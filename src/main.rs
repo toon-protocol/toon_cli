@@ -17,6 +17,7 @@ mod operator;
 mod outcome;
 mod profile;
 mod runner;
+mod service;
 mod status;
 mod up;
 mod wallet;
@@ -24,6 +25,7 @@ mod wallet;
 use std::env;
 use std::ffi::OsString;
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
 use clap::error::ErrorKind;
@@ -78,15 +80,23 @@ fn main() -> ExitCode {
             json,
         )
         .into(),
-        Command::Up => up(json).into(),
+        Command::Up { foreground: true } => up(json).into(),
+        Command::Up { foreground: false } => {
+            render(home::resolve().and_then(|home| install(&home)), json).into()
+        }
+        Command::Logs { name, lines } => render(
+            home::resolve().and_then(|home| status::logs(&home, &name, lines)),
+            json,
+        )
+        .into(),
         // The connector this binary embeds, as the supervisor's child: it reports to
         // the supervisor and not to an operator.
         Command::Connector { config } => connector::serve(&config),
     }
 }
 
-/// `toon up` reports once its connector is listening and then stays in the foreground,
-/// so it renders twice: the report, and why it stopped.
+/// `toon up --foreground` reports once its connector is listening and then stays in the foreground,
+/// so it renders once, and its exit code says whether `toon down` stopped it or an app did.
 fn up(json: bool) -> Exit {
     let supervisor = match home::resolve().and_then(|home| up::start(&home)) {
         Ok(supervisor) => supervisor,
@@ -102,6 +112,42 @@ fn up(json: bool) -> Exit {
         Stopped::Failed(error) if json => error.code.exit(),
         Stopped::Failed(error) => render(Err(error), json),
     }
+}
+
+/// `toon up` without `--foreground`: install the unit that runs the supervisor, and
+/// leave it running.
+fn install(home: &Path) -> Result<Report, Error> {
+    if node::State::load(home)?.is_none() {
+        return Err(node::no_agent_node(home));
+    }
+    if control::running(home) {
+        return Err(Error {
+            code: ErrorCode::AlreadyRunning,
+            message: format!(
+                "A supervisor is already running this agent node, at {}.",
+                control::path(home).display()
+            ),
+        });
+    }
+    let installed = service::install()?;
+    let unit = installed.unit.to_string_lossy();
+    let linger = if installed.linger {
+        ""
+    } else {
+        " It will start at your first login, not at boot: run `loginctl enable-linger` to change that."
+    };
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({
+            "home": home,
+            "unit": { "name": service::UNIT, "path": unit },
+            "linger": installed.linger,
+        }),
+        text: format!(
+            "Started {} ({unit}). `toon status` shows what it runs.{linger}",
+            service::UNIT
+        ),
+    })
 }
 
 /// Whether the arguments ask for JSON. Asked of the raw arguments because a command

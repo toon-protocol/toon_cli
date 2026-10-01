@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use crate::control;
 use crate::node::{self, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::service;
 
 /// How long `down` waits for the supervisor to finish stopping.
 const STOPPING: Duration = Duration::from_secs(30);
@@ -49,15 +50,24 @@ pub fn status(home: &Path) -> Result<Report, Error> {
         let field = |name: &str| connector.map_or(Value::Null, |connector| connector[name].clone());
         let running = field("running") == true;
         all_running &= running;
+        let restarts = field("restarts").as_u64().unwrap_or(0);
         lines.push(format!(
-            "TOON app {}: connector {}{}.",
+            "TOON app {}: connector {}{}{}.",
             app.name,
             if running { "running" } else { "not running" },
             field("address")
                 .as_str()
                 .map(|address| format!(" on {address}"))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            match restarts {
+                0 => String::new(),
+                1 => ", restarted once".to_string(),
+                times => format!(", restarted {times} times"),
+            }
         ));
+        if let Some(why) = field("last_exit").as_str() {
+            lines.push(format!("  Last stopped: {why}"));
+        }
         let apps: Vec<Value> = app
             .apps
             .iter()
@@ -87,6 +97,8 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                 "address": field("address"),
                 "pid": field("pid"),
                 "running": running,
+                "restarts": field("restarts"),
+                "last_exit": field("last_exit"),
             },
         }));
     }
@@ -107,8 +119,9 @@ pub fn status(home: &Path) -> Result<Report, Error> {
     })
 }
 
-/// Stop the supervisor and its connector, and return once both are gone. A node that
-/// is not running is already down.
+/// Stop the supervisor and its connector, and return once both are gone, and stop the
+/// `systemd --user` unit that `up` installed, so that it does not start them again. A
+/// node that is not running is already down.
 pub fn down(home: &Path) -> Result<Report, Error> {
     if State::load(home)?.is_none() {
         return Err(node::no_agent_node(home));
@@ -118,20 +131,75 @@ pub fn down(home: &Path) -> Result<Report, Error> {
         json: json!({ "stopped": was_running }),
         text: text.into(),
     };
-    if control::ask(home, "down").is_none() {
-        return Ok(stopped(false, "The agent node was not running."));
-    }
-    // The supervisor removes its socket last, when the connector has exited. One that
-    // dies on the way leaves its socket behind, but nothing answers on it.
-    let deadline = Instant::now() + STOPPING;
-    while control::running(home) {
-        if Instant::now() >= deadline {
-            return Err(Error {
-                code: ErrorCode::ConnectorFailed,
-                message: "The supervisor was asked to stop and had not stopped in time.".into(),
-            });
+    let was_running = control::ask(home, "down").is_some();
+    if was_running {
+        // The supervisor removes its socket last, when the connector has exited. One that
+        // dies on the way leaves its socket behind, but nothing answers on it.
+        let deadline = Instant::now() + STOPPING;
+        while control::running(home) {
+            if Instant::now() >= deadline {
+                return Err(Error {
+                    code: ErrorCode::ConnectorFailed,
+                    message: "The supervisor was asked to stop and had not stopped in time.".into(),
+                });
+            }
+            thread::sleep(Duration::from_millis(20));
         }
-        thread::sleep(Duration::from_millis(20));
     }
-    Ok(stopped(true, "The agent node stopped."))
+    service::remove()?;
+    Ok(if was_running {
+        stopped(true, "The agent node stopped.")
+    } else {
+        stopped(false, "The agent node was not running.")
+    })
+}
+
+/// How many lines of a log `toon logs` shows when it is not told.
+pub const DEFAULT_LINES: usize = 100;
+
+/// The last `lines` lines of the log of the TOON app or app called `name`. An app's
+/// requests pass through the connector of its TOON app, so until an app runs as a
+/// process of its own, the connector's log is the app's log.
+pub fn logs(home: &Path, name: &str, lines: usize) -> Result<Report, Error> {
+    let Some(state) = State::load(home)? else {
+        return Err(node::no_agent_node(home));
+    };
+    let Some(app) = state
+        .toon_apps
+        .iter()
+        .find(|app| app.name == name || app.apps.iter().any(|behind| behind == name))
+    else {
+        let known: Vec<&str> = state
+            .toon_apps
+            .iter()
+            .flat_map(|app| std::iter::once(&app.name).chain(&app.apps))
+            .map(String::as_str)
+            .collect();
+        return Err(Error {
+            code: ErrorCode::UnknownName,
+            message: format!(
+                "No TOON app or app is called {name}. This agent node has {}.",
+                known.join(", ")
+            ),
+        });
+    };
+    let log = node::ConnectorFiles::of(home, app.connector).log;
+    let text = match std::fs::read(&log) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        // A TOON app that has never started has no log yet.
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(source) => {
+            return Err(Error {
+                code: ErrorCode::Io,
+                message: format!("{}: {source}.", log.display()),
+            })
+        }
+    };
+    let all: Vec<&str> = text.lines().collect();
+    let shown = &all[all.len().saturating_sub(lines)..];
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "name": name, "toon_app": app.name, "log": log, "lines": shown }),
+        text: shown.join("\n"),
+    })
 }

@@ -85,7 +85,7 @@ fn a_packet_to_the_relays_address_is_delivered_to_the_relay() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     let address = connector(&up.report());
 
     send(address, "g.toon.relay.ephemeral", b"hello relay");
@@ -105,7 +105,7 @@ fn the_relay_is_started_with_the_wallets_relay_identity_key() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
 
     let key = fs::read(relay_dir(&machine).join("identity.key")).unwrap();
@@ -125,7 +125,7 @@ fn the_connectors_config_routes_the_relays_write_and_its_free_ephemeral_write() 
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
 
     let status = machine.toon(&["status", "--json"]).json();
@@ -155,7 +155,7 @@ fn status_shows_the_relay_as_an_app_of_the_first_toon_app() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
 
     let run = machine.toon(&["status", "--json"]);
@@ -179,7 +179,7 @@ fn down_stops_the_relay() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
-    let mut up = machine.start(&["up", "--json"]);
+    let mut up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
     let relay: SocketAddr = machine.toon(&["status", "--json"]).json()["agent_node"]["toon_apps"]
         [0]["apps"][0]["address"]
@@ -202,7 +202,7 @@ fn up_fails_with_app_failed_when_the_relay_does_not_start() {
     let machine = Machine::new();
     machine.init_on(&chain);
 
-    let run = machine.toon_with(&["up", "--json"], |command| {
+    let run = machine.toon_with(&["up", "--foreground", "--json"], |command| {
         command.env("TOON_APP_COMMAND", "/nonexistent/relay");
     });
 
@@ -216,7 +216,7 @@ fn up_fails_when_the_relay_stops() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
-    let mut up = machine.start(&["up", "--json"]);
+    let mut up = machine.start(&["up", "--foreground", "--json"]);
     let report = up.report();
     let pid = report["connector"]["pid"].as_u64().unwrap();
     let relay: SocketAddr = machine.toon(&["status", "--json"]).json()["agent_node"]["toon_apps"]

@@ -45,12 +45,20 @@ child process of the same binary:
 ./target/debug/toon up --json
 ```
 
-`toon up` stays in the foreground. It starts the relay from the pinned image as a
-container with `docker`, its write port published on loopback only, then starts the
-connector from the config it renders, with the relay's write route and its free
-ephemeral route, and prints the connector's address once it is listening.
-`TOON_APP_COMMAND=<program>` runs every app as a local process of that program instead
-of a container; the tests use it with `examples/fake_relay.rs`.
+`toon up` writes a `systemd --user` unit (`~/.config/systemd/user/toon-agent-node.service`)
+that runs `toon up --foreground`, the supervisor, and starts it, so the agent node
+outlives the session that started it. The supervisor restarts a connector that exits,
+`toon status` shows how often, `toon logs <name>` shows the log of a TOON app or an app,
+and `toon down` stops the supervisor and the unit. `toon up --foreground` runs the
+supervisor in this process instead, and prints the connector's address once it is
+listening.
+
+The supervisor starts the relay from the pinned image as a container with `docker`, its
+write port published on loopback only, then starts the connector from the config it
+renders, with the relay's write route and its free ephemeral route. If the relay stops,
+the supervisor stops with it and exits 1. `TOON_APP_COMMAND=<program>` runs every app as
+a local process of that program instead of a container; the tests use it with
+`examples/fake_relay.rs`.
 
 Every command is non-interactive and accepts `--json`, which prints exactly one JSON
 document. Exit codes and error codes are stable and listed in

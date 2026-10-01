@@ -10,8 +10,13 @@ use crate::outcome::{Error, ErrorCode};
 /// `toon-client` keeps its own files directly under `~/.toon`, so the agent node gets
 /// a directory of its own beside them.
 pub fn resolve() -> Result<PathBuf, Error> {
+    user().map(|home| home.join(".toon").join("agent-node"))
+}
+
+/// The user's home directory: `$HOME`.
+pub fn user() -> Result<PathBuf, Error> {
     match env::var_os("HOME").filter(|home| !home.is_empty()) {
-        Some(home) => Ok(PathBuf::from(home).join(".toon").join("agent-node")),
+        Some(home) => Ok(PathBuf::from(home)),
         None => Err(Error {
             code: ErrorCode::HomeUnresolved,
             message: "HOME is not set or is empty, so there is nowhere to look for an agent node."
