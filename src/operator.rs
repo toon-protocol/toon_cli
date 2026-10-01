@@ -757,26 +757,27 @@ const NETWORK_PREFIX: &str = "g.toon";
 /// prefix over the peering, and read the network's relay. All of it is under the
 /// spending limit, as the one deposit.
 pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
+    // Refused before the spending limit is charged: a refused join moves nothing.
+    let Some(mut state) = State::load(home)? else {
+        return Err(node::no_agent_node(home));
+    };
+    let name = args.network.name();
+    if state.network != args.network {
+        return Err(failed(
+            ErrorCode::JoinRefused,
+            format!(
+                "This agent node was initialised for {}, whose chain it settles on: it cannot join {name}.",
+                state.network.name()
+            ),
+        ));
+    }
+    if let Some(joined) = &state.joined {
+        return Err(failed(
+            ErrorCode::JoinRefused,
+            format!("This agent node has already joined {joined}."),
+        ));
+    }
     spending::spend(home, args.deposit, args.yes, || {
-        let Some(mut state) = State::load(home)? else {
-            return Err(node::no_agent_node(home));
-        };
-        let name = args.network.name();
-        if state.network != args.network {
-            return Err(failed(
-                ErrorCode::Usage,
-                format!(
-                    "This agent node was initialised for {}, whose chain it settles on: it cannot join {name}.",
-                    state.network.name()
-                ),
-            ));
-        }
-        if let Some(joined) = &state.joined {
-            return Err(failed(
-                ErrorCode::PeerFailed,
-                format!("This agent node has already joined {joined}."),
-            ));
-        }
         let peered = peer_add(
             home,
             &PeerAdd {

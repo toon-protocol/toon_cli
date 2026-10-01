@@ -43,7 +43,7 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             state.reads.join(", ")
         )),
         None => lines.push(
-            "Unconnected: no peering, and nothing spent. `toon join <network> --deposit <amount> --yes` connects it."
+            "Unconnected: it has joined no network. `toon join <network> --deposit <amount> --yes` connects it."
                 .into(),
         ),
     }

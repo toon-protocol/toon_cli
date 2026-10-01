@@ -104,6 +104,25 @@ fn a_new_agent_node_is_unconnected_until_it_joins_and_then_reads_the_networks_re
         "ws://127.0.0.1:7100"
     );
     assert_eq!(after.json()["agent_node"]["joined"], "devnet");
+
+    let left = agent.machine.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"]
+        .clone();
+    let again = agent.machine.toon(&[
+        "join",
+        "devnet",
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(again.json()["error"]["code"], "join_refused");
+    assert_eq!(chain.balance(&agent.evm), DEPOSIT * 9);
+    let still = agent.machine.toon(&["limit", "show", "--json"]);
+    assert_eq!(
+        still.json()["limits"]["remaining_today"],
+        left,
+        "a refused join is not counted"
+    );
 }
 
 #[test]
