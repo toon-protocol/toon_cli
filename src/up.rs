@@ -29,6 +29,7 @@ use crate::funding;
 use crate::node::{self, App, AppFiles, ConnectorFiles, Reach, Source, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::overlay::{self, Edge};
+use crate::receive::{Receiver, Surroundings};
 use crate::runner::{self, AppRunner, AppSpec, RunningApp};
 
 /// How long a connector gets to exit once its supervisor is stopping, before it is killed.
@@ -92,6 +93,23 @@ struct Shared {
     /// The `sync` requests that `wait` has not carried out yet: the state holds a TOON app
     /// that does not run, or one that runs is gone from it.
     sync: Mutex<Vec<Reload>>,
+    /// The overlay's SOCKS5 proxy, once the supervisor has bootstrapped it.
+    proxy: Mutex<Option<SocketAddr>>,
+}
+
+impl Surroundings for Shared {
+    fn relay(&self) -> Option<SocketAddr> {
+        self.units().iter().find_map(|unit| {
+            unit.apps()
+                .iter()
+                .find(|app| app.name == node::RELAY && app.running.load(Ordering::SeqCst))
+                .map(|app| app.address)
+        })
+    }
+
+    fn proxy(&self) -> Option<SocketAddr> {
+        *self.proxy.lock().expect("the proxy")
+    }
 }
 
 /// A connector that is listening.
@@ -169,6 +187,8 @@ pub struct Supervisor {
     shared: Arc<Shared>,
     socket: PathBuf,
     home: PathBuf,
+    /// Receives every subscription's live feed into the relay.
+    receiver: Option<Receiver>,
 }
 
 /// How a supervisor ended.
@@ -307,9 +327,11 @@ fn launch(
             stop: AtomicBool::new(false),
             units: Mutex::new(Vec::new()),
             sync: Mutex::new(Vec::new()),
+            proxy: Mutex::new(None),
         }),
         socket: socket.to_path_buf(),
         home: home.to_path_buf(),
+        receiver: None,
     };
     for app in &state.toon_apps {
         if let Err(error) = supervisor.add(app) {
@@ -317,6 +339,7 @@ fn launch(
             return Err(error);
         }
     }
+    supervisor.receiver = Some(Receiver::start(home, supervisor.shared.clone()));
     let answering = Arc::clone(&supervisor.shared);
     thread::spawn(move || {
         control::serve(listener, move |request, toon_app| {
@@ -591,6 +614,7 @@ impl Supervisor {
                     Some(edge) => Arc::clone(edge),
                     None => {
                         let edge: Arc<dyn Edge> = Arc::from(overlay::bootstrap(&self.home, false)?);
+                        *self.shared.proxy.lock().expect("the proxy") = Some(edge.proxy());
                         self.edge = Some(Arc::clone(&edge));
                         edge
                     }
@@ -647,6 +671,8 @@ impl Supervisor {
     /// Stop every connector, and then the apps that were behind them, and let the overlay
     /// they shared go.
     fn shutdown(&mut self) {
+        // The feeds stop first: they write into the relay.
+        self.receiver = None;
         for unit in &mut self.units {
             unit.shared.reloads().clear();
             unit.stop();

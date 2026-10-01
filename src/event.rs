@@ -433,6 +433,7 @@ pub fn run(command: EventCommand) -> Result<Report, Error> {
             yes: _,
         } => publish(&home::resolve()?, kind, &content, &tags, amount),
         EventCommand::Query { relay, filter } => query(&relay, &filter),
+        EventCommand::Follow { relay } => crate::subscribe::follow(&home::resolve()?, &relay),
     }
 }
 

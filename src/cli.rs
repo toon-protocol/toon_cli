@@ -414,6 +414,12 @@ pub enum EventCommand {
         #[arg(long)]
         filter: String,
     },
+    /// Print the events of the live feed of a relay this agent node subscribed to, one JSON
+    /// document to a line, as they arrive
+    Follow {
+        /// The relay's websocket URL, as given to `toon relay subscribe`
+        relay: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
