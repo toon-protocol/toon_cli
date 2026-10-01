@@ -7,11 +7,22 @@
 // Each test file compiles this module separately and uses a different part of it.
 #![allow(dead_code)]
 
+pub mod fake_chain;
+
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tempfile::TempDir;
+
+/// How long a foreground `toon` gets to print a line or to exit. A connector binds to
+/// its chain before it listens, so this is generous.
+const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// One operator's machine: an empty home directory that is deleted on drop.
 pub struct Machine {
@@ -54,13 +65,7 @@ impl Machine {
     /// machine the tests run on. Standard input is closed: a command that prompts
     /// fails here instead of hanging.
     pub fn toon_with(&self, args: &[&str], configure: impl FnOnce(&mut Command)) -> Run {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_toon"));
-        command
-            .args(args)
-            .env_clear()
-            .env("HOME", self.home())
-            .current_dir(self.home())
-            .stdin(Stdio::null());
+        let mut command = self.command(args);
         configure(&mut command);
         let output = command.output().expect("run the toon binary");
         Run {
@@ -71,6 +76,112 @@ impl Machine {
             stdout: String::from_utf8(output.stdout).expect("stdout is UTF-8"),
             stderr: String::from_utf8(output.stderr).expect("stderr is UTF-8"),
         }
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_toon"));
+        command
+            .args(args)
+            .env_clear()
+            .env("HOME", self.home())
+            .current_dir(self.home())
+            .stdin(Stdio::null());
+        command
+    }
+
+    /// Write `contents` to `name` in the agent node's home, and return its path.
+    pub fn write_agent_node_file(&self, name: &str, contents: impl AsRef<[u8]>) -> PathBuf {
+        let path = self.agent_node_home().join(name);
+        fs::create_dir_all(self.agent_node_home()).expect("create the agent node's home");
+        fs::write(&path, contents).expect("write a file in the agent node's home");
+        path
+    }
+
+    /// Start `toon` with `args` and leave it running, for a command that stays in the
+    /// foreground. It is killed when the returned value is dropped.
+    pub fn start(&self, args: &[&str]) -> Foreground {
+        let stderr = self.home().join("toon.stderr");
+        let mut child = self
+            .command(args)
+            .stdout(Stdio::piped())
+            .stderr(File::create(&stderr).expect("create a file for stderr"))
+            .spawn()
+            .expect("start the toon binary");
+        let stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
+        let (sender, lines) = mpsc::channel();
+        // Read on a thread of its own, so a `toon` that prints nothing fails the test
+        // instead of hanging it.
+        thread::spawn(move || {
+            for line in stdout.lines().map_while(Result::ok) {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Foreground {
+            child,
+            lines,
+            stderr,
+        }
+    }
+}
+
+/// A `toon` that was started and left running.
+pub struct Foreground {
+    child: Child,
+    lines: Receiver<String>,
+    stderr: PathBuf,
+}
+
+impl Foreground {
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// The next line of standard output as the one JSON document `--json` promises,
+    /// which a foreground command prints once what it runs is up.
+    pub fn report(&self) -> Value {
+        let line = self.line();
+        serde_json::from_str(&line)
+            .unwrap_or_else(|error| panic!("the report is not a JSON document ({error}):\n{line}"))
+    }
+
+    /// The next line of standard output, for a command that prints text.
+    pub fn line(&self) -> String {
+        self.lines
+            .recv_timeout(TIMEOUT)
+            .unwrap_or_else(|_| panic!("toon printed nothing; stderr:\n{}", self.stderr()))
+    }
+
+    /// Wait for it to exit by itself, and return its exit code.
+    pub fn exit_code(&mut self) -> i32 {
+        let deadline = Instant::now() + TIMEOUT;
+        loop {
+            if let Some(status) = self.child.try_wait().expect("wait for toon") {
+                return status
+                    .code()
+                    .expect("toon exited without being killed by a signal");
+            }
+            assert!(Instant::now() < deadline, "toon is still running");
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// What it has written to standard error so far.
+    pub fn stderr(&self) -> String {
+        fs::read_to_string(&self.stderr).expect("read stderr")
+    }
+
+    /// Kill it the way a crash or `kill -9` would: with no chance to clean up.
+    pub fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for Foreground {
+    fn drop(&mut self) {
+        self.kill();
     }
 }
 

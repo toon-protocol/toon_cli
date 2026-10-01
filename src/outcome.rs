@@ -48,6 +48,8 @@ pub struct Report {
 pub enum ErrorCode {
     Usage,
     HomeUnresolved,
+    NoAgentNode,
+    ConnectorFailed,
 }
 
 impl ErrorCode {
@@ -55,6 +57,8 @@ impl ErrorCode {
         match self {
             ErrorCode::Usage => "usage",
             ErrorCode::HomeUnresolved => "home_unresolved",
+            ErrorCode::NoAgentNode => "no_agent_node",
+            ErrorCode::ConnectorFailed => "connector_failed",
         }
     }
 
@@ -62,6 +66,8 @@ impl ErrorCode {
         match self {
             ErrorCode::Usage => Exit::Usage,
             ErrorCode::HomeUnresolved => Exit::Failure,
+            ErrorCode::NoAgentNode => Exit::NoAgentNode,
+            ErrorCode::ConnectorFailed => Exit::Failure,
         }
     }
 }

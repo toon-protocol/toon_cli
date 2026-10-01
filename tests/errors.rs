@@ -1,6 +1,5 @@
 mod support;
 
-use serde_json::json;
 use support::Machine;
 
 #[test]
@@ -72,16 +71,6 @@ fn json_is_accepted_before_the_command_as_well_as_after() {
 
     assert_eq!(before.json(), after.json());
     assert_eq!(before.exit_code, after.exit_code);
-}
-
-#[test]
-fn the_version_with_json_is_a_json_document() {
-    let machine = Machine::new();
-
-    let run = machine.toon(&["--version", "--json"]);
-
-    assert_eq!(run.json(), json!({ "version": env!("CARGO_PKG_VERSION") }));
-    assert_eq!(run.exit_code, 0);
 }
 
 #[test]

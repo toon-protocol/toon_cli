@@ -1,13 +1,23 @@
 //! The command surface.
 
+use std::path::PathBuf;
+
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use crate::outcome::Exit;
 
+/// What `--version` prints after the name: this release, and the connector it embeds.
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (connector ",
+    env!("TOON_CONNECTOR_REVISION"),
+    ")"
+);
+
 #[derive(Debug, Parser)]
 #[command(
     name = "toon",
-    version,
+    version = VERSION,
     about = "Runs and manages an agent node",
     // `--help` is the one way to ask for help, so that `help` is not a command that
     // would have to accept `--json` like every other.
@@ -26,6 +36,11 @@ pub struct Cli {
 pub enum Command {
     /// Show the agent node on this machine
     Status,
+    /// Run the agent node in the foreground
+    Up,
+    /// Serve one connector from its config file: what `up` starts as a child process
+    #[command(hide = true)]
+    Connector { config: PathBuf },
 }
 
 impl Cli {

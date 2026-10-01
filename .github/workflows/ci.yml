@@ -8,6 +8,10 @@
 #
 # The toolchain is `stable` with clippy and rustfmt, as in the shared sandbox image
 # (connector's .sandcastle/Dockerfile). Neither pins a version.
+#
+# The `aarch64` job is not part of the gate. `toon` ships for Linux on x86_64 and
+# aarch64, and the connector it embeds brings both chains' SDKs with it, so the tests
+# also run on an arm64 runner.
 
 name: CI
 
@@ -53,6 +57,30 @@ jobs:
 
       - name: Clippy, warnings as errors
         run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked
+
+  aarch64:
+    name: Tests on aarch64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: aarch64-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            aarch64-${{ runner.os }}-
 
       - name: Run tests
         run: cargo test --locked

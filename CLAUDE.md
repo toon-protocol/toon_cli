@@ -16,10 +16,27 @@ Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/age
 
 One Rust crate, `toon-cli`, at the repository root; it builds the binary `toon`.
 Tests live in `tests/` and go through one seam: `tests/support` runs the built binary
-against a temporary home directory, and a test asserts on its output, its exit code and
-the files it leaves. Exit codes and error codes are part of the interface and are listed
+against a temporary home directory, and a test asserts on its output, its exit code,
+the files it leaves, and what a connector it started answers over loopback. Exit codes and error codes are part of the interface and are listed
 in `docs/exit-codes.md`. `tests/exit_codes.rs` keeps its own copy of both lists and
 checks it against that file and `toon --help`, so add a new code to all of them together.
+
+## The embedded connector
+
+`toon` depends on the connector's crates at one git revision (ADR 0001). The `rev` is
+written on every connector line in `Cargo.toml`; `build.rs` fails the build if they
+differ and hands the value to `toon --version`. Do not copy it anywhere else.
+
+To move the pin: change every `rev` in `Cargo.toml`, replace `Cargo.lock` with the
+connector's own `Cargo.lock` at that revision, then run `cargo build` once without
+`--locked`. Cargo does not read a git dependency's lockfile, so this is what keeps the
+embedded connector on the dependency versions the connector was tested with.
+
+`toon up` starts `toon connector <config>`, a hidden command, as a child process
+(`src/connector.rs`). Tests that start a connector use `tests/support/fake_chain.rs`,
+the connector's `FakeRpc` answering as an EVM chain with x402 deployed. It holds no
+channels and accepts no transaction: enough for a connector to start, not for a test
+that moves money.
 
 ## The AFK factory
 
