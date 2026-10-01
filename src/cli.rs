@@ -55,6 +55,11 @@ pub enum Command {
         #[command(subcommand)]
         command: RouteCommand,
     },
+    /// Publish and read Nostr events under the agent identity
+    Event {
+        #[command(subcommand)]
+        command: EventCommand,
+    },
     /// Start the agent node as a `systemd --user` unit that outlives this session
     Up {
         /// Run the supervisor in this process instead of installing the unit
@@ -151,6 +156,34 @@ pub struct SendArgs {
     /// The amount, in the token's base units: a send always states it
     #[arg(long)]
     pub amount: u64,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EventCommand {
+    /// Sign an event with the agent identity and publish it to the agent node's own relay
+    Publish {
+        /// The event's kind
+        #[arg(long)]
+        kind: u64,
+        /// The event's content
+        #[arg(long, default_value = "")]
+        content: String,
+        /// The event's tags, as a JSON array of arrays of strings
+        #[arg(long, default_value = "[]")]
+        tags: String,
+        /// What the write is paid, in the token's base units; the operator's own relay
+        /// charges its operator nothing
+        #[arg(long, default_value_t = 0)]
+        amount: u64,
+    },
+    /// Read the stored events of a relay that match a filter
+    Query {
+        /// The relay's websocket URL, `ws://host:port`
+        relay: String,
+        /// A NIP-01 filter, as one JSON object
+        #[arg(long)]
+        filter: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

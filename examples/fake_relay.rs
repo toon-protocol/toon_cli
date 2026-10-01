@@ -5,6 +5,10 @@
 //! `/write-ephemeral` with 200 after appending `<path> <body in hex>` to `writes.log` in its
 //! data directory. It writes the secret key it was handed to `environment` there, and it
 //! exits when its standard input closes, as a supervisor's apps do.
+//!
+//! A body that is a JSON event is also stored in `events.log`, one per line, and a websocket
+//! client on the same port reads them back with a NIP-01 `REQ` (`ids`, `authors`, `kinds`
+//! and `limit` are honoured) and gets `EOSE` after the stored events.
 
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -46,6 +50,14 @@ fn main() {
 }
 
 fn serve(stream: TcpStream, data: &Path) {
+    let mut start = [0u8; 1024];
+    let peeked = stream.peek(&mut start).unwrap_or(0);
+    if String::from_utf8_lossy(&start[..peeked])
+        .to_ascii_lowercase()
+        .contains("upgrade: websocket")
+    {
+        return websocket(stream, data);
+    }
     let mut reader = BufReader::new(stream);
     let mut request = String::new();
     if reader.read_line(&mut request).is_err() {
@@ -86,6 +98,14 @@ fn serve(stream: TcpStream, data: &Path) {
                     .map(|byte| format!("{byte:02x}"))
                     .collect::<String>()
             );
+            if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&body) {
+                let mut events = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(data.join("events.log"))
+                    .expect("open the event log");
+                let _ = writeln!(events, "{event}");
+            }
             ("200 OK", "stored")
         }
         _ => ("404 Not Found", "not found"),
@@ -95,4 +115,49 @@ fn serve(stream: TcpStream, data: &Path) {
         "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
         answer.len()
     );
+}
+
+/// Whether `event` is among what `filter` asks for.
+fn matches(filter: &serde_json::Value, event: &serde_json::Value) -> bool {
+    [("ids", "id"), ("authors", "pubkey"), ("kinds", "kind")]
+        .iter()
+        .all(|(wanted, field)| match filter[wanted].as_array() {
+            Some(allowed) => allowed.contains(&event[field]),
+            None => true,
+        })
+}
+
+fn websocket(stream: TcpStream, data: &Path) {
+    let Ok(mut socket) = tungstenite::accept(stream) else {
+        return;
+    };
+    while let Ok(message) = socket.read() {
+        let tungstenite::Message::Text(text) = message else {
+            continue;
+        };
+        let Ok(serde_json::Value::Array(frame)) = serde_json::from_str(&text) else {
+            continue;
+        };
+        if frame.first().and_then(|kind| kind.as_str()) != Some("REQ") || frame.len() < 3 {
+            continue;
+        }
+        let subscription = frame[1].clone();
+        let stored = fs::read_to_string(data.join("events.log")).unwrap_or_default();
+        let mut found: Vec<serde_json::Value> = stored
+            .lines()
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .filter(|event| frame[2..].iter().any(|filter| matches(filter, event)))
+            .collect();
+        if let Some(limit) = frame[2]["limit"].as_u64() {
+            found.truncate(limit as usize);
+        }
+        for event in found {
+            let _ = socket.send(tungstenite::Message::text(
+                serde_json::json!(["EVENT", subscription, event]).to_string(),
+            ));
+        }
+        let _ = socket.send(tungstenite::Message::text(
+            serde_json::json!(["EOSE", subscription]).to_string(),
+        ));
+    }
 }

@@ -94,7 +94,7 @@ pub fn route_list(home: &Path) -> Result<Report, Error> {
 }
 
 /// What a packet came to.
-enum Answer {
+pub enum Answer {
     Fulfilled { status: u64, body: String },
     Rejected { code: String, message: String },
     WrongFulfilment,
@@ -123,9 +123,14 @@ fn answer(summary: &str) -> Option<Answer> {
     })
 }
 
-/// `toon send`: one packet from the operator surface to `destination`, for `amount`.
-/// A packet that is not fulfilled is a report, not an error, and exits 1.
-pub fn send(home: &Path, destination: &str, amount: u64) -> Result<Report, Error> {
+/// Send one packet from the operator surface to `destination`, for `amount`, and return
+/// what the connector says it came to. `body` is a file the request carries as its JSON body.
+pub fn dispatch(
+    home: &Path,
+    destination: &str,
+    amount: u64,
+    body: Option<&Path>,
+) -> Result<Answer, Error> {
     let surface = surface(home)?;
     let send_failed = |message: String| failed(ErrorCode::SendFailed, message);
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -135,21 +140,26 @@ pub fn send(home: &Path, destination: &str, amount: u64) -> Result<Report, Error
     let amount_text = amount.to_string();
     let seal_to = format!("{}/ilp", surface.url);
     let write_key = surface.write_key.to_string_lossy();
+    let body = body.map(|path| path.to_string_lossy().into_owned());
+    let mut arguments = vec![
+        "toon send",
+        "send",
+        "--operator",
+        &surface.url,
+        "--operator-key",
+        &write_key,
+        "--to",
+        destination,
+        "--seal-to",
+        &seal_to,
+        "--amount",
+        &amount_text,
+    ];
+    if let Some(body) = &body {
+        arguments.extend(["--body", body]);
+    }
     let summary = runtime
-        .block_on(connector_cli::run(&[
-            "toon send",
-            "send",
-            "--operator",
-            &surface.url,
-            "--operator-key",
-            &write_key,
-            "--to",
-            destination,
-            "--seal-to",
-            &seal_to,
-            "--amount",
-            &amount_text,
-        ]))
+        .block_on(connector_cli::run(&arguments))
         .map_err(|error| send_failed(error.to_string()))
         .and_then(|command| match command {
             connector_cli::Command::Finished { summary } => Ok(summary),
@@ -157,11 +167,17 @@ pub fn send(home: &Path, destination: &str, amount: u64) -> Result<Report, Error
                 Err(send_failed("The connector did not send.".into()))
             }
         })?;
-    let answer = answer(&summary).ok_or_else(|| {
+    answer(&summary).ok_or_else(|| {
         send_failed(format!(
             "The connector's answer was not understood: {summary}"
         ))
-    })?;
+    })
+}
+
+/// `toon send`: one packet from the operator surface to `destination`, for `amount`.
+/// A packet that is not fulfilled is a report, not an error, and exits 1.
+pub fn send(home: &Path, destination: &str, amount: u64) -> Result<Report, Error> {
+    let answer = dispatch(home, destination, amount, None)?;
     let sent = format!("{amount} base units to {destination}");
     Ok(match answer {
         Answer::Fulfilled { status, body } => Report {

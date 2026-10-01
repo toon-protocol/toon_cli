@@ -6353,6 +6353,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "tungstenite",
  "zeroize",
 ]
 

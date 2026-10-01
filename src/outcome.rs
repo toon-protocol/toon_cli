@@ -64,6 +64,7 @@ pub enum ErrorCode {
     SendFailed,
     SystemdFailed,
     UnknownName,
+    QueryFailed,
 }
 
 impl ErrorCode {
@@ -87,6 +88,7 @@ impl ErrorCode {
             ErrorCode::SendFailed => "send_failed",
             ErrorCode::SystemdFailed => "systemd_failed",
             ErrorCode::UnknownName => "unknown_name",
+            ErrorCode::QueryFailed => "query_failed",
         }
     }
 
@@ -108,7 +110,8 @@ impl ErrorCode {
             | ErrorCode::NotRunning
             | ErrorCode::SendFailed
             | ErrorCode::SystemdFailed
-            | ErrorCode::UnknownName => Exit::Failure,
+            | ErrorCode::UnknownName
+            | ErrorCode::QueryFailed => Exit::Failure,
         }
     }
 }

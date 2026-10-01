@@ -70,13 +70,14 @@ A failed command with `--json` prints:
 | `unfunded` | 1 | A settlement key does not hold what the connector needs, so `toon up` did not start it; the message names each address and the amount |
 | `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
-| `send_failed` | 1 | The packet could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
+| `send_failed` | 1 | The packet (or, for `toon event publish`, the event) could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
 | `unknown_name` | 1 | `toon logs` was given a name that is neither a TOON app nor an app of this agent node |
+| `query_failed` | 1 | `toon event query` could not read events from the relay: it did not answer, is not a websocket relay this build dials, or closed the subscription with a reason the message carries |
 
 ## The wallet passphrase
 
-`toon init` and `toon wallet show` read the passphrase from the file named by
+`toon init`, `toon wallet show` and `toon event publish` read the passphrase from the file named by
 `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`. It is never a flag. One trailing
 newline in the file is not part of the passphrase.
 
@@ -90,3 +91,11 @@ settlement is off unless `--solana` is given. `toon up` does not start a connect
 settlement key holds less than 0.0001 ETH (0.01 SOL) for gas and one whole token; it fails
 with `unfunded`. Only the devnet has a faucet: on the other networks `toon wallet fund`
 fails with `faucet_unavailable`, and on mainnet the operator funds the addresses themselves.
+
+## Events
+
+`toon event publish` signs with the agent identity, which is why it needs the passphrase,
+and sends the event to the agent node's own relay as an operator write: it exits 1 with
+`"outcome": "rejected"` when the packet is rejected and `"outcome": "refused"` when the relay
+answers with a status that is not 2xx. `toon event query` is a plain NIP-01 `REQ` and needs no
+passphrase; it reads from `ws://` relays only.
