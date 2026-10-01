@@ -26,6 +26,19 @@ pub struct Cli {
 pub enum Command {
     /// Show the agent node on this machine
     Status,
+    /// Create the wallet: one mnemonic, shown once, and an encrypted keystore
+    Init,
+    /// Manage the wallet
+    Wallet {
+        #[command(subcommand)]
+        command: WalletCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WalletCommand {
+    /// List the wallet's addresses by chain
+    Show,
 }
 
 impl Cli {

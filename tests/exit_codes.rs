@@ -60,7 +60,16 @@ fn the_exit_codes_document_lists_the_same_codes() {
 
 /// The error codes, as fixed by the releases so far. A new one is added here and to the
 /// document together.
-const ERROR_CODES: [&str; 2] = ["usage", "home_unresolved"];
+const ERROR_CODES: [&str; 8] = [
+    "usage",
+    "home_unresolved",
+    "no_wallet",
+    "passphrase_missing",
+    "passphrase_unreadable",
+    "passphrase_wrong",
+    "keystore_corrupt",
+    "io",
+];
 
 #[test]
 fn the_exit_codes_document_lists_the_error_codes() {

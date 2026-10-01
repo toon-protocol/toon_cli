@@ -6,9 +6,12 @@
 //! in `docs/exit-codes.md`.
 
 mod cli;
+mod derive;
 mod home;
+mod keystore;
 mod outcome;
 mod status;
+mod wallet;
 
 use std::env;
 use std::ffi::OsString;
@@ -18,7 +21,7 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use serde_json::json;
 
-use cli::{Cli, Command};
+use cli::{Cli, Command, WalletCommand};
 use outcome::{Error, ErrorCode, Exit, Report};
 
 fn main() -> ExitCode {
@@ -42,6 +45,10 @@ fn main() -> ExitCode {
 fn run(command: &Command) -> Result<Report, Error> {
     match command {
         Command::Status => Ok(status::status(&home::resolve()?)),
+        Command::Init => wallet::init(&home::resolve()?),
+        Command::Wallet {
+            command: WalletCommand::Show,
+        } => wallet::show(&home::resolve()?),
     }
 }
 
