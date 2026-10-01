@@ -99,6 +99,10 @@ pub enum Command {
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
+    /// Restore the wallet from the mnemonic in `TOON_MNEMONIC_FILE`, else `TOON_MNEMONIC`:
+    /// the onion endpoints are new, since a mnemonic does not hold them
+    #[arg(long)]
+    pub from_mnemonic: bool,
     /// Agree to the Anyone Protocol's terms, which a hidden service needs
     #[arg(long)]
     pub accept_anyone_terms: bool,
@@ -336,6 +340,17 @@ pub enum WalletCommand {
     Fund,
     /// Show the balance of every address by TOON app and chain
     Balances,
+    /// Seal the keystore and every onion endpoint's address key into one file
+    Backup {
+        /// The file to write; it must not exist
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Recreate the wallet and the address keys from a backup, in a home with no wallet
+    Restore {
+        /// The backup `wallet backup` wrote
+        file: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]

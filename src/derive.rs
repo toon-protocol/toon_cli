@@ -16,7 +16,9 @@
 //! - connector identity key: `m/10473'/2'/{connector}'`, per connector.
 //! - relay identity key: `m/10473'/3'/{relay}'`, per relay (ADR 0004).
 //! - onion key: `m/10473'/4'/{connector}'`, per connector: the key a hidden service's
-//!   address is made of (ADR 0003), so that the wallet's backup restores the address.
+//!   address is made of (ADR 0003). A new wallet derives it; a wallet restored from its
+//!   mnemonic alone is given random ones instead, and says its addresses changed, so only
+//!   the wallet's backup, which holds the keys, brings an address back.
 //!
 //! Each of those is a secp256k1 key whose public half is a Nostr x-only key, except
 //! the operator write key: the connector verifies operator writes with Ed25519, so its
