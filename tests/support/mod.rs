@@ -9,6 +9,7 @@
 
 pub mod fake_chain;
 pub mod fake_faucet;
+pub mod stub_app;
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -105,27 +106,37 @@ impl Machine {
     /// Run `toon init` for an agent node that settles on `chain`, with the passphrase
     /// every test uses.
     pub fn init_on(&self, chain: &fake_chain::FakeChain) -> Run {
-        self.toon_with(
-            &[
-                "init",
-                "--json",
-                "--evm-rpc-url",
-                &chain.rpc_url(),
-                "--evm-token",
-                fake_chain::TOKEN,
-                "--evm-decimals",
-                &fake_chain::TOKEN_DECIMALS.to_string(),
-                "--evm-asset-name",
-                "USDC",
-                "--evm-asset-version",
-                "2",
-                "--evm-transfer-method",
-                "permit2",
-            ],
-            |command| {
-                command.env("TOON_PASSPHRASE", PASSPHRASE);
-            },
-        )
+        self.init_on_with(chain, &[])
+    }
+
+    /// Like `init_on`, for an agent node whose relay is served at `relay_url`.
+    pub fn init_on_serving(&self, chain: &fake_chain::FakeChain, relay_url: &str) -> Run {
+        self.init_on_with(chain, &["--relay-url", relay_url])
+    }
+
+    fn init_on_with(&self, chain: &fake_chain::FakeChain, more: &[&str]) -> Run {
+        let decimals = fake_chain::TOKEN_DECIMALS.to_string();
+        let rpc_url = chain.rpc_url();
+        let mut args = vec![
+            "init",
+            "--json",
+            "--evm-rpc-url",
+            &rpc_url,
+            "--evm-token",
+            fake_chain::TOKEN,
+            "--evm-decimals",
+            &decimals,
+            "--evm-asset-name",
+            "USDC",
+            "--evm-asset-version",
+            "2",
+            "--evm-transfer-method",
+            "permit2",
+        ];
+        args.extend_from_slice(more);
+        self.toon_with(&args, |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        })
     }
 
     /// Write `contents` to `name` in the agent node's home, and return its path.

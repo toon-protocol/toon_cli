@@ -60,7 +60,7 @@ fn the_exit_codes_document_lists_the_same_codes() {
 
 /// The error codes, as fixed by the releases so far. A new one is added here and to the
 /// document together.
-const ERROR_CODES: [&str; 13] = [
+const ERROR_CODES: [&str; 15] = [
     "usage",
     "home_unresolved",
     "no_wallet",
@@ -74,6 +74,8 @@ const ERROR_CODES: [&str; 13] = [
     "already_running",
     "unfunded",
     "faucet_unavailable",
+    "not_running",
+    "send_failed",
 ];
 
 #[test]

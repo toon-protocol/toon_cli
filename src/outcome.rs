@@ -59,6 +59,8 @@ pub enum ErrorCode {
     AlreadyRunning,
     Unfunded,
     FaucetUnavailable,
+    NotRunning,
+    SendFailed,
 }
 
 impl ErrorCode {
@@ -77,6 +79,8 @@ impl ErrorCode {
             ErrorCode::AlreadyRunning => "already_running",
             ErrorCode::Unfunded => "unfunded",
             ErrorCode::FaucetUnavailable => "faucet_unavailable",
+            ErrorCode::NotRunning => "not_running",
+            ErrorCode::SendFailed => "send_failed",
         }
     }
 
@@ -93,7 +97,9 @@ impl ErrorCode {
             | ErrorCode::ConnectorFailed
             | ErrorCode::AlreadyRunning
             | ErrorCode::Unfunded
-            | ErrorCode::FaucetUnavailable => Exit::Failure,
+            | ErrorCode::FaucetUnavailable
+            | ErrorCode::NotRunning
+            | ErrorCode::SendFailed => Exit::Failure,
         }
     }
 }

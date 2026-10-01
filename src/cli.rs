@@ -4,15 +4,18 @@ use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
-use crate::node::Options;
+use crate::node::{self, Options};
 use crate::outcome::Exit;
 use crate::profile::Profile;
 
-/// What `--version` prints after the name: this release, and the connector it embeds.
+/// What `--version` prints after the name: this release, the connector it embeds and the
+/// relay image it runs.
 const VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     " (connector ",
     env!("TOON_CONNECTOR_REVISION"),
+    ", relay ",
+    env!("TOON_RELAY_IMAGE"),
     ")"
 );
 
@@ -45,6 +48,13 @@ pub enum Command {
         #[command(subcommand)]
         command: WalletCommand,
     },
+    /// Send one packet to an address and say whether it was fulfilled or rejected
+    Send(SendArgs),
+    /// Read the connector's routes
+    Route {
+        #[command(subcommand)]
+        command: RouteCommand,
+    },
     /// Run the agent node in the foreground
     Up,
     /// Stop the agent node that `up` runs
@@ -74,6 +84,9 @@ pub struct InitArgs {
     /// The token the connector is paid in on that chain, instead of the profile's
     #[arg(long)]
     pub evm_token: Option<String>,
+    /// Where the relay app is served, which the connector delivers the relay's route to
+    #[arg(long, default_value = node::DEFAULT_RELAY_URL)]
+    pub relay_url: String,
     /// The token's decimals, at most 18
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..=18))]
     pub evm_decimals: Option<u8>,
@@ -111,6 +124,7 @@ impl InitArgs {
         }
         Options {
             listen: self.listen.clone(),
+            relay_url: self.relay_url.clone(),
             network: self.network,
             evm: Some(evm),
             solana: self.solana.then(|| self.network.solana()),
@@ -120,6 +134,21 @@ impl InitArgs {
                 .or_else(|| self.network.faucet_url().map(str::to_owned)),
         }
     }
+}
+
+#[derive(Debug, Args)]
+pub struct SendArgs {
+    /// The ILP address the packet is bound for
+    pub address: String,
+    /// The amount, in the token's base units: a send always states it
+    #[arg(long)]
+    pub amount: u64,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RouteCommand {
+    /// List the connector's routing table
+    List,
 }
 
 #[derive(Debug, Subcommand)]

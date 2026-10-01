@@ -13,6 +13,7 @@ mod funding;
 mod home;
 mod keystore;
 mod node;
+mod operator;
 mod outcome;
 mod profile;
 mod status;
@@ -27,7 +28,7 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use serde_json::json;
 
-use cli::{Cli, Command, WalletCommand};
+use cli::{Cli, Command, RouteCommand, WalletCommand};
 use outcome::{Error, ErrorCode, Exit, Report};
 use up::Stopped;
 
@@ -64,6 +65,18 @@ fn main() -> ExitCode {
         Command::Wallet {
             command: WalletCommand::Fund,
         } => render(home::resolve().and_then(|home| funding::fund(&home)), json).into(),
+        Command::Send(args) => render(
+            home::resolve().and_then(|home| operator::send(&home, &args.address, args.amount)),
+            json,
+        )
+        .into(),
+        Command::Route {
+            command: RouteCommand::List,
+        } => render(
+            home::resolve().and_then(|home| operator::route_list(&home)),
+            json,
+        )
+        .into(),
         Command::Up => up(json).into(),
         // The connector this binary embeds, as the supervisor's child: it reports to
         // the supervisor and not to an operator.
@@ -106,6 +119,7 @@ fn unparsed(error: clap::Error) -> Result<Report, Error> {
             json: json!({
                 "version": env!("CARGO_PKG_VERSION"),
                 "connector_revision": connector::REVISION,
+                "relay_image": env!("TOON_RELAY_IMAGE"),
             }),
             text: String::new(),
         });

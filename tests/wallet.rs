@@ -334,7 +334,7 @@ fn wallet_show_gives_the_settlement_addresses_toon_client_gives() {
     );
     assert_eq!(
         wallet["operator_write_key"],
-        "4c262604bf69c4902a52add1a89044248af354ab63a8b5a084d701ad4ccf12fd"
+        "ab202b62ab312a6026db3c651308c445af43983e89ee591f8bf51f7c6aa0756f"
     );
     assert_eq!(
         wallet["connector_identities"][0]["public_key"],

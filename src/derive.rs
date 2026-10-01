@@ -15,7 +15,9 @@
 //! - operator write key: `m/10473'/1'/0'`, once per wallet.
 //! - connector identity key: `m/10473'/2'/{connector}'`, per connector.
 //!
-//! Each of those is a secp256k1 key whose public half is a Nostr x-only key.
+//! Each of those is a secp256k1 key whose public half is a Nostr x-only key, except
+//! the operator write key: the connector verifies operator writes with Ed25519, so its
+//! 32 bytes are read as an Ed25519 secret and its public half is that key, in hex.
 
 use hmac::{Hmac, Mac};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
@@ -174,7 +176,8 @@ pub struct ConnectorKeys {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Addresses {
     pub connectors: Vec<ConnectorKeys>,
-    /// The operator write key, as a Nostr public key in hex.
+    /// The operator write key, as an Ed25519 public key in hex: what a connector's
+    /// `write_keys_file` lists.
     pub operator_write: String,
     /// The agent identity, as a Nostr public key in hex.
     pub agent_identity: String,
@@ -220,6 +223,16 @@ pub fn agent_identity_secret(seed: &[u8]) -> Result<Zeroizing<[u8; 32]>, DeriveE
     secp256k1_path(seed, &[TOON_PURPOSE | HARDENED, HARDENED, HARDENED])
 }
 
+/// The public half of the operator write key, as a connector's write-key allowlist
+/// lists it: the Ed25519 public key in hex.
+pub fn operator_write_public_key(secret: &[u8; 32]) -> String {
+    hex::encode(
+        ed25519_dalek::SigningKey::from_bytes(secret)
+            .verifying_key()
+            .as_bytes(),
+    )
+}
+
 /// The Solana address of a SLIP-0010 seed: base58 of the Ed25519 public key.
 pub fn solana_address(secret: &[u8; 32]) -> String {
     let signing = ed25519_dalek::SigningKey::from_bytes(secret);
@@ -239,7 +252,7 @@ pub fn addresses(seed: &[u8], connectors: u32) -> Result<Addresses, DeriveError>
     }
     Ok(Addresses {
         connectors: keys,
-        operator_write: nostr_public_key(&*operator_write_secret(seed)?),
+        operator_write: operator_write_public_key(&*operator_write_secret(seed)?),
         agent_identity: nostr_public_key(&*agent_identity_secret(seed)?),
     })
 }
@@ -286,8 +299,10 @@ mod tests {
 
     const PINNED_AGENT_IDENTITY: &str =
         "ff535e30a4f7288a270c465f6d8c033b177342d5c5162bda8c4c3ed8e6b3267b";
+    // The Ed25519 public key, by `ed25519-dalek`, of the secret pinned by BIP-32 like
+    // the others.
     const PINNED_OPERATOR_WRITE: &str =
-        "4c262604bf69c4902a52add1a89044248af354ab63a8b5a084d701ad4ccf12fd";
+        "ab202b62ab312a6026db3c651308c445af43983e89ee591f8bf51f7c6aa0756f";
     const PINNED_IDENTITY_0: &str =
         "41c5dadd3b76286c4f4c4b0869b2d05e1c1a61bba8b75b7b884d2b1e1ee04079";
     const PINNED_IDENTITY_1: &str =
