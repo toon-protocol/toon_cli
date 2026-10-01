@@ -1,7 +1,8 @@
 # Pushing a version tag (`v0.1.0`) builds `toon` for Linux on x86_64 and aarch64 and
 # attaches the binaries, with a checksum file, to a GitHub release.
 #
-# The tag must be `v` followed by the version in Cargo.toml.
+# The tag must be `v` followed by the version in Cargo.toml. The binaries are built on
+# Ubuntu 22.04, so they need glibc 2.35 or later.
 
 name: Release
 
@@ -21,10 +22,10 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             arch: x86_64
-            runner: ubuntu-latest
+            runner: ubuntu-22.04
           - target: aarch64-unknown-linux-gnu
             arch: aarch64
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout code
@@ -71,4 +72,4 @@ jobs:
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.tar.gz.sha256 dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

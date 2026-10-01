@@ -5,7 +5,8 @@ and the decisions are in [`docs/adr/`](docs/adr/).
 
 ## Install
 
-From a release, on Linux x86_64 or aarch64, no Rust toolchain needed:
+From a release, on Linux x86_64 or aarch64 with glibc 2.35 or later, no Rust toolchain
+needed:
 
 ```sh
 version=v0.1.0   # a tag from https://github.com/toon-protocol/toon_cli/releases
@@ -14,13 +15,13 @@ curl -fsSLO "https://github.com/toon-protocol/toon_cli/releases/download/$versio
 curl -fsSLO "https://github.com/toon-protocol/toon_cli/releases/download/$version/SHA256SUMS"
 sha256sum --check --ignore-missing SHA256SUMS
 tar -xzf "toon-$version-linux-$arch.tar.gz"
-install "toon-$version-linux-$arch/toon" ~/.local/bin/toon
+install -D "toon-$version-linux-$arch/toon" ~/.local/bin/toon
 ```
 
 From source, with a Rust toolchain:
 
 ```sh
-cargo install --locked --git https://github.com/toon-protocol/toon_cli
+cargo install --locked --git https://github.com/toon-protocol/toon_cli --tag v0.1.0
 ```
 
 Pushing a tag `v<version>` (the version in `Cargo.toml`) publishes a release

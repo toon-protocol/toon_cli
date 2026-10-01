@@ -26,14 +26,17 @@ fn locked_connector_revision() -> String {
     revisions[0].to_string()
 }
 
-/// The relay image `Cargo.toml` pins.
+/// The relay image `Cargo.toml` pins under `[package.metadata.toon]`.
 fn pinned_relay_image() -> String {
     let manifest = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
         .expect("read Cargo.toml");
     let image = manifest
         .lines()
+        .map(str::trim)
+        .skip_while(|line| *line != "[package.metadata.toon]")
         .find_map(|line| line.strip_prefix("relay_image = \""))
-        .and_then(|rest| rest.strip_suffix('"'))
+        .and_then(|rest| rest.split_once('"'))
+        .map(|(image, _)| image)
         .expect("Cargo.toml pins a relay image");
     image.to_string()
 }
