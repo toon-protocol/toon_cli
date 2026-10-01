@@ -1,0 +1,83 @@
+# TOON CLI
+
+The operator's tool for running an agent node and managing what it holds, charges and connects to. Terms that the connector already defines keep the connector's meaning.
+
+## Language
+
+### What is run
+
+**Agent node**:
+Everything one operator runs through the CLI on one machine: one wallet and one or more TOON apps. It starts as a single TOON app whose only app is a relay. Always two words.
+_Avoid_: Node, hub, stack, full node
+
+**TOON app**:
+One connector together with the apps behind it. "The relay TOON app" is the one whose connector fronts the relay.
+_Avoid_: Node, deployment, service; using "TOON app" for an app on its own
+
+**Connector**:
+The paid reverse proxy at the front of a TOON app: it accepts a packet, charges for it, and delivers it to an app or forwards it to a peer.
+_Avoid_: Gateway, proxy, terminator
+
+**App**:
+A payment-oblivious HTTP service that a connector delivers to at the end of a route. The relay is an app. Never "TOON app", which is the connector and its apps together.
+_Avoid_: Backend, service
+
+**Relay**:
+The Nostr relay app: paid to write to through its connector.
+
+**Operator**:
+Whoever runs an agent node: a human, or an agent acting through the CLI.
+_Avoid_: Admin, user
+
+### What the operator does
+
+**Add**:
+Put a new app behind the connector of a TOON app that already exists.
+_Avoid_: Spawn, deploy, attach
+
+**Create**:
+Start a new TOON app: a new connector with its own identity and keys, and an app behind it.
+_Avoid_: Spawn, deploy
+
+**Peering**:
+A connector's standing arrangement to forward packets to another connector, paid on a channel it opens toward that connector. An operator creates one alone; the other connector forwards back only if its own operator creates one in return.
+_Avoid_: Half-open peering, invite, handshake
+
+**Spending limit**:
+The most a wallet will pay out, per command and per day. Every command that moves money states its amount and is refused past the limit.
+_Avoid_: Cap (the connector's word for the largest packet a peering carries), budget
+
+**Wallet**:
+The operator's keys and funds for an agent node, which the CLI generates and manages. Distinct from the connector's Signer, which only reads the keys it is handed.
+_Avoid_: Signer (for this), keystore (for the concept)
+
+**Agent identity**:
+The Nostr key an agent signs its events with. It belongs to the wallet but is a different key from any that pays or settles.
+_Avoid_: Account, payer, relay identity
+
+### Subscribing
+
+**Subscription**:
+A prepaid balance a relay holds for a subscriber, drawn down by the broadcast price for each event the relay broadcasts to that subscriber. It ends when the balance runs out.
+_Avoid_: Mirror, sync, follow
+
+**Subscribe**:
+Pay a relay's subscribe route. The first payment opens a subscription; every later one tops it up.
+_Avoid_: Top up (as a separate action)
+
+**Broadcast price**:
+What a relay debits from a subscription for each event it broadcasts. Set by that relay's operator.
+_Avoid_: Read price, subscription fee
+
+### How it is reached
+
+**Hidden service**:
+The mode in which a connector is reachable only at an address inside the Anyone overlay, which public DNS cannot resolve. It is the default for a new TOON app.
+_Avoid_: Onion service, Tor service, dark node
+
+**Onion endpoint**:
+The `.anyone` address a hidden-service connector publishes.
+_Avoid_: Hidden-service URL, `.onion` address
+
+**Clearnet**:
+Reachable at an ordinary public hostname. Never the default; the operator asks for it explicitly.
