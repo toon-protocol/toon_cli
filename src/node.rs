@@ -382,7 +382,11 @@ pub fn write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Error> {
 fn via_proxy(overlay: Option<&Overlay>, rpc_url: &str) -> &'static str {
     let local_http = rpc_url
         .strip_prefix("http://")
-        .and_then(|rest| rest.split(['/', ':']).next())
+        .and_then(|rest| rest.split('/').next())
+        .map(|authority| match authority.find(']') {
+            Some(end) => &authority[..=end],
+            None => authority.split(':').next().unwrap_or(authority),
+        })
         .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "[::1]"));
     if overlay.is_some() && !local_http {
         "rpc_via_socks_proxy = true\n"
@@ -547,4 +551,33 @@ fn write_operator_files(home: &Path, files: &ConnectorFiles) -> Result<bool, Err
         0o600,
     )?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_plain_http_rpc_on_this_machine_skips_the_proxy() {
+        let overlay = Overlay {
+            proxy: "127.0.0.1:9050".parse().unwrap(),
+            endpoint: "example.anon".into(),
+        };
+        for local in [
+            "http://localhost:8545",
+            "http://127.0.0.1:8545/",
+            "http://[::1]:8545",
+            "http://[::1]",
+        ] {
+            assert_eq!(via_proxy(Some(&overlay), local), "", "{local}");
+        }
+        for remote in [
+            "https://localhost:8545",
+            "http://rpc.example:8545",
+            "http://[::2]:8545",
+        ] {
+            assert_ne!(via_proxy(Some(&overlay), remote), "", "{remote}");
+        }
+        assert_eq!(via_proxy(None, "https://rpc.example"), "");
+    }
 }

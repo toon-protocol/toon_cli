@@ -106,7 +106,7 @@ impl Hidden {
 
 /// A supervisor whose connector is listening.
 pub struct Supervisor {
-    /// Held for as long as the connector runs, and dropped after it.
+    /// Held for as long as the connector runs, and dropped once it and the apps are stopped.
     hidden: Option<Hidden>,
     connector: Option<Started>,
     /// The apps behind it, stopped after it.
@@ -225,8 +225,19 @@ fn launch(
     listener: UnixListener,
     socket: &Path,
 ) -> Result<Supervisor, Error> {
+    // A hidden service is not started without its overlay, and never on clearnet instead,
+    // so the overlay comes up before anything behind it listens.
+    let overlay = match app.reach {
+        Reach::Hidden => {
+            let edge = overlay::bootstrap(home)?;
+            let key = ConnectorFiles::of(home, app.connector).onion_key;
+            let endpoint = edge.issue(app.connector, &key)?;
+            Some((edge, endpoint))
+        }
+        Reach::Clearnet { .. } => None,
+    };
     let mut apps = start_apps(home, app, runner)?;
-    let result = launch_connector(home, app, &mut apps, listener, socket);
+    let result = launch_connector(home, app, overlay, &mut apps, listener, socket);
     if result.is_err() {
         for (_, running) in &mut apps {
             running.stop();
@@ -238,6 +249,7 @@ fn launch(
 fn launch_connector(
     home: &Path,
     app: &ToonApp,
+    overlay: Option<(Box<dyn Edge>, String)>,
     apps: &mut StartedApps,
     listener: UnixListener,
     socket: &Path,
@@ -246,24 +258,14 @@ fn launch_connector(
         .iter()
         .find(|(name, _)| name == node::RELAY)
         .map(|(_, running)| running.write_address());
-    // A hidden service is not started without its overlay, and never on clearnet instead.
-    let hidden = match app.reach {
-        Reach::Hidden => {
-            let edge = overlay::bootstrap(home)?;
-            let key = ConnectorFiles::of(home, app.connector).onion_key;
-            let endpoint = edge.issue(app.connector, &key)?;
-            let read = apps
-                .iter()
-                .find(|(name, _)| name == node::RELAY)
-                .and_then(|(_, running)| running.read_address());
-            Some(Hidden {
-                edge,
-                endpoint,
-                read,
-            })
-        }
-        Reach::Clearnet { .. } => None,
-    };
+    let hidden = overlay.map(|(edge, endpoint)| Hidden {
+        edge,
+        endpoint,
+        read: apps
+            .iter()
+            .find(|(name, _)| name == node::RELAY)
+            .and_then(|(_, running)| running.read_address()),
+    });
     let rendering = hidden.as_ref().map(|hidden| node::Overlay {
         proxy: hidden.edge.proxy(),
         endpoint: hidden.endpoint.clone(),
@@ -451,6 +453,7 @@ impl Supervisor {
         for app in &mut self.apps {
             app.stop();
         }
+        self.hidden = None;
         self.shared.live().running = false;
         // Last, so that a `toon down` that sees the socket gone knows everything has.
         let _ = std::fs::remove_file(&self.socket);
