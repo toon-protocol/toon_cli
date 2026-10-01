@@ -39,7 +39,7 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use serde_json::json;
 
-use cli::{Cli, Command, LimitCommand, SkillCommand};
+use cli::{Cli, Command, LimitCommand};
 use outcome::{Error, ErrorCode, Exit, Report};
 use up::Stopped;
 
@@ -186,9 +186,7 @@ fn main() -> ExitCode {
         .into(),
         Command::Event { command } => render(event::run(command), json).into(),
         Command::Nip { command } => render(nip::run(command), json).into(),
-        Command::Skill {
-            command: SkillCommand::Install { dir },
-        } => render(skill::install(dir.as_deref()), json).into(),
+        Command::Skill { command } => render(skill::run(command), json).into(),
         Command::Relay { command } => render(
             home::resolve().and_then(|home| relay::run(&home, command)),
             json,

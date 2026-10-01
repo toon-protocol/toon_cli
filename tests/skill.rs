@@ -1,7 +1,7 @@
 mod support;
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use support::Machine;
 
@@ -10,6 +10,22 @@ fn skill_text() -> String {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/operating-an-agent-node/SKILL.md"),
     )
     .expect("read the skill")
+}
+
+/// The skills in `skills/`: each directory's name and its `SKILL.md`.
+fn shipped_skills() -> Vec<(String, PathBuf)> {
+    let mut skills: Vec<(String, PathBuf)> =
+        fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills"))
+            .expect("read skills/")
+            .map(|entry| entry.expect("read skills/").path())
+            .filter(|path| path.is_dir())
+            .map(|path| {
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                (name, path.join("SKILL.md"))
+            })
+            .collect();
+    skills.sort();
+    skills
 }
 
 /// Every inline code span of the skill that starts with `toon `, as its words.
@@ -25,11 +41,13 @@ fn named_commands(text: &str) -> Vec<Vec<String>> {
 #[test]
 fn every_command_the_skill_names_exists_in_the_binary() {
     let machine = Machine::new();
-    let commands = named_commands(&skill_text());
     assert!(
-        commands.len() > 30,
-        "the skill names its commands: {commands:?}"
+        named_commands(&skill_text()).len() > 30,
+        "the skill names its commands"
     );
+    let commands = shipped_skills()
+        .into_iter()
+        .flat_map(|(_, file)| named_commands(&fs::read_to_string(file).expect("read a skill")));
     for words in commands {
         // The command is the leading plain words; a value is `<placeholder>`, and a flag
         // starts with `--`.
@@ -53,7 +71,9 @@ fn every_command_the_skill_names_exists_in_the_binary() {
         for flag in words.iter().filter(|word| word.starts_with("--")) {
             let flag = flag.trim_end_matches([',', '.']);
             assert!(
-                help.stdout.contains(flag),
+                help.stdout
+                    .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                    .any(|word| word == flag),
                 "`toon {}` has no {flag}",
                 path.join(" ")
             );
@@ -86,6 +106,39 @@ fn skill_install_writes_the_skills_and_is_safe_to_run_again() {
     assert_eq!(again.exit_code, 0, "{}", again.stdout);
     assert_eq!(fs::read_to_string(&file).unwrap(), skill_text());
     assert_eq!(first.json()["skills"], again.json()["skills"]);
+}
+
+#[test]
+fn skill_install_installs_every_skill_in_the_repository() {
+    let machine = Machine::new();
+    let run = machine.toon(&["skill", "install", "--json"]);
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let report = run.json();
+    let installed: Vec<&str> = report["skills"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|skill| skill["name"].as_str().unwrap())
+        .collect();
+    let shipped = shipped_skills();
+    assert_eq!(
+        installed,
+        shipped
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>()
+    );
+    for (name, file) in shipped {
+        let target = machine
+            .home()
+            .join(".claude/skills")
+            .join(&name)
+            .join("SKILL.md");
+        assert_eq!(
+            fs::read_to_string(target).unwrap(),
+            fs::read_to_string(file).unwrap()
+        );
+    }
 }
 
 #[test]

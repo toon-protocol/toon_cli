@@ -29,7 +29,8 @@ command here is missing from `toon --help`, the skill is out of date: trust `--h
   print one; a failure is `{"error": {"code": ..., "message": ...}}`. Branch on `code`, never on
   `message`.
 - Exit codes: 0 done, 1 failed (the error code says why), 2 command line not understood,
-  3 no agent node on this machine. `docs/exit-codes.md` in the repository lists the error codes.
+  3 no agent node on this machine. `toon --help` lists them; the error codes to branch on are
+  named where they arise below.
 - No command prompts or reads standard input. The wallet passphrase comes from the file named by
   `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`, never from a flag.
 - `--app <name>` says which TOON app a command about a connector is about; the first one is the
