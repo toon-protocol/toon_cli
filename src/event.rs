@@ -116,8 +116,8 @@ pub fn now() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
-/// The agent identity's secret, opened with the passphrase (ADR 0004).
-pub fn agent_secret(home: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
+/// The wallet's seed, opened with the passphrase.
+pub fn wallet_seed(home: &Path) -> Result<zeroize::Zeroizing<[u8; 64]>, Error> {
     let passphrase = keystore::passphrase()?;
     let mnemonic: bip39::Mnemonic =
         keystore::open(home, &passphrase)?
@@ -126,7 +126,12 @@ pub fn agent_secret(home: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> 
                 code: ErrorCode::KeystoreCorrupt,
                 message: "The keystore does not hold a valid mnemonic.".into(),
             })?;
-    derive::agent_identity_secret(&*derive::seed(&mnemonic)).map_err(|source| Error {
+    Ok(derive::seed(&mnemonic))
+}
+
+/// The agent identity's secret, opened with the passphrase (ADR 0004).
+pub fn agent_secret(home: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
+    derive::agent_identity_secret(&*wallet_seed(home)?).map_err(|source| Error {
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
     })
@@ -289,25 +294,29 @@ struct Edge {
     price: u64,
 }
 
-fn unpayable(message: String) -> Error {
+pub fn unpayable(message: String) -> Error {
     Error {
         code: ErrorCode::RelayNotPayable,
         message,
     }
 }
 
-/// The paid write edge `relay` publishes in its NIP-11 information document, the `toon`
-/// object. The document is served at the relay's own URL, as `http://`.
-fn edge(relay: &str) -> Result<Edge, Error> {
-    let url = relay
+/// The HTTP form of a `ws://` relay URL: where its information document is served.
+pub fn http_url(relay: &str) -> Result<String, Error> {
+    relay
         .strip_prefix("ws://")
         .map(|rest| format!("http://{rest}"))
         .ok_or_else(|| {
             unpayable(format!(
                 "{relay} is not a ws:// URL; this build dials plain websocket relays only."
             ))
-        })?;
-    let document: Value = reqwest::blocking::Client::builder()
+        })
+}
+
+/// The NIP-11 information document of `relay`, served at its own URL as `http://`.
+pub fn information_document(relay: &str) -> Result<Value, Error> {
+    let url = http_url(relay)?;
+    reqwest::blocking::Client::builder()
         .timeout(PATIENCE)
         .build()
         .and_then(|client| {
@@ -322,7 +331,13 @@ fn edge(relay: &str) -> Result<Edge, Error> {
             unpayable(format!(
                 "The information document of {relay} could not be read: {error}."
             ))
-        })?;
+        })
+}
+
+/// The paid write edge `relay` publishes in its NIP-11 information document, the `toon`
+/// object.
+fn edge(relay: &str) -> Result<Edge, Error> {
+    let document = information_document(relay)?;
     let toon = &document["toon"];
     let text = |field: &str| toon[field].as_str().filter(|text| !text.is_empty());
     match (

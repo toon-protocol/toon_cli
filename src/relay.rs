@@ -191,5 +191,12 @@ pub fn run(home: &Path, command: RelayCommand) -> Result<Report, Error> {
     match command {
         RelayCommand::Config(args) => config(home, &args.change(), args.yes),
         RelayCommand::Price { amount, yes } => price(home, amount, yes),
+        RelayCommand::Subscribe {
+            relay,
+            filter,
+            amount,
+            yes,
+        } => crate::subscribe::subscribe(home, &relay, filter.as_deref(), amount, yes),
+        RelayCommand::Subscriptions => crate::subscribe::subscriptions(home),
     }
 }

@@ -10,6 +10,7 @@
 pub mod anvil_chain;
 pub mod fake_chain;
 pub mod fake_faucet;
+pub mod fake_remote_relay;
 pub mod local_chain;
 pub mod unpeerable;
 

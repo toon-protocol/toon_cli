@@ -682,6 +682,119 @@ pub fn dispatch(
     })
 }
 
+/// Send one packet like [`dispatch`] does, but with `headers` on the request and `body` in
+/// memory. The connector's `send` fixes the request's headers, so this forms, seals and
+/// signs the packet itself, with the connector's own crates, and reads the answer the
+/// same way.
+pub fn dispatch_with_headers(
+    home: &Path,
+    destination: &str,
+    amount: u64,
+    seal_to: &str,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+) -> Result<Answer, Error> {
+    use connector_domain::{EnvelopeRequest, EnvelopeResponse, Fulfill, Prepare, Reject};
+    use connector_signer::giftwrap::{derive_fulfillment, open_response, seal_request};
+
+    let surface = surface(home)?;
+    let send_failed = |message: String| failed(ErrorCode::SendFailed, message);
+    let keypair = write_keypair(&surface.write_key)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(PATIENCE)
+        .build()
+        .map_err(|error| send_failed(error.to_string()))?;
+
+    let identity_url = format!("{}/identity", seal_to.trim_end_matches('/'));
+    let identity: Value = client
+        .get(&identity_url)
+        .send()
+        .and_then(|response| response.json())
+        .map_err(|error| {
+            send_failed(format!(
+                "{identity_url} did not give its identity: {error}."
+            ))
+        })?;
+    let public: [u8; 65] = identity["publicKey"]
+        .as_str()
+        .and_then(|key| hex::decode(key.trim_start_matches("0x")).ok())
+        .and_then(|key| key.try_into().ok())
+        .ok_or_else(|| send_failed(format!("{identity_url} has no 65-byte `publicKey`.")))?;
+
+    let plaintext = EnvelopeRequest {
+        method: "POST".into(),
+        target: "/".into(),
+        headers,
+        body,
+    }
+    .encode();
+    let (data, secret) = seal_request(&plaintext, &public)
+        .map_err(|error| send_failed(format!("The packet could not be sealed: {error}.")))?;
+    let prepare = Prepare {
+        amount,
+        expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+        greeting: false,
+        destination: destination.to_owned(),
+        data,
+    }
+    .encode();
+    let created = chrono::Utc::now().timestamp().max(0) as u64;
+    let (signature_input, signature, content_digest) = connector_operator::signing::sign_request(
+        &keypair,
+        "POST",
+        "/packets",
+        &prepare,
+        created,
+        Some(created + 60),
+    );
+    let response = client
+        .post(format!("{}/packets", surface.url))
+        .header("content-type", "application/octet-stream")
+        .header("content-digest", content_digest)
+        .header("signature-input", signature_input)
+        .header("signature", signature)
+        .body(prepare)
+        .send()
+        .map_err(|error| send_failed(error.to_string()))?;
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .map_err(|error| send_failed(error.to_string()))?;
+    if !status.is_success() {
+        return Err(send_failed(format!(
+            "The connector refused the write with {status}: {}",
+            String::from_utf8_lossy(&bytes).trim()
+        )));
+    }
+    let undecodable = |reason: String| {
+        send_failed(format!(
+            "The connector's answer was not understood: {reason}"
+        ))
+    };
+    match Fulfill::decode(&bytes) {
+        Ok(fulfill) if fulfill.fulfillment != derive_fulfillment(&secret) => {
+            Ok(Answer::WrongFulfilment)
+        }
+        Ok(fulfill) => {
+            let opened = open_response(&secret, &fulfill.data)
+                .map_err(|error| undecodable(error.to_string()))?;
+            let envelope = EnvelopeResponse::decode(&opened)
+                .map_err(|error| undecodable(error.to_string()))?;
+            Ok(Answer::Fulfilled {
+                status: envelope.status.into(),
+                body: String::from_utf8_lossy(&envelope.body).into_owned(),
+            })
+        }
+        Err(_) => {
+            let reject = Reject::decode(&bytes).map_err(|error| undecodable(error.to_string()))?;
+            Ok(Answer::Rejected {
+                code: reject.code.as_str().to_owned(),
+                message: reject.message,
+            })
+        }
+    }
+}
+
 /// `toon send`: one packet from the operator surface to `destination`, for `amount`,
 /// sealed to the connector at `seal_to`, or to this one.
 /// A packet that is not fulfilled is a report, not an error, and exits 1.

@@ -14,3 +14,5 @@ The balance belongs to a subscriber key, a Nostr key the subscriber signs each p
 - An agent node pays through its own connector, so subscribing to a relay it has no path to means peering first.
 - Balances are not refundable.
 - The relay trusts its connector to deliver to the subscribe route only what it charged for, as it does for writes. The contract is the draft NIP, `nips/paid-subscription.md`.
+- The wallet derives the subscriber key at `m/10473'/6'/0'`, once per wallet, and not from the agent identity: a relay can see which payments go into which subscriber key, and the agent identity's events are public.
+- The pinned connector's `send` cannot carry a request header, and a subscribe request needs `Authorization`. The CLI therefore forms, seals and signs that packet itself (`operator::dispatch_with_headers`), with the connector's own crates.

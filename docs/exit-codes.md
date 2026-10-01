@@ -83,8 +83,8 @@ A failed command with `--json` prints:
 | `draft_refused` | 1 | `toon nip new` or `toon nip publish` would not write or publish a draft: the file exists already, does not name a draft or begin with its title, is not UTF-8, or the relay holds the identifier under another title and `--title-changed` was not given; the message says which |
 | `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
 | `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap, so a hidden service was not created or started; nothing falls back to clearnet |
-| `relay_not_payable` | 1 | `toon event publish --relay` could not read the relay's information document, or it names no paid write edge (`toon`: `ilp_address`, `connector_url`, `price`); nothing was paid |
-| `peering_needed` | 1 | `toon event publish --relay` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. Run `toon peer add` and `toon route add` first |
+| `relay_not_payable` | 1 | `toon event publish --relay` or `toon relay subscribe` could not read the relay's information document, or it names no paid write edge (`toon`: `ilp_address`, `connector_url`, `price`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
+| `peering_needed` | 1 | `toon event publish --relay` or `toon relay subscribe` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. Run `toon peer add` and `toon route add` first |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
 | `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
 
@@ -145,6 +145,20 @@ the relay's `ilp_address` it fails with `peering_needed` and creates nothing. Th
 the same outcomes as a publish to the own relay, plus `relay` and `paid`: the price, or `0`
 when the packet was rejected and nothing moved. `--amount` is refused with `--relay`, and
 `--yes` without it.
+
+`toon relay subscribe <ws-url> --filter <filter> --amount <amount>` subscribes to another
+relay's paid live feed (`nips/paid-subscription.md`). It reads `toon_subscription` from the
+relay's information document and shows the subscribe price, the broadcast price and the
+events the amount buys. It pays only with `--yes`, under the spending limit, over a peering
+(`peering_needed` names the deposit it would take and creates nothing). The amount is paid as
+whole packets at the subscribe price, each authorized by NIP-98 with the subscriber key
+(`m/10473'/6'/0'`, not the agent identity), and the report gives `packets`, `paid`,
+`credited`, `balance`, `broadcast_price` and `filter`; a packet the relay refuses still cost
+its price, and `outcome` says `refused` or `rejected` with the exit code 1. A first
+subscription needs `--filter`; a later one may leave it out to top up, or give a new one to
+replace the old, and keeps the balance. `toon relay subscriptions` lists, per relay, the
+`balance`, `filter` and `subscriber_key`, read from the relay now (`current: true`) or as it
+last answered.
 
 `toon nip publish` signs a draft (`nips/proposals-as-events.md`) the same way and writes it
 to the agent node's own relay as `toon event publish` does, with the same outcomes. It first

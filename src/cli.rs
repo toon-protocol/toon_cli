@@ -411,6 +411,24 @@ pub enum RelayCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Subscribe to another relay's paid live feed, or top a subscription up
+    Subscribe {
+        /// The relay's websocket URL, `ws://host:port`
+        relay: String,
+        /// The NIP-01 filter the subscription pays for; a first subscription needs one, and
+        /// a later one replaces the old filter
+        #[arg(long)]
+        filter: Option<String>,
+        /// What to pay, in the token's base units: paid as whole packets at the relay's
+        /// subscribe price
+        #[arg(long)]
+        amount: u64,
+        /// Confirm that this command moves money: without it nothing is paid
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List the balance and filter at each relay subscribed to
+    Subscriptions,
 }
 
 #[derive(Debug, Args)]
