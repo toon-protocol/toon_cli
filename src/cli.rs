@@ -111,6 +111,11 @@ pub enum Command {
         #[command(subcommand)]
         command: RelayCommand,
     },
+    /// Install the skills shipped in this binary
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
+    },
     /// Start the agent node as a `systemd --user` unit that outlives this session
     Up {
         /// Run the supervisor in this process instead of installing the unit
@@ -130,6 +135,17 @@ pub enum Command {
     /// Serve one connector from its config file: what `up` starts as a child process
     #[command(hide = true)]
     Connector { config: PathBuf },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SkillCommand {
+    /// Write the shipped skills where an agent harness loads them, replacing an earlier
+    /// release's: safe to run again after an upgrade
+    Install {
+        /// The directory the skills go under, instead of `~/.claude/skills`
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Args)]
