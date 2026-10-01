@@ -4,12 +4,11 @@
 //! An edge issues each connector an onion endpoint that is the same every time, publishes
 //! the local ports behind it, and provides the SOCKS proxy that all of the connector's
 //! outbound traffic goes through, settlement RPC included. Two implementations are held to
-//! one contract suite, in the tests below. The real one runs the `anon` daemon and is a
-//! separate piece of work; until it lands, nothing can bootstrap it and every command that
-//! needs an overlay fails, as it must when the overlay is down. The other is the loopback
-//! stand-in the tests use: `TOON_OVERLAY=loopback` selects it, and its proxy passes through
-//! to loopback addresses and to the ports published behind an onion endpoint, and refuses
-//! everything else.
+//! one contract suite, in the tests below. The real one runs the `anon` daemon (`anon.rs`);
+//! when it cannot bootstrap, every command that needs an overlay fails, as it must. The
+//! other is the loopback stand-in the tests use: `TOON_OVERLAY=loopback` selects it, and
+//! its proxy passes through to loopback addresses and to the ports published behind an
+//! onion endpoint, and refuses everything else.
 //!
 //! A connector's onion endpoint is made from the key the wallet derives for it
 //! (`derive::onion_secret`), which is part of the wallet's backup.
@@ -67,8 +66,10 @@ fn unavailable(why: &str) -> Error {
     }
 }
 
-/// Bootstrap the overlay of the agent node at `home`, or say why it did not.
-pub fn bootstrap(home: &Path) -> Result<Box<dyn Edge>, Error> {
+/// Bootstrap the overlay of the agent node at `home`, or say why it did not. `agreed` is
+/// whether the operator has just agreed to Anyone's terms; the daemon does not start
+/// without that, now or on record.
+pub fn bootstrap(home: &Path, agreed: bool) -> Result<Box<dyn Edge>, Error> {
     match env::var(OVERLAY_VARIABLE).ok().as_deref() {
         Some("loopback") => Ok(Box::new(Loopback::start(home).map_err(|error| {
             unavailable(&format!("the stand-in proxy could not listen: {error}"))
@@ -76,18 +77,19 @@ pub fn bootstrap(home: &Path) -> Result<Box<dyn Edge>, Error> {
         Some(other) if !other.is_empty() => Err(unavailable(&format!(
             "{OVERLAY_VARIABLE} names no overlay: {other}"
         ))),
-        _ => Err(unavailable("this build does not run the `anon` daemon yet")),
+        _ => crate::anon::bootstrap(home, agreed).map(|edge| Box::new(edge) as Box<dyn Edge>),
     }
 }
 
 /// The onion endpoint of an Ed25519 key: the key, a checksum and a version, in base32,
-/// as Tor's v3 addresses are made and as `anon` writes them.
+/// as Tor's v3 addresses are made and as `anon` writes them. Anyone's checksum is over
+/// `.anyone checksum`, not Tor's `.onion checksum`, which the real daemon showed.
 pub fn address_of(secret: &[u8; 32]) -> String {
     let public = ed25519_dalek::SigningKey::from_bytes(secret)
         .verifying_key()
         .to_bytes();
     let checksum = Sha3_256::new()
-        .chain_update(b".onion checksum")
+        .chain_update(b".anyone checksum")
         .chain_update(public)
         .chain_update([3u8])
         .finalize();
@@ -277,19 +279,27 @@ fn socks(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::BufRead;
 
     /// Everything an edge promises, whichever edge it is. `fresh` makes another edge over
-    /// the same agent node, as a restart does.
-    fn contract(edge: &dyn Edge, fresh: &dyn Fn() -> Box<dyn Edge>, dir: &Path) {
-        let key = |name: &str, byte: u8| {
+    /// the same agent node, as a restart does. `patience` is how long the overlay has to
+    /// answer: a stand-in is quick and the real network is not.
+    pub(crate) fn contract(
+        edge: &dyn Edge,
+        fresh: &dyn Fn() -> Box<dyn Edge>,
+        dir: &Path,
+        patience: Duration,
+    ) {
+        let key = |name: &str| {
             let path = dir.join(name);
-            fs::write(&path, [byte; 32]).unwrap();
+            // Fresh keys each run: the real network remembers an address it has seen.
+            let secret = crate::keystore::random::<32>().unwrap();
+            fs::write(&path, secret).unwrap();
             path
         };
-        let (first, second) = (key("a", 1), key("b", 2));
+        let (first, second) = (key("a"), key("b"));
 
         // An address per connector, in the overlay's own domain, the same every time.
         let one = edge.issue(0, &first).unwrap();
@@ -309,16 +319,16 @@ mod tests {
         );
         assert_eq!(
             "connector",
-            through(edge.proxy(), &one, CONNECTOR_PORT).unwrap()
+            reaches(edge.proxy(), &one, CONNECTOR_PORT, patience)
         );
         assert_eq!(
             "relay",
-            through(edge.proxy(), &one, RELAY_READ_PORT).unwrap()
+            reaches(edge.proxy(), &one, RELAY_READ_PORT, patience)
         );
         // An address nothing is published at is not reached.
-        assert!(through(edge.proxy(), &one, 81).is_none());
+        assert!(through(edge.proxy(), &one, 81, patience).is_none());
         let other = edge.issue(1, &second).unwrap();
-        assert!(through(edge.proxy(), &other, CONNECTOR_PORT).is_none());
+        assert!(through(edge.proxy(), &other, CONNECTOR_PORT, patience).is_none());
     }
 
     /// A server that answers one line, `name`, to whoever connects.
@@ -333,12 +343,25 @@ mod tests {
         address
     }
 
+    /// `through`, again until it answers: a published endpoint takes a while to be found.
+    fn reaches(proxy: SocketAddr, host: &str, port: u16, patience: Duration) -> String {
+        let deadline = std::time::Instant::now() + patience;
+        loop {
+            if let Some(line) = through(proxy, host, port, patience) {
+                return line;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{host}:{port} was not reached in {patience:?}"
+            );
+            thread::sleep(Duration::from_secs(2));
+        }
+    }
+
     /// Ask the proxy for `host:port` by name, as `socks5h` does, and read the line it says.
-    fn through(proxy: SocketAddr, host: &str, port: u16) -> Option<String> {
+    fn through(proxy: SocketAddr, host: &str, port: u16, patience: Duration) -> Option<String> {
         let mut stream = TcpStream::connect(proxy).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
+        stream.set_read_timeout(Some(patience)).unwrap();
         stream.write_all(&[5, 1, 0]).unwrap();
         let mut answer = [0u8; 2];
         stream.read_exact(&mut answer).unwrap();
@@ -366,6 +389,7 @@ mod tests {
             &edge,
             &move || Box::new(Loopback::start(&path).unwrap()),
             home.path(),
+            Duration::from_secs(5),
         );
         // The address is kept where the daemon keeps its own.
         let kept = fs::read_to_string(home.path().join("overlay/0/hostname")).unwrap();
@@ -379,9 +403,14 @@ mod tests {
         let server = serve("here");
         assert_eq!(
             Some("here".into()),
-            through(edge.proxy(), "127.0.0.1", server.port())
+            through(
+                edge.proxy(),
+                "127.0.0.1",
+                server.port(),
+                Duration::from_secs(5)
+            )
         );
-        assert!(through(edge.proxy(), "example.com", 443).is_none());
+        assert!(through(edge.proxy(), "example.com", 443, Duration::from_secs(5)).is_none());
     }
 
     #[test]

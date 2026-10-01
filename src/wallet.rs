@@ -266,6 +266,7 @@ fn discard_toon_apps(home: &Path) {
         let _ = std::fs::remove_dir_all(home.join("connectors"));
     }
     let _ = std::fs::remove_dir_all(home.join("apps"));
+    crate::anon::stop(home);
     let _ = std::fs::remove_dir_all(home.join("overlay"));
     let _ = std::fs::remove_file(node::operator_key(home));
     let _ = std::fs::remove_file(spending::limits_path(home));
@@ -540,7 +541,7 @@ fn edge_for(home: &Path, options: &node::Options) -> Result<Option<Box<dyn Edge>
             ),
         });
     }
-    overlay::bootstrap(home).map(Some)
+    overlay::bootstrap(home, true).map(Some)
 }
 
 /// List the wallet's addresses.

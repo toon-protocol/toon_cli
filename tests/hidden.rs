@@ -2,7 +2,10 @@ mod support;
 
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use support::fake_chain::FakeChain;
@@ -28,6 +31,29 @@ fn value(config: &str, name: &str) -> String {
         .1
         .trim_matches(['"', '[', ']'])
         .to_owned()
+}
+
+/// A stand-in for where the `anon` release is downloaded from. It answers every request
+/// with `body`, and counts the requests: no release was fetched if it counts none.
+fn mirror(body: &'static [u8]) -> (String, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let hits = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&hits);
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let mut request = [0u8; 2048];
+            let _ = stream.read(&mut request);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(body);
+        }
+    });
+    (url, hits)
 }
 
 fn onion_endpoint(config: &str) -> String {
@@ -211,10 +237,12 @@ fn leaves_nothing(machine: &Machine) {
 #[test]
 fn init_fails_and_leaves_nothing_when_the_overlay_cannot_bootstrap() {
     let machine = Machine::new();
+    let (releases, _) = mirror(b"not a release");
 
     for overlay in [None, Some("anon")] {
         let run = machine.toon_with(&["init", "--json", "--accept-anyone-terms"], |command| {
             command.env("TOON_PASSPHRASE", PASSPHRASE);
+            command.env("TOON_ANON_MIRROR", &releases);
             match overlay {
                 Some(name) => command.env("TOON_OVERLAY", name),
                 None => command.env_remove("TOON_OVERLAY"),
@@ -230,16 +258,42 @@ fn init_fails_and_leaves_nothing_when_the_overlay_cannot_bootstrap() {
 }
 
 #[test]
+fn a_release_that_does_not_match_its_checksum_is_never_run() {
+    let machine = Machine::new();
+    let (releases, hits) = mirror(b"a release somebody swapped");
+
+    let run = machine.toon_with(&["init", "--json", "--accept-anyone-terms"], |command| {
+        command.env("TOON_PASSPHRASE", PASSPHRASE);
+        command.env_remove("TOON_OVERLAY");
+        command.env("TOON_ANON_MIRROR", &releases);
+    });
+
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
+    let error = &run.json()["error"];
+    assert_eq!(error["code"], "overlay_unavailable");
+    assert!(error["message"].as_str().unwrap().contains("checksum"));
+    assert_eq!(1, hits.load(Ordering::SeqCst));
+    leaves_nothing(&machine);
+}
+
+#[test]
 fn up_does_not_fall_back_to_clearnet_when_the_overlay_is_gone() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
 
+    let (releases, hits) = mirror(b"not a release");
+
     let run = machine.toon_with(&["up", "--foreground", "--json"], |command| {
         command.env_remove("TOON_OVERLAY");
+        command.env("TOON_ANON_MIRROR", &releases);
     });
 
     assert_eq!(run.json()["error"]["code"], "overlay_unavailable");
+    // The terms were never agreed to on this machine, so no daemon is fetched, let alone run.
+    let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
+    assert!(message.contains("--accept-anyone-terms"), "{message}");
+    assert_eq!(0, hits.load(Ordering::SeqCst));
     assert_eq!(run.exit_code, 1);
     assert!(!machine.agent_node_home().join("supervisor.sock").exists());
 }

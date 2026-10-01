@@ -280,7 +280,7 @@ fn launch(
     // so the overlay comes up before anything behind it listens.
     let overlay = match app.reach {
         Reach::Hidden => {
-            let edge = overlay::bootstrap(home)?;
+            let edge = overlay::bootstrap(home, false)?;
             let key = ConnectorFiles::of(home, app.connector).onion_key;
             let endpoint = edge.issue(app.connector, &key)?;
             Some((edge, endpoint))
