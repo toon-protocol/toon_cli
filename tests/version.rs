@@ -26,8 +26,20 @@ fn locked_connector_revision() -> String {
     revisions[0].to_string()
 }
 
+/// The relay image `Cargo.toml` pins.
+fn pinned_relay_image() -> String {
+    let manifest = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+        .expect("read Cargo.toml");
+    let image = manifest
+        .lines()
+        .find_map(|line| line.strip_prefix("relay_image = \""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("Cargo.toml pins a relay image");
+    image.to_string()
+}
+
 #[test]
-fn the_version_with_json_names_the_connector_revision_it_embeds() {
+fn the_version_with_json_names_the_connector_revision_and_relay_image() {
     let machine = Machine::new();
 
     let run = machine.toon(&["--version", "--json"]);
@@ -37,13 +49,14 @@ fn the_version_with_json_names_the_connector_revision_it_embeds() {
         json!({
             "version": env!("CARGO_PKG_VERSION"),
             "connector_revision": locked_connector_revision(),
+            "relay_image": pinned_relay_image(),
         })
     );
     assert_eq!(run.exit_code, 0);
 }
 
 #[test]
-fn the_version_as_text_names_the_connector_revision_it_embeds() {
+fn the_version_as_text_names_the_connector_revision_and_relay_image() {
     let machine = Machine::new();
 
     let run = machine.toon(&["--version"]);
@@ -51,9 +64,10 @@ fn the_version_as_text_names_the_connector_revision_it_embeds() {
     assert_eq!(
         run.stdout,
         format!(
-            "toon {} (connector {})\n",
+            "toon {} (connector {}, relay {})\n",
             env!("CARGO_PKG_VERSION"),
-            locked_connector_revision()
+            locked_connector_revision(),
+            pinned_relay_image()
         )
     );
     assert_eq!(run.exit_code, 0);

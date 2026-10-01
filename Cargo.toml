@@ -26,5 +26,10 @@ connector-chain-rpc = { git = "https://github.com/toon-protocol/connector", rev 
 connector-signer = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
 reqwest = { version = "0.11", default-features = false, features = ["blocking", "json"] }
 
+# The relay image `toon` runs as a container (ADR 0001). `build.rs` hands it to
+# `toon --version`.
+[package.metadata.toon]
+relay_image = "ghcr.io/toon-protocol/relay:2.3.1"
+
 [lints.rust]
 unsafe_code = "forbid"

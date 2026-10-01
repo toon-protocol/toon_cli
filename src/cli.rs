@@ -6,11 +6,14 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 use crate::outcome::Exit;
 
-/// What `--version` prints after the name: this release, and the connector it embeds.
+/// What `--version` prints after the name: this release, the connector it embeds and the
+/// relay image it runs.
 const VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     " (connector ",
     env!("TOON_CONNECTOR_REVISION"),
+    ", relay ",
+    env!("TOON_RELAY_IMAGE"),
     ")"
 );
 

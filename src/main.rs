@@ -84,6 +84,7 @@ fn unparsed(error: clap::Error) -> Result<Report, Error> {
             json: json!({
                 "version": env!("CARGO_PKG_VERSION"),
                 "connector_revision": connector::REVISION,
+                "relay_image": env!("TOON_RELAY_IMAGE"),
             }),
             text: String::new(),
         });

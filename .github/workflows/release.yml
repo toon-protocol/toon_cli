@@ -1,0 +1,74 @@
+# Pushing a version tag (`v0.1.0`) builds `toon` for Linux on x86_64 and aarch64 and
+# attaches the binaries, with a checksum file, to a GitHub release.
+#
+# The tag must be `v` followed by the version in Cargo.toml.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check the tag names the version in Cargo.toml
+        run: test "${GITHUB_REF_NAME}" = "v$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          name="toon-${GITHUB_REF_NAME}-linux-${{ matrix.arch }}"
+          mkdir "$name"
+          cp target/release/toon "$name/toon"
+          tar -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          "$name/toon" --version
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: toon-linux-${{ matrix.arch }}
+          path: toon-*.tar.gz*
+
+  release:
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Collect the checksums
+        run: cd dist && cat toon-*.sha256 > SHA256SUMS && sha256sum --check SHA256SUMS
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
