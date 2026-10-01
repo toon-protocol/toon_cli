@@ -1,0 +1,21 @@
+[package]
+name = "toon-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Runs and manages an agent node"
+repository = "https://github.com/toon-protocol/toon_cli"
+
+[[bin]]
+name = "toon"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
