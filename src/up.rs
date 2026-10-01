@@ -105,7 +105,7 @@ struct Hidden {
 impl Hidden {
     /// Publish the connector, now listening at `address`, and the relay's read port, at the
     /// onion endpoint.
-    fn publish(&self, address: &str) {
+    fn publish(&self, address: &str) -> Result<(), Error> {
         let mut ports = Vec::new();
         if let Ok(address) = address.parse() {
             ports.push((overlay::CONNECTOR_PORT, address));
@@ -113,7 +113,7 @@ impl Hidden {
         if let Some(read) = self.read {
             ports.push((overlay::RELAY_READ_PORT, read));
         }
-        self.edge.publish(&self.endpoint, &ports);
+        self.edge.publish(&self.endpoint, &ports)
     }
 
     fn overlay(&self) -> node::Overlay {
@@ -337,8 +337,20 @@ fn launch_connector(
             return Err(error);
         }
     };
-    if let Some(hidden) = &hidden {
-        hidden.publish(&started.address);
+    let mut started = started;
+    if let Some(Err(error)) = hidden
+        .as_ref()
+        .map(|hidden| hidden.publish(&started.address))
+    {
+        let _ = started.child.kill();
+        let _ = started.child.wait();
+        for (_, running) in &mut apps {
+            running.stop();
+        }
+        if let Some(hidden) = &hidden {
+            hidden.edge.release();
+        }
+        return Err(error);
     }
     let first = (started.child.id(), started.address.clone());
     let shared = Arc::new(Shared {
@@ -560,7 +572,9 @@ impl Supervisor {
         for (_, app) in &mut self.apps {
             app.stop();
         }
-        self.hidden = None;
+        if let Some(hidden) = self.hidden.take() {
+            hidden.edge.release();
+        }
         self.shared.live().running = false;
         // Last, so that a `toon down` that sees the socket gone knows everything has.
         let _ = std::fs::remove_file(&self.socket);
@@ -599,8 +613,12 @@ impl Supervisor {
         self.delay = (self.delay * 2).min(LONGEST_RESTART_DELAY);
         match spawn(&self.files) {
             Ok(started) => {
-                if let Some(hidden) = &self.hidden {
-                    hidden.publish(&started.address);
+                if let Some(Err(error)) = self.hidden.as_ref().map(|h| h.publish(&started.address))
+                {
+                    eprintln!(
+                        "toon: the restarted connector was not published: {}",
+                        error.message
+                    );
                 }
                 let mut live = self.shared.live();
                 live.pid = Some(started.child.id());
@@ -714,12 +732,17 @@ impl Supervisor {
             hidden.read = read;
         }
         self.files = files;
-        let started = spawn(&self.files).map_err(|error| Unreloaded {
+        let mut started = spawn(&self.files).map_err(|error| Unreloaded {
             error,
             stopped: true,
         })?;
-        if let Some(hidden) = &self.hidden {
-            hidden.publish(&started.address);
+        if let Some(Err(error)) = self.hidden.as_ref().map(|h| h.publish(&started.address)) {
+            let _ = started.child.kill();
+            let _ = started.child.wait();
+            return Err(Unreloaded {
+                error,
+                stopped: true,
+            });
         }
         let mut live = self.shared.live();
         live.pid = Some(started.child.id());

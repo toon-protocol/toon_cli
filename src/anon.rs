@@ -158,38 +158,52 @@ fn start(dir: &Path, agreed: bool) -> Result<Anon, Error> {
     })
 }
 
+/// What the daemon leaves in `overlay/daemon` while it runs: its process and its proxy.
+struct Daemon {
+    pid: String,
+    socks: SocketAddr,
+}
+
+impl Daemon {
+    fn read(dir: &Path) -> Option<Self> {
+        let state = fs::read_to_string(dir.join("daemon")).ok()?;
+        let mut fields = state.split_whitespace();
+        Some(Self {
+            pid: fields.next()?.to_owned(),
+            socks: SocketAddr::from((Ipv4Addr::LOCALHOST, fields.next()?.parse().ok()?)),
+        })
+    }
+
+    fn signal(&self, signal: &str) -> bool {
+        Command::new("kill")
+            .args([&format!("-{signal}"), &self.pid])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+}
+
 /// The SOCKS port of the daemon that runs, if one does: it has left its state, its process
 /// is there and its proxy answers.
 fn running(dir: &Path) -> Option<SocketAddr> {
-    let state = fs::read_to_string(dir.join("daemon")).ok()?;
-    let mut fields = state.split_whitespace();
-    let pid = fields.next()?;
-    let socks = SocketAddr::from((Ipv4Addr::LOCALHOST, fields.next()?.parse().ok()?));
-    let alive = signal(pid, "0");
-    let answers = TcpStream::connect_timeout(&socks, Duration::from_secs(2)).is_ok();
-    if alive && answers {
-        return Some(socks);
+    let daemon = Daemon::read(dir)?;
+    let answers = TcpStream::connect_timeout(&daemon.socks, Duration::from_secs(2)).is_ok();
+    if daemon.signal("0") && answers {
+        return Some(daemon.socks);
     }
     let _ = fs::remove_file(dir.join("daemon"));
     None
 }
 
-fn signal(pid: &str, signal: &str) -> bool {
-    Command::new("kill")
-        .args([&format!("-{signal}"), pid])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+/// Stop the daemon of `home`, if one runs.
+pub fn stop(home: &Path) {
+    stop_in(&directory(home));
 }
 
-/// Stop the machine's daemon, if one runs.
-pub fn stop(home: &Path) {
-    let dir = directory(home);
-    if let Ok(state) = fs::read_to_string(dir.join("daemon")) {
-        if let Some(pid) = state.split_whitespace().next() {
-            signal(pid, "TERM");
-        }
+fn stop_in(dir: &Path) {
+    if let Some(daemon) = Daemon::read(dir) {
+        daemon.signal("TERM");
     }
     let _ = fs::remove_file(dir.join("daemon"));
 }
@@ -412,9 +426,7 @@ impl Anon {
             return Ok(false);
         }
         crate::node::write(&path, config.as_bytes(), 0o600)?;
-        let state = fs::read_to_string(self.dir.join("daemon")).unwrap_or_default();
-        let pid = state.split_whitespace().next().unwrap_or_default();
-        if !signal(pid, "HUP") {
+        if !Daemon::read(&self.dir).is_some_and(|daemon| daemon.signal("HUP")) {
             return Err(unavailable("the `anon` daemon is no longer running"));
         }
         Ok(true)
@@ -482,7 +494,7 @@ impl Edge for Anon {
         Ok(address)
     }
 
-    fn publish(&self, address: &str, ports: &[(u16, SocketAddr)]) {
+    fn publish(&self, address: &str, ports: &[(u16, SocketAddr)]) -> Result<(), Error> {
         let connector = {
             let issued = self.issued.lock().unwrap_or_else(|e| e.into_inner());
             issued
@@ -490,9 +502,16 @@ impl Edge for Anon {
                 .find(|(known, _)| known == address)
                 .map(|(_, n)| *n)
         };
-        if let Some(connector) = connector {
-            let _ = self.write_service(connector, ports);
+        match connector {
+            Some(connector) => self.write_service(connector, ports).map(|_| ()),
+            None => Err(unavailable(&format!(
+                "{address} was not issued by this overlay"
+            ))),
         }
+    }
+
+    fn release(&self) {
+        stop_in(&self.dir);
     }
 }
 

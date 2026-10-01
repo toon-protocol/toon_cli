@@ -142,7 +142,9 @@ pub fn init(home: &Path, options: &node::Options, restore: bool) -> Result<Repor
     let wallet = describe(&addresses(&phrase)?);
     // The TOON app is made and checked before the wallet is kept, so that a command line
     // the connector would refuse does not leave a wallet whose mnemonic nobody saw.
-    let state = create_toon_app(home, &mnemonic, options, edge.as_deref(), onion)?;
+    let state = create_toon_app(home, &mnemonic, options, edge.as_deref(), onion);
+    release(home, edge.as_deref());
+    let state = state?;
     if !keystore::create(home, &passphrase, &phrase)? {
         return existing(home, options);
     }
@@ -381,7 +383,9 @@ fn existing(home: &Path, options: &node::Options) -> Result<Report, Error> {
                         code: ErrorCode::KeystoreCorrupt,
                         message: "The keystore does not hold a valid mnemonic.".into(),
                     })?;
-            let state = create_toon_app(home, &mnemonic, options, edge.as_deref(), Onion::Derived)?;
+            let state = create_toon_app(home, &mnemonic, options, edge.as_deref(), Onion::Derived);
+            release(home, edge.as_deref());
+            let state = state?;
             if let Err(error) = state.save(home) {
                 discard_toon_apps(home);
                 return Err(error);
@@ -542,6 +546,16 @@ fn edge_for(home: &Path, options: &node::Options) -> Result<Option<Box<dyn Edge>
         });
     }
     overlay::bootstrap(home, true).map(Some)
+}
+
+/// Let the overlay go once the TOON app is made, unless a supervisor is running on it: the
+/// daemon is started again by `toon up`.
+fn release(home: &Path, edge: Option<&dyn Edge>) {
+    if let Some(edge) = edge {
+        if !home.join("supervisor.sock").exists() {
+            edge.release();
+        }
+    }
 }
 
 /// List the wallet's addresses.

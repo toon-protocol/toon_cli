@@ -124,7 +124,8 @@ overlay and no terms flag.
 
 The overlay is Anyone's `anon` daemon. `toon` downloads the release pinned in `src/anon.rs`,
 checks its SHA-256 and only then runs it, one daemon per agent node home, detached so it
-outlives the command that started it and shared by every connector. The operator's agreement
+outlives the command that started it and shared by every connector. It stops when the
+supervisor does, and after `init` or `create` when no supervisor is running. The operator's agreement
 to the terms is recorded in `overlay/agreed` once the daemon has bootstrapped; `toon up` starts
 no daemon without it. `TOON_ANON_MIRROR` replaces the download location (the checksum still
 applies).

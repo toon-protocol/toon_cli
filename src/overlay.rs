@@ -52,7 +52,11 @@ pub trait Edge: Send {
 
     /// Serve `ports` at the onion endpoint `address`, each at its own port, from the
     /// local address behind it. Replaces what was published for that endpoint before.
-    fn publish(&self, address: &str, ports: &[(u16, SocketAddr)]);
+    fn publish(&self, address: &str, ports: &[(u16, SocketAddr)]) -> Result<(), Error>;
+
+    /// The overlay is no longer needed on this machine: a daemon that nothing else uses
+    /// stops. The stand-in has nothing to stop.
+    fn release(&self) {}
 }
 
 fn unavailable(why: &str) -> Error {
@@ -186,12 +190,13 @@ impl Edge for Loopback {
         Ok(address)
     }
 
-    fn publish(&self, address: &str, ports: &[(u16, SocketAddr)]) {
+    fn publish(&self, address: &str, ports: &[(u16, SocketAddr)]) -> Result<(), Error> {
         let mut table = self.published.lock().unwrap_or_else(|e| e.into_inner());
         table.retain(|(host, _), _| host != address);
         for (port, target) in ports {
             table.insert((address.to_owned(), *port), *target);
         }
+        Ok(())
     }
 }
 
@@ -316,7 +321,8 @@ pub(crate) mod tests {
         edge.publish(
             &one,
             &[(CONNECTOR_PORT, connector), (RELAY_READ_PORT, relay)],
-        );
+        )
+        .unwrap();
         assert_eq!(
             "connector",
             reaches(edge.proxy(), &one, CONNECTOR_PORT, patience)
