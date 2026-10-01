@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 pub mod fake_chain;
+pub mod fake_faucet;
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -90,6 +91,15 @@ impl Machine {
             .current_dir(self.home())
             .stdin(Stdio::null());
         command
+    }
+
+    /// Run `toon init --json` with `args` after it, and the passphrase every test uses.
+    pub fn init_with(&self, args: &[&str]) -> Run {
+        let mut all = vec!["init", "--json"];
+        all.extend_from_slice(args);
+        self.toon_with(&all, |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        })
     }
 
     /// Run `toon init` for an agent node that settles on `chain`, with the passphrase

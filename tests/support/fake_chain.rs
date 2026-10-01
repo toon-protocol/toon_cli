@@ -12,8 +12,13 @@
 //! The token is a plain ERC-20 with no ERC-3009, so a connector on this chain is
 //! configured with `asset_transfer_method = "permit2"`.
 //!
-//! It holds no channels and no balances and accepts no transaction, so it carries a
-//! connector that nobody pays. A test that moves money needs more than this.
+//! It holds no channels and accepts no transaction, so it carries a connector that
+//! nobody pays. A test that moves money needs more than this. Every address holds a
+//! vast balance of gas and of the token, unless the chain was started unfunded and
+//! nobody has funded it yet.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use connector_chain_rpc::{FakeRpc, RpcCall, RpcReply};
 use connector_signer::{evm_batch_channel_id, BatchChannelConfig, BatchSettlementDomain};
@@ -29,6 +34,8 @@ pub const TOKEN_DECIMALS: u8 = 6;
 /// The token's `decimals()`.
 const DECIMALS: &str = "313ce567";
 /// The contract's `getChannelId(ChannelConfig)`.
+/// The token's `balanceOf(owner)`.
+const BALANCE_OF: &str = "70a08231";
 const GET_CHANNEL_ID: &str = "5e5e0b87";
 /// The contract's `receivers(receiver, token)`: what a receiver has claimed and settled.
 const RECEIVERS: &str = "21ff6389";
@@ -37,20 +44,41 @@ const WORD: usize = 64;
 
 pub struct FakeChain {
     rpc: FakeRpc,
+    funded: Arc<AtomicBool>,
     // Dropped after `rpc`, whose server runs on it.
     _runtime: Runtime,
 }
 
 impl FakeChain {
+    /// A chain on which every address is funded.
     pub fn start() -> Self {
+        Self::spawn(true)
+    }
+
+    /// A chain on which every address holds nothing until `fund` is called.
+    pub fn start_unfunded() -> Self {
+        Self::spawn(false)
+    }
+
+    /// What a faucet does: from now on every address holds gas and the token.
+    pub fn funded(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.funded)
+    }
+
+    fn spawn(funded: bool) -> Self {
+        let funded = Arc::new(AtomicBool::new(funded));
+        let held = Arc::clone(&funded);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()
             .expect("a runtime for the fake chain");
-        let rpc = runtime.block_on(FakeRpc::spawn(answer));
+        let rpc = runtime.block_on(FakeRpc::spawn(move |call: &RpcCall| {
+            answer(call, held.load(Ordering::SeqCst))
+        }));
         Self {
             rpc,
+            funded,
             _runtime: runtime,
         }
     }
@@ -65,18 +93,23 @@ impl FakeChain {
     }
 }
 
-fn answer(call: &RpcCall) -> RpcReply {
+fn answer(call: &RpcCall, funded: bool) -> RpcReply {
     match call.method.as_str() {
         "eth_chainId" => RpcReply::Result(json!(format!("{CHAIN_ID:#x}"))),
         "eth_blockNumber" => RpcReply::Result(json!("0x1")),
         // Any code at all: the connector asks only whether the contract is deployed.
         "eth_getCode" => RpcReply::Result(json!("0x60")),
-        "eth_call" => eth_call(call),
+        "eth_getBalance" => RpcReply::Result(json!(if funded {
+            "0xde0b6b3a7640000000"
+        } else {
+            "0x0"
+        })),
+        "eth_call" => eth_call(call, funded),
         other => not_served(other),
     }
 }
 
-fn eth_call(call: &RpcCall) -> RpcReply {
+fn eth_call(call: &RpcCall, funded: bool) -> RpcReply {
     let request = &call.params[0];
     let data = request["data"]
         .as_str()
@@ -86,6 +119,10 @@ fn eth_call(call: &RpcCall) -> RpcReply {
     let (selector, arguments) = data.split_at(data.len().min(8));
     if selector == DECIMALS {
         return RpcReply::Result(json!(format!("0x{:064x}", TOKEN_DECIMALS)));
+    }
+    if selector == BALANCE_OF {
+        let held: u128 = if funded { 1_000_000_000_000 } else { 0 };
+        return RpcReply::Result(json!(format!("0x{held:064x}")));
     }
     if selector == RECEIVERS {
         // Nothing claimed and nothing settled: two zero words.
