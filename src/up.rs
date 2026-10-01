@@ -30,6 +30,10 @@ use crate::runner::{self, AppRunner, AppSpec, RunningApp};
 /// How long a connector gets to exit once its supervisor is stopping, before it is killed.
 const GRACE: Duration = Duration::from_secs(10);
 
+/// How often a supervisor asks whether its apps still run. Asking a container is a
+/// `docker` process, so not on every tick.
+const APPS_EVERY: Duration = Duration::from_secs(1);
+
 /// An app behind the connector, as the control socket reports it.
 struct AppStatus {
     name: String,
@@ -301,11 +305,18 @@ impl Supervisor {
     /// supervisor has nothing else to wait for, so a connector that stops by itself is a
     /// failure.
     pub fn wait(mut self) -> Stopped {
+        let mut apps_checked = Instant::now();
         let stopped = loop {
             if self.shared.stop.load(Ordering::SeqCst) {
                 break self.stop_connector();
             }
-            if let Some(stopped) = self.stopped_app() {
+            let stopped_app = if apps_checked.elapsed() >= APPS_EVERY {
+                apps_checked = Instant::now();
+                self.stopped_app()
+            } else {
+                None
+            };
+            if let Some(stopped) = stopped_app {
                 let _ = self.stop_connector();
                 break Stopped::Failed(Error {
                     code: ErrorCode::AppFailed,

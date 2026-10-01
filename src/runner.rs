@@ -211,6 +211,7 @@ pub struct ContainerRunner;
 struct Container {
     name: String,
     address: SocketAddr,
+    stopped: bool,
 }
 
 fn docker(args: &[&str]) -> Result<String, String> {
@@ -262,6 +263,7 @@ impl AppRunner for ContainerRunner {
         let mut container = Container {
             name: name.clone(),
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            stopped: false,
         };
         let mapped = docker(&["port", &name, &format!("{WRITE_PORT}/tcp")]).and_then(|ports| {
             ports
@@ -301,9 +303,18 @@ impl RunningApp for Container {
     }
 
     fn stop(&mut self) {
+        if std::mem::replace(&mut self.stopped, true) {
+            return;
+        }
         let _ = docker(&["stop", "--time", "10", &self.name]);
         // `--rm` removes it once stopped; this is for one that was created and never ran.
         let _ = docker(&["rm", "--force", &self.name]);
+    }
+}
+
+impl Drop for Container {
+    fn drop(&mut self) {
+        self.stop();
     }
 }
 

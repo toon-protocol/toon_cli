@@ -16,7 +16,8 @@ use serde_json::{json, Value};
 use crate::keystore;
 use crate::outcome::{Error, ErrorCode};
 
-/// The name of the first TOON app, the one whose connector fronts the relay.
+/// The name of the first TOON app, the one whose connector fronts the relay, and of the
+/// relay app behind it.
 pub const RELAY: &str = "relay";
 
 /// The connector's route to the relay's paid write endpoint, and its price per write.
@@ -268,8 +269,9 @@ fn string(text: &str) -> String {
 }
 
 /// Render the connector config of `app` into `home` and check it with the connector's
-/// own validation. `relay` is where the relay's write port is reached, if `app` fronts one. The config is written whether or not it validates, so that the
-/// error can be read against it; a caller that gets `Err` starts nothing.
+/// own validation. `relay` is where the relay's write port is reached, if `app` fronts
+/// one. The config is written whether or not it validates, so that the error can be read
+/// against it; a caller that gets `Err` starts nothing.
 pub fn render(
     home: &Path,
     app: &ToonApp,
