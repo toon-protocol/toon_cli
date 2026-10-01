@@ -5,6 +5,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use crate::cli::WalletCommand;
 use crate::derive::{self, Addresses};
 use crate::funding;
 use crate::keystore;
@@ -550,4 +551,13 @@ pub fn balances(home: &Path) -> Result<Report, Error> {
         json: json!({ "balances": entries }),
         text: lines.join("\n"),
     })
+}
+
+/// `toon wallet`.
+pub fn run(home: &Path, command: &WalletCommand) -> Result<Report, Error> {
+    match command {
+        WalletCommand::Show => show(home),
+        WalletCommand::Fund => funding::fund(home),
+        WalletCommand::Balances => balances(home),
+    }
 }
