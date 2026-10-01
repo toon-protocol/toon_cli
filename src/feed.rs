@@ -7,7 +7,7 @@
 //! (`socks5h`), so that nothing is resolved on this machine.
 
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
@@ -102,11 +102,23 @@ fn through(proxy: SocketAddr, host: &str, port: u16) -> Result<TcpStream, String
     Ok(stream)
 }
 
+/// Connect to `host:port`, giving each address it resolves to the patience.
+fn direct(host: &str, port: u16) -> std::io::Result<TcpStream> {
+    let mut last = None;
+    for address in (host, port).to_socket_addrs()? {
+        match TcpStream::connect_timeout(&address, PATIENCE) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last = Some(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("the name resolves to no address")))
+}
+
 fn dial(relay: &str, proxy: Option<SocketAddr>) -> Result<WebSocket<TcpStream>, String> {
     let (host, port) = authority(relay)?;
     let stream = match proxy {
         Some(proxy) => through(proxy, &host, port)?,
-        None => TcpStream::connect((host.as_str(), port))
+        None => direct(&host, port)
             .map_err(|error| format!("{relay} did not accept a connection: {error}."))?,
     };
     // The handshake gets the patience; once it is done a read gives up every tick.

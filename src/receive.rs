@@ -11,7 +11,7 @@
 //! drops is dialled again after a delay that doubles; one that ends with `payment-required`
 //! is marked exhausted and left alone until the balance is topped up.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
@@ -99,8 +99,9 @@ struct Retry {
 struct Progress {
     /// The newest `created_at` handed on.
     newest: Option<u64>,
-    /// The ids handed on, so an event the feed sends again is not handed on again.
-    seen: HashSet<String>,
+    /// The ids handed on with their `created_at`, so an event the feed sends again is not
+    /// handed on again. One older than the overlap is not asked for again, and is let go.
+    seen: HashMap<String, u64>,
 }
 
 fn run(home: &Path, surroundings: &dyn Surroundings, stop: &AtomicBool) {
@@ -219,19 +220,21 @@ fn receive(
     let ended = feed::read(&entry.relay, secret, &filter, proxy, stop, |event| {
         let mut progress = progress.lock().expect("the progress");
         let id = event["id"].as_str().unwrap_or_default().to_owned();
-        if progress.seen.contains(&id) {
+        if progress.seen.contains_key(&id) {
             return true;
         }
         // An event the relay did not take is not marked as seen, so it comes again.
         if hand_over(own, &event) {
-            progress.seen.insert(id);
-            let created = event["created_at"].as_u64();
-            progress.newest = progress.newest.max(created);
+            let created = event["created_at"].as_u64().unwrap_or_default();
+            progress.seen.insert(id, created);
+            progress.newest = progress.newest.max(Some(created));
+            let from = progress.newest.unwrap_or_default().saturating_sub(OVERLAP);
+            progress.seen.retain(|_, created| *created >= from);
         }
         true
     });
     if let Ended::Exhausted(_) = ended {
-        let _ = subscribe::mark_exhausted(home, &entry.relay);
+        let _ = subscribe::mark_exhausted(home, entry);
     }
 }
 

@@ -499,13 +499,14 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
     })
 }
 
-/// Note that `relay` closed the feed with `payment-required`: its balance is below the
-/// broadcast price, whatever was last kept. What is left is not known here, and
-/// `toon relay subscriptions` asks the relay.
-pub fn mark_exhausted(home: &Path, relay: &str) -> Result<(), Error> {
+/// Note that the relay of `dialled`, the subscription a feed was dialled for, closed that
+/// feed with `payment-required`: its balance is below the broadcast price, whatever was
+/// last kept. What is left is not known here, and `toon relay subscriptions` asks the relay.
+/// A balance kept since the feed was dialled is a top-up the relay had not seen, and stays.
+pub fn mark_exhausted(home: &Path, dialled: &Kept) -> Result<(), Error> {
     let mut kept = load(home)?;
-    match kept.iter_mut().find(|kept| kept.relay == relay) {
-        Some(entry) if !entry.exhausted() => {
+    match kept.iter_mut().find(|kept| kept.relay == dialled.relay) {
+        Some(entry) if !entry.exhausted() && entry.balance == dialled.balance => {
             entry.balance = 0;
             save(home, &kept)
         }
@@ -549,7 +550,7 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
     Err(match ended {
         _ if unwritten => failed("The events could not be written.".into()),
         feed::Ended::Exhausted(reason) => {
-            let _ = mark_exhausted(home, relay);
+            let _ = mark_exhausted(home, &kept);
             failed(format!(
                 "The subscription at {relay} has run out: {reason}. `toon relay subscribe` tops it up."
             ))
