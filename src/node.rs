@@ -59,6 +59,8 @@ pub struct Options {
     pub plaintext_peers: bool,
     /// The faucet `toon wallet fund` asks, if the network has one.
     pub faucet_url: Option<String>,
+    /// The spending limit, signed into `limits.json` at `init`.
+    pub limits: crate::spending::Limits,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -72,6 +72,7 @@ fn one_operator_peers_alone_and_a_packet_crosses_and_is_fulfilled() {
         &far.url(),
         "--deposit",
         &DEPOSIT.to_string(),
+        "--yes",
         "--id",
         "far",
         "--json",
@@ -102,6 +103,7 @@ fn one_operator_peers_alone_and_a_packet_crosses_and_is_fulfilled() {
         "g.toon.relay.far",
         "--amount",
         "1",
+        "--yes",
         "--seal-to",
         &far.url(),
         "--json",
@@ -122,7 +124,14 @@ fn peer_add_says_the_other_connector_forwards_back_only_if_its_operator_peers_in
     let near = node_on(&chain);
     let far = node_on(&chain);
 
-    let peered = near.toon(&["peer", "add", &far.url(), "--deposit", &DEPOSIT.to_string()]);
+    let peered = near.toon(&[
+        "peer",
+        "add",
+        &far.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+    ]);
 
     assert_eq!(peered.exit_code, 0, "{}", peered.stderr);
     assert!(
@@ -145,6 +154,7 @@ fn peers_and_routes_are_listed_and_removed() {
         &far.url(),
         "--deposit",
         &DEPOSIT.to_string(),
+        "--yes",
         "--id",
         "far",
     ]);
@@ -213,6 +223,7 @@ fn a_peering_toward_a_connector_that_is_not_peerable_says_the_refusal_is_on_the_
         &unpeerable.url(),
         "--deposit",
         &DEPOSIT.to_string(),
+        "--yes",
         "--json",
     ]);
 
@@ -251,6 +262,7 @@ fn peer_commands_need_the_agent_node_to_be_running() {
             "http://127.0.0.1:1/ilp",
             "--deposit",
             "1",
+            "--yes",
             "--json",
         ][..],
         &["peer", "list", "--json"],
@@ -276,6 +288,7 @@ fn a_connector_that_dials_no_plaintext_says_the_refusal_is_on_this_side() {
         &far.url(),
         "--deposit",
         &DEPOSIT.to_string(),
+        "--yes",
         "--json",
     ]);
 

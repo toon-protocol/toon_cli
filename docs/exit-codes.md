@@ -83,6 +83,8 @@ A failed command with `--json` prints:
 | `draft_refused` | 1 | `toon nip new` or `toon nip publish` would not write or publish a draft: the file exists already, does not name a draft or begin with its title, is not UTF-8, or the relay holds the identifier under another title and `--title-changed` was not given; the message says which |
 | `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
 | `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap, so a hidden service was not created or started; nothing falls back to clearnet |
+| `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
+| `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
 
 
 ## The wallet passphrase
@@ -154,3 +156,17 @@ by `TOON_MNEMONIC_FILE`, else from `TOON_MNEMONIC`, never a flag, into a home wi
 (`io` if there is one; `usage` if the mnemonic is missing or not BIP-39). It shows no mnemonic, and
 a hidden service gets new onion endpoints, which it says (`"onion_endpoints_changed": true`):
 a mnemonic does not hold the address keys.
+
+## The spending limit
+
+Every command that moves money (`toon send`, `toon peer add`) states its amount and needs
+`--yes`. The amount is checked against the spending limit before the command runs: at most
+`--max-per-command` for one command, and `--max-per-day` for the commands of one UTC day
+together, both in the token's base units, set at `toon init` (defaults 10000000 and
+100000000). A payment that was rejected is not counted, nor one that failed before it
+reached the connector or that the other side refused; any other failure may have paid, and
+stays counted. `toon limit show` prints the limits and what is left today. `toon limit set`
+changes them and reads the wallet passphrase, so an agent without it cannot raise them: the
+limits are signed with a key the wallet derives, and an unsigned or edited `limits.json`
+stops every payment. When `limits.json` is missing or was edited, `toon limit set` needs
+both `--max-per-command` and `--max-per-day`.

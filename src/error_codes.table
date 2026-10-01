@@ -24,6 +24,8 @@ error_codes! {
     RouteFailed => "route_failed" => Failure,
     ChainFailed => "chain_failed" => Failure,
     ChannelFailed => "channel_failed" => Failure,
+    NotConfirmed => "not_confirmed" => Failure,
+    SpendingLimit => "spending_limit" => Failure,
     NameTaken => "name_taken" => Failure,
     QueryFailed => "query_failed" => Failure,
     DraftRefused => "draft_refused" => Failure,

@@ -14,6 +14,7 @@ use crate::cli::{ChannelCommand, PeerCommand, RouteCommand};
 use crate::control;
 use crate::node::{self, ConnectorFiles, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::spending;
 
 /// How long a read of the operator surface waits for the connector.
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -715,16 +716,19 @@ pub fn channel(home: &Path, command: ChannelCommand) -> Result<Report, Error> {
 /// `toon peer`.
 pub fn peer(home: &Path, command: &PeerCommand) -> Result<Report, Error> {
     match command {
-        PeerCommand::Add(args) => peer_add(
-            home,
-            &PeerAdd {
-                address: &args.address,
-                deposit: args.deposit,
-                id: args.id.as_deref(),
-                fee: args.fee,
-                max_packet_amount: args.max_packet_amount,
-            },
-        ),
+        PeerCommand::Add(args) => spending::spend(home, args.deposit, args.yes, || {
+            let report = peer_add(
+                home,
+                &PeerAdd {
+                    address: &args.address,
+                    deposit: args.deposit,
+                    id: args.id.as_deref(),
+                    fee: args.fee,
+                    max_packet_amount: args.max_packet_amount,
+                },
+            )?;
+            Ok((report, true))
+        }),
         PeerCommand::List => peer_list(home),
         PeerCommand::Remove { id } => peer_remove(home, id),
     }

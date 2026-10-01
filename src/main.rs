@@ -23,6 +23,7 @@ mod profile;
 mod relay;
 mod runner;
 mod service;
+mod spending;
 mod status;
 mod up;
 mod wallet;
@@ -36,7 +37,7 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use serde_json::json;
 
-use cli::{Cli, Command};
+use cli::{Cli, Command, LimitCommand};
 use outcome::{Error, ErrorCode, Exit, Report};
 use up::Stopped;
 
@@ -80,7 +81,13 @@ fn main() -> ExitCode {
         .into(),
         Command::Send(args) => render(
             home::resolve().and_then(|home| {
-                operator::send(&home, &args.address, args.amount, args.seal_to.as_deref())
+                spending::spend(&home, args.amount.into(), args.yes, || {
+                    let report =
+                        operator::send(&home, &args.address, args.amount, args.seal_to.as_deref())?;
+                    // A packet that was rejected moved nothing.
+                    let paid = report.exit == Exit::Success;
+                    Ok((report, paid))
+                })
             }),
             json,
         )
@@ -113,6 +120,17 @@ fn main() -> ExitCode {
         .into(),
         Command::Peer { command } => render(
             home::resolve().and_then(|home| operator::peer(&home, &command)),
+            json,
+        )
+        .into(),
+        Command::Limit { command } => render(
+            home::resolve().and_then(|home| match command {
+                LimitCommand::Show => spending::show(&home),
+                LimitCommand::Set {
+                    max_per_command,
+                    max_per_day,
+                } => spending::set(&home, max_per_command, max_per_day),
+            }),
             json,
         )
         .into(),

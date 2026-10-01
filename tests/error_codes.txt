@@ -21,6 +21,8 @@ peer_not_peerable
 route_failed
 chain_failed
 channel_failed
+not_confirmed
+spending_limit
 name_taken
 query_failed
 draft_refused
