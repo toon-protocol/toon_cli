@@ -37,6 +37,16 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             "not running"
         }
     )];
+    match &state.joined {
+        Some(network) => lines.push(format!(
+            "Connected to {network}. Reading {}.",
+            state.reads.join(", ")
+        )),
+        None => lines.push(
+            "Unconnected: no peering, and nothing spent. `toon join <network> --deposit <amount> --yes` connects it."
+                .into(),
+        ),
+    }
     let mut toon_apps = Vec::new();
     for app in &state.toon_apps {
         let reported = reply
@@ -133,6 +143,8 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             "home": shown,
             "agent_node": {
                 "supervisor": { "running": supervisor_running, "socket": control::path(home) },
+                "joined": state.joined,
+                "reads": state.reads,
                 "toon_apps": toon_apps,
             },
         }),

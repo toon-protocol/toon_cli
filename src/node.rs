@@ -59,6 +59,10 @@ pub struct Options {
     pub plaintext_peers: bool,
     /// The faucet `toon wallet fund` asks, if the network has one.
     pub faucet_url: Option<String>,
+    /// The `/ilp` URL of the network's connector, which `toon join` peers toward.
+    pub connector_url: String,
+    /// The websocket URL of the network's relay, which `toon join` makes one the agent reads.
+    pub relay_url: String,
     /// The spending limit, signed into `limits.json` at `init`.
     pub limits: crate::spending::Limits,
 }
@@ -267,6 +271,14 @@ pub struct State {
     pub network: Profile,
     /// Where `toon wallet fund` asks for funds; the networks without a faucet have none.
     pub faucet_url: Option<String>,
+    /// The network's connector, as the profile or `init` names it.
+    pub connector_url: String,
+    /// The network's relay, as the profile or `init` names it.
+    pub relay_url: String,
+    /// The network this agent node has joined: none until `toon join`.
+    pub joined: Option<String>,
+    /// The relays the agent reads: those of the networks it has joined.
+    pub reads: Vec<String>,
     pub toon_apps: Vec<ToonApp>,
 }
 
@@ -410,6 +422,10 @@ impl State {
         Self {
             network: options.network,
             faucet_url: options.faucet_url.clone(),
+            connector_url: options.connector_url.clone(),
+            relay_url: options.relay_url.clone(),
+            joined: None,
+            reads: Vec::new(),
             toon_apps: vec![ToonApp {
                 name: RELAY.into(),
                 connector: 0,
@@ -446,6 +462,10 @@ impl State {
             "version": 1,
             "network": self.network.name(),
             "faucet_url": self.faucet_url,
+            "connector_url": self.connector_url,
+            "relay_url": self.relay_url,
+            "joined": self.joined,
+            "reads": self.reads,
             "toon_apps": apps,
         })
     }
@@ -498,9 +518,30 @@ impl State {
             Value::Null => None,
             url => Some(url.as_str()?.to_owned()),
         };
+        // A state from before `join` names the profile's own connector and relay.
+        let text = |name: &str, default: &str| match &value[name] {
+            Value::Null => Some(default.to_owned()),
+            url => url.as_str().map(str::to_owned),
+        };
+        let joined = match &value["joined"] {
+            Value::Null => None,
+            name => Some(name.as_str()?.to_owned()),
+        };
+        let reads = match &value["reads"] {
+            Value::Null => Vec::new(),
+            reads => reads
+                .as_array()?
+                .iter()
+                .map(|url| url.as_str().map(str::to_owned))
+                .collect::<Option<_>>()?,
+        };
         Some(Self {
             network,
             faucet_url,
+            connector_url: text("connector_url", network.connector_url())?,
+            relay_url: text("relay_url", network.relay_url())?,
+            joined,
+            reads,
             toon_apps,
         })
     }
