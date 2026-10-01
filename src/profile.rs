@@ -93,4 +93,22 @@ impl Profile {
             Profile::Sandbox | Profile::Mainnet => None,
         }
     }
+
+    /// The `/ilp` URL of the connector `toon join` peers toward.
+    pub fn connector_url(self) -> &'static str {
+        match self {
+            Profile::Devnet => "https://connector.devnet.toonprotocol.dev/ilp",
+            Profile::Sandbox => "http://localhost:4100/ilp",
+            Profile::Mainnet => "https://connector.toonprotocol.dev/ilp",
+        }
+    }
+
+    /// The websocket URL of the relay `toon join` makes one the agent reads.
+    pub fn relay_url(self) -> &'static str {
+        match self {
+            Profile::Devnet => "wss://relay.devnet.toonprotocol.dev",
+            Profile::Sandbox => "ws://localhost:7100",
+            Profile::Mainnet => "wss://relay.toonprotocol.dev",
+        }
+    }
 }

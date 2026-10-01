@@ -15,9 +15,21 @@ use crate::overlay::{self, Edge};
 use crate::runner;
 use crate::spending;
 
-/// How many connectors a wallet lists. An agent node starts as one TOON app, so one
-/// connector; later commands that create TOON apps raise this.
-const CONNECTORS: u32 = 1;
+/// How many connectors a new wallet lists: an agent node starts as one TOON app.
+const FIRST_CONNECTORS: u32 = 1;
+
+/// How many connectors the wallet of the agent node at `home` lists: every index a TOON app
+/// uses, and the ones below it.
+fn connectors(home: &Path) -> Result<u32, Error> {
+    Ok(node::State::load(home)?.map_or(FIRST_CONNECTORS, |state| {
+        state
+            .toon_apps
+            .iter()
+            .map(|app| app.connector + 1)
+            .max()
+            .unwrap_or(FIRST_CONNECTORS)
+    }))
+}
 
 /// Which relay's identity key the first TOON app's relay gets.
 const RELAY_INDEX: u32 = 0;
@@ -32,12 +44,12 @@ enum Onion {
     Fresh,
 }
 
-fn addresses(mnemonic: &str) -> Result<Addresses, Error> {
+fn addresses(mnemonic: &str, connectors: u32) -> Result<Addresses, Error> {
     let mnemonic: bip39::Mnemonic = mnemonic.parse().map_err(|_| Error {
         code: ErrorCode::KeystoreCorrupt,
         message: "The keystore does not hold a valid mnemonic.".into(),
     })?;
-    derive::addresses(&*derive::seed(&mnemonic), CONNECTORS).map_err(|source| Error {
+    derive::addresses(&*derive::seed(&mnemonic), connectors).map_err(|source| Error {
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
     })
@@ -139,7 +151,7 @@ pub fn init(home: &Path, options: &node::Options, restore: bool) -> Result<Repor
         Onion::Derived
     };
     let phrase = zeroize::Zeroizing::new(mnemonic.to_string());
-    let wallet = describe(&addresses(&phrase)?);
+    let wallet = describe(&addresses(&phrase, FIRST_CONNECTORS)?);
     // The TOON app is made and checked before the wallet is kept, so that a command line
     // the connector would refuse does not leave a wallet whose mnemonic nobody saw.
     let state = create_toon_app(home, &mnemonic, options, edge.as_deref(), onion)?;
@@ -287,6 +299,40 @@ fn create_toon_app(
     created
 }
 
+/// Write the identity key and the settlement keys the wallet derives for the connector of
+/// `app`, which only that connector reads. Its onion key is not here: `init` may make that
+/// one at random.
+pub fn write_connector_keys(home: &Path, seed: &[u8], app: &node::ToonApp) -> Result<(), Error> {
+    let files = node::ConnectorFiles::of(home, app.connector);
+    let corrupt = |source: derive::DeriveError| Error {
+        code: ErrorCode::KeystoreCorrupt,
+        message: source.0,
+    };
+    let identity = derive::identity_secret(seed, app.connector).map_err(corrupt)?;
+    let settlement = derive::evm_settlement_secret(seed, app.connector).map_err(corrupt)?;
+    node::write(&files.identity_key, &*identity, 0o600)?;
+    node::write(&files.settlement_key, &*settlement, 0o600)?;
+    if app.solana.is_some() {
+        let solana = derive::solana_settlement_secret(seed, app.connector).map_err(corrupt)?;
+        node::write(&files.solana_settlement_key, &*solana, 0o600)?;
+    }
+    Ok(())
+}
+
+/// Write the key a new hidden service's onion endpoint is made of, derived from the wallet
+/// so that the same mnemonic makes the same endpoint. A key that is there already stays.
+pub fn write_onion_key(home: &Path, seed: &[u8], app: &node::ToonApp) -> Result<(), Error> {
+    let files = node::ConnectorFiles::of(home, app.connector);
+    if app.reach == Reach::Hidden && !files.onion_key.exists() {
+        let onion = derive::onion_secret(seed, app.connector).map_err(|source| Error {
+            code: ErrorCode::KeystoreCorrupt,
+            message: source.0,
+        })?;
+        node::write(&files.onion_key, &*onion, 0o600)?;
+    }
+    Ok(())
+}
+
 fn write_toon_app(
     home: &Path,
     mnemonic: &bip39::Mnemonic,
@@ -314,15 +360,7 @@ fn write_toon_app(
             code: ErrorCode::KeystoreCorrupt,
             message: source.0,
         };
-        let identity = derive::identity_secret(&*seed, app.connector).map_err(corrupt)?;
-        let settlement = derive::evm_settlement_secret(&*seed, app.connector).map_err(corrupt)?;
-        node::write(&files.identity_key, &*identity, 0o600)?;
-        node::write(&files.settlement_key, &*settlement, 0o600)?;
-        if app.solana.is_some() {
-            let solana =
-                derive::solana_settlement_secret(&*seed, app.connector).map_err(corrupt)?;
-            node::write(&files.solana_settlement_key, &*solana, 0o600)?;
-        }
+        write_connector_keys(home, &*seed, app)?;
         if app.apps.iter().any(|app| app.source == node::Source::Relay) {
             // The relay's identity key is the wallet's, handed over as a file that only
             // this user reads. `up` reads it and gives it to the relay.
@@ -505,7 +543,18 @@ fn toon_app_text(home: &Path, state: &node::State, created: bool) -> String {
 /// needs none. A hidden service is not made without the operator's agreement to Anyone's
 /// terms, nor without an overlay: this fails before anything is written.
 fn edge_for(home: &Path, options: &node::Options) -> Result<Option<Box<dyn Edge>>, Error> {
-    if let Reach::Clearnet { hostname } = &options.reach {
+    check_reach(&options.reach, options.accept_anyone_terms, &options.listen)?;
+    match options.reach {
+        Reach::Clearnet { .. } => Ok(None),
+        Reach::Hidden => overlay::bootstrap(home).map(Some),
+    }
+}
+
+/// Whether a TOON app can be reached as `reach` asks, listening where `listen` says: a
+/// clearnet hostname that is one, and a hidden service that the operator agreed to the
+/// terms of, which listens on loopback only.
+pub fn check_reach(reach: &Reach, accept_anyone_terms: bool, listen: &str) -> Result<(), Error> {
+    if let Reach::Clearnet { hostname } = reach {
         if hostname.is_empty()
             || hostname.contains(|c: char| c.is_whitespace() || "/:@".contains(c))
         {
@@ -514,9 +563,9 @@ fn edge_for(home: &Path, options: &node::Options) -> Result<Option<Box<dyn Edge>
                 message: format!("`--clearnet` takes a hostname, and {hostname:?} is not one."),
             });
         }
-        return Ok(None);
+        return Ok(());
     }
-    if !options.accept_anyone_terms {
+    if !accept_anyone_terms {
         return Err(Error {
             code: ErrorCode::Usage,
             message: "A new TOON app is a hidden service on the Anyone overlay. Pass \
@@ -525,22 +574,20 @@ fn edge_for(home: &Path, options: &node::Options) -> Result<Option<Box<dyn Edge>
                 .into(),
         });
     }
-    if options
-        .listen
+    if listen
         .parse::<SocketAddr>()
         .is_ok_and(|listen| !listen.ip().is_loopback())
     {
         return Err(Error {
             code: ErrorCode::Usage,
             message: format!(
-                "A hidden service listens on loopback only, and {} is not: its onion endpoint \
+                "A hidden service listens on loopback only, and {listen} is not: its onion endpoint \
                  is the only address it is reached at. `--clearnet <hostname>` binds an address \
-                 for a hostname instead.",
-                options.listen
+                 for a hostname instead."
             ),
         });
     }
-    overlay::bootstrap(home).map(Some)
+    Ok(())
 }
 
 /// List the wallet's addresses.
@@ -550,7 +597,7 @@ pub fn show(home: &Path) -> Result<Report, Error> {
     }
     let passphrase = keystore::passphrase()?;
     let mnemonic = keystore::open(home, &passphrase)?;
-    let wallet = describe(&addresses(&mnemonic)?);
+    let wallet = describe(&addresses(&mnemonic, connectors(home)?)?);
     Ok(Report {
         exit: Exit::Success,
         text: listing(&wallet),
@@ -608,7 +655,7 @@ pub fn balances(home: &Path) -> Result<Report, Error> {
     };
     let passphrase = keystore::passphrase()?;
     let mnemonic = keystore::open(home, &passphrase)?;
-    let addresses = addresses(&mnemonic)?;
+    let addresses = addresses(&mnemonic, connectors(home)?)?;
     let mut entries = Vec::new();
     let mut lines = Vec::new();
     for app in &state.toon_apps {
@@ -807,7 +854,7 @@ pub fn restore(home: &Path, from: &Path) -> Result<Report, Error> {
             .ok_or_else(corrupt)?
             .to_owned(),
     );
-    let wallet = describe(&addresses(&phrase)?);
+    let wallet = describe(&addresses(&phrase, FIRST_CONNECTORS)?);
     let mut keys = Vec::new();
     for (connector, key) in document["onion_keys"].as_object().ok_or_else(corrupt)? {
         let connector: u32 = connector.parse().map_err(|_| corrupt())?;

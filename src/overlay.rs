@@ -43,7 +43,7 @@ pub const CONNECTOR_PORT: u16 = 80;
 /// relay does anywhere else.
 pub const RELAY_READ_PORT: u16 = 7100;
 
-pub trait Edge: Send {
+pub trait Edge: Send + Sync {
     /// Where outbound traffic is proxied: a SOCKS5 proxy on this machine.
     fn proxy(&self) -> SocketAddr;
 

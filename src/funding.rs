@@ -40,7 +40,7 @@ pub struct Need {
 }
 
 impl Need {
-    fn text(&self) -> String {
+    pub fn text(&self) -> String {
         format!("{} ({}): {}", self.address, self.chain, self.shown)
     }
 
