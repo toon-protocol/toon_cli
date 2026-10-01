@@ -76,6 +76,8 @@ A failed command with `--json` prints:
 | `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
 | `peer_not_peerable` | 1 | `peer add` named a connector that is not peerable: the refusal is on the other side, and only its operator can lift it |
 | `route_failed` | 1 | The connector's operator surface refused a route write or could not be reached; the message carries the reason |
+| `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
+| `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
 
 ## The wallet passphrase
 
@@ -93,3 +95,14 @@ settlement is off unless `--solana` is given. `toon up` does not start a connect
 settlement key holds less than 0.0001 ETH (0.01 SOL) for gas and one whole token; it fails
 with `unfunded`. Only the devnet has a faucet: on the other networks `toon wallet fund`
 fails with `faucet_unavailable`, and on mainnet the operator funds the addresses themselves.
+
+## The spending limit
+
+Every command that moves money (`toon send`, `toon peer add`) states its amount and needs
+`--yes`. The amount is checked against the spending limit before the command runs: at most
+`--max-per-command` for one command, and `--max-per-day` for the commands of one UTC day
+together, both in the token's base units, set at `toon init` (defaults 10000000 and
+100000000). A payment that was rejected, or failed, is not counted. `toon limit show`
+prints the limits and what is left today. `toon limit set` changes them and reads the
+wallet passphrase, so an agent without it cannot raise them: the limits are signed with a key
+the wallet derives, and an unsigned or edited `limits.json` stops every payment.

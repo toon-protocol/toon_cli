@@ -11,6 +11,7 @@ use crate::keystore;
 use crate::node;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::runner;
+use crate::spending;
 
 /// How many connectors a wallet lists. An agent node starts as one TOON app, so one
 /// connector; later commands that create TOON apps raise this.
@@ -148,6 +149,7 @@ fn discard_toon_apps(home: &Path) {
     let _ = std::fs::remove_dir_all(home.join("connectors"));
     let _ = std::fs::remove_dir_all(home.join("apps"));
     let _ = std::fs::remove_file(node::operator_key(home));
+    let _ = std::fs::remove_file(spending::limits_path(home));
 }
 
 /// Write the keys of the first TOON app's connector, and render and check its config.
@@ -182,6 +184,7 @@ fn write_toon_app(
         message: source.0,
     })?;
     node::write(&node::operator_key(home), &*operator, 0o600)?;
+    spending::write_limits(home, &*seed, &options.limits)?;
     for app in &state.toon_apps {
         let files = node::ConnectorFiles::of(home, app.connector);
         let corrupt = |source: derive::DeriveError| Error {

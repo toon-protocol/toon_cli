@@ -15,6 +15,8 @@
 //! - operator write key: `m/10473'/1'/0'`, once per wallet.
 //! - connector identity key: `m/10473'/2'/{connector}'`, per connector.
 //! - relay identity key: `m/10473'/3'/{relay}'`, per relay (ADR 0004).
+//! - spending-limit signing key: `m/10473'/4'/0'`, once per wallet; an Ed25519 key like the
+//!   operator write key, whose signature on `limits.json` is what the limit rests on.
 //!
 //! Each of those is a secp256k1 key whose public half is a Nostr x-only key, except
 //! the operator write key: the connector verifies operator writes with Ed25519, so its
@@ -227,6 +229,12 @@ pub fn relay_identity_secret(seed: &[u8], relay: u32) -> Result<Zeroizing<[u8; 3
 
 pub fn operator_write_secret(seed: &[u8]) -> Result<Zeroizing<[u8; 32]>, DeriveError> {
     secp256k1_path(seed, &[TOON_PURPOSE | HARDENED, 1 | HARDENED, HARDENED])
+}
+
+/// The key that signs the spending limit: `m/10473'/4'/0'`. Its 32 bytes are read as an
+/// Ed25519 secret, like the operator write key's.
+pub fn limits_secret(seed: &[u8]) -> Result<Zeroizing<[u8; 32]>, DeriveError> {
+    secp256k1_path(seed, &[TOON_PURPOSE | HARDENED, 4 | HARDENED, HARDENED])
 }
 
 pub fn agent_identity_secret(seed: &[u8]) -> Result<Zeroizing<[u8; 32]>, DeriveError> {

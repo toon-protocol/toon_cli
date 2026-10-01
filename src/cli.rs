@@ -7,6 +7,7 @@ use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use crate::node::Options;
 use crate::outcome::Exit;
 use crate::profile::Profile;
+use crate::spending;
 
 /// What `--version` prints after the name: this release, the connector it embeds and the
 /// relay image it runs.
@@ -54,6 +55,11 @@ pub enum Command {
     Peer {
         #[command(subcommand)]
         command: PeerCommand,
+    },
+    /// Show or change the spending limit
+    Limit {
+        #[command(subcommand)]
+        command: LimitCommand,
     },
     /// Manage the connector's forwarding routes
     Route {
@@ -116,6 +122,12 @@ pub struct InitArgs {
     /// How the token is transferred: `eip3009` or `permit2`
     #[arg(long)]
     pub evm_transfer_method: Option<String>,
+    /// The most one command that moves money may pay, in the token's base units
+    #[arg(long, default_value_t = spending::DEFAULT_PER_COMMAND)]
+    pub max_per_command: u128,
+    /// The most the commands of one UTC day may pay together, in the token's base units
+    #[arg(long, default_value_t = spending::DEFAULT_PER_DAY)]
+    pub max_per_day: u128,
 }
 
 impl InitArgs {
@@ -145,6 +157,10 @@ impl InitArgs {
             evm: Some(evm),
             solana: self.solana.then(|| self.network.solana()),
             plaintext_peers: self.allow_plaintext_peers,
+            limits: spending::Limits {
+                per_command: self.max_per_command,
+                per_day: self.max_per_day,
+            },
             faucet_url: self
                 .faucet_url
                 .clone()
@@ -164,6 +180,9 @@ pub struct SendArgs {
     /// one: the payload is sealed to that connector's identity
     #[arg(long)]
     pub seal_to: Option<String>,
+    /// Confirm that this command moves money: without it nothing is sent
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -195,6 +214,9 @@ pub struct PeerAddArgs {
     /// The most one forwarded packet may carry; the connector's default if omitted
     #[arg(long, default_value_t = 0)]
     pub max_packet_amount: u64,
+    /// Confirm that this command moves money: without it nothing is deposited
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -216,6 +238,21 @@ pub enum RouteCommand {
     Remove {
         /// The ILP address prefix
         prefix: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum LimitCommand {
+    /// Show the spending limit and what is left of today's
+    Show,
+    /// Change the spending limit; needs the wallet passphrase
+    Set {
+        /// The most one command that moves money may pay, in the token's base units
+        #[arg(long)]
+        max_per_command: Option<u128>,
+        /// The most the commands of one UTC day may pay together
+        #[arg(long)]
+        max_per_day: Option<u128>,
     },
 }
 

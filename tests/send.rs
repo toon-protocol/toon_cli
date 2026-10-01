@@ -32,7 +32,7 @@ fn a_packet_to_the_operators_own_route_is_fulfilled() {
 
     let run = node
         .machine
-        .toon(&["send", "g.toon.relay", "--amount", "0", "--json"]);
+        .toon(&["send", "g.toon.relay", "--amount", "0", "--yes", "--json"]);
 
     let report = run.json();
     assert_eq!(report["outcome"], "fulfilled", "{report}");
@@ -48,7 +48,7 @@ fn a_packet_to_a_route_under_the_prefix_is_fulfilled() {
 
     let run = node
         .machine
-        .toon(&["send", "g.toon.relay.write", "--amount", "0"]);
+        .toon(&["send", "g.toon.relay.write", "--amount", "0", "--yes"]);
 
     assert_eq!(
         run.stdout,
@@ -63,7 +63,7 @@ fn a_rejected_packet_says_why_and_exits_non_zero() {
 
     let run = node
         .machine
-        .toon(&["send", "g.nobody.here", "--amount", "0", "--json"]);
+        .toon(&["send", "g.nobody.here", "--amount", "0", "--yes", "--json"]);
 
     let report = run.json();
     assert_eq!(report["outcome"], "rejected", "{report}");
@@ -78,7 +78,7 @@ fn a_rejected_packet_is_readable_text_without_json() {
 
     let run = node
         .machine
-        .toon(&["send", "g.nobody.here", "--amount", "0"]);
+        .toon(&["send", "g.nobody.here", "--amount", "0", "--yes"]);
 
     assert!(
         run.stdout
@@ -105,7 +105,7 @@ fn send_needs_the_agent_node_to_be_running() {
     let machine = Machine::new();
     assert_eq!(machine.init_on(&chain).exit_code, 0);
 
-    let run = machine.toon(&["send", "g.toon.relay", "--amount", "0", "--json"]);
+    let run = machine.toon(&["send", "g.toon.relay", "--amount", "0", "--yes", "--json"]);
 
     assert_eq!(run.json()["error"]["code"], "not_running");
     assert_eq!(run.exit_code, 1);
@@ -116,7 +116,7 @@ fn send_needs_the_agent_node_to_be_running() {
 fn send_on_a_machine_with_no_agent_node_says_so() {
     let machine = Machine::new();
 
-    let run = machine.toon(&["send", "g.toon.relay", "--amount", "0", "--json"]);
+    let run = machine.toon(&["send", "g.toon.relay", "--amount", "0", "--yes", "--json"]);
 
     assert_eq!(run.json()["error"]["code"], "no_agent_node");
     assert_eq!(run.exit_code, 3);

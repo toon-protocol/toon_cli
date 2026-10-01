@@ -18,6 +18,7 @@ mod outcome;
 mod profile;
 mod runner;
 mod service;
+mod spending;
 mod status;
 mod up;
 mod wallet;
@@ -31,7 +32,7 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use serde_json::json;
 
-use cli::{Cli, Command, PeerCommand, RouteCommand, WalletCommand};
+use cli::{Cli, Command, LimitCommand, PeerCommand, RouteCommand, WalletCommand};
 use outcome::{Error, ErrorCode, Exit, Report};
 use up::Stopped;
 
@@ -70,25 +71,45 @@ fn main() -> ExitCode {
         } => render(home::resolve().and_then(|home| funding::fund(&home)), json).into(),
         Command::Send(args) => render(
             home::resolve().and_then(|home| {
-                operator::send(&home, &args.address, args.amount, args.seal_to.as_deref())
+                spending::spend(&home, args.amount.into(), args.yes, || {
+                    let report =
+                        operator::send(&home, &args.address, args.amount, args.seal_to.as_deref())?;
+                    // A packet that was rejected moved nothing.
+                    let paid = report.exit == Exit::Success;
+                    Ok((report, paid))
+                })
             }),
             json,
         )
         .into(),
         Command::Peer { command } => render(
             home::resolve().and_then(|home| match &command {
-                PeerCommand::Add(args) => operator::peer_add(
-                    &home,
-                    &operator::PeerAdd {
-                        address: &args.address,
-                        deposit: args.deposit,
-                        id: args.id.as_deref(),
-                        fee: args.fee,
-                        max_packet_amount: args.max_packet_amount,
-                    },
-                ),
+                PeerCommand::Add(args) => spending::spend(&home, args.deposit, args.yes, || {
+                    let report = operator::peer_add(
+                        &home,
+                        &operator::PeerAdd {
+                            address: &args.address,
+                            deposit: args.deposit,
+                            id: args.id.as_deref(),
+                            fee: args.fee,
+                            max_packet_amount: args.max_packet_amount,
+                        },
+                    )?;
+                    Ok((report, true))
+                }),
                 PeerCommand::List => operator::peer_list(&home),
                 PeerCommand::Remove { id } => operator::peer_remove(&home, id),
+            }),
+            json,
+        )
+        .into(),
+        Command::Limit { command } => render(
+            home::resolve().and_then(|home| match command {
+                LimitCommand::Show => spending::show(&home),
+                LimitCommand::Set {
+                    max_per_command,
+                    max_per_day,
+                } => spending::set(&home, max_per_command, max_per_day),
             }),
             json,
         )
