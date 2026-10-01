@@ -44,10 +44,22 @@ pub enum Command {
         #[command(subcommand)]
         command: WalletCommand,
     },
-    /// Run the agent node in the foreground
-    Up,
-    /// Stop the agent node that `up` runs
+    /// Start the agent node as a `systemd --user` unit that outlives this session
+    Up {
+        /// Run the supervisor in this process instead of installing the unit
+        #[arg(long)]
+        foreground: bool,
+    },
+    /// Stop the agent node, and the unit that `up` installed
     Down,
+    /// Show the log of a TOON app or an app
+    Logs {
+        /// The name of a TOON app, or of an app behind one
+        name: String,
+        /// How many of the last lines to show
+        #[arg(long, short = 'n', default_value_t = crate::status::DEFAULT_LINES)]
+        lines: usize,
+    },
     /// Serve one connector from its config file: what `up` starts as a child process
     #[command(hide = true)]
     Connector { config: PathBuf },

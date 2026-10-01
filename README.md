@@ -17,9 +17,13 @@ child process of the same binary:
 ./target/debug/toon up --json
 ```
 
-`toon up` stays in the foreground. It starts the connector from
-`~/.toon/agent-node/connector.toml`, which no command writes yet, and prints the
-connector's address once it is listening.
+`toon up` writes a `systemd --user` unit (`~/.config/systemd/user/toon-agent-node.service`)
+that runs `toon up --foreground`, the supervisor, and starts it, so the agent node
+outlives the session that started it. The supervisor restarts a connector that exits,
+`toon status` shows how often, `toon logs <name>` shows the log of a TOON app or an app,
+and `toon down` stops the supervisor and the unit. `toon up --foreground` runs the
+supervisor in this process instead, and prints the connector's address once it is
+listening.
 
 Every command is non-interactive and accepts `--json`, which prints exactly one JSON
 document. Exit codes and error codes are stable and listed in

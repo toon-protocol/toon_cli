@@ -14,7 +14,7 @@ is missing here. Add a new code to the test and to this file together.
 - Without `--json`, a command prints readable text on standard output, and an error
   goes to standard error as `error: <message>`.
 - No command reads standard input or prompts.
-- A command that stays in the foreground, such as `toon up`, prints its one JSON
+- A command that stays in the foreground, such as `toon up --foreground`, prints its one JSON
   document once what it runs is up, and then keeps running. If it stops later, its exit
   code says so and it prints no second document.
 - `toon connector` is not an operator's command and keeps none of these rules. It is
@@ -30,6 +30,10 @@ is missing here. Add a new code to the test and to this file together.
 | 1 | The command failed; the error's code says why |
 | 2 | The command line was not understood |
 | 3 | There is no agent node on this machine |
+
+`toon up` without `--foreground` installs a `systemd --user` unit and returns once
+`systemctl` has started it. A connector that stops by itself is restarted by the
+supervisor, and `toon status` reports how many times.
 
 `toon status` exits with the code that describes the agent node, and still prints its
 report. It exits 1 when the supervisor or a connector is not running, and `toon down` exits 0
@@ -59,6 +63,8 @@ A failed command with `--json` prints:
 | `no_agent_node` | 3 | The command needs an agent node and this machine has none |
 | `connector_failed` | 1 | A connector did not start, or stopped; the message carries the connector's own reason |
 | `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
+| `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it; the message carries `systemctl`'s own reason |
+| `unknown_name` | 1 | `toon logs` was given a name that is neither a TOON app nor an app of this agent node |
 
 ## The wallet passphrase
 
