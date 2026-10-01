@@ -111,7 +111,7 @@ pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
     if let Err(error) = state.save(home) {
         // The mnemonic has not been shown, so the wallet goes with the TOON app.
         let _ = std::fs::remove_file(keystore::path(home));
-        let _ = std::fs::remove_dir_all(home.join("connectors"));
+        discard_toon_apps(home);
         return Err(error);
     }
     let text = format!(
@@ -133,6 +133,12 @@ pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
     })
 }
 
+/// Remove what writing a TOON app's keys left.
+fn discard_toon_apps(home: &Path) {
+    let _ = std::fs::remove_dir_all(home.join("connectors"));
+    let _ = std::fs::remove_file(node::operator_key(home));
+}
+
 /// Write the keys of the first TOON app's connector, and render and check its config.
 /// What it wrote is removed again if it fails.
 fn create_toon_app(
@@ -142,7 +148,7 @@ fn create_toon_app(
 ) -> Result<node::State, Error> {
     let created = write_toon_app(home, mnemonic, options);
     if created.is_err() {
-        let _ = std::fs::remove_dir_all(home.join("connectors"));
+        discard_toon_apps(home);
     }
     created
 }
@@ -154,6 +160,11 @@ fn write_toon_app(
 ) -> Result<node::State, Error> {
     let seed = derive::seed(mnemonic);
     let state = node::State::first(options);
+    let operator = derive::operator_write_secret(&*seed).map_err(|source| Error {
+        code: ErrorCode::KeystoreCorrupt,
+        message: source.0,
+    })?;
+    node::write(&node::operator_key(home), &*operator, 0o600)?;
     for app in &state.toon_apps {
         let files = node::ConnectorFiles::of(home, app.connector);
         let corrupt = |source: derive::DeriveError| Error {
@@ -185,7 +196,7 @@ fn existing(home: &Path, options: &node::Options) -> Result<Report, Error> {
                     })?;
             let state = create_toon_app(home, &mnemonic, options)?;
             if let Err(error) = state.save(home) {
-                let _ = std::fs::remove_dir_all(home.join("connectors"));
+                discard_toon_apps(home);
                 return Err(error);
             }
             (state, true)

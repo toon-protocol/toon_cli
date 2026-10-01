@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 pub mod fake_chain;
+pub mod stub_app;
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -95,9 +96,16 @@ impl Machine {
     /// Run `toon init` for an agent node that settles on `chain`, with the passphrase
     /// every test uses.
     pub fn init_on(&self, chain: &fake_chain::FakeChain) -> Run {
+        self.init_on_serving(chain, "http://127.0.0.1:7100/")
+    }
+
+    /// Like `init_on`, for an agent node whose relay is served at `relay_url`.
+    pub fn init_on_serving(&self, chain: &fake_chain::FakeChain, relay_url: &str) -> Run {
         self.toon_with(
             &[
                 "init",
+                "--relay-url",
+                relay_url,
                 "--json",
                 "--evm-rpc-url",
                 &chain.rpc_url(),
