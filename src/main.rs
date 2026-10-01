@@ -123,6 +123,11 @@ fn main() -> ExitCode {
             json,
         )
         .into(),
+        Command::Join(args) => render(
+            home::resolve().and_then(|home| operator::join(&home, &args)),
+            json,
+        )
+        .into(),
         Command::Limit { command } => render(
             home::resolve().and_then(|home| match command {
                 LimitCommand::Show => spending::show(&home),

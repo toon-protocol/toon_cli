@@ -83,6 +83,7 @@ A failed command with `--json` prints:
 | `draft_refused` | 1 | `toon nip new` or `toon nip publish` would not write or publish a draft: the file exists already, does not name a draft or begin with its title, is not UTF-8, or the relay holds the identifier under another title and `--title-changed` was not given; the message says which |
 | `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
 | `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap, so a hidden service was not created or started; nothing falls back to clearnet |
+| `join_refused` | 1 | `toon join` named a network other than the one this agent node was initialised for, or the agent node has already joined one; nothing was spent |
 | `relay_not_payable` | 1 | `toon event publish --relay` could not read the relay's information document, or it names no paid write edge (`toon`: `ilp_address`, `connector_url`, `price`); nothing was paid |
 | `peering_needed` | 1 | `toon event publish --relay` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. Run `toon peer add` and `toon route add` first |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
@@ -171,7 +172,7 @@ a mnemonic does not hold the address keys.
 
 ## The spending limit
 
-Every command that moves money (`toon send`, `toon peer add`) states its amount and needs
+Every command that moves money (`toon send`, `toon peer add`, `toon join`) states its amount and needs
 `--yes`. The amount is checked against the spending limit before the command runs: at most
 `--max-per-command` for one command, and `--max-per-day` for the commands of one UTC day
 together, both in the token's base units, set at `toon init` (defaults 10000000 and

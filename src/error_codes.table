@@ -31,6 +31,7 @@ error_codes! {
     DraftRefused => "draft_refused" => Failure,
     ConfirmationRequired => "confirmation_required" => Failure,
     OverlayUnavailable => "overlay_unavailable" => Failure,
+    JoinRefused => "join_refused" => Failure,
     RelayNotPayable => "relay_not_payable" => Failure,
     PeeringNeeded => "peering_needed" => Failure,
 }

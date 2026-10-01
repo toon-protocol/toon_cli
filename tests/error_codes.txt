@@ -28,5 +28,6 @@ query_failed
 draft_refused
 confirmation_required
 overlay_unavailable
+join_refused
 relay_not_payable
 peering_needed
