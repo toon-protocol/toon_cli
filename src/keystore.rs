@@ -104,23 +104,28 @@ fn io(path: &Path, source: std::io::Error) -> Error {
     error(ErrorCode::Io, format!("{}: {source}.", path.display()))
 }
 
+/// `plain` sealed under `passphrase`, as the document a keystore and a backup are written as.
+pub fn seal(passphrase: &str, plain: &[u8]) -> Result<Value, Error> {
+    let salt = random::<16>()?;
+    let nonce = random::<12>()?;
+    let key = derive_key(passphrase, &salt, LOG_N)?;
+    let ciphertext = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key))
+        .encrypt(&Nonce::from(nonce), plain)
+        .map_err(|_| error(ErrorCode::Io, "The secret could not be encrypted."))?;
+    Ok(json!({
+        "version": 1,
+        "kdf": { "name": "scrypt", "log_n": LOG_N, "r": R, "p": P, "salt": hex::encode(salt) },
+        "cipher": { "name": "aes-256-gcm", "nonce": hex::encode(nonce) },
+        "ciphertext": hex::encode(ciphertext),
+    }))
+}
+
 /// Seal `mnemonic` under `passphrase` and write it to a new keystore in `home`.
 ///
 /// Returns `Ok(false)` and writes nothing if a keystore is already there, so two
 /// concurrent `init`s cannot make two wallets.
 pub fn create(home: &Path, passphrase: &str, mnemonic: &str) -> Result<bool, Error> {
-    let salt = random::<16>()?;
-    let nonce = random::<12>()?;
-    let key = derive_key(passphrase, &salt, LOG_N)?;
-    let ciphertext = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key))
-        .encrypt(&Nonce::from(nonce), mnemonic.as_bytes())
-        .map_err(|_| error(ErrorCode::Io, "The mnemonic could not be encrypted."))?;
-    let document = json!({
-        "version": 1,
-        "kdf": { "name": "scrypt", "log_n": LOG_N, "r": R, "p": P, "salt": hex::encode(salt) },
-        "cipher": { "name": "aes-256-gcm", "nonce": hex::encode(nonce) },
-        "ciphertext": hex::encode(ciphertext),
-    });
+    let document = seal(passphrase, mnemonic.as_bytes())?;
 
     fs::DirBuilder::new()
         .recursive(true)
@@ -174,13 +179,22 @@ pub fn open(home: &Path, passphrase: &str) -> Result<Zeroizing<String>, Error> {
         ErrorKind::NotFound => no_wallet(home),
         _ => io(&file, source),
     })?;
-    let corrupt = || {
-        error(
-            ErrorCode::KeystoreCorrupt,
-            format!("{} is not a keystore this version reads.", file.display()),
-        )
-    };
-    let document: Value = serde_json::from_str(&text).map_err(|_| corrupt())?;
+    let plain = unseal(&text, passphrase, &file)?;
+    let mnemonic = String::from_utf8(plain).map_err(|_| not_read(&file))?;
+    Ok(Zeroizing::new(mnemonic))
+}
+
+fn not_read(file: &Path) -> Error {
+    error(
+        ErrorCode::KeystoreCorrupt,
+        format!("{} is not a keystore this version reads.", file.display()),
+    )
+}
+
+/// What `text`, a document `seal` wrote and `file` held, was sealed from.
+pub fn unseal(text: &str, passphrase: &str, file: &Path) -> Result<Vec<u8>, Error> {
+    let corrupt = || not_read(file);
+    let document: Value = serde_json::from_str(text).map_err(|_| corrupt())?;
     let field = |outer: &str, inner: &str| -> Result<Vec<u8>, Error> {
         let text = document[outer][inner].as_str().ok_or_else(corrupt)?;
         hex::decode(text).map_err(|_| corrupt())
@@ -210,6 +224,5 @@ pub fn open(home: &Path, passphrase: &str) -> Result<Zeroizing<String>, Error> {
                 "The wallet passphrase is wrong.",
             )
         })?;
-    let mnemonic = String::from_utf8(plain).map_err(|_| corrupt())?;
-    Ok(Zeroizing::new(mnemonic))
+    Ok(plain)
 }

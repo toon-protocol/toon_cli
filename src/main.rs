@@ -62,7 +62,8 @@ fn main() -> ExitCode {
         }
         Command::Down => render(home::resolve().and_then(|home| status::down(&home)), json).into(),
         Command::Init(args) => render(
-            home::resolve().and_then(|home| wallet::init(&home, &args.options())),
+            home::resolve()
+                .and_then(|home| wallet::init(&home, &args.options(), args.from_mnemonic)),
             json,
         )
         .into(),
