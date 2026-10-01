@@ -26,7 +26,9 @@ error_codes! {
     ChannelFailed => "channel_failed" => Failure,
     NotConfirmed => "not_confirmed" => Failure,
     SpendingLimit => "spending_limit" => Failure,
+    NameTaken => "name_taken" => Failure,
     QueryFailed => "query_failed" => Failure,
+    DraftRefused => "draft_refused" => Failure,
     ConfirmationRequired => "confirmation_required" => Failure,
     OverlayUnavailable => "overlay_unavailable" => Failure,
 }

@@ -323,7 +323,7 @@ fn write_toon_app(
                 derive::solana_settlement_secret(&*seed, app.connector).map_err(corrupt)?;
             node::write(&files.solana_settlement_key, &*solana, 0o600)?;
         }
-        if app.apps.iter().any(|name| name == node::RELAY) {
+        if app.apps.iter().any(|app| app.source == node::Source::Relay) {
             // The relay's identity key is the wallet's, handed over as a file that only
             // this user reads. `up` reads it and gives it to the relay.
             let relay = derive::relay_identity_secret(&*seed, RELAY_INDEX).map_err(corrupt)?;
@@ -355,7 +355,12 @@ fn write_toon_app(
             }
             _ => None,
         };
-        node::render(home, app, Some(placeholder), overlay.as_ref())?;
+        node::render(
+            home,
+            app,
+            &[(node::RELAY.to_owned(), placeholder)],
+            overlay.as_ref(),
+        )?;
     }
     Ok(state)
 }
@@ -418,7 +423,7 @@ fn toon_apps(home: &Path, state: &node::State, created: bool) -> Vec<Value> {
                         "relay_read": app
                             .apps
                             .iter()
-                            .any(|name| name == node::RELAY)
+                            .any(|behind| behind.name == node::RELAY)
                             .then_some(overlay::RELAY_READ_PORT),
                     });
                 }
@@ -444,7 +449,7 @@ fn reach_text(home: &Path, state: &node::State) -> String {
                 app.name,
                 node::onion_endpoint(home, app).unwrap_or_default(),
                 overlay::CONNECTOR_PORT,
-                if app.apps.iter().any(|name| name == node::RELAY) {
+                if app.apps.iter().any(|behind| behind.name == node::RELAY) {
                     format!(", and the relay's read port on port {}", overlay::RELAY_READ_PORT)
                 } else {
                     String::new()

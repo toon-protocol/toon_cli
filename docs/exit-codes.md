@@ -70,23 +70,26 @@ A failed command with `--json` prints:
 | `unfunded` | 1 | A settlement key does not hold what the connector needs, so `toon up` did not start it; the message names each address and the amount |
 | `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
-| `send_failed` | 1 | The packet (or, for `toon event publish`, the event) could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
+| `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event) could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
-| `unknown_name` | 1 | `toon logs` was given a name that is neither a TOON app nor an app of this agent node |
+| `unknown_name` | 1 | `toon logs`, `toon add` or `toon remove` was given a name that is not a TOON app or an app of this agent node, as that command needs |
 | `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
 | `peer_not_peerable` | 1 | `peer add` named a connector that is not peerable: the refusal is on the other side, and only its operator can lift it |
-| `route_failed` | 1 | The connector's operator surface refused a route write or could not be reached; the message carries the reason |
+| `route_failed` | 1 | The connector's operator surface refused a route write or could not be reached, or a route command was given an address prefix it cannot use or that no route has; the message carries the reason |
 | `chain_failed` | 1 | A chain's JSON-RPC endpoint could not be reached or did not answer a read as expected; the message carries the reason |
 | `channel_failed` | 1 | A channel write was refused by the connector or could not be sent, the channel id is not one, or the terms file was unreadable; the message carries the reason |
-| `query_failed` | 1 | `toon event query` could not read events from the relay: it did not answer, is not a websocket relay this build dials, or closed the subscription with a reason the message carries |
-| `confirmation_required` | 1 | `toon relay config` or `toon relay price` would restart a running relay and its connector and was not given `--yes`; nothing was changed |
+| `name_taken` | 1 | `toon add` was given a name that is not usable, or that a TOON app or an app of this agent node already has |
+| `query_failed` | 1 | `toon event query`, or `toon nip publish` asking for a draft's current revision, could not read events from the relay: it did not answer, is not a websocket relay this build dials, or closed the subscription with a reason the message carries |
+| `draft_refused` | 1 | `toon nip new` or `toon nip publish` would not write or publish a draft: the file exists already, does not name a draft or begin with its title, is not UTF-8, or the relay holds the identifier under another title and `--title-changed` was not given; the message says which |
+| `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
 | `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap, so a hidden service was not created or started; nothing falls back to clearnet |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
 | `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
 
+
 ## The wallet passphrase
 
-`toon init`, `toon wallet show`, `toon wallet balances`, `toon wallet backup`, `toon wallet restore` and `toon event publish` read the passphrase from the file named by
+`toon init`, `toon wallet show`, `toon wallet balances`, `toon wallet backup`, `toon wallet restore` `toon event publish` and `toon nip publish` read the passphrase from the file named by
 `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`. It is never a flag. One trailing
 newline in the file is not part of the passphrase.
 
@@ -130,6 +133,13 @@ and sends the event to the agent node's own relay as an operator write: it exits
 answers with a status that is not 2xx, and `"outcome": "wrong_fulfilment"` when the packet is
 fulfilled but not by this connector. `toon event query` is a plain NIP-01 `REQ` and needs no
 passphrase; it reads from `ws://` relays only.
+
+`toon nip publish` signs a draft (`nips/proposals-as-events.md`) the same way and writes it
+to the agent node's own relay as `toon event publish` does, with the same outcomes. It first
+asks `--relay` for the draft's current revision, so `--relay` must be the agent node's own
+relay's `ws://` URL. It exits 1 with `draft_refused` when the file is not a draft it can
+publish, or the relay holds that identifier under another title and `--title-changed` was
+not given.
 
 ## Backup and restore
 

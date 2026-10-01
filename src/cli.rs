@@ -67,10 +67,25 @@ pub enum Command {
         #[command(subcommand)]
         command: RouteCommand,
     },
+    /// Put an app behind the connector of a TOON app: this restarts that connector
+    Add(AddArgs),
+    /// Take an app, and its route, away from its connector: this restarts that connector
+    Remove {
+        /// The app's name
+        app: String,
+        /// Go ahead although the connector restarts and drops packets in flight
+        #[arg(long)]
+        yes: bool,
+    },
     /// Publish and read Nostr events under the agent identity
     Event {
         #[command(subcommand)]
         command: EventCommand,
+    },
+    /// Scaffold a draft NIP and publish it as an event under the agent identity
+    Nip {
+        #[command(subcommand)]
+        command: NipCommand,
     },
     /// Manage the channels the connector pays and is paid on
     Channel {
@@ -101,6 +116,30 @@ pub enum Command {
     /// Serve one connector from its config file: what `up` starts as a child process
     #[command(hide = true)]
     Connector { config: PathBuf },
+}
+
+#[derive(Debug, Args)]
+pub struct AddArgs {
+    /// A name for the app, unique in this agent node
+    pub app: String,
+    /// The TOON app whose connector the app goes behind
+    #[arg(long)]
+    pub to: String,
+    /// A container image to run as the app
+    #[arg(long, conflicts_with = "url", required_unless_present = "url")]
+    pub image: Option<String>,
+    /// The URL of an app you already serve: nothing is run
+    #[arg(long)]
+    pub url: Option<String>,
+    /// The ILP address prefix the connector delivers to the app; `g.toon.<app>` if omitted
+    #[arg(long)]
+    pub address: Option<String>,
+    /// What a client pays the connector for a packet to the app
+    #[arg(long, default_value_t = 0)]
+    pub price: u64,
+    /// Go ahead although the connector restarts and drops packets in flight
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -280,6 +319,33 @@ pub enum EventCommand {
 }
 
 #[derive(Debug, Subcommand)]
+pub enum NipCommand {
+    /// Write a draft NIP from the template, named after its title, into the current directory
+    New {
+        /// The draft's title
+        title: String,
+    },
+    /// Publish a draft as a kind 30817 event, replacing the earlier revision of it
+    Publish {
+        /// The draft's file, named after its identifier: `<identifier>.md`
+        draft: PathBuf,
+        /// The agent node's own relay, `ws://host:port`, which the draft is written to: asked
+        /// first for the draft's current revision
+        #[arg(long)]
+        relay: String,
+        /// A topic of the draft, in lower case; may be repeated
+        #[arg(long = "topic")]
+        topics: Vec<String>,
+        /// Publish although the relay holds a draft of this identifier under another title
+        #[arg(long)]
+        title_changed: bool,
+        /// What the write is paid, in the token's base units
+        #[arg(long, default_value_t = 0)]
+        amount: u64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub enum RouteCommand {
     /// List the connector's routes: the ones it terminates and the ones it forwards
     List,
@@ -293,6 +359,16 @@ pub enum RouteCommand {
         /// What a client pays the connector for a packet on this route
         #[arg(long, default_value_t = 0)]
         price: u64,
+    },
+    /// Set what a client pays for a packet on the route to an app: this restarts the connector
+    Price {
+        /// The ILP address prefix the route terminates at
+        prefix: String,
+        /// The price, in the token's base units
+        price: u64,
+        /// Go ahead although the connector restarts and drops packets in flight
+        #[arg(long)]
+        yes: bool,
     },
     /// Stop forwarding a prefix
     Remove {
