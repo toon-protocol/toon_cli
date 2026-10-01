@@ -10,6 +10,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
+use crate::cli::{ChannelCommand, PeerCommand, RouteCommand};
 use crate::control;
 use crate::node::{self, ConnectorFiles, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
@@ -694,4 +695,50 @@ pub fn send(
             ),
         },
     })
+}
+
+/// `toon channel`.
+pub fn channel(home: &Path, command: ChannelCommand) -> Result<Report, Error> {
+    match command {
+        ChannelCommand::List => channel_list(home),
+        ChannelCommand::Open {
+            terms,
+            deposit,
+            url,
+        } => channel_open(home, &terms, deposit, url.as_deref()),
+        ChannelCommand::Fund { id, amount } => channel_fund(home, &id, amount),
+        ChannelCommand::Withdraw { id } => channel_withdraw(home, &id),
+        ChannelCommand::Land { id } => channel_land(home, &id),
+    }
+}
+
+/// `toon peer`.
+pub fn peer(home: &Path, command: &PeerCommand) -> Result<Report, Error> {
+    match command {
+        PeerCommand::Add(args) => peer_add(
+            home,
+            &PeerAdd {
+                address: &args.address,
+                deposit: args.deposit,
+                id: args.id.as_deref(),
+                fee: args.fee,
+                max_packet_amount: args.max_packet_amount,
+            },
+        ),
+        PeerCommand::List => peer_list(home),
+        PeerCommand::Remove { id } => peer_remove(home, id),
+    }
+}
+
+/// `toon route`.
+pub fn route(home: &Path, command: &RouteCommand) -> Result<Report, Error> {
+    match command {
+        RouteCommand::List => route_list(home),
+        RouteCommand::Add {
+            prefix,
+            peer,
+            price,
+        } => route_add(home, prefix, peer, *price),
+        RouteCommand::Remove { prefix } => route_remove(home, prefix),
+    }
 }

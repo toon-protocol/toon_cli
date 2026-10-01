@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
+use crate::cli::RelayCommand;
 use crate::control;
 use crate::node::{self, Expiry, RelaySettings, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
@@ -203,4 +204,12 @@ pub fn price(home: &Path, amount: u64, yes: bool) -> Result<Report, Error> {
     state.save(home)?;
     let restarted = restart(home)?;
     Ok(report(&settings, restarted, true))
+}
+
+/// `toon relay`.
+pub fn run(home: &Path, command: RelayCommand) -> Result<Report, Error> {
+    match command {
+        RelayCommand::Config(args) => config(home, &args.change(), args.yes),
+        RelayCommand::Price { amount, yes } => price(home, amount, yes),
+    }
 }
