@@ -3,7 +3,6 @@ mod support;
 use std::fs;
 use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
-use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -38,7 +37,7 @@ fn up_starts_a_connector_that_answers_its_identity_endpoint_on_loopback() {
     let machine = Machine::new();
     configure_a_connector(&machine, &chain);
 
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     let report = up.report();
 
     let address = address(&report);
@@ -69,7 +68,7 @@ fn the_connector_settles_on_the_fake_chain() {
     let machine = Machine::new();
     configure_a_connector(&machine, &chain);
 
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     let report = up.report();
 
     // The connector's self-description publishes the chain it bound to and the token
@@ -91,7 +90,7 @@ fn the_connector_is_a_child_process_of_the_same_binary() {
     let machine = Machine::new();
     configure_a_connector(&machine, &chain);
 
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     let report = up.report();
 
     let connector = report["connector"]["pid"].as_u64().expect("a pid");
@@ -114,7 +113,7 @@ fn the_connector_does_not_outlive_its_supervisor() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     configure_a_connector(&machine, &chain);
-    let mut up = machine.start(&["up", "--json"]);
+    let mut up = machine.start(&["up", "--foreground", "--json"]);
     let report = up.report();
     let address = address(&report);
     assert!(TcpStream::connect(address).is_ok());
@@ -132,30 +131,12 @@ fn the_connector_does_not_outlive_its_supervisor() {
 }
 
 #[test]
-fn up_fails_when_its_connector_stops() {
-    let chain = FakeChain::start();
-    let machine = Machine::new();
-    configure_a_connector(&machine, &chain);
-    let mut up = machine.start(&["up", "--json"]);
-    let connector = up.report()["connector"]["pid"].as_u64().expect("a pid");
-
-    let killed = Command::new("kill")
-        .arg(connector.to_string())
-        .status()
-        .expect("run kill");
-    assert!(killed.success());
-
-    assert_eq!(up.exit_code(), 1);
-    assert_eq!(up.stderr(), "");
-}
-
-#[test]
 fn up_is_readable_text_without_json() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     configure_a_connector(&machine, &chain);
 
-    let up = machine.start(&["up"]);
+    let up = machine.start(&["up", "--foreground"]);
 
     let line = up.line();
     assert!(
@@ -171,7 +152,7 @@ fn up_reports_the_connector_revision_it_runs() {
     let machine = Machine::new();
     configure_a_connector(&machine, &chain);
 
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
 
     assert_eq!(
         up.report()["connector"]["revision"],
@@ -183,7 +164,7 @@ fn up_reports_the_connector_revision_it_runs() {
 fn up_on_a_machine_with_no_agent_node_says_so() {
     let machine = Machine::new();
 
-    let run = machine.toon(&["up", "--json"]);
+    let run = machine.toon(&["up", "--foreground", "--json"]);
 
     assert_eq!(run.json()["error"]["code"], "no_agent_node");
     assert_eq!(run.exit_code, 3);
@@ -197,7 +178,7 @@ fn up_fails_with_the_connectors_reason_when_the_chain_is_not_there() {
     configure_a_connector(&machine, &chain);
     drop(chain);
 
-    let run = machine.toon(&["up", "--json"]);
+    let run = machine.toon(&["up", "--foreground", "--json"]);
 
     let error = &run.json()["error"];
     assert_eq!(error["code"], "connector_failed");

@@ -7,29 +7,42 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
+use std::net::SocketAddr;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
 use crate::outcome::{Error, ErrorCode};
+use crate::profile::Profile;
 use crate::{derive, keystore};
 
-/// The name of the first TOON app, the one whose connector fronts the relay.
+/// The name of the first TOON app, the one whose connector fronts the relay, and of the
+/// relay app behind it.
 pub const RELAY: &str = "relay";
 
-/// Where the relay is served unless `init` is told otherwise.
-pub const DEFAULT_RELAY_URL: &str = "http://127.0.0.1:7100/";
+/// The connector's route to the relay's paid write endpoint, and its price per write.
+pub const RELAY_WRITE_PREFIX: &str = "g.toon.relay";
+pub const RELAY_WRITE_PRICE: u64 = 1;
+/// The route to the relay's free ephemeral write endpoint.
+pub const RELAY_EPHEMERAL_PREFIX: &str = "g.toon.relay.ephemeral";
 
 /// What `init` was asked for, for the first TOON app.
 #[derive(Clone, Debug)]
 pub struct Options {
     /// Where the connector listens.
     pub listen: String,
+    /// The network profile the chain settings come from.
+    pub network: Profile,
     /// The EVM chain it settles on, if any.
     pub evm: Option<Evm>,
-    /// Where the relay app is served: what the connector delivers its route to.
-    pub relay_url: String,
+    /// The Solana chain it settles on, if the operator opted in.
+    pub solana: Option<Solana>,
+    /// Whether the connector may peer toward a plain `http://` address, which it refuses
+    /// by default: a trial on one machine, where nothing is encrypted.
+    pub plaintext_peers: bool,
+    /// The faucet `toon wallet fund` asks, if the network has one.
+    pub faucet_url: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,13 +55,11 @@ pub struct Evm {
     pub transfer_method: String,
 }
 
-/// A route the connector terminates: packets for `prefix` are delivered to the app at
-/// `handler_url`, for `price` base units each.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Route {
-    pub prefix: String,
-    pub handler_url: String,
-    pub price: u64,
+pub struct Solana {
+    pub rpc_url: String,
+    pub token: String,
+    pub decimals: u8,
 }
 
 /// One TOON app as the operator asked for it.
@@ -59,15 +70,19 @@ pub struct ToonApp {
     pub connector: u32,
     pub listen: String,
     pub evm: Option<Evm>,
+    pub solana: Option<Solana>,
+    /// Whether the connector may peer toward a plain `http://` address.
+    pub plaintext_peers: bool,
     /// The apps behind the connector.
     pub apps: Vec<String>,
-    /// The routes the connector terminates, one per app.
-    pub routes: Vec<Route>,
 }
 
 /// The agent node's state: every TOON app.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
+    pub network: Profile,
+    /// Where `toon wallet fund` asks for funds; the networks without a faucet have none.
+    pub faucet_url: Option<String>,
     pub toon_apps: Vec<ToonApp>,
 }
 
@@ -76,11 +91,6 @@ fn io(path: &Path, source: std::io::Error) -> Error {
         code: ErrorCode::Io,
         message: format!("{}: {source}.", path.display()),
     }
-}
-
-/// The ILP address prefix of the route to the app called `name`.
-pub fn route_prefix(name: &str) -> String {
-    format!("g.toon.{name}")
 }
 
 /// What a command that needs an agent node says when `home` has none.
@@ -110,6 +120,7 @@ pub struct ConnectorFiles {
     pub write_keys: PathBuf,
     pub identity_key: PathBuf,
     pub settlement_key: PathBuf,
+    pub solana_settlement_key: PathBuf,
     pub config: PathBuf,
     pub state_dir: PathBuf,
     pub log: PathBuf,
@@ -123,9 +134,27 @@ impl ConnectorFiles {
             write_keys: dir.join("operator-write-keys"),
             identity_key: dir.join("identity.key"),
             settlement_key: dir.join("settlement.key"),
+            solana_settlement_key: dir.join("settlement-solana.key"),
             config: dir.join("connector.toml"),
             state_dir: dir.join("state"),
             log: dir.join("connector.log"),
+        }
+    }
+}
+
+/// The files of one app behind a connector: the identity key the wallet hands it, and
+/// the directory it keeps its data in.
+pub struct AppFiles {
+    pub identity_key: PathBuf,
+    pub data_dir: PathBuf,
+}
+
+impl AppFiles {
+    pub fn of(home: &Path, app: &str) -> Self {
+        let dir = home.join("apps").join(app);
+        Self {
+            identity_key: dir.join("identity.key"),
+            data_dir: dir.join("data"),
         }
     }
 }
@@ -155,21 +184,34 @@ impl Evm {
     }
 }
 
+impl Solana {
+    fn json(&self) -> Value {
+        json!({ "rpc_url": self.rpc_url, "token": self.token, "decimals": self.decimals })
+    }
+
+    fn from_json(value: &Value) -> Option<Self> {
+        Some(Self {
+            rpc_url: value["rpc_url"].as_str()?.to_owned(),
+            token: value["token"].as_str()?.to_owned(),
+            decimals: u8::try_from(value["decimals"].as_u64()?).ok()?,
+        })
+    }
+}
+
 impl State {
     /// The state `init` records: one TOON app, the relay's, with the relay behind it.
     pub fn first(options: &Options) -> Self {
         Self {
+            network: options.network,
+            faucet_url: options.faucet_url.clone(),
             toon_apps: vec![ToonApp {
                 name: RELAY.into(),
                 connector: 0,
                 listen: options.listen.clone(),
                 evm: options.evm.clone(),
+                solana: options.solana.clone(),
+                plaintext_peers: options.plaintext_peers,
                 apps: vec![RELAY.into()],
-                routes: vec![Route {
-                    prefix: route_prefix(RELAY),
-                    handler_url: options.relay_url.clone(),
-                    price: 0,
-                }],
             }],
         }
     }
@@ -184,16 +226,18 @@ impl State {
                     "connector": app.connector,
                     "listen": app.listen,
                     "evm": app.evm.as_ref().map(Evm::json),
+                    "solana": app.solana.as_ref().map(Solana::json),
+                    "plaintext_peers": app.plaintext_peers,
                     "apps": app.apps,
-                    "routes": app.routes.iter().map(|route| json!({
-                        "prefix": route.prefix,
-                        "handler_url": route.handler_url,
-                        "price": route.price,
-                    })).collect::<Vec<_>>(),
                 })
             })
             .collect();
-        json!({ "version": 1, "toon_apps": apps })
+        json!({
+            "version": 1,
+            "network": self.network.name(),
+            "faucet_url": self.faucet_url,
+            "toon_apps": apps,
+        })
     }
 
     fn from_json(value: &Value) -> Option<Self> {
@@ -212,26 +256,17 @@ impl State {
                         Value::Null => None,
                         evm => Some(Evm::from_json(evm)?),
                     },
+                    solana: match &app["solana"] {
+                        Value::Null => None,
+                        solana => Some(Solana::from_json(solana)?),
+                    },
+                    // A state from before peerings has none.
+                    plaintext_peers: app["plaintext_peers"].as_bool().unwrap_or(false),
                     apps: app["apps"]
                         .as_array()?
                         .iter()
                         .map(|name| name.as_str().map(str::to_owned))
                         .collect::<Option<_>>()?,
-                    // A state from before routes were recorded has none.
-                    routes: match &app["routes"] {
-                        Value::Null => Vec::new(),
-                        routes => routes
-                            .as_array()?
-                            .iter()
-                            .map(|route| {
-                                Some(Route {
-                                    prefix: route["prefix"].as_str()?.to_owned(),
-                                    handler_url: route["handler_url"].as_str()?.to_owned(),
-                                    price: route["price"].as_u64()?,
-                                })
-                            })
-                            .collect::<Option<_>>()?,
-                    },
                 })
             })
             .collect::<Option<Vec<_>>>()?;
@@ -239,7 +274,19 @@ impl State {
         if toon_apps.is_empty() {
             return None;
         }
-        Some(Self { toon_apps })
+        let network = match &value["network"] {
+            Value::Null => Profile::default(),
+            network => Profile::from_name(network.as_str()?)?,
+        };
+        let faucet_url = match &value["faucet_url"] {
+            Value::Null => None,
+            url => Some(url.as_str()?.to_owned()),
+        };
+        Some(Self {
+            network,
+            faucet_url,
+            toon_apps,
+        })
     }
 
     /// The state in `home`, or `None` if there is no agent node there.
@@ -302,25 +349,61 @@ fn string(text: &str) -> String {
     Value::from(text).to_string()
 }
 
+/// `listen` with a port: a connector publishes where it can be paid, so it cannot be left
+/// to the system to pick one when it binds. Port 0 is replaced by a port that was free a
+/// moment ago.
+pub fn concrete(listen: &str) -> Result<String, Error> {
+    let Some((host, "0")) = listen.rsplit_once(':') else {
+        return Ok(listen.to_owned());
+    };
+    let free = std::net::TcpListener::bind(listen)
+        .and_then(|bound| bound.local_addr())
+        .map_err(|source| Error {
+            code: ErrorCode::Io,
+            message: format!("{listen}: no free port: {source}."),
+        })?;
+    Ok(format!("{host}:{}", free.port()))
+}
+
 /// Render the connector config of `app` into `home` and check it with the connector's
-/// own validation. The config is written whether or not it validates, so that the
-/// error can be read against it; a caller that gets `Err` starts nothing.
-pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
+/// own validation. `relay` is where the relay's write port is reached, if `app` fronts
+/// one. The config is written whether or not it validates, so that the error can be read
+/// against it; a caller that gets `Err` starts nothing.
+pub fn render(
+    home: &Path,
+    app: &ToonApp,
+    relay: Option<SocketAddr>,
+) -> Result<ConnectorFiles, Error> {
     let files = ConnectorFiles::of(home, app.connector);
     let operator = write_operator_files(home, &files)?;
+    let listen = concrete(&app.listen)?;
+    // Every connector is peerable: another operator can peer toward it. A peer reads
+    // where to pay it from the connector's self-description, so the connector must be
+    // told its own address, and `peer_expose` is a root key, which TOML wants first.
     let mut config = format!(
         "# Rendered by `toon` from state.json. Edits here are overwritten.\n\
-         client_edge_addr = {}\nstate_dir = {}\n\n[signer]\nkey_file = {}\n",
-        string(&app.listen),
+         client_edge_addr = {}\nstate_dir = {}\npeer_expose = \"http\"\n{}\n\
+         [node]\naddresses = [{}]\nhttp_endpoint = {}\n\n[signer]\nkey_file = {}\n",
+        string(&listen),
         string(&files.state_dir.to_string_lossy()),
+        if app.plaintext_peers {
+            "peer_allow_plaintext_endpoints = true\n"
+        } else {
+            ""
+        },
+        string(&format!("g.toon.{}", app.name)),
+        string(&format!("http://{listen}/ilp")),
         string(&files.identity_key.to_string_lossy()),
     );
-    for route in &app.routes {
+    if let Some(relay) = relay.filter(|_| app.apps.iter().any(|name| name == RELAY)) {
+        // The relay is paid to write to, and takes a free ephemeral write beside it.
         config.push_str(&format!(
-            "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = {}\n",
-            string(&route.prefix),
-            string(&route.handler_url),
-            route.price,
+            "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = {RELAY_WRITE_PRICE}\n\n\
+             [[routes]]\nprefix = {}\nhandler_url = {}\nprice = 0\n",
+            string(RELAY_WRITE_PREFIX),
+            string(&format!("http://{relay}/write")),
+            string(RELAY_EPHEMERAL_PREFIX),
+            string(&format!("http://{relay}/write-ephemeral")),
         ));
     }
     if operator {
@@ -342,6 +425,17 @@ pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
             string(&evm.asset_version),
             string(&evm.transfer_method),
             string(&files.settlement_key.to_string_lossy()),
+        ));
+    }
+    if let Some(solana) = &app.solana {
+        config.push_str(&format!(
+            "\n[settlement.solana]\nrpc_url = {}\ntoken_address = {}\ndecimals = {}\n\
+             min_sponsored_deposit = {}\n\n[settlement.solana.key]\nkey_file = {}\n",
+            string(&solana.rpc_url),
+            string(&solana.token),
+            solana.decimals,
+            10u64.pow(u32::from(solana.decimals)),
+            string(&files.solana_settlement_key.to_string_lossy()),
         ));
     }
     write(&files.config, config.as_bytes(), 0o600)?;

@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
-use crate::node::{self, Evm, Options};
+use crate::node::Options;
 use crate::outcome::Exit;
+use crate::profile::Profile;
 
 /// What `--version` prints after the name: this release, the connector it embeds and the
 /// relay image it runs.
@@ -49,7 +50,12 @@ pub enum Command {
     },
     /// Send one packet to an address and say whether it was fulfilled or rejected
     Send(SendArgs),
-    /// Read the connector's routes
+    /// Manage peerings: the connectors this one forwards packets to
+    Peer {
+        #[command(subcommand)]
+        command: PeerCommand,
+    },
+    /// Manage the connector's forwarding routes
     Route {
         #[command(subcommand)]
         command: RouteCommand,
@@ -59,10 +65,22 @@ pub enum Command {
         #[command(subcommand)]
         command: ChannelCommand,
     },
-    /// Run the agent node in the foreground
-    Up,
-    /// Stop the agent node that `up` runs
+    /// Start the agent node as a `systemd --user` unit that outlives this session
+    Up {
+        /// Run the supervisor in this process instead of installing the unit
+        #[arg(long)]
+        foreground: bool,
+    },
+    /// Stop the agent node, and the unit that `up` installed
     Down,
+    /// Show the log of a TOON app or an app
+    Logs {
+        /// The name of a TOON app, or of an app behind one
+        name: String,
+        /// How many of the last lines to show
+        #[arg(long, short = 'n', default_value_t = crate::status::DEFAULT_LINES)]
+        lines: usize,
+    },
     /// Serve one connector from its config file: what `up` starts as a child process
     #[command(hide = true)]
     Connector { config: PathBuf },
@@ -73,46 +91,69 @@ pub struct InitArgs {
     /// Where the connector listens; the system picks a port when it is 0
     #[arg(long, default_value = "127.0.0.1:0")]
     pub listen: String,
-    /// The EVM chain's JSON-RPC endpoint the connector settles on
-    #[arg(long, requires = "evm_token")]
+    /// The network profile the chain settings come from
+    #[arg(long, value_enum, default_value_t = Profile::Devnet)]
+    pub network: Profile,
+    /// Settle on Solana too: its key then needs SOL and the token before `up`
+    #[arg(long)]
+    pub solana: bool,
+    /// Where `wallet fund` asks for funds, instead of the profile's faucet
+    #[arg(long)]
+    pub faucet_url: Option<String>,
+    /// The EVM chain's JSON-RPC endpoint, instead of the profile's
+    #[arg(long)]
     pub evm_rpc_url: Option<String>,
-    /// The token the connector is paid in on that chain
-    #[arg(long, requires = "evm_rpc_url")]
+    /// The token the connector is paid in on that chain, instead of the profile's
+    #[arg(long)]
     pub evm_token: Option<String>,
-    /// Where the relay app is served, which the connector delivers the relay's route to
-    #[arg(long, default_value = node::DEFAULT_RELAY_URL)]
-    pub relay_url: String,
-    /// The token's decimals
-    #[arg(long, default_value_t = 6)]
-    pub evm_decimals: u8,
+    /// Let the connector peer toward a plain `http://` address, for a trial on one machine
+    #[arg(long)]
+    pub allow_plaintext_peers: bool,
+    /// The token's decimals, at most 18
+    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=18))]
+    pub evm_decimals: Option<u8>,
     /// The token's EIP-712 domain name
-    #[arg(long, default_value = "USDC")]
-    pub evm_asset_name: String,
+    #[arg(long)]
+    pub evm_asset_name: Option<String>,
     /// The token's EIP-712 domain version
-    #[arg(long, default_value = "2")]
-    pub evm_asset_version: String,
+    #[arg(long)]
+    pub evm_asset_version: Option<String>,
     /// How the token is transferred: `eip3009` or `permit2`
-    #[arg(long, default_value = "eip3009")]
-    pub evm_transfer_method: String,
+    #[arg(long)]
+    pub evm_transfer_method: Option<String>,
 }
 
 impl InitArgs {
     pub fn options(&self) -> Options {
+        let mut evm = self.network.evm();
+        if let Some(rpc_url) = &self.evm_rpc_url {
+            evm.rpc_url = rpc_url.clone();
+        }
+        if let Some(token) = &self.evm_token {
+            evm.token = token.clone();
+        }
+        if let Some(decimals) = self.evm_decimals {
+            evm.decimals = decimals;
+        }
+        if let Some(name) = &self.evm_asset_name {
+            evm.asset_name = name.clone();
+        }
+        if let Some(version) = &self.evm_asset_version {
+            evm.asset_version = version.clone();
+        }
+        if let Some(method) = &self.evm_transfer_method {
+            evm.transfer_method = method.clone();
+        }
         Options {
             listen: self.listen.clone(),
-            relay_url: self.relay_url.clone(),
-            evm: self
-                .evm_rpc_url
+            network: self.network,
+            evm: Some(evm),
+            solana: self.solana.then(|| self.network.solana()),
+            plaintext_peers: self.allow_plaintext_peers,
+            faucet_url: self
+                .faucet_url
                 .clone()
-                .zip(self.evm_token.clone())
-                .map(|(rpc_url, token)| Evm {
-                    rpc_url,
-                    token,
-                    decimals: self.evm_decimals,
-                    asset_name: self.evm_asset_name.clone(),
-                    asset_version: self.evm_asset_version.clone(),
-                    transfer_method: self.evm_transfer_method.clone(),
-                }),
+                .or_else(|| self.network.faucet_url().map(str::to_owned)),
         }
     }
 }
@@ -124,18 +165,71 @@ pub struct SendArgs {
     /// The amount, in the token's base units: a send always states it
     #[arg(long)]
     pub amount: u64,
+    /// The `/ilp` URL of the connector that terminates the packet, when it is not this
+    /// one: the payload is sealed to that connector's identity
+    #[arg(long)]
+    pub seal_to: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PeerCommand {
+    /// Peer toward another connector: open and fund the channel it is paid on
+    Add(PeerAddArgs),
+    /// List the peerings
+    List,
+    /// Remove a peering
+    Remove {
+        /// The peering's label, as `peer list` shows it
+        id: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct PeerAddArgs {
+    /// The other connector's address: the URL of its `/ilp` endpoint
+    pub address: String,
+    /// What the channel is opened with, in the token's base units
+    #[arg(long)]
+    pub deposit: u128,
+    /// A label for the peering; the address, reduced to letters and digits, if omitted
+    #[arg(long)]
+    pub id: Option<String>,
+    /// What this connector keeps of each packet it forwards over the peering
+    #[arg(long, default_value_t = 0)]
+    pub fee: u64,
+    /// The most one forwarded packet may carry; the connector's default if omitted
+    #[arg(long, default_value_t = 0)]
+    pub max_packet_amount: u64,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum RouteCommand {
-    /// List the connector's routing table
+    /// List the connector's routes: the ones it terminates and the ones it forwards
     List,
+    /// Forward packets for a prefix to a peering
+    Add {
+        /// The ILP address prefix to forward
+        prefix: String,
+        /// The peering's label, as `peer list` shows it
+        #[arg(long)]
+        peer: String,
+        /// What a client pays the connector for a packet on this route
+        #[arg(long, default_value_t = 0)]
+        price: u64,
+    },
+    /// Stop forwarding a prefix
+    Remove {
+        /// The ILP address prefix
+        prefix: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum WalletCommand {
     /// List the wallet's addresses by chain
     Show,
+    /// Fund the wallet's addresses from the devnet faucet
+    Fund,
     /// Show the balance of every address by TOON app and chain
     Balances,
 }

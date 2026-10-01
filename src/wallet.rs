@@ -1,17 +1,23 @@
 //! `toon init` and `toon wallet show`.
 
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 use serde_json::{json, Value};
 
 use crate::derive::{self, Addresses};
+use crate::funding;
 use crate::keystore;
 use crate::node;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::runner;
 
 /// How many connectors a wallet lists. An agent node starts as one TOON app, so one
 /// connector; later commands that create TOON apps raise this.
 const CONNECTORS: u32 = 1;
+
+/// Which relay's identity key the first TOON app's relay gets.
+const RELAY_INDEX: u32 = 0;
 
 fn addresses(mnemonic: &str) -> Result<Addresses, Error> {
     let mnemonic: bip39::Mnemonic = mnemonic.parse().map_err(|_| Error {
@@ -114,12 +120,14 @@ pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
         discard_toon_apps(home);
         return Err(error);
     }
+    let (needs, funding_text) = funding::requirements(home, &state)?;
     let text = format!(
-        "Wallet created at {}.\n\nYour mnemonic. It is shown this once and no command shows it again; write it down now:\n\n  {}\n\n{}\n\n{}",
+        "Wallet created at {}.\n\nYour mnemonic. It is shown this once and no command shows it again; write it down now:\n\n  {}\n\n{}\n\n{}\n\n{}",
         keystore::path(home).display(),
         *phrase,
         listing(&wallet),
-        toon_app_text(&state, true)
+        toon_app_text(&state, true),
+        funding_text
     );
     Ok(Report {
         exit: Exit::Success,
@@ -128,6 +136,8 @@ pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
             "mnemonic": &*phrase,
             "wallet": wallet,
             "toon_apps": toon_apps(home, &state, true),
+            "network": state.network.name(),
+            "needs": needs.iter().map(funding::Need::json).collect::<Vec<_>>(),
         }),
         text,
     })
@@ -136,6 +146,7 @@ pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
 /// Remove what writing a TOON app's keys left.
 fn discard_toon_apps(home: &Path) {
     let _ = std::fs::remove_dir_all(home.join("connectors"));
+    let _ = std::fs::remove_dir_all(home.join("apps"));
     let _ = std::fs::remove_file(node::operator_key(home));
 }
 
@@ -159,7 +170,13 @@ fn write_toon_app(
     options: &node::Options,
 ) -> Result<node::State, Error> {
     let seed = derive::seed(mnemonic);
-    let state = node::State::first(options);
+    // The port is chosen now, once, so that the address a connector publishes to its
+    // peers is the same one every time it starts.
+    let options = node::Options {
+        listen: node::concrete(&options.listen)?,
+        ..options.clone()
+    };
+    let state = node::State::first(&options);
     let operator = derive::operator_write_secret(&*seed).map_err(|source| Error {
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
@@ -175,7 +192,25 @@ fn write_toon_app(
         let settlement = derive::evm_settlement_secret(&*seed, app.connector).map_err(corrupt)?;
         node::write(&files.identity_key, &*identity, 0o600)?;
         node::write(&files.settlement_key, &*settlement, 0o600)?;
-        node::render(home, app)?;
+        if app.solana.is_some() {
+            let solana =
+                derive::solana_settlement_secret(&*seed, app.connector).map_err(corrupt)?;
+            node::write(&files.solana_settlement_key, &*solana, 0o600)?;
+        }
+        if app.apps.iter().any(|name| name == node::RELAY) {
+            // The relay's identity key is the wallet's, handed over as a file that only
+            // this user reads. `up` reads it and gives it to the relay.
+            let relay = derive::relay_identity_secret(&*seed, RELAY_INDEX).map_err(corrupt)?;
+            node::write(
+                &node::AppFiles::of(home, node::RELAY).identity_key,
+                &*relay,
+                0o600,
+            )?;
+        }
+        // Nothing runs yet, so the route is checked against the address the relay's
+        // container serves on.
+        let placeholder = SocketAddr::from((Ipv4Addr::LOCALHOST, runner::WRITE_PORT));
+        node::render(home, app, Some(placeholder))?;
     }
     Ok(state)
 }
@@ -239,7 +274,7 @@ fn toon_app_text(state: &node::State, created: bool) -> String {
         .collect();
     if created {
         format!(
-            "TOON app created: {}. Run `toon up` to start it.",
+            "TOON app created: {}. Fund its settlement keys, then run `toon up` to start it.",
             names.join(", ")
         )
     } else {

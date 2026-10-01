@@ -12,8 +12,13 @@
 //! The token is a plain ERC-20 with no ERC-3009, so a connector on this chain is
 //! configured with `asset_transfer_method = "permit2"`.
 //!
-//! It holds no channels, says every address holds the same balance, and accepts no transaction, so it carries a
-//! connector that nobody pays. A test that moves money needs more than this.
+//! It holds no channels and accepts no transaction, so it carries a connector that
+//! nobody pays. A test that moves money needs more than this. Every address holds the
+//! same balance of gas and of the token, unless the chain was started unfunded and
+//! nobody has funded it yet.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use connector_chain_rpc::{FakeRpc, RpcCall, RpcReply};
 use connector_signer::{evm_batch_channel_id, BatchChannelConfig, BatchSettlementDomain};
@@ -26,15 +31,15 @@ pub const CHAIN_ID: u64 = 31_337;
 pub const TOKEN: &str = "0x00000000000000000000000000000000000000bb";
 pub const TOKEN_DECIMALS: u8 = 6;
 
-/// What the fake chain says every address holds, native and in the token. Read-only: the
-/// chain accepts no transaction, so these never change.
+/// What the fake chain says a funded address holds, native and in the token. The chain
+/// accepts no transaction, so these change only when an unfunded chain is funded.
 pub const NATIVE_BALANCE: u64 = 3_000_000_000_000_000_000;
 pub const TOKEN_BALANCE: u64 = 2_500_000;
 
-/// The token's `balanceOf(address)`.
-const BALANCE_OF: &str = "70a08231";
 /// The token's `decimals()`.
 const DECIMALS: &str = "313ce567";
+/// The token's `balanceOf(owner)`.
+const BALANCE_OF: &str = "70a08231";
 /// The contract's `getChannelId(ChannelConfig)`.
 const GET_CHANNEL_ID: &str = "5e5e0b87";
 /// The contract's `receivers(receiver, token)`: what a receiver has claimed and settled.
@@ -44,20 +49,41 @@ const WORD: usize = 64;
 
 pub struct FakeChain {
     rpc: FakeRpc,
+    funded: Arc<AtomicBool>,
     // Dropped after `rpc`, whose server runs on it.
     _runtime: Runtime,
 }
 
 impl FakeChain {
+    /// A chain on which every address is funded.
     pub fn start() -> Self {
+        Self::spawn(true)
+    }
+
+    /// A chain on which every address holds nothing until `fund` is called.
+    pub fn start_unfunded() -> Self {
+        Self::spawn(false)
+    }
+
+    /// What a faucet does: from now on every address holds gas and the token.
+    pub fn funded(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.funded)
+    }
+
+    fn spawn(funded: bool) -> Self {
+        let funded = Arc::new(AtomicBool::new(funded));
+        let held = Arc::clone(&funded);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()
             .expect("a runtime for the fake chain");
-        let rpc = runtime.block_on(FakeRpc::spawn(answer));
+        let rpc = runtime.block_on(FakeRpc::spawn(move |call: &RpcCall| {
+            answer(call, held.load(Ordering::SeqCst))
+        }));
         Self {
             rpc,
+            funded,
             _runtime: runtime,
         }
     }
@@ -72,19 +98,23 @@ impl FakeChain {
     }
 }
 
-fn answer(call: &RpcCall) -> RpcReply {
+fn answer(call: &RpcCall, funded: bool) -> RpcReply {
     match call.method.as_str() {
         "eth_chainId" => RpcReply::Result(json!(format!("{CHAIN_ID:#x}"))),
         "eth_blockNumber" => RpcReply::Result(json!("0x1")),
         // Any code at all: the connector asks only whether the contract is deployed.
         "eth_getCode" => RpcReply::Result(json!("0x60")),
-        "eth_getBalance" => RpcReply::Result(json!(format!("{NATIVE_BALANCE:#x}"))),
-        "eth_call" => eth_call(call),
+        "eth_getBalance" => RpcReply::Result(json!(if funded {
+            format!("{NATIVE_BALANCE:#x}")
+        } else {
+            "0x0".into()
+        })),
+        "eth_call" => eth_call(call, funded),
         other => not_served(other),
     }
 }
 
-fn eth_call(call: &RpcCall) -> RpcReply {
+fn eth_call(call: &RpcCall, funded: bool) -> RpcReply {
     let request = &call.params[0];
     let data = request["data"]
         .as_str()
@@ -96,7 +126,8 @@ fn eth_call(call: &RpcCall) -> RpcReply {
         return RpcReply::Result(json!(format!("0x{:064x}", TOKEN_DECIMALS)));
     }
     if selector == BALANCE_OF {
-        return RpcReply::Result(json!(format!("0x{:064x}", TOKEN_BALANCE)));
+        let held = if funded { TOKEN_BALANCE } else { 0 };
+        return RpcReply::Result(json!(format!("0x{held:064x}")));
     }
     if selector == RECEIVERS {
         // Nothing claimed and nothing settled: two zero words.

@@ -60,7 +60,7 @@ fn the_exit_codes_document_lists_the_same_codes() {
 
 /// The error codes, as fixed by the releases so far. A new one is added here and to the
 /// document together.
-const ERROR_CODES: [&str; 15] = [
+const ERROR_CODES: [&str; 23] = [
     "usage",
     "home_unresolved",
     "no_wallet",
@@ -72,8 +72,16 @@ const ERROR_CODES: [&str; 15] = [
     "no_agent_node",
     "connector_failed",
     "already_running",
+    "app_failed",
+    "unfunded",
+    "faucet_unavailable",
     "not_running",
     "send_failed",
+    "systemd_failed",
+    "unknown_name",
+    "peer_failed",
+    "peer_not_peerable",
+    "route_failed",
     "chain_failed",
     "channel_failed",
 ];

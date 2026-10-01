@@ -2,7 +2,6 @@ mod support;
 
 use support::fake_chain::{FakeChain, NATIVE_BALANCE, TOKEN, TOKEN_BALANCE};
 use support::local_chain::LocalChain;
-use support::stub_app::StubApp;
 use support::{Foreground, Machine, Run, PASSPHRASE};
 
 fn with_passphrase(machine: &Machine, args: &[&str]) -> Run {
@@ -11,27 +10,24 @@ fn with_passphrase(machine: &Machine, args: &[&str]) -> Run {
     })
 }
 
-/// An agent node on the fake chain, running.
+/// An agent node on the fake chain, running, with the fake relay behind its connector.
 struct Running {
     machine: Machine,
     _up: Foreground,
     _chain: FakeChain,
-    _app: StubApp,
 }
 
 fn running() -> Running {
     let chain = FakeChain::start();
-    let app = StubApp::start();
     let machine = Machine::new();
-    let init = machine.init_on_serving(&chain, app.url());
+    let init = machine.init_on(&chain);
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
     Running {
         machine,
         _up: up,
         _chain: chain,
-        _app: app,
     }
 }
 
@@ -89,9 +85,14 @@ fn balances_in_text_name_the_app_the_chain_and_the_address() {
 
 #[test]
 fn balances_without_a_chain_have_nothing_to_read() {
+    let chain = FakeChain::start();
     let machine = Machine::new();
-    let init = with_passphrase(&machine, &["init", "--json"]);
-    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    // `init` always records a chain now: an agent node with none is one from before it did.
+    let recorded = std::fs::read(machine.agent_node_home().join("state.json")).unwrap();
+    let mut state: serde_json::Value = serde_json::from_slice(&recorded).unwrap();
+    state["toon_apps"][0]["evm"] = serde_json::Value::Null;
+    machine.write_agent_node_file("state.json", state.to_string());
 
     let run = with_passphrase(&machine, &["wallet", "balances", "--json"]);
 
@@ -295,7 +296,7 @@ fn on_chain(chain: &LocalChain) -> OnChain {
         .expect("an EVM address")
         .to_owned();
     chain.fund(&address, FUNDED);
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     let connector = up.report()["connector"]["address"]
         .as_str()
         .expect("the connector's address")

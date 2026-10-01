@@ -7,9 +7,11 @@
 // Each test file compiles this module separately and uses a different part of it.
 #![allow(dead_code)]
 
+pub mod anvil_chain;
 pub mod fake_chain;
+pub mod fake_faucet;
 pub mod local_chain;
-pub mod stub_app;
+pub mod unpeerable;
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -28,6 +30,19 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The wallet passphrase the tests use.
 pub const PASSPHRASE: &str = "correct horse battery staple";
+
+/// The fake relay of `examples/fake_relay.rs`, which cargo builds for the tests.
+pub fn fake_relay() -> PathBuf {
+    let tests = std::env::current_exe().expect("the test binary's path");
+    let program = tests
+        .parent()
+        .and_then(Path::parent)
+        .expect("target/<profile>/deps/<test>")
+        .join("examples")
+        .join("fake_relay");
+    assert!(program.exists(), "{} is not built", program.display());
+    program
+}
 
 /// One operator's machine: an empty home directory that is deleted on drop.
 pub struct Machine {
@@ -89,37 +104,67 @@ impl Machine {
             .args(args)
             .env_clear()
             .env("HOME", self.home())
+            // Apps run as local processes of the fake relay, never as containers.
+            .env("TOON_APP_COMMAND", fake_relay())
             .current_dir(self.home())
             .stdin(Stdio::null());
         command
     }
 
+    /// Run `toon init --json` with `args` after it, and the passphrase every test uses.
+    pub fn init_with(&self, args: &[&str]) -> Run {
+        let mut all = vec!["init", "--json"];
+        all.extend_from_slice(args);
+        self.toon_with(&all, |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        })
+    }
+
     /// Run `toon init` for an agent node that settles on `chain`, with the passphrase
     /// every test uses.
     pub fn init_on(&self, chain: &fake_chain::FakeChain) -> Run {
-        self.init_on_with(chain, &[])
+        self.toon_with(
+            &[
+                "init",
+                "--json",
+                "--evm-rpc-url",
+                &chain.rpc_url(),
+                "--evm-token",
+                fake_chain::TOKEN,
+                "--evm-decimals",
+                &fake_chain::TOKEN_DECIMALS.to_string(),
+                "--evm-asset-name",
+                "USDC",
+                "--evm-asset-version",
+                "2",
+                "--evm-transfer-method",
+                "permit2",
+            ],
+            |command| {
+                command.env("TOON_PASSPHRASE", PASSPHRASE);
+            },
+        )
     }
 
-    /// Like `init_on`, for an agent node whose relay is served at `relay_url`.
-    pub fn init_on_serving(&self, chain: &fake_chain::FakeChain, relay_url: &str) -> Run {
-        self.init_on_with(chain, &["--relay-url", relay_url])
-    }
-
-    fn init_on_with(&self, chain: &fake_chain::FakeChain, more: &[&str]) -> Run {
-        let decimals = fake_chain::TOKEN_DECIMALS.to_string();
+    /// Like `init_on`, on the local chain `anvil`: its token moves by ERC-3009, as the
+    /// profile's does. The chain and the connectors share one machine, so a connector
+    /// that peers needs `plaintext_peers`.
+    pub fn init_on_anvil(&self, chain: &anvil_chain::AnvilChain, plaintext_peers: bool) -> Run {
+        let decimals = anvil_chain::TOKEN_DECIMALS.to_string();
         let rpc_url = chain.rpc_url();
+        let token = chain.token();
         let mut args = vec![
             "--evm-rpc-url",
             &rpc_url,
             "--evm-token",
-            fake_chain::TOKEN,
+            &token,
             "--evm-decimals",
             &decimals,
-            "--evm-transfer-method",
-            "permit2",
         ];
-        args.extend_from_slice(more);
-        self.init_evm(&args)
+        if plaintext_peers {
+            args.push("--allow-plaintext-peers");
+        }
+        self.init_with(&args)
     }
 
     /// Run `toon init` for an agent node that settles in USDC on a local chain, paying
@@ -127,31 +172,14 @@ impl Machine {
     pub fn init_on_local(&self, chain: &local_chain::LocalChain) -> Run {
         let decimals = local_chain::TOKEN_DECIMALS.to_string();
         let token = chain.token();
-        self.init_evm(&[
+        self.init_with(&[
             "--evm-rpc-url",
             chain.rpc_url(),
             "--evm-token",
             &token,
             "--evm-decimals",
             &decimals,
-            "--evm-transfer-method",
-            "eip3009",
         ])
-    }
-
-    fn init_evm(&self, more: &[&str]) -> Run {
-        let mut args = vec![
-            "init",
-            "--json",
-            "--evm-asset-name",
-            "USDC",
-            "--evm-asset-version",
-            "2",
-        ];
-        args.extend_from_slice(more);
-        self.toon_with(&args, |command| {
-            command.env("TOON_PASSPHRASE", PASSPHRASE);
-        })
     }
 
     /// Write `contents` to `name` in the agent node's home, and return its path.

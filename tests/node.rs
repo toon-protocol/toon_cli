@@ -108,10 +108,20 @@ fn the_connector_config_is_rendered_from_the_state_on_every_up() {
     let rendered = fs::read_to_string(&config).unwrap();
     fs::write(&config, "this is not a config\n").unwrap();
 
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
 
-    assert_eq!(fs::read_to_string(&config).unwrap(), rendered);
+    // What changes is where the relay was found: `init` could only point at where its
+    // container will serve, and `up` knows where the relay is.
+    let status = machine.toon(&["status", "--json"]).json();
+    let relay = status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        fs::read_to_string(&config).unwrap(),
+        rendered.replace("127.0.0.1:3100", &relay)
+    );
 }
 
 #[test]
@@ -119,7 +129,7 @@ fn status_reports_the_running_connector_and_down_stops_everything() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
-    let mut up = machine.start(&["up", "--json"]);
+    let mut up = machine.start(&["up", "--foreground", "--json"]);
     let started = up.report();
 
     let status = machine.toon(&["status", "--json"]);
@@ -191,10 +201,10 @@ fn a_second_up_is_refused_while_one_runs() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
 
-    let second = machine.toon(&["up", "--json"]);
+    let second = machine.toon(&["up", "--foreground", "--json"]);
 
     assert_eq!(second.json()["error"]["code"], "already_running");
     assert_eq!(second.exit_code, 1);
@@ -206,11 +216,11 @@ fn up_after_a_supervisor_was_killed_replaces_its_stale_socket() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
-    let mut first = machine.start(&["up", "--json"]);
+    let mut first = machine.start(&["up", "--foreground", "--json"]);
     first.report();
     first.kill();
 
-    let second = machine.start(&["up", "--json"]);
+    let second = machine.start(&["up", "--foreground", "--json"]);
 
     second.report();
     assert_eq!(machine.toon(&["status", "--json"]).exit_code, 0);
@@ -221,7 +231,7 @@ fn up_refuses_a_state_with_no_toon_app() {
     let machine = Machine::new();
     machine.write_agent_node_file("state.json", r#"{"version": 1, "toon_apps": []}"#);
 
-    let run = machine.toon(&["up", "--json"]);
+    let run = machine.toon(&["up", "--foreground", "--json"]);
 
     assert_eq!(run.json()["error"]["code"], "io");
     assert_eq!(run.exit_code, 1);
