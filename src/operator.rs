@@ -57,14 +57,7 @@ pub fn surface_of(home: &Path, name: Option<&str>) -> Result<Surface, Error> {
     let Some(state) = State::load(home)? else {
         return Err(node::no_agent_node(home));
     };
-    let app = match name {
-        None => &state.toon_apps[0],
-        Some(name) => state
-            .toon_apps
-            .iter()
-            .find(|app| app.name == name)
-            .ok_or_else(|| crate::apps::unknown(&state, name))?,
-    };
+    let app = crate::apps::toon_app(&state, name)?;
     let address = control::ask(home, "status")
         .and_then(|reply| {
             reply["toon_apps"]

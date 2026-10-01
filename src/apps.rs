@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::control;
-use crate::node::{self, App, Source, State};
+use crate::node::{self, App, Source, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::runner;
 
@@ -236,6 +236,18 @@ pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
             restarted(restarted_now, add.to)
         ),
     })
+}
+
+/// The TOON app called `name`, or the first one if `None`.
+pub fn toon_app<'a>(state: &'a State, name: Option<&str>) -> Result<&'a ToonApp, Error> {
+    match name {
+        None => Ok(&state.toon_apps[0]),
+        Some(name) => state
+            .toon_apps
+            .iter()
+            .find(|app| app.name == name)
+            .ok_or_else(|| unknown(state, name)),
+    }
 }
 
 pub fn unknown(state: &State, name: &str) -> Error {

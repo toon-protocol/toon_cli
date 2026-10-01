@@ -67,8 +67,8 @@ fn synced(home: &Path) -> Result<(), Error> {
 }
 
 /// Remove what a TOON app has on disk: its connector's keys, config and state, and its
-/// apps' data. A hidden service's onion key stays: a wallet restored from a backup holds
-/// its address key nowhere else.
+/// apps' data. The connector's directory stays, with a hidden service's onion key, so that
+/// `next_connector` does not give its index, and the keys derived at it, to another TOON app.
 fn remove_files(home: &Path, app: &ToonApp) {
     let dir = node::ConnectorFiles::of(home, app.connector).config;
     if let Some(dir) = dir.parent() {
@@ -83,6 +83,24 @@ fn remove_files(home: &Path, app: &ToonApp) {
         let _ = std::fs::remove_dir_all(node::AppFiles::of(home, &behind.name).data_dir);
         let _ = std::fs::remove_file(node::AppFiles::of(home, &behind.name).identity_key);
     }
+}
+
+/// The next index of the wallet's connector keys: past every TOON app's, and past every
+/// connector directory a destroyed TOON app left.
+fn next_connector(home: &Path, state: &State) -> u32 {
+    let left = std::fs::read_dir(home.join("connectors"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok());
+    state
+        .toon_apps
+        .iter()
+        .map(|app| app.connector)
+        .chain(left)
+        .map(|connector| connector + 1)
+        .max()
+        .unwrap_or(0)
 }
 
 /// The URL another connector on this machine peers toward, to reach `app`: its onion
@@ -135,14 +153,7 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
     let Some(state) = State::load(home)? else {
         return Err(node::no_agent_node(home));
     };
-    let source = match create.from {
-        None => &state.toon_apps[0],
-        Some(from) => state
-            .toon_apps
-            .iter()
-            .find(|app| app.name == from)
-            .ok_or_else(|| apps::unknown(&state, from))?,
-    };
+    let source = apps::toon_app(&state, create.from)?;
     apps::free(&state, create.name)?;
     wallet::check_reach(&create.reach, create.accept_anyone_terms, create.listen)?;
     // A peering is made through the connectors, so both must run.
@@ -158,12 +169,7 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
         )
     })?;
     let seed = derive::seed(&mnemonic);
-    let connector = state
-        .toon_apps
-        .iter()
-        .map(|app| app.connector + 1)
-        .max()
-        .unwrap_or(0);
+    let connector = next_connector(home, &state);
     if connector > derive::MAX_CONNECTOR_INDEX {
         return Err(failed(
             ErrorCode::KeystoreCorrupt,
@@ -231,7 +237,7 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
                     error.code,
                     format!(
                         "The TOON app {} was created, and {} of its 2 peerings were: {} \
-                         `toon peer add --app` makes the rest.",
+                         `toon peer add --app` and `toon route add --app` make the rest.",
                         new.name,
                         peerings.len(),
                         error.message
@@ -250,6 +256,14 @@ fn made(home: &Path, state: &State, new: &ToonApp, seed: &[u8]) -> Result<bool, 
     let undo = |error: Error| {
         let _ = state.save(home);
         remove_files(home, new);
+        // Nothing was created, so the index is free for the next `toon create`: the one
+        // whose settlement key an `unfunded` failure asked to fund.
+        if let Some(dir) = node::ConnectorFiles::of(home, new.connector)
+            .config
+            .parent()
+        {
+            let _ = std::fs::remove_dir_all(dir);
+        }
         error
     };
     let mut changed = state.clone();

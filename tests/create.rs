@@ -260,6 +260,22 @@ fn destroy_stops_and_removes_a_toon_app_that_holds_nothing() {
     // The connector of the first TOON app was not touched, and the agent node always has one.
     let last = machine.toon(&["destroy", "relay", "--json"]);
     assert_eq!(last.json()["error"]["code"], "last_toon_app");
+    // The keys of a destroyed TOON app are not given to the next one.
+    let next = with_passphrase(
+        &machine,
+        &[
+            "create",
+            "third",
+            "--image",
+            "third:1",
+            "--no-peer",
+            "--clearnet",
+            "third.example.com",
+            "--json",
+        ],
+    );
+    assert_eq!(next.exit_code, 0, "{}", next.stdout);
+    assert_eq!(next.json()["created"]["connector"], 2);
 }
 
 #[test]
