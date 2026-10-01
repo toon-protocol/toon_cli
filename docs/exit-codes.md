@@ -134,12 +134,13 @@ passphrase; it reads from `ws://` relays only.
 `toon wallet backup --out <file>` seals the keystore's mnemonic and the address key of every
 onion endpoint into one file under the wallet's passphrase, and refuses a file that exists.
 `toon wallet restore <file>` recreates the wallet and the address keys in a home with no
-wallet (`io` if there is one), sealed under the passphrase that opened the backup; a wrong
+wallet or agent node (`io` if there is one), sealed under the passphrase that opened the backup; a wrong
 passphrase fails with `passphrase_wrong` and a file that is not a backup with
 `keystore_corrupt`. Then `toon init` makes the TOON app on the keys it finds, at the same
 onion endpoints.
 
 `toon init --from-mnemonic` restores a wallet from a mnemonic alone, read from the file named
-by `TOON_MNEMONIC_FILE`, else from `TOON_MNEMONIC`, never a flag. It shows no mnemonic, and
+by `TOON_MNEMONIC_FILE`, else from `TOON_MNEMONIC`, never a flag, into a home with no wallet
+(`io` if there is one; `usage` if the mnemonic is missing or not BIP-39). It shows no mnemonic, and
 a hidden service gets new onion endpoints, which it says (`"onion_endpoints_changed": true`):
 a mnemonic does not hold the address keys.

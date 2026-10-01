@@ -104,7 +104,7 @@ pub fn init(home: &Path, options: &node::Options, restore: bool) -> Result<Repor
     if keystore::exists(home) {
         if restore {
             return Err(Error {
-                code: ErrorCode::Usage,
+                code: ErrorCode::Io,
                 message: format!(
                     "There is already a wallet at {}: a mnemonic restores into an empty home.",
                     keystore::path(home).display()
@@ -228,9 +228,8 @@ fn restoring_mnemonic() -> Result<bip39::Mnemonic, Error> {
              or from {MNEMONIC_ENV}. A flag is not accepted, because it would show in a process list."
         )));
     };
-    text.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    let words = zeroize::Zeroizing::new(text.split_whitespace().collect::<Vec<_>>().join(" "));
+    words
         .parse()
         .map_err(|_| usage("The mnemonic is not a valid BIP-39 phrase.".into()))
 }
@@ -676,8 +675,8 @@ pub fn balances(home: &Path) -> Result<Report, Error> {
     })
 }
 
-/// The backup's contents before they are sealed: the mnemonic the keystore holds and the
-/// key of every onion endpoint, by connector.
+/// The version of a backup's contents before they are sealed: the mnemonic the keystore
+/// holds and the key of every onion endpoint, by connector.
 const BACKUP_VERSION: u64 = 1;
 
 /// `toon wallet backup`: seal the keystore's mnemonic and every address key into one
@@ -764,16 +763,31 @@ pub fn restore(home: &Path, from: &Path) -> Result<Report, Error> {
             ),
         });
     }
+    if node::State::load(home)?.is_some() {
+        return Err(Error {
+            code: ErrorCode::Io,
+            message: format!(
+                "{} has an agent node's state but no wallet: a backup restores into an empty home.",
+                node::state_path(home).display()
+            ),
+        });
+    }
     let passphrase = keystore::passphrase()?;
     let text = std::fs::read_to_string(from).map_err(|source| Error {
         code: ErrorCode::Io,
         message: format!("{}: {source}.", from.display()),
     })?;
-    let plain = zeroize::Zeroizing::new(keystore::unseal(&text, &passphrase, from)?);
     let corrupt = || Error {
         code: ErrorCode::KeystoreCorrupt,
         message: format!("{} is not a backup this version reads.", from.display()),
     };
+    let plain =
+        zeroize::Zeroizing::new(keystore::unseal(&text, &passphrase, from).map_err(|error| {
+            match error.code {
+                ErrorCode::KeystoreCorrupt => corrupt(),
+                _ => error,
+            }
+        })?);
     let document: Value = serde_json::from_slice(&plain).map_err(|_| corrupt())?;
     if document["version"] != BACKUP_VERSION {
         return Err(corrupt());
@@ -799,21 +813,48 @@ pub fn restore(home: &Path, from: &Path) -> Result<Report, Error> {
     // The address keys first: if one cannot be written there is no wallet that lacks them.
     let mut endpoints = Vec::new();
     let mut lines = Vec::new();
+    let mut written = Vec::new();
+    // Only the files this restore wrote are removed if it fails, so that nothing else in the
+    // home is touched.
+    let undo = |written: &[std::path::PathBuf]| {
+        for file in written {
+            let _ = std::fs::remove_file(file);
+        }
+    };
     for (connector, key) in &keys {
         let file = node::ConnectorFiles::of(home, *connector).onion_key;
+        if file.exists() {
+            undo(&written);
+            return Err(Error {
+                code: ErrorCode::Io,
+                message: format!(
+                    "{} is there already: a backup restores into an empty home.",
+                    file.display()
+                ),
+            });
+        }
         if let Err(error) = node::write(&file, key, 0o600) {
-            let _ = std::fs::remove_dir_all(home.join("connectors"));
+            undo(&written);
             return Err(error);
         }
+        written.push(file);
         let endpoint = overlay::address_of(key.as_slice().try_into().expect("32 bytes"));
         lines.push(format!("connector {connector} onion endpoint: {endpoint}"));
         endpoints.push(json!({ "connector": connector, "onion_endpoint": endpoint }));
     }
-    if !keystore::create(home, &passphrase, &phrase)? {
-        return Err(Error {
-            code: ErrorCode::Io,
-            message: "A wallet was made here while the backup was being restored.".into(),
-        });
+    match keystore::create(home, &passphrase, &phrase) {
+        Ok(true) => {}
+        Ok(false) => {
+            undo(&written);
+            return Err(Error {
+                code: ErrorCode::Io,
+                message: "A wallet was made here while the backup was being restored.".into(),
+            });
+        }
+        Err(error) => {
+            undo(&written);
+            return Err(error);
+        }
     }
     Ok(Report {
         exit: Exit::Success,

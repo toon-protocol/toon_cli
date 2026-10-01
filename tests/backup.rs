@@ -190,7 +190,7 @@ fn init_restores_from_a_mnemonic_alone_with_new_onion_endpoints() {
             command.env("TOON_MNEMONIC", &mnemonic);
         },
     );
-    assert_eq!(text.exit_code, 2, "a wallet exists: {}", text.stdout);
+    assert_eq!(text.exit_code, 1, "a wallet exists: {}", text.stdout);
 
     let fresh = Machine::new();
     let text = fresh.toon_with(
@@ -224,4 +224,30 @@ fn restoring_a_mnemonic_needs_one_and_not_from_a_flag() {
     assert_eq!(run.exit_code, 2);
     assert_eq!(run.json()["error"]["code"], "usage");
     assert!(!machine.agent_node_home().join("keystore.json").exists());
+}
+
+#[test]
+fn a_restore_into_a_home_with_an_agent_node_but_no_wallet_changes_nothing() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    let file = machine.home().join("b");
+    let backup = passphrase(
+        &machine,
+        &["wallet", "backup", "--out", file.to_str().unwrap()],
+    );
+    assert_eq!(backup.exit_code, 0, "{}", backup.stdout);
+    let onion_key = machine.agent_node_home().join("connectors/0/onion.key");
+    let key_before = fs::read(&onion_key).unwrap();
+    fs::remove_file(machine.agent_node_home().join("keystore.json")).unwrap();
+
+    let restore = passphrase(
+        &machine,
+        &["wallet", "restore", "--json", file.to_str().unwrap()],
+    );
+
+    assert_eq!(restore.exit_code, 1, "{}", restore.stdout);
+    assert_eq!(restore.json()["error"]["code"], "io");
+    assert!(!machine.agent_node_home().join("keystore.json").exists());
+    assert_eq!(fs::read(&onion_key).unwrap(), key_before);
 }
