@@ -33,7 +33,9 @@ is missing here. Add a new code to the test and to this file together.
 
 `toon status` exits with the code that describes the agent node, and still prints its
 report. It exits 1 when the supervisor or a connector is not running, and `toon down` exits 0
-whether or not anything was running. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
+whether or not anything was running. `toon send` exits 1 when the packet was rejected, and still prints its report: the
+reject code is in `reject.code`. It exits 1 too, with `"outcome": "wrong_fulfilment"`, when
+the packet was fulfilled with a fulfilment that does not match it. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
 and exits 3.
 
 ## Errors
@@ -59,6 +61,8 @@ A failed command with `--json` prints:
 | `no_agent_node` | 3 | The command needs an agent node and this machine has none |
 | `connector_failed` | 1 | A connector did not start, or stopped; the message carries the connector's own reason |
 | `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
+| `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
+| `send_failed` | 1 | The packet could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
 
 ## The wallet passphrase
 

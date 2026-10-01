@@ -12,11 +12,14 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use crate::keystore;
 use crate::outcome::{Error, ErrorCode};
+use crate::{derive, keystore};
 
 /// The name of the first TOON app, the one whose connector fronts the relay.
 pub const RELAY: &str = "relay";
+
+/// Where the relay is served unless `init` is told otherwise.
+pub const DEFAULT_RELAY_URL: &str = "http://127.0.0.1:7100/";
 
 /// What `init` was asked for, for the first TOON app.
 #[derive(Clone, Debug)]
@@ -25,6 +28,8 @@ pub struct Options {
     pub listen: String,
     /// The EVM chain it settles on, if any.
     pub evm: Option<Evm>,
+    /// Where the relay app is served: what the connector delivers its route to.
+    pub relay_url: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +42,15 @@ pub struct Evm {
     pub transfer_method: String,
 }
 
+/// A route the connector terminates: packets for `prefix` are delivered to the app at
+/// `handler_url`, for `price` base units each.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Route {
+    pub prefix: String,
+    pub handler_url: String,
+    pub price: u64,
+}
+
 /// One TOON app as the operator asked for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToonApp {
@@ -47,6 +61,8 @@ pub struct ToonApp {
     pub evm: Option<Evm>,
     /// The apps behind the connector.
     pub apps: Vec<String>,
+    /// The routes the connector terminates, one per app.
+    pub routes: Vec<Route>,
 }
 
 /// The agent node's state: every TOON app.
@@ -62,6 +78,11 @@ fn io(path: &Path, source: std::io::Error) -> Error {
     }
 }
 
+/// The ILP address prefix of the route to the app called `name`.
+pub fn route_prefix(name: &str) -> String {
+    format!("g.toon.{name}")
+}
+
 /// What a command that needs an agent node says when `home` has none.
 pub fn no_agent_node(home: &Path) -> Error {
     Error {
@@ -74,8 +95,19 @@ pub fn state_path(home: &Path) -> PathBuf {
     home.join("state.json")
 }
 
+/// The wallet's operator write key, written once by `init`. The connector verifies writes
+/// with ed25519, and this file holds the 32 bytes the wallet derived, read as an ed25519
+/// secret key.
+pub fn operator_key(home: &Path) -> PathBuf {
+    home.join("operator.key")
+}
+
 /// The files of one connector's key material, config, state directory and log.
 pub struct ConnectorFiles {
+    /// The bearer token the connector's operator surface wants on every read.
+    pub bearer_token: PathBuf,
+    /// The public keys it accepts a signed write from: the wallet's operator write key.
+    pub write_keys: PathBuf,
     pub identity_key: PathBuf,
     pub settlement_key: PathBuf,
     pub config: PathBuf,
@@ -87,6 +119,8 @@ impl ConnectorFiles {
     pub fn of(home: &Path, connector: u32) -> Self {
         let dir = home.join("connectors").join(connector.to_string());
         Self {
+            bearer_token: dir.join("operator-bearer-token"),
+            write_keys: dir.join("operator-write-keys"),
             identity_key: dir.join("identity.key"),
             settlement_key: dir.join("settlement.key"),
             config: dir.join("connector.toml"),
@@ -131,6 +165,11 @@ impl State {
                 listen: options.listen.clone(),
                 evm: options.evm.clone(),
                 apps: vec![RELAY.into()],
+                routes: vec![Route {
+                    prefix: route_prefix(RELAY),
+                    handler_url: options.relay_url.clone(),
+                    price: 0,
+                }],
             }],
         }
     }
@@ -146,6 +185,11 @@ impl State {
                     "listen": app.listen,
                     "evm": app.evm.as_ref().map(Evm::json),
                     "apps": app.apps,
+                    "routes": app.routes.iter().map(|route| json!({
+                        "prefix": route.prefix,
+                        "handler_url": route.handler_url,
+                        "price": route.price,
+                    })).collect::<Vec<_>>(),
                 })
             })
             .collect();
@@ -173,6 +217,21 @@ impl State {
                         .iter()
                         .map(|name| name.as_str().map(str::to_owned))
                         .collect::<Option<_>>()?,
+                    // A state from before routes were recorded has none.
+                    routes: match &app["routes"] {
+                        Value::Null => Vec::new(),
+                        routes => routes
+                            .as_array()?
+                            .iter()
+                            .map(|route| {
+                                Some(Route {
+                                    prefix: route["prefix"].as_str()?.to_owned(),
+                                    handler_url: route["handler_url"].as_str()?.to_owned(),
+                                    price: route["price"].as_u64()?,
+                                })
+                            })
+                            .collect::<Option<_>>()?,
+                    },
                 })
             })
             .collect::<Option<Vec<_>>>()?;
@@ -248,6 +307,7 @@ fn string(text: &str) -> String {
 /// error can be read against it; a caller that gets `Err` starts nothing.
 pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
     let files = ConnectorFiles::of(home, app.connector);
+    let operator = write_operator_files(home, &files)?;
     let mut config = format!(
         "# Rendered by `toon` from state.json. Edits here are overwritten.\n\
          client_edge_addr = {}\nstate_dir = {}\n\n[signer]\nkey_file = {}\n",
@@ -255,6 +315,21 @@ pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
         string(&files.state_dir.to_string_lossy()),
         string(&files.identity_key.to_string_lossy()),
     );
+    for route in &app.routes {
+        config.push_str(&format!(
+            "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = {}\n",
+            string(&route.prefix),
+            string(&route.handler_url),
+            route.price,
+        ));
+    }
+    if operator {
+        config.push_str(&format!(
+            "\n[operator]\nbearer_token_file = {}\nwrite_keys_file = {}\n",
+            string(&files.bearer_token.to_string_lossy()),
+            string(&files.write_keys.to_string_lossy()),
+        ));
+    }
     if let Some(evm) = &app.evm {
         config.push_str(&format!(
             "\n[settlement.evm]\nrpc_url = {}\ntoken_address = {}\ndecimals = {}\n\
@@ -278,4 +353,32 @@ pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
         },
     )?;
     Ok(files)
+}
+
+/// The files the connector's operator surface reads: a bearer token, made once and kept,
+/// and the allowlist of write keys, which is the public half of the wallet's operator
+/// write key and is written again every time. An agent node made before `init` wrote the
+/// operator write key has none, and its connector runs without an operator surface, as it
+/// did then: `false`.
+fn write_operator_files(home: &Path, files: &ConnectorFiles) -> Result<bool, Error> {
+    let key = operator_key(home);
+    if !key.exists() {
+        return Ok(false);
+    }
+    if !files.bearer_token.exists() {
+        let token = hex::encode(keystore::random::<32>()?);
+        write(&files.bearer_token, token.as_bytes(), 0o600)?;
+    }
+    let bytes = zeroize::Zeroizing::new(fs::read(&key).map_err(|source| io(&key, source))?);
+    let secret: zeroize::Zeroizing<[u8; 32]> =
+        zeroize::Zeroizing::new(bytes.as_slice().try_into().map_err(|_| Error {
+            code: ErrorCode::Io,
+            message: format!("{} is not a 32-byte key.", key.display()),
+        })?);
+    write(
+        &files.write_keys,
+        format!("{}\n", derive::operator_write_public_key(&secret)).as_bytes(),
+        0o600,
+    )?;
+    Ok(true)
 }

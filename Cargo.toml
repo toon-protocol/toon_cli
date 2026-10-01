@@ -28,6 +28,7 @@ zeroize = "1"
 connector-cli = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
 axum = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+reqwest = { version = "0.11", default-features = false, features = ["blocking", "json"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
@@ -36,7 +37,6 @@ tempfile = "3"
 # The connector's own fake chain RPC, and the channel-id arithmetic the fake answers with.
 connector-chain-rpc = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705", features = ["test-support"] }
 connector-signer = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
-reqwest = { version = "0.11", default-features = false, features = ["blocking", "json"] }
 
 # The relay image `toon` runs as a container (ADR 0001), pinned by digest. `build.rs`
 # hands it to `toon --version`.

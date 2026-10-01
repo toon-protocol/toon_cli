@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
-use crate::node::{Evm, Options};
+use crate::node::{self, Evm, Options};
 use crate::outcome::Exit;
 
 /// What `--version` prints after the name: this release, the connector it embeds and the
@@ -47,6 +47,13 @@ pub enum Command {
         #[command(subcommand)]
         command: WalletCommand,
     },
+    /// Send one packet to an address and say whether it was fulfilled or rejected
+    Send(SendArgs),
+    /// Read the connector's routes
+    Route {
+        #[command(subcommand)]
+        command: RouteCommand,
+    },
     /// Run the agent node in the foreground
     Up,
     /// Stop the agent node that `up` runs
@@ -67,6 +74,9 @@ pub struct InitArgs {
     /// The token the connector is paid in on that chain
     #[arg(long, requires = "evm_rpc_url")]
     pub evm_token: Option<String>,
+    /// Where the relay app is served, which the connector delivers the relay's route to
+    #[arg(long, default_value = node::DEFAULT_RELAY_URL)]
+    pub relay_url: String,
     /// The token's decimals
     #[arg(long, default_value_t = 6)]
     pub evm_decimals: u8,
@@ -85,6 +95,7 @@ impl InitArgs {
     pub fn options(&self) -> Options {
         Options {
             listen: self.listen.clone(),
+            relay_url: self.relay_url.clone(),
             evm: self
                 .evm_rpc_url
                 .clone()
@@ -99,6 +110,21 @@ impl InitArgs {
                 }),
         }
     }
+}
+
+#[derive(Debug, Args)]
+pub struct SendArgs {
+    /// The ILP address the packet is bound for
+    pub address: String,
+    /// The amount, in the token's base units: a send always states it
+    #[arg(long)]
+    pub amount: u64,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RouteCommand {
+    /// List the connector's routing table
+    List,
 }
 
 #[derive(Debug, Subcommand)]

@@ -57,6 +57,8 @@ pub enum ErrorCode {
     NoAgentNode,
     ConnectorFailed,
     AlreadyRunning,
+    NotRunning,
+    SendFailed,
 }
 
 impl ErrorCode {
@@ -73,6 +75,8 @@ impl ErrorCode {
             ErrorCode::NoAgentNode => "no_agent_node",
             ErrorCode::ConnectorFailed => "connector_failed",
             ErrorCode::AlreadyRunning => "already_running",
+            ErrorCode::NotRunning => "not_running",
+            ErrorCode::SendFailed => "send_failed",
         }
     }
 
@@ -87,7 +91,9 @@ impl ErrorCode {
             | ErrorCode::KeystoreCorrupt
             | ErrorCode::Io
             | ErrorCode::ConnectorFailed
-            | ErrorCode::AlreadyRunning => Exit::Failure,
+            | ErrorCode::AlreadyRunning
+            | ErrorCode::NotRunning
+            | ErrorCode::SendFailed => Exit::Failure,
         }
     }
 }
