@@ -86,7 +86,7 @@ A failed command with `--json` prints:
 
 ## The wallet passphrase
 
-`toon init`, `toon wallet show`, `toon wallet balances` and `toon event publish` read the passphrase from the file named by
+`toon init`, `toon wallet show`, `toon wallet balances`, `toon wallet backup`, `toon wallet restore` and `toon event publish` read the passphrase from the file named by
 `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`. It is never a flag. One trailing
 newline in the file is not part of the passphrase.
 
@@ -107,7 +107,7 @@ A new TOON app is a hidden service (ADR 0003): its connector is reachable only a
 endpoint, a `.anyone` address, on port 80, and the relay's read port at the same address on
 port 7100. Its connector listens on loopback only, and all of its outbound traffic goes
 through the overlay's SOCKS proxy, settlement RPC included. The endpoint is made from a key
-the wallet derives, so it is the same after a restart and after the wallet is restored.
+the wallet derives, so it is the same after a restart, and a wallet backup restores it.
 
 `toon init` creates a hidden service only with `--accept-anyone-terms`, which says the
 operator agrees to the Anyone Protocol's terms; without it `init` fails with `usage` and
@@ -130,6 +130,23 @@ and sends the event to the agent node's own relay as an operator write: it exits
 answers with a status that is not 2xx, and `"outcome": "wrong_fulfilment"` when the packet is
 fulfilled but not by this connector. `toon event query` is a plain NIP-01 `REQ` and needs no
 passphrase; it reads from `ws://` relays only.
+
+## Backup and restore
+
+`toon wallet backup --out <file>` seals the keystore's mnemonic and the address key of every
+onion endpoint into one file under the wallet's passphrase, and refuses a file that exists.
+`toon wallet restore <file>` recreates the wallet and the address keys in a home with no
+wallet or agent node (`io` if there is one), sealed under the passphrase that opened the backup; a wrong
+passphrase fails with `passphrase_wrong` and a file that is not a backup with
+`keystore_corrupt`. Then `toon init` makes the TOON app on the keys it finds, at the same
+onion endpoints.
+
+`toon init --from-mnemonic` restores a wallet from a mnemonic alone, read from the file named
+by `TOON_MNEMONIC_FILE`, else from `TOON_MNEMONIC`, never a flag, into a home with no wallet
+(`io` if there is one; `usage` if the mnemonic is missing or not BIP-39). It shows no mnemonic, and
+a hidden service gets new onion endpoints, which it says (`"onion_endpoints_changed": true`):
+a mnemonic does not hold the address keys.
+
 ## The spending limit
 
 Every command that moves money (`toon send`, `toon peer add`) states its amount and needs

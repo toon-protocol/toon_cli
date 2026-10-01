@@ -22,6 +22,16 @@ const CONNECTORS: u32 = 1;
 /// Which relay's identity key the first TOON app's relay gets.
 const RELAY_INDEX: u32 = 0;
 
+/// Where a new hidden service's address key comes from, when no file holds it already.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Onion {
+    /// Derived from the wallet, so that the same mnemonic makes the same address.
+    Derived,
+    /// Random: a wallet restored from its mnemonic alone does not recover its addresses,
+    /// and says so.
+    Fresh,
+}
+
 fn addresses(mnemonic: &str) -> Result<Addresses, Error> {
     let mnemonic: bip39::Mnemonic = mnemonic.parse().map_err(|_| Error {
         code: ErrorCode::KeystoreCorrupt,
@@ -92,8 +102,17 @@ fn listing(wallet: &Value) -> String {
 /// Create the wallet and the first TOON app, once each. A second `init` finds them and
 /// changes nothing: it does not even need the passphrase, unless the TOON app is missing
 /// and has to be made from the wallet's keys.
-pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
+pub fn init(home: &Path, options: &node::Options, restore: bool) -> Result<Report, Error> {
     if keystore::exists(home) {
+        if restore {
+            return Err(Error {
+                code: ErrorCode::Io,
+                message: format!(
+                    "There is already a wallet at {}: a mnemonic restores into an empty home.",
+                    keystore::path(home).display()
+                ),
+            });
+        }
         return existing(home, options);
     }
     if node::State::load(home)?.is_some() {
@@ -108,14 +127,22 @@ pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
     // Before anything is made: a hidden service that cannot be had creates nothing.
     let edge = edge_for(home, options)?;
     let passphrase = keystore::passphrase()?;
-    let entropy = zeroize::Zeroizing::new(keystore::random::<16>()?);
-    let mnemonic =
-        bip39::Mnemonic::from_entropy(&*entropy).expect("16 bytes is a valid entropy length");
+    let mnemonic = if restore {
+        restoring_mnemonic()?
+    } else {
+        let entropy = zeroize::Zeroizing::new(keystore::random::<16>()?);
+        bip39::Mnemonic::from_entropy(&*entropy).expect("16 bytes is a valid entropy length")
+    };
+    let onion = if restore {
+        Onion::Fresh
+    } else {
+        Onion::Derived
+    };
     let phrase = zeroize::Zeroizing::new(mnemonic.to_string());
     let wallet = describe(&addresses(&phrase)?);
     // The TOON app is made and checked before the wallet is kept, so that a command line
     // the connector would refuse does not leave a wallet whose mnemonic nobody saw.
-    let state = create_toon_app(home, &mnemonic, options, edge.as_deref())?;
+    let state = create_toon_app(home, &mnemonic, options, edge.as_deref(), onion)?;
     if !keystore::create(home, &passphrase, &phrase)? {
         return existing(home, options);
     }
@@ -126,32 +153,118 @@ pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
         return Err(error);
     }
     let (needs, funding_text) = funding::requirements(home, &state)?;
+    let hidden = state.toon_apps.iter().any(|app| app.reach == Reach::Hidden);
+    let changed = restore && hidden;
+    let opening = if restore {
+        format!(
+            "Wallet restored from your mnemonic at {}.",
+            keystore::path(home).display()
+        )
+    } else {
+        format!(
+            "Wallet created at {}.\n\nYour mnemonic. It is shown this once and no command shows it again; write it down now:\n\n  {}",
+            keystore::path(home).display(),
+            *phrase
+        )
+    };
+    let changed_text = if changed {
+        format!("\n\n{ADDRESSES_CHANGED}")
+    } else {
+        String::new()
+    };
     let text = format!(
-        "Wallet created at {}.\n\nYour mnemonic. It is shown this once and no command shows it again; write it down now:\n\n  {}\n\n{}\n\n{}\n\n{}",
-        keystore::path(home).display(),
-        *phrase,
+        "{opening}\n\n{}\n\n{}{changed_text}\n\n{}",
         listing(&wallet),
         toon_app_text(home, &state, true),
         funding_text
     );
+    let mut json = json!({
+        "created": true,
+        "mnemonic": (!restore).then(|| &*phrase),
+        "wallet": wallet,
+        "toon_apps": toon_apps(home, &state, true),
+        "notes": notes(&state),
+        "network": state.network.name(),
+        "needs": needs.iter().map(funding::Need::json).collect::<Vec<_>>(),
+    });
+    if restore {
+        json["restored"] = json!(true);
+        json["onion_endpoints_changed"] = json!(changed);
+    }
     Ok(Report {
         exit: Exit::Success,
-        json: json!({
-            "created": true,
-            "mnemonic": &*phrase,
-            "wallet": wallet,
-            "toon_apps": toon_apps(home, &state, true),
-            "notes": notes(&state),
-            "network": state.network.name(),
-            "needs": needs.iter().map(funding::Need::json).collect::<Vec<_>>(),
-        }),
+        json,
         text,
     })
 }
 
+/// Said when a wallet is restored from its mnemonic alone: the mnemonic does not hold the
+/// address keys, a backup does.
+const ADDRESSES_CHANGED: &str = "The onion endpoints are new: a mnemonic does not hold the \
+    address keys, so every address other operators have created peerings toward has changed. \
+    `toon wallet backup` and `toon wallet restore` keep them.";
+
+/// The mnemonic `toon init --from-mnemonic` restores, from the file named by
+/// `TOON_MNEMONIC_FILE`, else from `TOON_MNEMONIC`: never a flag, so it is not in a process list.
+fn restoring_mnemonic() -> Result<bip39::Mnemonic, Error> {
+    let usage = |message: String| Error {
+        code: ErrorCode::Usage,
+        message,
+    };
+    let text = if let Some(file) = std::env::var_os(MNEMONIC_FILE_ENV).filter(|f| !f.is_empty()) {
+        zeroize::Zeroizing::new(std::fs::read_to_string(&file).map_err(|source| {
+            usage(format!(
+                "{MNEMONIC_FILE_ENV} names {}, which cannot be read: {source}.",
+                Path::new(&file).display()
+            ))
+        })?)
+    } else if let Some(value) = std::env::var_os(MNEMONIC_ENV) {
+        zeroize::Zeroizing::new(
+            value
+                .into_string()
+                .map_err(|_| usage(format!("{MNEMONIC_ENV} is not valid UTF-8.")))?,
+        )
+    } else {
+        return Err(usage(format!(
+            "`--from-mnemonic` reads the mnemonic from the file named by {MNEMONIC_FILE_ENV}, \
+             or from {MNEMONIC_ENV}. A flag is not accepted, because it would show in a process list."
+        )));
+    };
+    let words = zeroize::Zeroizing::new(text.split_whitespace().collect::<Vec<_>>().join(" "));
+    words
+        .parse()
+        .map_err(|_| usage("The mnemonic is not a valid BIP-39 phrase.".into()))
+}
+
+/// The environment variable that holds the mnemonic `init --from-mnemonic` restores.
+pub const MNEMONIC_ENV: &str = "TOON_MNEMONIC";
+/// The environment variable that names a file holding that mnemonic.
+pub const MNEMONIC_FILE_ENV: &str = "TOON_MNEMONIC_FILE";
+
 /// Remove what writing a TOON app's keys left.
 fn discard_toon_apps(home: &Path) {
-    let _ = std::fs::remove_dir_all(home.join("connectors"));
+    // A wallet restored from a backup holds its address keys in these directories, and
+    // they are the one thing that cannot be made again.
+    if keystore::exists(home) {
+        for entry in std::fs::read_dir(home.join("connectors"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            for file in std::fs::read_dir(entry.path())
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                if file.file_name() != "onion.key" {
+                    let path = file.path();
+                    let _ = std::fs::remove_dir_all(&path).or_else(|_| std::fs::remove_file(&path));
+                }
+            }
+        }
+    } else {
+        let _ = std::fs::remove_dir_all(home.join("connectors"));
+    }
     let _ = std::fs::remove_dir_all(home.join("apps"));
     let _ = std::fs::remove_dir_all(home.join("overlay"));
     let _ = std::fs::remove_file(node::operator_key(home));
@@ -165,8 +278,9 @@ fn create_toon_app(
     mnemonic: &bip39::Mnemonic,
     options: &node::Options,
     edge: Option<&dyn Edge>,
+    onion: Onion,
 ) -> Result<node::State, Error> {
-    let created = write_toon_app(home, mnemonic, options, edge);
+    let created = write_toon_app(home, mnemonic, options, edge, onion);
     if created.is_err() {
         discard_toon_apps(home);
     }
@@ -178,6 +292,7 @@ fn write_toon_app(
     mnemonic: &bip39::Mnemonic,
     options: &node::Options,
     edge: Option<&dyn Edge>,
+    onion: Onion,
 ) -> Result<node::State, Error> {
     let seed = derive::seed(mnemonic);
     // The port is chosen now, once, so that the address a connector publishes to its
@@ -223,8 +338,16 @@ fn write_toon_app(
         let placeholder = SocketAddr::from((Ipv4Addr::LOCALHOST, runner::WRITE_PORT));
         let overlay = match (&app.reach, edge) {
             (Reach::Hidden, Some(edge)) => {
-                let onion = derive::onion_secret(&*seed, app.connector).map_err(corrupt)?;
-                node::write(&files.onion_key, &*onion, 0o600)?;
+                // A key that is there already was restored from a backup: it is kept.
+                if !files.onion_key.exists() {
+                    let key = match onion {
+                        Onion::Derived => {
+                            derive::onion_secret(&*seed, app.connector).map_err(corrupt)?
+                        }
+                        Onion::Fresh => zeroize::Zeroizing::new(keystore::random::<32>()?),
+                    };
+                    node::write(&files.onion_key, &*key, 0o600)?;
+                }
                 Some(node::Overlay {
                     proxy: edge.proxy(),
                     endpoint: edge.issue(app.connector, &files.onion_key)?,
@@ -252,7 +375,7 @@ fn existing(home: &Path, options: &node::Options) -> Result<Report, Error> {
                         code: ErrorCode::KeystoreCorrupt,
                         message: "The keystore does not hold a valid mnemonic.".into(),
                     })?;
-            let state = create_toon_app(home, &mnemonic, options, edge.as_deref())?;
+            let state = create_toon_app(home, &mnemonic, options, edge.as_deref(), Onion::Derived)?;
             if let Err(error) = state.save(home) {
                 discard_toon_apps(home);
                 return Err(error);
@@ -556,11 +679,206 @@ pub fn balances(home: &Path) -> Result<Report, Error> {
     })
 }
 
+/// The version of a backup's contents before they are sealed: the mnemonic the keystore
+/// holds and the key of every onion endpoint, by connector.
+const BACKUP_VERSION: u64 = 1;
+
+/// `toon wallet backup`: seal the keystore's mnemonic and every address key into one
+/// file, under the wallet's passphrase. The file is only written where there is none.
+pub fn backup(home: &Path, out: &Path) -> Result<Report, Error> {
+    if !keystore::exists(home) {
+        return Err(keystore::no_wallet(home));
+    }
+    let Some(state) = node::State::load(home)? else {
+        return Err(node::no_agent_node(home));
+    };
+    let passphrase = keystore::passphrase()?;
+    let mnemonic = keystore::open(home, &passphrase)?;
+    let mut onion_keys = serde_json::Map::new();
+    let mut endpoints = Vec::new();
+    for app in state
+        .toon_apps
+        .iter()
+        .filter(|app| app.reach == Reach::Hidden)
+    {
+        let file = node::ConnectorFiles::of(home, app.connector).onion_key;
+        let key = std::fs::read(&file).map_err(|source| Error {
+            code: ErrorCode::Io,
+            message: format!("{}: {source}.", file.display()),
+        })?;
+        let key = zeroize::Zeroizing::new(key);
+        onion_keys.insert(app.connector.to_string(), json!(hex::encode(&*key)));
+        endpoints.push(json!({
+            "toon_app": app.name,
+            "connector": app.connector,
+            "onion_endpoint": node::onion_endpoint(home, app),
+        }));
+    }
+    let plain = zeroize::Zeroizing::new(
+        json!({
+            "version": BACKUP_VERSION,
+            "mnemonic": &*mnemonic,
+            "onion_keys": onion_keys,
+        })
+        .to_string(),
+    );
+    let sealed = keystore::seal(&passphrase, plain.as_bytes())?;
+    let io = |source: std::io::Error| Error {
+        code: ErrorCode::Io,
+        message: format!("{}: {source}.", out.display()),
+    };
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(out)
+            .map_err(io)?;
+        let written = writeln!(file, "{sealed:#}").and_then(|()| file.sync_all());
+        if let Err(source) = written {
+            let _ = std::fs::remove_file(out);
+            return Err(io(source));
+        }
+    }
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "backup": out, "onion_endpoints": endpoints }),
+        text: format!(
+            "Backup written to {}. It holds the mnemonic and {} address key(s), sealed under \
+             the wallet's passphrase: keep both somewhere other than this machine.",
+            out.display(),
+            endpoints.len()
+        ),
+    })
+}
+
+/// `toon wallet restore`: make the wallet and the address keys from a backup, in a home
+/// with no wallet. The keystore is sealed under the passphrase that opened the backup.
+/// `toon init` then makes the TOON app on the keys it finds, at the same onion endpoints.
+pub fn restore(home: &Path, from: &Path) -> Result<Report, Error> {
+    if keystore::exists(home) {
+        return Err(Error {
+            code: ErrorCode::Io,
+            message: format!(
+                "There is already a wallet at {}: a backup restores into an empty home.",
+                keystore::path(home).display()
+            ),
+        });
+    }
+    if node::State::load(home)?.is_some() {
+        return Err(Error {
+            code: ErrorCode::Io,
+            message: format!(
+                "{} has an agent node's state but no wallet: a backup restores into an empty home.",
+                node::state_path(home).display()
+            ),
+        });
+    }
+    let passphrase = keystore::passphrase()?;
+    let text = std::fs::read_to_string(from).map_err(|source| Error {
+        code: ErrorCode::Io,
+        message: format!("{}: {source}.", from.display()),
+    })?;
+    let corrupt = || Error {
+        code: ErrorCode::KeystoreCorrupt,
+        message: format!("{} is not a backup this version reads.", from.display()),
+    };
+    let plain =
+        zeroize::Zeroizing::new(keystore::unseal(&text, &passphrase, from).map_err(|error| {
+            match error.code {
+                ErrorCode::KeystoreCorrupt => corrupt(),
+                _ => error,
+            }
+        })?);
+    let document: Value = serde_json::from_slice(&plain).map_err(|_| corrupt())?;
+    if document["version"] != BACKUP_VERSION {
+        return Err(corrupt());
+    }
+    let phrase = zeroize::Zeroizing::new(
+        document["mnemonic"]
+            .as_str()
+            .ok_or_else(corrupt)?
+            .to_owned(),
+    );
+    let wallet = describe(&addresses(&phrase)?);
+    let mut keys = Vec::new();
+    for (connector, key) in document["onion_keys"].as_object().ok_or_else(corrupt)? {
+        let connector: u32 = connector.parse().map_err(|_| corrupt())?;
+        let key = zeroize::Zeroizing::new(
+            hex::decode(key.as_str().ok_or_else(corrupt)?).map_err(|_| corrupt())?,
+        );
+        if key.len() != 32 {
+            return Err(corrupt());
+        }
+        keys.push((connector, key));
+    }
+    // The address keys first: if one cannot be written there is no wallet that lacks them.
+    let mut endpoints = Vec::new();
+    let mut lines = Vec::new();
+    let mut written = Vec::new();
+    // Only the files this restore wrote are removed if it fails, so that nothing else in the
+    // home is touched.
+    let undo = |written: &[std::path::PathBuf]| {
+        for file in written {
+            let _ = std::fs::remove_file(file);
+        }
+    };
+    for (connector, key) in &keys {
+        let file = node::ConnectorFiles::of(home, *connector).onion_key;
+        if file.exists() {
+            undo(&written);
+            return Err(Error {
+                code: ErrorCode::Io,
+                message: format!(
+                    "{} is there already: a backup restores into an empty home.",
+                    file.display()
+                ),
+            });
+        }
+        if let Err(error) = node::write(&file, key, 0o600) {
+            undo(&written);
+            return Err(error);
+        }
+        written.push(file);
+        let endpoint = overlay::address_of(key.as_slice().try_into().expect("32 bytes"));
+        lines.push(format!("connector {connector} onion endpoint: {endpoint}"));
+        endpoints.push(json!({ "connector": connector, "onion_endpoint": endpoint }));
+    }
+    match keystore::create(home, &passphrase, &phrase) {
+        Ok(true) => {}
+        Ok(false) => {
+            undo(&written);
+            return Err(Error {
+                code: ErrorCode::Io,
+                message: "A wallet was made here while the backup was being restored.".into(),
+            });
+        }
+        Err(error) => {
+            undo(&written);
+            return Err(error);
+        }
+    }
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "restored": true, "wallet": wallet, "onion_endpoints": endpoints }),
+        text: format!(
+            "Wallet restored at {}.\n\n{}\n{}\n\nRun `toon init` to make the TOON app: it keeps these onion endpoints.",
+            keystore::path(home).display(),
+            listing(&wallet),
+            lines.join("\n")
+        ),
+    })
+}
+
 /// `toon wallet`.
 pub fn run(home: &Path, command: &WalletCommand) -> Result<Report, Error> {
     match command {
         WalletCommand::Show => show(home),
         WalletCommand::Fund => funding::fund(home),
         WalletCommand::Balances => balances(home),
+        WalletCommand::Backup { out } => backup(home, out),
+        WalletCommand::Restore { file } => restore(home, file),
     }
 }

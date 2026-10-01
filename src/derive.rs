@@ -16,7 +16,9 @@
 //! - connector identity key: `m/10473'/2'/{connector}'`, per connector.
 //! - relay identity key: `m/10473'/3'/{relay}'`, per relay (ADR 0004).
 //! - onion key: `m/10473'/4'/{connector}'`, per connector: the key a hidden service's
-//!   address is made of (ADR 0003), so that the wallet's backup restores the address.
+//!   address is made of (ADR 0003). A new wallet derives it; a wallet restored from its
+//!   mnemonic alone is given random ones instead, and says its addresses changed, so only
+//!   the wallet's backup, which holds the keys, brings an address back.
 //! - spending-limit signing key: `m/10473'/5'/0'`, once per wallet; an Ed25519 key like the
 //!   operator write key, whose signature on `limits.json` is what the limit rests on.
 //!
