@@ -25,14 +25,32 @@ scrypt = "0.11"
 sha2 = "0.10"
 sha3 = "0.10"
 zeroize = "1"
+connector-cli = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+axum = "0.6"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]
 tempfile = "3"
+# The connector's own fake chain RPC, and the channel-id arithmetic the fake answers with.
+connector-chain-rpc = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705", features = ["test-support"] }
+connector-signer = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+reqwest = { version = "0.11", default-features = false, features = ["blocking", "json"] }
 
 [lints.rust]
 unsafe_code = "forbid"
 
 # The keystore's scrypt is deliberately slow; unoptimised it makes every test that opens
-# a wallet take seconds. This changes how fast the crates run, not the parameters.
-[profile.dev.package."*"]
+# a wallet take seconds. Only the crates that do that work are optimised: scrypt and what
+# it runs on, and the PBKDF2 that turns the mnemonic into a seed. The parameters are unchanged.
+[profile.dev.package.scrypt]
+opt-level = 3
+[profile.dev.package.salsa20]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.hmac]
+opt-level = 3
+[profile.dev.package.sha2]
 opt-level = 3

@@ -288,8 +288,8 @@ fn keystore_of(machine: &Machine, mnemonic: &str) {
     let mut key = [0u8; 32];
     let params = scrypt::Params::new(log_n, 8, 1, 32).unwrap();
     scrypt::scrypt(PASSPHRASE.as_bytes(), &salt, &params, &mut key).unwrap();
-    let ciphertext = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key))
-        .encrypt(Nonce::from_slice(&nonce), mnemonic.as_bytes())
+    let ciphertext = Aes256Gcm::new(&Key::<Aes256Gcm>::from(key))
+        .encrypt(&Nonce::from(nonce), mnemonic.as_bytes())
         .unwrap();
     let document = serde_json::json!({
         "version": 1,

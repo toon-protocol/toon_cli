@@ -128,6 +128,16 @@ export async function loadGate(sandbox: Sandbox, base: string): Promise<Gate> {
 }
 
 /**
+ * What the sandbox is handed for one step: the command under bash, stopping at its first
+ * failing line and at a failure anywhere in a pipeline, as GitHub's runner runs a `run:`
+ * step. bash is named because the sandbox runs a command with `sh`, which in the image
+ * is dash, and dash has no `pipefail`.
+ */
+export function stepScript(command: string): string {
+  return `bash -c ${shellQuote(`set -eo pipefail\n${command}`)}`;
+}
+
+/**
  * Run `steps` in order, stopping at the first failure.
  *
  * Failure is returned, not thrown, so the caller can decide between a fix
@@ -139,8 +149,7 @@ export async function runGate(sandbox: Sandbox, steps: readonly GateStep[]): Pro
   for (const step of steps) {
     console.log(`  [gate] ${step.name}: ${step.command}`);
     const lines: string[] = [];
-    // pipefail is not POSIX: enable it only where the shell has it (dash, as `sh`, does not).
-    const result = await sandbox.exec(`set -e\n(set -o pipefail) 2>/dev/null && set -o pipefail\n${step.command}`, {
+    const result = await sandbox.exec(stepScript(step.command), {
       onLine: (line) => {
         lines.push(line);
         // Stream sparingly: full build output would bury the runner log.

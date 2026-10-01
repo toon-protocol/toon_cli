@@ -112,8 +112,8 @@ pub fn create(home: &Path, passphrase: &str, mnemonic: &str) -> Result<bool, Err
     let salt = random::<16>()?;
     let nonce = random::<12>()?;
     let key = derive_key(passphrase, &salt, LOG_N)?;
-    let ciphertext = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_slice()))
-        .encrypt(Nonce::from_slice(&nonce), mnemonic.as_bytes())
+    let ciphertext = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key))
+        .encrypt(&Nonce::from(nonce), mnemonic.as_bytes())
         .map_err(|_| error(ErrorCode::Io, "The mnemonic could not be encrypted."))?;
     let document = json!({
         "version": 1,
@@ -200,12 +200,10 @@ pub fn open(home: &Path, passphrase: &str) -> Result<Zeroizing<String>, Error> {
     let nonce = field("cipher", "nonce")?;
     let ciphertext =
         hex::decode(document["ciphertext"].as_str().ok_or_else(corrupt)?).map_err(|_| corrupt())?;
-    if nonce.len() != 12 {
-        return Err(corrupt());
-    }
+    let nonce: [u8; 12] = nonce.try_into().map_err(|_| corrupt())?;
     let key = derive_key(passphrase, &salt, log_n)?;
-    let plain = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_slice()))
-        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_slice())
+    let plain = Aes256Gcm::new(&Key::<Aes256Gcm>::from(*key))
+        .decrypt(&Nonce::from(nonce), ciphertext.as_slice())
         .map_err(|_| {
             error(
                 ErrorCode::PassphraseWrong,

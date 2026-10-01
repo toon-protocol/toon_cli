@@ -54,6 +54,8 @@ pub enum ErrorCode {
     PassphraseWrong,
     KeystoreCorrupt,
     Io,
+    NoAgentNode,
+    ConnectorFailed,
 }
 
 impl ErrorCode {
@@ -67,19 +69,22 @@ impl ErrorCode {
             ErrorCode::PassphraseWrong => "passphrase_wrong",
             ErrorCode::KeystoreCorrupt => "keystore_corrupt",
             ErrorCode::Io => "io",
+            ErrorCode::NoAgentNode => "no_agent_node",
+            ErrorCode::ConnectorFailed => "connector_failed",
         }
     }
 
     pub fn exit(self) -> Exit {
         match self {
             ErrorCode::Usage => Exit::Usage,
-            ErrorCode::NoWallet => Exit::NoAgentNode,
+            ErrorCode::NoWallet | ErrorCode::NoAgentNode => Exit::NoAgentNode,
             ErrorCode::HomeUnresolved
             | ErrorCode::PassphraseMissing
             | ErrorCode::PassphraseUnreadable
             | ErrorCode::PassphraseWrong
             | ErrorCode::KeystoreCorrupt
-            | ErrorCode::Io => Exit::Failure,
+            | ErrorCode::Io
+            | ErrorCode::ConnectorFailed => Exit::Failure,
         }
     }
 }
