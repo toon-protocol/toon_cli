@@ -307,6 +307,13 @@ pub enum EventCommand {
         /// What the write is paid, in the token's base units
         #[arg(long, default_value_t = 0)]
         amount: u64,
+        /// Publish to this relay instead (`ws://host:port`), paying the price its
+        /// information document states
+        #[arg(long)]
+        relay: Option<String>,
+        /// Confirm that this command moves money: without it nothing is paid
+        #[arg(long)]
+        yes: bool,
     },
     /// Read the stored events of a relay that match a filter
     Query {

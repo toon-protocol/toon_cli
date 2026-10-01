@@ -20,6 +20,7 @@ use crate::keystore;
 use crate::node;
 use crate::operator::{self, Answer};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::spending;
 
 /// How long a relay gets to answer each message of a query.
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -143,12 +144,24 @@ pub fn public_key(secret: &[u8; 32]) -> Result<String, Error> {
 
 /// Write a signed event to the agent node's own relay through the relay's write route.
 pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
+    write_to(home, event, node::RELAY_WRITE_PREFIX, amount, None)
+}
+
+/// Write a signed event to `destination` for `amount`, sealed to the connector at
+/// `seal_to`, or to this agent node's own.
+fn write_to(
+    home: &Path,
+    event: Value,
+    destination: &str,
+    amount: u64,
+    seal_to: Option<&str>,
+) -> Result<Report, Error> {
     let body = home.join(format!(
         "event.{}.json",
         hex::encode(keystore::random::<8>()?)
     ));
     node::write(&body, event.to_string().as_bytes(), 0o600)?;
-    let answer = operator::dispatch(home, node::RELAY_WRITE_PREFIX, amount, None, Some(&body));
+    let answer = operator::dispatch(home, destination, amount, seal_to, Some(&body));
     let _ = std::fs::remove_file(&body);
 
     let id = event["id"].as_str().unwrap_or_default().to_owned();
@@ -269,6 +282,119 @@ fn set_timeouts(stream: &TcpStream) -> std::io::Result<()> {
     stream.set_write_timeout(Some(PATIENCE))
 }
 
+/// Where another relay is paid for a write, from its information document.
+struct Edge {
+    ilp_address: String,
+    connector_url: String,
+    price: u64,
+}
+
+fn unpayable(message: String) -> Error {
+    Error {
+        code: ErrorCode::RelayNotPayable,
+        message,
+    }
+}
+
+/// The paid write edge `relay` publishes in its NIP-11 information document, the `toon`
+/// object. The document is served at the relay's own URL, as `http://`.
+fn edge(relay: &str) -> Result<Edge, Error> {
+    let url = relay
+        .strip_prefix("ws://")
+        .map(|rest| format!("http://{rest}"))
+        .ok_or_else(|| {
+            unpayable(format!(
+                "{relay} is not a ws:// URL; this build dials plain websocket relays only."
+            ))
+        })?;
+    let document: Value = reqwest::blocking::Client::builder()
+        .timeout(PATIENCE)
+        .build()
+        .and_then(|client| {
+            client
+                .get(&url)
+                .header("accept", "application/nostr+json")
+                .send()
+        })
+        .and_then(|response| response.error_for_status())
+        .and_then(|response| response.json())
+        .map_err(|error| {
+            unpayable(format!(
+                "The information document of {relay} could not be read: {error}."
+            ))
+        })?;
+    let toon = &document["toon"];
+    let text = |field: &str| toon[field].as_str().filter(|text| !text.is_empty());
+    match (
+        text("ilp_address"),
+        text("connector_url"),
+        toon["price"].as_u64(),
+    ) {
+        (Some(ilp_address), Some(connector_url), Some(price)) => Ok(Edge {
+            ilp_address: ilp_address.to_owned(),
+            connector_url: connector_url.to_owned(),
+            price,
+        }),
+        _ => Err(unpayable(format!(
+            "The information document of {relay} has no `toon` object with an `ilp_address`, \
+             a `connector_url` and a `price`, so it does not say where a write is paid for."
+        ))),
+    }
+}
+
+/// `toon event publish --relay`: publish to a relay this agent node does not run, paying
+/// its price through this agent node's own connector over a peering. It never creates the
+/// peering.
+fn publish_to(
+    home: &Path,
+    relay: &str,
+    kind: u64,
+    content: &str,
+    tags: &str,
+    yes: bool,
+) -> Result<Report, Error> {
+    let tags = parse_tags(tags)?;
+    if node::State::load(home)?.is_none() {
+        return Err(node::no_agent_node(home));
+    }
+    let edge = edge(relay)?;
+    if !operator::forwards(home, &edge.ilp_address)? {
+        return Err(Error {
+            code: ErrorCode::PeeringNeeded,
+            message: format!(
+                "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
+                 needed: run `toon peer add {}` and then `toon route add {} --peer <id>`.",
+                edge.ilp_address, edge.connector_url, edge.ilp_address
+            ),
+        });
+    }
+    if !yes {
+        return Err(Error {
+            code: ErrorCode::NotConfirmed,
+            message: format!(
+                "A write to {relay} costs {} base units. Add `--yes` to say that you mean it.",
+                edge.price
+            ),
+        });
+    }
+    let secret = agent_secret(home)?;
+    let event = sign(&secret, now(), kind, tags, content)?;
+    spending::spend(home, edge.price.into(), yes, || {
+        let mut report = write_to(
+            home,
+            event,
+            &edge.ilp_address,
+            edge.price,
+            Some(&edge.connector_url),
+        )?;
+        // Only a fulfilled packet moved money.
+        let paid = report.exit == Exit::Success || report.json["outcome"] == "refused";
+        report.json["relay"] = json!(relay);
+        report.json["paid"] = json!(edge.price);
+        Ok((report, paid))
+    })
+}
+
 /// `toon event`.
 pub fn run(command: EventCommand) -> Result<Report, Error> {
     match command {
@@ -276,7 +402,17 @@ pub fn run(command: EventCommand) -> Result<Report, Error> {
             kind,
             content,
             tags,
+            amount: _,
+            relay: Some(relay),
+            yes,
+        } => publish_to(&home::resolve()?, &relay, kind, &content, &tags, yes),
+        EventCommand::Publish {
+            kind,
+            content,
+            tags,
             amount,
+            relay: None,
+            yes: _,
         } => publish(&home::resolve()?, kind, &content, &tags, amount),
         EventCommand::Query { relay, filter } => query(&relay, &filter),
     }
