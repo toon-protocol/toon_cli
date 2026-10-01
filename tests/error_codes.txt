@@ -23,5 +23,6 @@ chain_failed
 channel_failed
 name_taken
 query_failed
+draft_refused
 confirmation_required
 overlay_unavailable

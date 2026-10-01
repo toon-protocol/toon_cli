@@ -14,6 +14,7 @@ mod event;
 mod funding;
 mod home;
 mod keystore;
+mod nip;
 mod node;
 mod operator;
 mod outcome;
@@ -121,6 +122,7 @@ fn main() -> ExitCode {
         )
         .into(),
         Command::Event { command } => render(event::run(command), json).into(),
+        Command::Nip { command } => render(nip::run(command), json).into(),
         Command::Relay { command } => render(
             home::resolve().and_then(|home| relay::run(&home, command)),
             json,
