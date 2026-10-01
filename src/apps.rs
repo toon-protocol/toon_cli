@@ -92,7 +92,7 @@ fn confirm(yes: bool, toon_app: &str) -> Result<(), Error> {
 /// restart stopped it, started again without it. If nothing runs, the change is checked
 /// against the connector's own validation before it is recorded. Returns whether a
 /// connector was restarted.
-fn apply(home: &Path, before: &State, changed: &State, toon_app: &str) -> Result<bool, Error> {
+pub fn apply(home: &Path, before: &State, changed: &State, toon_app: &str) -> Result<bool, Error> {
     if !control::running(home) {
         check(home, changed, toon_app)?;
         changed.save(home)?;
@@ -146,7 +146,13 @@ fn check(home: &Path, changed: &State, toon_app: &str) -> Result<(), Error> {
         .iter()
         .map(|behind| (behind.name.clone(), placeholder))
         .collect();
-    node::render(home, app, &addresses).map(|_| ())
+    // A hidden service renders only with its overlay, which a check has none of: a stand-in
+    // is enough to check what the config says.
+    let overlay = matches!(app.reach, node::Reach::Hidden).then(|| node::Overlay {
+        proxy: placeholder,
+        endpoint: "check.anyone".into(),
+    });
+    node::render(home, app, &addresses, overlay.as_ref()).map(|_| ())
 }
 
 fn restarted(now: bool, toon_app: &str) -> String {

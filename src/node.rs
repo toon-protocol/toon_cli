@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use crate::outcome::{Error, ErrorCode};
 use crate::profile::Profile;
-use crate::{derive, keystore};
+use crate::{derive, keystore, overlay};
 
 /// The name of the first TOON app, the one whose connector fronts the relay, and of the
 /// relay app behind it.
@@ -24,12 +24,28 @@ pub const RELAY: &str = "relay";
 /// The connector's route to the relay's paid write endpoint, and its price per write.
 pub const RELAY_WRITE_PREFIX: &str = "g.toon.relay";
 pub const RELAY_WRITE_PRICE: u64 = 1;
+/// The price of the relay's free ephemeral write.
+pub const RELAY_EPHEMERAL_PRICE: u64 = 0;
 /// The route to the relay's free ephemeral write endpoint.
 pub const RELAY_EPHEMERAL_PREFIX: &str = "g.toon.relay.ephemeral";
+
+/// How a TOON app is reached (ADR 0003).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// Only at its onion endpoint. The default.
+    Hidden,
+    /// At a public hostname the operator asked for. The certificate and the reverse
+    /// proxy that answer there are the operator's.
+    Clearnet { hostname: String },
+}
 
 /// What `init` was asked for, for the first TOON app.
 #[derive(Clone, Debug)]
 pub struct Options {
+    /// How it is reached.
+    pub reach: Reach,
+    /// The operator agreed to the Anyone Protocol's terms, which a hidden service needs.
+    pub accept_anyone_terms: bool,
     /// Where the connector listens.
     pub listen: String,
     /// The network profile the chain settings come from.
@@ -62,12 +78,96 @@ pub struct Solana {
     pub decimals: u8,
 }
 
+/// What the relay does with an event that carries an expiration (NIP-40).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Expiry {
+    /// Drop it once it has expired.
+    #[default]
+    Honour,
+    /// Keep it for ever.
+    Ignore,
+}
+
+impl Expiry {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Expiry::Honour => "honour",
+            Expiry::Ignore => "ignore",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "honour" => Some(Expiry::Honour),
+            "ignore" => Some(Expiry::Ignore),
+            _ => None,
+        }
+    }
+}
+
+/// What the operator set for the relay. The relay reads them when it starts. The price of
+/// a write is the connector's, on the relay's route: the relay's `App`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RelaySettings {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub expiry: Expiry,
+    /// Nostr public keys, in hex, whose events the relay refuses.
+    pub blocklist: Vec<String>,
+}
+
+impl RelaySettings {
+    /// The environment the relay is started with, besides its identity key. A setting
+    /// the operator never made is not passed, so the relay keeps its own default.
+    pub fn env(&self) -> Vec<(String, String)> {
+        let mut env = Vec::new();
+        if let Some(name) = &self.name {
+            env.push(("TOON_RELAY_NAME".into(), name.clone()));
+        }
+        if let Some(description) = &self.description {
+            env.push(("TOON_RELAY_DESCRIPTION".into(), description.clone()));
+        }
+        env.push(("TOON_RELAY_EXPIRY".into(), self.expiry.as_str().into()));
+        if !self.blocklist.is_empty() {
+            env.push(("TOON_RELAY_BLOCKLIST".into(), self.blocklist.join(",")));
+        }
+        env
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "name": self.name,
+            "description": self.description,
+            "expiry": self.expiry.as_str(),
+            "blocklist": self.blocklist,
+        })
+    }
+
+    fn from_json(value: &Value) -> Option<Self> {
+        let optional = |key: &str| match &value[key] {
+            Value::Null => Some(None),
+            text => text.as_str().map(|text| Some(text.to_owned())),
+        };
+        Some(Self {
+            name: optional("name")?,
+            description: optional("description")?,
+            expiry: Expiry::from_name(value["expiry"].as_str()?)?,
+            blocklist: value["blocklist"]
+                .as_array()?
+                .iter()
+                .map(|key| key.as_str().map(str::to_owned))
+                .collect::<Option<_>>()?,
+        })
+    }
+}
+
 /// One TOON app as the operator asked for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToonApp {
     pub name: String,
     /// The index of the wallet's keys this app's connector uses.
     pub connector: u32,
+    pub reach: Reach,
     pub listen: String,
     pub evm: Option<Evm>,
     pub solana: Option<Solana>,
@@ -75,6 +175,8 @@ pub struct ToonApp {
     pub plaintext_peers: bool,
     /// The apps behind the connector.
     pub apps: Vec<App>,
+    /// How the relay behind it is set, if it has one.
+    pub relay: RelaySettings,
 }
 
 /// Where an app comes from.
@@ -201,6 +303,8 @@ pub struct ConnectorFiles {
     pub identity_key: PathBuf,
     pub settlement_key: PathBuf,
     pub solana_settlement_key: PathBuf,
+    /// The key a hidden service's onion endpoint is made of.
+    pub onion_key: PathBuf,
     pub config: PathBuf,
     pub state_dir: PathBuf,
     pub log: PathBuf,
@@ -215,6 +319,7 @@ impl ConnectorFiles {
             identity_key: dir.join("identity.key"),
             settlement_key: dir.join("settlement.key"),
             solana_settlement_key: dir.join("settlement-solana.key"),
+            onion_key: dir.join("onion.key"),
             config: dir.join("connector.toml"),
             state_dir: dir.join("state"),
             log: dir.join("connector.log"),
@@ -235,6 +340,25 @@ impl AppFiles {
         Self {
             identity_key: dir.join("identity.key"),
             data_dir: dir.join("data"),
+        }
+    }
+}
+
+impl Reach {
+    fn json(&self) -> Value {
+        match self {
+            Reach::Hidden => json!({ "mode": "hidden" }),
+            Reach::Clearnet { hostname } => json!({ "mode": "clearnet", "hostname": hostname }),
+        }
+    }
+
+    fn from_json(value: &Value) -> Option<Self> {
+        match value["mode"].as_str()? {
+            "hidden" => Some(Reach::Hidden),
+            "clearnet" => Some(Reach::Clearnet {
+                hostname: value["hostname"].as_str()?.to_owned(),
+            }),
+            _ => None,
         }
     }
 }
@@ -287,11 +411,13 @@ impl State {
             toon_apps: vec![ToonApp {
                 name: RELAY.into(),
                 connector: 0,
+                reach: options.reach.clone(),
                 listen: options.listen.clone(),
                 evm: options.evm.clone(),
                 solana: options.solana.clone(),
                 plaintext_peers: options.plaintext_peers,
                 apps: vec![App::relay()],
+                relay: RelaySettings::default(),
             }],
         }
     }
@@ -304,11 +430,13 @@ impl State {
                 json!({
                     "name": app.name,
                     "connector": app.connector,
+                    "reach": app.reach.json(),
                     "listen": app.listen,
                     "evm": app.evm.as_ref().map(Evm::json),
                     "solana": app.solana.as_ref().map(Solana::json),
                     "plaintext_peers": app.plaintext_peers,
                     "apps": app.apps.iter().map(App::json).collect::<Vec<_>>(),
+                    "relay": app.relay.json(),
                 })
             })
             .collect();
@@ -331,6 +459,7 @@ impl State {
                 Some(ToonApp {
                     name: app["name"].as_str()?.to_owned(),
                     connector: u32::try_from(app["connector"].as_u64()?).ok()?,
+                    reach: Reach::from_json(&app["reach"])?,
                     listen: app["listen"].as_str()?.to_owned(),
                     evm: match &app["evm"] {
                         Value::Null => None,
@@ -347,6 +476,11 @@ impl State {
                         .iter()
                         .map(App::from_json)
                         .collect::<Option<_>>()?,
+                    // A state written before the relay had settings has none.
+                    relay: match &app["relay"] {
+                        Value::Null => RelaySettings::default(),
+                        relay => RelaySettings::from_json(relay)?,
+                    },
                 })
             })
             .collect::<Option<Vec<_>>>()?;
@@ -424,9 +558,46 @@ pub fn write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Error> {
     Ok(())
 }
 
+/// The line that puts a settlement table's RPC on the overlay's proxy, if there is one.
+/// The connector refuses plain http through a circuit, where an exit relay could rewrite the
+/// answers, so a plain-http endpoint on this machine, which has nothing to hide from a
+/// relay, is the one RPC that is dialed directly.
+fn via_proxy(overlay: Option<&Overlay>, rpc_url: &str) -> &'static str {
+    let local_http = rpc_url
+        .strip_prefix("http://")
+        .and_then(|rest| rest.split('/').next())
+        .map(|authority| match authority.find(']') {
+            Some(end) => &authority[..=end],
+            None => authority.split(':').next().unwrap_or(authority),
+        })
+        .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "[::1]"));
+    if overlay.is_some() && !local_http {
+        "rpc_via_socks_proxy = true\n"
+    } else {
+        ""
+    }
+}
+
 /// A TOML basic string. JSON's escapes are the ones TOML reads.
 fn string(text: &str) -> String {
     Value::from(text).to_string()
+}
+
+/// The onion endpoint of `app`, if it is a hidden service whose key is there.
+pub fn onion_endpoint(home: &Path, app: &ToonApp) -> Option<String> {
+    if app.reach != Reach::Hidden {
+        return None;
+    }
+    let key = fs::read(ConnectorFiles::of(home, app.connector).onion_key).ok()?;
+    Some(overlay::address_of(key.as_slice().try_into().ok()?))
+}
+
+/// What a hidden service's connector is told about the overlay.
+pub struct Overlay {
+    /// The SOCKS proxy all of its outbound traffic goes through.
+    pub proxy: SocketAddr,
+    /// Its onion endpoint, a host.
+    pub endpoint: String,
 }
 
 /// `listen` with a port: a connector publishes where it can be paid, so it cannot be left
@@ -450,19 +621,63 @@ pub type Addresses = [(String, SocketAddr)];
 
 /// Render the connector config of `app` into `home` and check it with the connector's
 /// own validation. `addresses` is where each app that runs is reached; a route is
-/// rendered for an app that has no address yet only if the operator serves it. The config is written whether or not it validates, so that the error can be read
-/// against it; a caller that gets `Err` starts nothing.
-pub fn render(home: &Path, app: &ToonApp, addresses: &Addresses) -> Result<ConnectorFiles, Error> {
+/// rendered for an app that has no address yet only if the operator serves it. `overlay` is
+/// what a hidden service is rendered with: an app that is one has no config without it, and
+/// one that is not ignores it. The config is written whether or not it validates, so that the
+/// error can be read against it; a caller that gets `Err` starts nothing.
+pub fn render(
+    home: &Path,
+    app: &ToonApp,
+    addresses: &Addresses,
+    overlay: Option<&Overlay>,
+) -> Result<ConnectorFiles, Error> {
+    let overlay = match (&app.reach, overlay) {
+        (Reach::Hidden, Some(overlay)) => Some(overlay),
+        (Reach::Hidden, None) => {
+            return Err(Error {
+                code: ErrorCode::OverlayUnavailable,
+                message: format!(
+                    "{} is a hidden service and the overlay is not there to render it with.",
+                    app.name
+                ),
+            })
+        }
+        (Reach::Clearnet { .. }, _) => None,
+    };
     let files = ConnectorFiles::of(home, app.connector);
     let operator = write_operator_files(home, &files)?;
     let listen = concrete(&app.listen)?;
+    // `socks_proxy` is one top-level key, so it goes before the first table: all the
+    // connector dials out goes through it, and `socks5h` because no local resolver
+    // resolves an onion name.
+    let socks = overlay
+        .map(|overlay| {
+            format!(
+                "socks_proxy = {}\n",
+                string(&format!("socks5h://{}", overlay.proxy))
+            )
+        })
+        .unwrap_or_default();
+    // A hidden service is paid at its onion endpoint, over HTTP and BTP; any other
+    // connector at the address it listens on.
+    let (http_endpoint, btp_endpoint) = match overlay {
+        Some(overlay) => (
+            format!("http://{}/ilp", overlay.endpoint),
+            format!(
+                "btp_endpoint = {}\n",
+                string(&format!("ws://{}/ilp/btp", overlay.endpoint))
+            ),
+        ),
+        None => (format!("http://{listen}/ilp"), String::new()),
+    };
     // Every connector is peerable: another operator can peer toward it. A peer reads
     // where to pay it from the connector's self-description, so the connector must be
     // told its own address, and `peer_expose` is a root key, which TOML wants first.
     let mut config = format!(
         "# Rendered by `toon` from state.json. Edits here are overwritten.\n\
-         client_edge_addr = {}\nstate_dir = {}\npeer_expose = \"http\"\n{}\n\
-         [node]\naddresses = [{}]\nhttp_endpoint = {}\n\n[signer]\nkey_file = {}\n",
+         client_edge_addr = {}\nstate_dir = {}\npeer_expose = \"http\"\n{}{socks}\n\
+         [node]\naddresses = [{}]\nhttp_endpoint = {}\n{btp_endpoint}\n\
+         [signer]\nkey_file = {}\n",
         string(&listen),
         string(&files.state_dir.to_string_lossy()),
         if app.plaintext_peers {
@@ -471,7 +686,7 @@ pub fn render(home: &Path, app: &ToonApp, addresses: &Addresses) -> Result<Conne
             ""
         },
         string(&format!("g.toon.{}", app.name)),
-        string(&format!("http://{listen}/ilp")),
+        string(&http_endpoint),
         string(&files.identity_key.to_string_lossy()),
     );
     for behind in &app.apps {
@@ -513,7 +728,7 @@ pub fn render(home: &Path, app: &ToonApp, addresses: &Addresses) -> Result<Conne
     if let Some(evm) = &app.evm {
         config.push_str(&format!(
             "\n[settlement.evm]\nrpc_url = {}\ntoken_address = {}\ndecimals = {}\n\
-             asset_eip712_name = {}\nasset_eip712_version = {}\nasset_transfer_method = {}\n\n\
+             asset_eip712_name = {}\nasset_eip712_version = {}\nasset_transfer_method = {}\n{}\n\
              [settlement.evm.key]\nkey_file = {}\n",
             string(&evm.rpc_url),
             string(&evm.token),
@@ -521,17 +736,19 @@ pub fn render(home: &Path, app: &ToonApp, addresses: &Addresses) -> Result<Conne
             string(&evm.asset_name),
             string(&evm.asset_version),
             string(&evm.transfer_method),
+            via_proxy(overlay, &evm.rpc_url),
             string(&files.settlement_key.to_string_lossy()),
         ));
     }
     if let Some(solana) = &app.solana {
         config.push_str(&format!(
             "\n[settlement.solana]\nrpc_url = {}\ntoken_address = {}\ndecimals = {}\n\
-             min_sponsored_deposit = {}\n\n[settlement.solana.key]\nkey_file = {}\n",
+             min_sponsored_deposit = {}\n{}\n[settlement.solana.key]\nkey_file = {}\n",
             string(&solana.rpc_url),
             string(&solana.token),
             solana.decimals,
             10u64.pow(u32::from(solana.decimals)),
+            via_proxy(overlay, &solana.rpc_url),
             string(&files.solana_settlement_key.to_string_lossy()),
         ));
     }
@@ -572,4 +789,33 @@ fn write_operator_files(home: &Path, files: &ConnectorFiles) -> Result<bool, Err
         0o600,
     )?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_plain_http_rpc_on_this_machine_skips_the_proxy() {
+        let overlay = Overlay {
+            proxy: "127.0.0.1:9050".parse().unwrap(),
+            endpoint: "example.anon".into(),
+        };
+        for local in [
+            "http://localhost:8545",
+            "http://127.0.0.1:8545/",
+            "http://[::1]:8545",
+            "http://[::1]",
+        ] {
+            assert_eq!(via_proxy(Some(&overlay), local), "", "{local}");
+        }
+        for remote in [
+            "https://localhost:8545",
+            "http://rpc.example:8545",
+            "http://[::2]:8545",
+        ] {
+            assert_ne!(via_proxy(Some(&overlay), remote), "", "{remote}");
+        }
+        assert_eq!(via_proxy(None, "https://rpc.example"), "");
+    }
 }

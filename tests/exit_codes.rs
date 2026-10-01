@@ -58,39 +58,15 @@ fn the_exit_codes_document_lists_the_same_codes() {
     assert_eq!(rows, expected);
 }
 
-/// The error codes, as fixed by the releases so far. A new one is added here and to the
-/// document together.
-const ERROR_CODES: [&str; 23] = [
-    "usage",
-    "home_unresolved",
-    "no_wallet",
-    "passphrase_missing",
-    "passphrase_unreadable",
-    "passphrase_wrong",
-    "keystore_corrupt",
-    "io",
-    "no_agent_node",
-    "connector_failed",
-    "already_running",
-    "app_failed",
-    "unfunded",
-    "faucet_unavailable",
-    "not_running",
-    "send_failed",
-    "systemd_failed",
-    "unknown_name",
-    "peer_failed",
-    "peer_not_peerable",
-    "route_failed",
-    "name_taken",
-    "confirmation_required",
-];
+/// The error codes, as fixed by the releases so far: `tests/error_codes.txt`, a line to a
+/// code. A new one is added there and to the document together.
+const ERROR_CODES: &str = include_str!("error_codes.txt");
 
 #[test]
 fn the_exit_codes_document_lists_the_error_codes() {
     let document = exit_codes_document();
 
-    for code in ERROR_CODES {
+    for code in ERROR_CODES.lines().filter(|line| !line.is_empty()) {
         assert!(
             document.contains(&format!("| `{code}` |")),
             "docs/exit-codes.md does not list the error code `{code}`"

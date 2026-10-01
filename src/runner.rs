@@ -25,6 +25,10 @@ pub const COMMAND_VARIABLE: &str = "TOON_APP_COMMAND";
 /// told to use through `TOON_BLS_PORT`.
 pub const WRITE_PORT: u16 = 3100;
 
+/// The port the relay serves reads on inside its container, and the one a local process
+/// is told to use through `TOON_WS_PORT`.
+pub const READ_PORT: u16 = crate::overlay::RELAY_READ_PORT;
+
 /// How long an app gets to answer its health check once started.
 const HEALTHY_WITHIN: Duration = Duration::from_secs(120);
 
@@ -54,6 +58,8 @@ pub trait AppRunner {
 pub trait RunningApp: Send {
     /// Where the app's write port can be reached: this machine only.
     fn write_address(&self) -> SocketAddr;
+    /// Where the app's read port can be reached, if it has one: this machine only.
+    fn read_address(&self) -> Option<SocketAddr>;
     /// Whether the app is still running.
     fn running(&mut self) -> bool;
     /// Stop the app and return once it is gone. Stopping a stopped app does nothing.
@@ -121,6 +127,7 @@ struct Process {
     /// The app exits when this closes, so it is held for as long as the app runs.
     alive: Option<ChildStdin>,
     address: SocketAddr,
+    read: SocketAddr,
 }
 
 impl AppRunner for ProcessRunner {
@@ -135,15 +142,19 @@ impl AppRunner for ProcessRunner {
             .open(&log)
             .map_err(|error| io(&log, error))?;
         // A port is free until something else takes it; the app fails to bind and says so.
-        let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .and_then(|listener| listener.local_addr())
-            .map_err(|error| failed(format!("No free port for the app: {error}.")))?
-            .port();
+        let free_port = || {
+            TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .and_then(|listener| listener.local_addr())
+                .map(|address| address.port())
+                .map_err(|error| failed(format!("No free port for the app: {error}.")))
+        };
+        let (port, read_port) = (free_port()?, free_port()?);
         let mut command = Command::new(&self.program);
         command
             .env_clear()
             .envs(spec.env.iter().map(|(name, value)| (name, value)))
             .env("TOON_BLS_PORT", port.to_string())
+            .env("TOON_WS_PORT", read_port.to_string())
             .env("TOON_DATA_DIR", &spec.data_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::from(
@@ -162,6 +173,7 @@ impl AppRunner for ProcessRunner {
             child,
             alive,
             address,
+            read: SocketAddr::from((Ipv4Addr::LOCALHOST, read_port)),
         };
         if let Err(why) = wait_healthy(address, || process.running()) {
             process.stop();
@@ -179,6 +191,10 @@ impl AppRunner for ProcessRunner {
 impl RunningApp for Process {
     fn write_address(&self) -> SocketAddr {
         self.address
+    }
+
+    fn read_address(&self) -> Option<SocketAddr> {
+        Some(self.read)
     }
 
     fn running(&mut self) -> bool {
@@ -211,6 +227,7 @@ pub struct ContainerRunner;
 struct Container {
     name: String,
     address: SocketAddr,
+    read: SocketAddr,
     stopped: bool,
 }
 
@@ -240,6 +257,7 @@ impl AppRunner for ContainerRunner {
         command
             .args(["run", "--detach", "--rm", "--name", &name])
             .args(["--publish", &format!("127.0.0.1::{WRITE_PORT}")])
+            .args(["--publish", &format!("127.0.0.1::{READ_PORT}")])
             .arg("--volume")
             .arg(format!("{}:/data", data.display()))
             .args(["--env", &format!("TOON_BLS_PORT={WRITE_PORT}")])
@@ -263,17 +281,23 @@ impl AppRunner for ContainerRunner {
         let mut container = Container {
             name: name.clone(),
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            read: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             stopped: false,
         };
-        let mapped = docker(&["port", &name, &format!("{WRITE_PORT}/tcp")]).and_then(|ports| {
-            ports
-                .lines()
-                .filter_map(|line| line.parse::<SocketAddr>().ok())
-                .find(SocketAddr::is_ipv4)
-                .ok_or_else(|| format!("docker did not say where {name} publishes {WRITE_PORT}"))
-        });
-        match mapped {
-            Ok(address) => container.address = address,
+        let published = |port: u16| {
+            docker(&["port", &name, &format!("{port}/tcp")]).and_then(|ports| {
+                ports
+                    .lines()
+                    .filter_map(|line| line.parse::<SocketAddr>().ok())
+                    .find(SocketAddr::is_ipv4)
+                    .ok_or_else(|| format!("docker did not say where {name} publishes {port}"))
+            })
+        };
+        match published(WRITE_PORT).and_then(|write| Ok((write, published(READ_PORT)?))) {
+            Ok((write, read)) => {
+                container.address = write;
+                container.read = read;
+            }
             Err(why) => {
                 container.stop();
                 return Err(failed(format!("The app {}: {why}.", spec.instance)));
@@ -295,6 +319,10 @@ impl AppRunner for ContainerRunner {
 impl RunningApp for Container {
     fn write_address(&self) -> SocketAddr {
         self.address
+    }
+
+    fn read_address(&self) -> Option<SocketAddr> {
+        Some(self.read)
     }
 
     fn running(&mut self) -> bool {

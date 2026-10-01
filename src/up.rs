@@ -26,8 +26,9 @@ use sha2::Digest;
 use crate::connector::{self, Startup};
 use crate::control;
 use crate::funding;
-use crate::node::{self, App, AppFiles, ConnectorFiles, Source, State, ToonApp};
+use crate::node::{self, App, AppFiles, ConnectorFiles, Reach, Source, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::overlay::{self, Edge};
 use crate::runner::{self, AppRunner, AppSpec, RunningApp};
 
 /// How long a connector gets to exit once its supervisor is stopping, before it is killed.
@@ -93,8 +94,47 @@ struct Started {
     since: Instant,
 }
 
+/// The overlay a hidden service's connector is reached and reaches out through.
+struct Hidden {
+    edge: Box<dyn Edge>,
+    endpoint: String,
+    /// Where the relay's read port is, if the TOON app fronts a relay.
+    read: Option<SocketAddr>,
+}
+
+impl Hidden {
+    /// Publish the connector, now listening at `address`, and the relay's read port, at the
+    /// onion endpoint.
+    fn publish(&self, address: &str) {
+        let mut ports = Vec::new();
+        if let Ok(address) = address.parse() {
+            ports.push((overlay::CONNECTOR_PORT, address));
+        }
+        if let Some(read) = self.read {
+            ports.push((overlay::RELAY_READ_PORT, read));
+        }
+        self.edge.publish(&self.endpoint, &ports);
+    }
+
+    fn overlay(&self) -> node::Overlay {
+        node::Overlay {
+            proxy: self.edge.proxy(),
+            endpoint: self.endpoint.clone(),
+        }
+    }
+}
+
+/// Where the relay's read port is, if it runs.
+fn read_address(apps: &StartedApps) -> Option<SocketAddr> {
+    apps.iter()
+        .find(|(name, _)| name == node::RELAY)
+        .and_then(|(_, running)| running.read_address())
+}
+
 /// A supervisor whose connector is listening.
 pub struct Supervisor {
+    /// Held for as long as the connector runs, and dropped once it and the apps are stopped.
+    hidden: Option<Hidden>,
     connector: Option<Started>,
     /// The apps behind it that run, stopped after it.
     apps: StartedApps,
@@ -172,6 +212,7 @@ type StartedApps = Vec<(String, Box<dyn RunningApp>)>;
 /// Start one app, if it is one the supervisor runs, and return once it is healthy.
 fn start_app(
     home: &Path,
+    toon: &ToonApp,
     app: &App,
     runner: &dyn AppRunner,
 ) -> Result<Option<Box<dyn RunningApp>>, Error> {
@@ -188,10 +229,9 @@ fn start_app(
                     files.identity_key.display()
                 ),
             })?;
-            (
-                env!("TOON_RELAY_IMAGE").to_owned(),
-                vec![("NOSTR_SECRET_KEY".into(), hex::encode(identity))],
-            )
+            let mut env = vec![("NOSTR_SECRET_KEY".to_owned(), hex::encode(identity))];
+            env.extend(toon.relay.env());
+            (env!("TOON_RELAY_IMAGE").to_owned(), env)
         }
         Source::Image(image) => (image.clone(), Vec::new()),
     };
@@ -208,7 +248,7 @@ fn start_app(
 fn start_apps(home: &Path, app: &ToonApp, runner: &dyn AppRunner) -> Result<StartedApps, Error> {
     let mut started = StartedApps::new();
     for behind in &app.apps {
-        match start_app(home, behind, runner) {
+        match start_app(home, app, behind, runner) {
             Ok(Some(running)) => started.push((behind.name.clone(), running)),
             Ok(None) => {}
             Err(error) => {
@@ -236,8 +276,19 @@ fn launch(
     listener: UnixListener,
     socket: &Path,
 ) -> Result<Supervisor, Error> {
+    // A hidden service is not started without its overlay, and never on clearnet instead,
+    // so the overlay comes up before anything behind it listens.
+    let overlay = match app.reach {
+        Reach::Hidden => {
+            let edge = overlay::bootstrap(home)?;
+            let key = ConnectorFiles::of(home, app.connector).onion_key;
+            let endpoint = edge.issue(app.connector, &key)?;
+            Some((edge, endpoint))
+        }
+        Reach::Clearnet { .. } => None,
+    };
     let apps = start_apps(home, app, &*runner)?;
-    launch_connector(home, app, apps, runner, listener, socket)
+    launch_connector(home, app, overlay, apps, runner, listener, socket)
 }
 
 /// Where each running app's write port is reached.
@@ -260,15 +311,23 @@ fn statuses(apps: &StartedApps) -> Vec<AppStatus> {
 fn launch_connector(
     home: &Path,
     app: &ToonApp,
+    overlay: Option<(Box<dyn Edge>, String)>,
     mut apps: StartedApps,
     runner: Box<dyn AppRunner>,
     listener: UnixListener,
     socket: &Path,
 ) -> Result<Supervisor, Error> {
-    let started = node::render(home, app, &addresses(&apps)).and_then(|files| {
-        let started = spawn(&files)?;
-        Ok((files, started))
+    let hidden = overlay.map(|(edge, endpoint)| Hidden {
+        edge,
+        endpoint,
+        read: read_address(&apps),
     });
+    let rendering = hidden.as_ref().map(Hidden::overlay);
+    let started =
+        node::render(home, app, &addresses(&apps), rendering.as_ref()).and_then(|files| {
+            let started = spawn(&files)?;
+            Ok((files, started))
+        });
     let (files, started) = match started {
         Ok(started) => started,
         Err(error) => {
@@ -278,6 +337,9 @@ fn launch_connector(
             return Err(error);
         }
     };
+    if let Some(hidden) = &hidden {
+        hidden.publish(&started.address);
+    }
     let first = (started.child.id(), started.address.clone());
     let shared = Arc::new(Shared {
         toon_app: app.name.clone(),
@@ -295,6 +357,7 @@ fn launch_connector(
     let answering = Arc::clone(&shared);
     thread::spawn(move || control::serve(listener, move |request| answering.answer(request)));
     Ok(Supervisor {
+        hidden,
         connector: Some(started),
         apps,
         runner,
@@ -497,6 +560,7 @@ impl Supervisor {
         for (_, app) in &mut self.apps {
             app.stop();
         }
+        self.hidden = None;
         self.shared.live().running = false;
         // Last, so that a `toon down` that sees the socket gone knows everything has.
         let _ = std::fs::remove_file(&self.socket);
@@ -535,6 +599,9 @@ impl Supervisor {
         self.delay = (self.delay * 2).min(LONGEST_RESTART_DELAY);
         match spawn(&self.files) {
             Ok(started) => {
+                if let Some(hidden) = &self.hidden {
+                    hidden.publish(&started.address);
+                }
                 let mut live = self.shared.live();
                 live.pid = Some(started.child.id());
                 live.address = Some(started.address.clone());
@@ -568,6 +635,26 @@ impl Supervisor {
                 "The TOON app {toon_app} is no longer in the state."
             ))));
         };
+        // An app whose definition changed, or the relay with new settings, is started again,
+        // and the old one goes first: the two would share a name.
+        let mut touched = false;
+        for behind in &app.apps {
+            let old = self.app.apps.iter().find(|old| old.name == behind.name);
+            let changed = old.is_some_and(|old| {
+                old.source != behind.source
+                    || (behind.name == node::RELAY && self.app.relay != app.relay)
+            });
+            if let Some(position) = self.apps.iter().position(|(name, _)| *name == behind.name) {
+                if changed {
+                    self.apps.remove(position).1.stop();
+                    touched = true;
+                }
+            }
+        }
+        let unreloaded = |error| Unreloaded {
+            error,
+            stopped: touched,
+        };
         let mut fresh = StartedApps::new();
         let stop = |fresh: &mut StartedApps| {
             for (_, running) in fresh {
@@ -578,24 +665,32 @@ impl Supervisor {
             if self.apps.iter().any(|(name, _)| *name == behind.name) {
                 continue;
             }
-            match start_app(&self.home, behind, &*self.runner) {
+            match start_app(&self.home, app, behind, &*self.runner) {
                 Ok(Some(running)) => fresh.push((behind.name.clone(), running)),
                 Ok(None) => {}
                 Err(error) => {
                     stop(&mut fresh);
-                    return Err(untouched(error));
+                    return Err(unreloaded(error));
                 }
             }
         }
         let mut reached = addresses(&self.apps);
         reached.extend(addresses(&fresh));
-        let files = match node::render(&self.home, app, &reached) {
+        // The relay's read port moves with the relay, so the onion endpoint is told again.
+        let read = read_address(&self.apps).or_else(|| read_address(&fresh));
+        let rendering = self.hidden.as_ref().map(Hidden::overlay);
+        let files = match node::render(&self.home, app, &reached, rendering.as_ref()) {
             Ok(files) => files,
             Err(error) => {
                 stop(&mut fresh);
                 // Put back the config the connector runs, for the next time it restarts.
-                let _ = node::render(&self.home, &self.app, &addresses(&self.apps));
-                return Err(untouched(error));
+                let _ = node::render(
+                    &self.home,
+                    &self.app,
+                    &addresses(&self.apps),
+                    rendering.as_ref(),
+                );
+                return Err(unreloaded(error));
             }
         };
         self.stop_connector();
@@ -615,11 +710,17 @@ impl Supervisor {
         self.apps.extend(fresh);
         *self.shared.apps() = statuses(&self.apps);
         self.app = app.clone();
+        if let Some(hidden) = &mut self.hidden {
+            hidden.read = read;
+        }
         self.files = files;
         let started = spawn(&self.files).map_err(|error| Unreloaded {
             error,
             stopped: true,
         })?;
+        if let Some(hidden) = &self.hidden {
+            hidden.publish(&started.address);
+        }
         let mut live = self.shared.live();
         live.pid = Some(started.child.id());
         live.address = Some(started.address.clone());

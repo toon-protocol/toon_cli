@@ -43,90 +43,35 @@ pub struct Report {
 }
 
 /// The error codes. Like the exit codes they are stable, and `docs/exit-codes.md`
-/// documents them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ErrorCode {
-    Usage,
-    HomeUnresolved,
-    NoWallet,
-    PassphraseMissing,
-    PassphraseUnreadable,
-    PassphraseWrong,
-    KeystoreCorrupt,
-    Io,
-    NoAgentNode,
-    ConnectorFailed,
-    AlreadyRunning,
-    AppFailed,
-    Unfunded,
-    FaucetUnavailable,
-    NotRunning,
-    SendFailed,
-    SystemdFailed,
-    UnknownName,
-    PeerFailed,
-    PeerNotPeerable,
-    RouteFailed,
-    NameTaken,
-    ConfirmationRequired,
+/// documents them. The list is `error_codes.table`, a line to a code, so that codes added
+/// side by side merge.
+macro_rules! error_codes {
+    ($($variant:ident => $name:literal => $exit:ident,)*) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum ErrorCode {
+            $($variant,)*
+        }
+
+        impl ErrorCode {
+            #[cfg(test)]
+            pub const ALL: &[ErrorCode] = &[$(ErrorCode::$variant,)*];
+
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(ErrorCode::$variant => $name,)*
+                }
+            }
+
+            pub fn exit(self) -> Exit {
+                match self {
+                    $(ErrorCode::$variant => Exit::$exit,)*
+                }
+            }
+        }
+    };
 }
 
-impl ErrorCode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ErrorCode::Usage => "usage",
-            ErrorCode::HomeUnresolved => "home_unresolved",
-            ErrorCode::NoWallet => "no_wallet",
-            ErrorCode::PassphraseMissing => "passphrase_missing",
-            ErrorCode::PassphraseUnreadable => "passphrase_unreadable",
-            ErrorCode::PassphraseWrong => "passphrase_wrong",
-            ErrorCode::KeystoreCorrupt => "keystore_corrupt",
-            ErrorCode::Io => "io",
-            ErrorCode::NoAgentNode => "no_agent_node",
-            ErrorCode::ConnectorFailed => "connector_failed",
-            ErrorCode::AlreadyRunning => "already_running",
-            ErrorCode::AppFailed => "app_failed",
-            ErrorCode::Unfunded => "unfunded",
-            ErrorCode::FaucetUnavailable => "faucet_unavailable",
-            ErrorCode::NotRunning => "not_running",
-            ErrorCode::SendFailed => "send_failed",
-            ErrorCode::SystemdFailed => "systemd_failed",
-            ErrorCode::UnknownName => "unknown_name",
-            ErrorCode::PeerFailed => "peer_failed",
-            ErrorCode::PeerNotPeerable => "peer_not_peerable",
-            ErrorCode::RouteFailed => "route_failed",
-            ErrorCode::NameTaken => "name_taken",
-            ErrorCode::ConfirmationRequired => "confirmation_required",
-        }
-    }
-
-    pub fn exit(self) -> Exit {
-        match self {
-            ErrorCode::Usage => Exit::Usage,
-            ErrorCode::NoWallet | ErrorCode::NoAgentNode => Exit::NoAgentNode,
-            ErrorCode::HomeUnresolved
-            | ErrorCode::PassphraseMissing
-            | ErrorCode::PassphraseUnreadable
-            | ErrorCode::PassphraseWrong
-            | ErrorCode::KeystoreCorrupt
-            | ErrorCode::Io
-            | ErrorCode::ConnectorFailed
-            | ErrorCode::AlreadyRunning
-            | ErrorCode::AppFailed
-            | ErrorCode::Unfunded
-            | ErrorCode::FaucetUnavailable
-            | ErrorCode::NotRunning
-            | ErrorCode::SendFailed
-            | ErrorCode::SystemdFailed
-            | ErrorCode::UnknownName
-            | ErrorCode::PeerFailed
-            | ErrorCode::PeerNotPeerable
-            | ErrorCode::RouteFailed
-            | ErrorCode::NameTaken
-            | ErrorCode::ConfirmationRequired => Exit::Failure,
-        }
-    }
-}
+include!("error_codes.table");
 
 /// Why a command did not do what was asked. `message` is for reading and may be reworded.
 #[derive(Debug)]
@@ -138,5 +83,22 @@ pub struct Error {
 impl Error {
     pub fn json(&self) -> Value {
         json!({ "error": { "code": self.code.as_str(), "message": self.message } })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ErrorCode;
+
+    /// The binary's error codes are the ones `tests/error_codes.txt` fixes, which
+    /// `tests/exit_codes.rs` checks against `docs/exit-codes.md`.
+    #[test]
+    fn the_error_codes_are_the_ones_the_tests_fix() {
+        let fixed = include_str!("../tests/error_codes.txt");
+        let mut fixed: Vec<&str> = fixed.lines().filter(|line| !line.is_empty()).collect();
+        let mut codes: Vec<&str> = ErrorCode::ALL.iter().map(|code| code.as_str()).collect();
+        fixed.sort_unstable();
+        codes.sort_unstable();
+        assert_eq!(codes, fixed);
     }
 }

@@ -1,0 +1,4 @@
+# Lists that grow a line at a time, one line to an item: two branches that each add a
+# line both keep it.
+src/error_codes.table merge=union
+tests/error_codes.txt merge=union
