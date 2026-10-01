@@ -2,7 +2,9 @@
 
 Both are part of `toon`'s interface. A code is added, and never renumbered or given a
 new meaning, so a script or an agent can branch on it across releases.
-`tests/exit_codes.rs` fails if this file and the binary disagree.
+`tests/exit_codes.rs` holds a copy of both lists and fails when the exit codes here,
+the ones `toon --help` prints, and that copy differ, or when an error code in that copy
+is missing here. Add a new code to the test and to this file together.
 
 ## Output
 
@@ -12,6 +14,8 @@ new meaning, so a script or an agent can branch on it across releases.
 - Without `--json`, a command prints readable text on standard output, and an error
   goes to standard error as `error: <message>`.
 - No command reads standard input or prompts.
+- `help` is not a command. Ask for help with `--help`.
+- If the output cannot be written, the command exits 1 whatever it found.
 
 ## Exit codes
 
@@ -39,4 +43,4 @@ A failed command with `--json` prints:
 | Error code | Exit code | Meaning |
 | --- | --- | --- |
 | `usage` | 2 | The command line was not understood: an unknown command or flag, or a missing argument |
-| `home_unresolved` | 1 | `HOME` is not set, so there is nowhere to look for an agent node |
+| `home_unresolved` | 1 | `HOME` is not set or is empty, so there is nowhere to look for an agent node |

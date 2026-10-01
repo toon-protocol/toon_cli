@@ -83,3 +83,37 @@ fn the_version_with_json_is_a_json_document() {
     assert_eq!(run.json(), json!({ "version": env!("CARGO_PKG_VERSION") }));
     assert_eq!(run.exit_code, 0);
 }
+
+#[test]
+fn help_is_a_flag_and_not_a_command() {
+    let machine = Machine::new();
+
+    for args in [["help", "--json"], ["--json", "help"]] {
+        let run = machine.toon(&args);
+
+        assert_eq!(run.json()["error"]["code"], "usage");
+        assert_eq!(run.exit_code, 2);
+    }
+}
+
+#[test]
+fn json_given_a_value_is_still_a_usage_error_in_json() {
+    let machine = Machine::new();
+
+    let run = machine.toon(&["status", "--json=true"]);
+
+    assert_eq!(run.json()["error"]["code"], "usage");
+    assert_eq!(run.exit_code, 2);
+    assert_eq!(run.stderr, "");
+}
+
+#[test]
+fn output_that_cannot_be_written_is_a_failure() {
+    let machine = Machine::new();
+
+    let run = machine.toon_with(&["status", "--json"], |command| {
+        command.stdout(std::fs::File::create("/dev/full").expect("open /dev/full"));
+    });
+
+    assert_eq!(run.exit_code, 1);
+}

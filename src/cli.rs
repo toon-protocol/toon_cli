@@ -1,22 +1,17 @@
 //! The command surface.
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
-/// The same list as `outcome::Exit` and `docs/exit-codes.md`; `tests/exit_codes.rs`
-/// holds the three together.
-const EXIT_CODES: &str = "\
-Exit codes:
-  0  The command did what was asked
-  1  The command failed; the error's code says why
-  2  The command line was not understood
-  3  There is no agent node on this machine";
+use crate::outcome::Exit;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "toon",
     version,
     about = "Runs and manages an agent node",
-    after_help = EXIT_CODES
+    // `--help` is the one way to ask for help, so that `help` is not a command that
+    // would have to accept `--json` like every other.
+    disable_help_subcommand = true
 )]
 pub struct Cli {
     /// Print one JSON document instead of text
@@ -31,4 +26,18 @@ pub struct Cli {
 pub enum Command {
     /// Show the agent node on this machine
     Status,
+}
+
+impl Cli {
+    /// Parse this process's command line. `--help` ends with the exit codes.
+    pub fn from_command_line() -> Result<Self, clap::Error> {
+        let exit_codes: String = Exit::ALL
+            .iter()
+            .map(|exit| format!("\n  {}  {}", *exit as u8, exit.meaning()))
+            .collect();
+        let matches = Self::command()
+            .after_help(format!("Exit codes:{exit_codes}"))
+            .try_get_matches()?;
+        Self::from_arg_matches(&matches)
+    }
 }

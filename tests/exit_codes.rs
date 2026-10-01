@@ -35,15 +35,21 @@ fn help_lists_the_exit_codes() {
     assert_eq!(run.exit_code, 0);
 }
 
+fn exit_codes_document() -> String {
+    fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/exit-codes.md"))
+        .expect("read docs/exit-codes.md")
+}
+
 #[test]
 fn the_exit_codes_document_lists_the_same_codes() {
-    let document =
-        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/exit-codes.md"))
-            .expect("read docs/exit-codes.md");
+    let document = exit_codes_document();
 
     let rows: Vec<&str> = document
         .lines()
-        .filter(|line| line.starts_with("| ") && line.as_bytes()[2].is_ascii_digit())
+        .filter(|line| {
+            line.strip_prefix("| ")
+                .is_some_and(|row| row.starts_with(|first: char| first.is_ascii_digit()))
+        })
         .collect();
     let expected: Vec<String> = EXIT_CODES
         .iter()
@@ -52,13 +58,15 @@ fn the_exit_codes_document_lists_the_same_codes() {
     assert_eq!(rows, expected);
 }
 
-#[test]
-fn the_exit_codes_document_lists_every_error_code() {
-    let document =
-        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/exit-codes.md"))
-            .expect("read docs/exit-codes.md");
+/// The error codes, as fixed by the releases so far. A new one is added here and to the
+/// document together.
+const ERROR_CODES: [&str; 2] = ["usage", "home_unresolved"];
 
-    for code in ["usage", "home_unresolved"] {
+#[test]
+fn the_exit_codes_document_lists_the_error_codes() {
+    let document = exit_codes_document();
+
+    for code in ERROR_CODES {
         assert!(
             document.contains(&format!("| `{code}` |")),
             "docs/exit-codes.md does not list the error code `{code}`"

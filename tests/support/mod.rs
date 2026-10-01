@@ -38,7 +38,7 @@ impl Machine {
         self.home.path()
     }
 
-    /// Where `toon` keeps this machine's agent node when nothing overrides it.
+    /// Where `toon` keeps this machine's agent node.
     pub fn agent_node_home(&self) -> PathBuf {
         self.home().join(".toon").join("agent-node")
     }

@@ -18,7 +18,8 @@ One Rust crate, `toon-cli`, at the repository root; it builds the binary `toon`.
 Tests live in `tests/` and go through one seam: `tests/support` runs the built binary
 against a temporary home directory, and a test asserts on its output, its exit code and
 the files it leaves. Exit codes and error codes are part of the interface and are listed
-in `docs/exit-codes.md`; `tests/exit_codes.rs` fails when a code is missing from it.
+in `docs/exit-codes.md`. `tests/exit_codes.rs` keeps its own copy of both lists and
+checks it against that file and `toon --help`, so add a new code to all of them together.
 
 ## The AFK factory
 
@@ -44,8 +45,9 @@ The gate today, run from the repository root:
 - `cargo test --locked`
 
 A step with an `if:` or a `${{ }}` expression is skipped by the factory, so keep every
-check in the `gate` job a plain `run:` step. The shared sandbox image builds and tests
-the crate with the same `stable` toolchain CI installs.
+check in the `gate` job a plain `run:` step. CI and the shared sandbox image both install
+Rust `stable` with clippy and rustfmt, and neither pins a version, so the two can differ
+by a release until the image is rebuilt.
 
 The runner's own commands, from `.sandcastle/`: `npm ci`, `npm test`, `npm run typecheck`.
 The repository root has no `package.json`; the runner's only Node manifest is

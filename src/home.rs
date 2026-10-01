@@ -3,7 +3,7 @@
 use std::env;
 use std::path::PathBuf;
 
-use crate::outcome::{Error, Exit};
+use crate::outcome::{Error, ErrorCode};
 
 /// The agent node's home directory: `~/.toon/agent-node`.
 ///
@@ -13,9 +13,9 @@ pub fn resolve() -> Result<PathBuf, Error> {
     match env::var_os("HOME").filter(|home| !home.is_empty()) {
         Some(home) => Ok(PathBuf::from(home).join(".toon").join("agent-node")),
         None => Err(Error {
-            exit: Exit::Failure,
-            code: "home_unresolved",
-            message: "HOME is not set, so there is nowhere to look for an agent node.".into(),
+            code: ErrorCode::HomeUnresolved,
+            message: "HOME is not set or is empty, so there is nowhere to look for an agent node."
+                .into(),
         }),
     }
 }

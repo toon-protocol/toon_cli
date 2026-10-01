@@ -16,27 +16,32 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 use clap::error::ErrorKind;
-use clap::Parser;
 use serde_json::json;
 
 use cli::{Cli, Command};
-use outcome::{Error, Exit, Report};
+use outcome::{Error, ErrorCode, Exit, Report};
 
 fn main() -> ExitCode {
     let json = wants_json(env::args_os().skip(1));
-    let outcome = match Cli::try_parse() {
+    let outcome = match Cli::from_command_line() {
         Ok(cli) => run(&cli.command),
-        Err(error) => match unparsed(error, json) {
-            Ok(outcome) => outcome,
-            Err(exit) => return exit.into(),
-        },
+        Err(error) if json && error.kind() != ErrorKind::DisplayHelp => unparsed(error),
+        // `--help`, or a command line that did not ask for JSON: the text is clap's own.
+        Err(error) => {
+            let exit = if error.use_stderr() {
+                Exit::Usage
+            } else {
+                Exit::Success
+            };
+            return written(error.print(), exit).into();
+        }
     };
     render(outcome, json).into()
 }
 
 fn run(command: &Command) -> Result<Report, Error> {
     match command {
-        Command::Status => status::status(&home::resolve()?),
+        Command::Status => Ok(status::status(&home::resolve()?)),
     }
 }
 
@@ -44,29 +49,18 @@ fn run(command: &Command) -> Result<Report, Error> {
 /// line that does not parse must still fail in the rendering it asked for.
 fn wants_json(args: impl Iterator<Item = OsString>) -> bool {
     args.take_while(|arg| arg != "--")
-        .any(|arg| arg == "--json")
+        .any(|arg| arg == "--json" || arg.to_string_lossy().starts_with("--json="))
 }
 
-/// What to do with a command line clap did not turn into a command: `--help`,
-/// `--version`, or a usage error. Text is clap's own and is printed here, leaving only
-/// the exit code; JSON comes back as an outcome to render like any other.
-fn unparsed(error: clap::Error, json: bool) -> Result<Result<Report, Error>, Exit> {
-    let exit = if error.use_stderr() {
-        Exit::Usage
-    } else {
-        Exit::Success
-    };
-    if !json || error.kind() == ErrorKind::DisplayHelp {
-        // Nothing useful can be done if the terminal is gone.
-        let _ = error.print();
-        return Err(exit);
-    }
+/// The JSON outcome of a command line clap did not turn into a command: `--version`,
+/// or a usage error.
+fn unparsed(error: clap::Error) -> Result<Report, Error> {
     if error.kind() == ErrorKind::DisplayVersion {
-        return Ok(Ok(Report {
-            exit,
+        return Ok(Report {
+            exit: Exit::Success,
             json: json!({ "version": env!("CARGO_PKG_VERSION") }),
             text: String::new(),
-        }));
+        });
     }
     // clap renders "error: <what>", a blank line, then the usage and a hint.
     let rendered = error.render().to_string();
@@ -77,32 +71,30 @@ fn unparsed(error: clap::Error, json: bool) -> Result<Result<Report, Error>, Exi
         .take_while(|line| !line.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    Ok(Err(Error {
-        exit: Exit::Usage,
-        code: "usage",
+    Err(Error {
+        code: ErrorCode::Usage,
         message,
-    }))
+    })
 }
 
 fn render(outcome: Result<Report, Error>, json: bool) -> Exit {
-    // A closed pipe is not worth a panic: the exit code still tells the caller.
     let mut stdout = io::stdout().lock();
     match outcome {
-        Ok(report) => {
-            let _ = if json {
-                writeln!(stdout, "{}", report.json)
-            } else {
-                writeln!(stdout, "{}", report.text)
-            };
-            report.exit
-        }
-        Err(error) => {
-            let _ = if json {
-                writeln!(stdout, "{}", error.json())
-            } else {
-                writeln!(io::stderr(), "error: {}", error.message)
-            };
-            error.exit
-        }
+        Ok(report) if json => written(writeln!(stdout, "{}", report.json), report.exit),
+        Ok(report) => written(writeln!(stdout, "{}", report.text), report.exit),
+        Err(error) if json => written(writeln!(stdout, "{}", error.json()), error.code.exit()),
+        Err(error) => written(
+            writeln!(io::stderr(), "error: {}", error.message),
+            error.code.exit(),
+        ),
+    }
+}
+
+/// `exit`, unless the output could not be written: a caller that got no output must
+/// not read the exit code as the answer.
+fn written(result: io::Result<()>, exit: Exit) -> Exit {
+    match result {
+        Ok(()) => exit,
+        Err(_) => Exit::Failure,
     }
 }

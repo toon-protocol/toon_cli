@@ -6,8 +6,8 @@
 # with no `if:` and no `${{ }}` expression, or the factory skips it. `uses:` steps are
 # setup for GitHub's runner and are not part of the gate.
 #
-# The toolchain is `stable` with clippy and rustfmt, the same as the shared sandbox
-# image (connector's .sandcastle/Dockerfile).
+# The toolchain is `stable` with clippy and rustfmt, as in the shared sandbox image
+# (connector's .sandcastle/Dockerfile). Neither pins a version.
 
 name: CI
 
