@@ -99,7 +99,7 @@ pub fn apply(home: &Path, before: &State, changed: &State, toon_app: &str) -> Re
         return Ok(false);
     }
     changed.save(home)?;
-    let reply = control::ask_within(home, "reload", RESTART_PATIENCE);
+    let reply = control::ask_about(home, "reload", Some(toon_app), RESTART_PATIENCE);
     let mut error = match &reply {
         Some(reply) if reply["reloaded"] == true => return Ok(true),
         Some(reply) if reply["error"].is_object() => {
@@ -124,7 +124,7 @@ pub fn apply(home: &Path, before: &State, changed: &State, toon_app: &str) -> Re
     // A restart that failed before it stopped the connector left it as it was.
     let untouched = reply.is_some_and(|reply| reply["stopped"] == false);
     if !untouched {
-        let back = control::ask_within(home, "reload", RESTART_PATIENCE);
+        let back = control::ask_about(home, "reload", Some(toon_app), RESTART_PATIENCE);
         if !back.is_some_and(|back| back["reloaded"] == true) {
             error.message.push_str(&format!(
                 " The connector of {toon_app} did not start again as it was either."
@@ -136,7 +136,7 @@ pub fn apply(home: &Path, before: &State, changed: &State, toon_app: &str) -> Re
 
 /// Render the config of `toon_app` in `changed`, with each app that runs reached where its
 /// container serves, and check it with the connector's own validation.
-fn check(home: &Path, changed: &State, toon_app: &str) -> Result<(), Error> {
+pub fn check(home: &Path, changed: &State, toon_app: &str) -> Result<(), Error> {
     let Some(app) = changed.toon_apps.iter().find(|app| app.name == toon_app) else {
         return Ok(());
     };
@@ -165,28 +165,34 @@ fn restarted(now: bool, toon_app: &str) -> String {
     }
 }
 
+/// Whether `name` is usable as the name of a TOON app or an app, and no TOON app or app of
+/// this agent node has it.
+pub fn free(state: &State, name: &str) -> Result<(), Error> {
+    plain(ErrorCode::NameTaken, "The name", name)?;
+    if state
+        .toon_apps
+        .iter()
+        .any(|toon_app| toon_app.name == name || toon_app.apps.iter().any(|app| app.name == name))
+    {
+        return Err(failed(
+            ErrorCode::NameTaken,
+            format!("This agent node already has a TOON app or an app called {name}."),
+        ));
+    }
+    Ok(())
+}
+
 /// `toon add`: put a new app behind the connector of the TOON app `to`.
 pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
     let state = loaded(home)?;
     let Some(index) = state.toon_apps.iter().position(|app| app.name == add.to) else {
         return Err(unknown(&state, add.to));
     };
-    plain(ErrorCode::NameTaken, "The app's name", add.name)?;
+    free(&state, add.name)?;
     let prefix = add
         .address
         .map_or_else(|| format!("g.toon.{}", add.name), str::to_owned);
     plain(ErrorCode::RouteFailed, "The address", &prefix)?;
-    if state.toon_apps.iter().any(|toon_app| {
-        toon_app.name == add.name || toon_app.apps.iter().any(|app| app.name == add.name)
-    }) {
-        return Err(failed(
-            ErrorCode::NameTaken,
-            format!(
-                "This agent node already has a TOON app or an app called {}.",
-                add.name
-            ),
-        ));
-    }
     let taken = |prefix: &str| {
         let ours = &state.toon_apps[index];
         ours.apps.iter().any(|app| {
@@ -232,7 +238,7 @@ pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
     })
 }
 
-fn unknown(state: &State, name: &str) -> Error {
+pub fn unknown(state: &State, name: &str) -> Error {
     let known: Vec<&str> = state
         .toon_apps
         .iter()

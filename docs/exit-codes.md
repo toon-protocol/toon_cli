@@ -72,19 +72,21 @@ A failed command with `--json` prints:
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
 | `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event) could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
-| `unknown_name` | 1 | `toon logs`, `toon add` or `toon remove` was given a name that is not a TOON app or an app of this agent node, as that command needs |
+| `unknown_name` | 1 | `--app`, `toon create --app`, `toon destroy`, `toon logs`, `toon add` or `toon remove` was given a name that is not a TOON app or an app of this agent node, as that command needs |
 | `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
 | `peer_not_peerable` | 1 | `peer add` named a connector that is not peerable: the refusal is on the other side, and only its operator can lift it |
 | `route_failed` | 1 | The connector's operator surface refused a route write or could not be reached, or a route command was given an address prefix it cannot use or that no route has; the message carries the reason |
 | `chain_failed` | 1 | A chain's JSON-RPC endpoint could not be reached or did not answer a read as expected; the message carries the reason |
 | `channel_failed` | 1 | A channel write was refused by the connector or could not be sent, the channel id is not one, or the terms file was unreadable; the message carries the reason |
-| `name_taken` | 1 | `toon add` was given a name that is not usable, or that a TOON app or an app of this agent node already has |
+| `name_taken` | 1 | `toon add` or `toon create` was given a name that is not usable, or that a TOON app or an app of this agent node already has |
 | `query_failed` | 1 | `toon event query`, or `toon nip publish` asking for a draft's current revision, could not read events from the relay: it did not answer, is not a websocket relay this build dials, or closed the subscription with a reason the message carries |
 | `draft_refused` | 1 | `toon nip new` or `toon nip publish` would not write or publish a draft: the file exists already, does not name a draft or begin with its title, is not UTF-8, or the relay holds the identifier under another title and `--title-changed` was not given; the message says which |
 | `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
 | `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap, so a hidden service was not created or started; nothing falls back to clearnet |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
 | `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
+| `funds_held` | 1 | `toon destroy` did nothing: a channel of the TOON app still holds funds, or its channels could not be read; the message names each |
+| `last_toon_app` | 1 | `toon destroy` was given the only TOON app: an agent node always has one |
 
 
 ## The wallet passphrase
@@ -156,6 +158,27 @@ by `TOON_MNEMONIC_FILE`, else from `TOON_MNEMONIC`, never a flag, into a home wi
 (`io` if there is one; `usage` if the mnemonic is missing or not BIP-39). It shows no mnemonic, and
 a hidden service gets new onion endpoints, which it says (`"onion_endpoints_changed": true`):
 a mnemonic does not hold the address keys.
+
+## Creating and destroying a TOON app
+
+`toon create <name> --app <from>` makes a second TOON app (ADR 0002): a connector on the next
+unused index of the wallet's keys, and an app behind it, named `<name>` too and reached at
+`g.toon.<name>`. `--image` or `--url` says which app; `--clearnet`, `--accept-anyone-terms` and
+`--listen` say how the connector is reached, as for `toon init`. It reads the wallet passphrase.
+It is peered with `<from>`, the first TOON app if `--app` is left out, in both directions,
+each channel opened with `--deposit`, with a forwarding route each way; `--no-peer` says not to.
+The deposits move money, so they need `--yes` and count twice against the spending limit. A
+settlement key that holds too little fails with `unfunded`, and nothing is created: the message
+names the address to fund. A running supervisor starts the connector; otherwise `toon up` does.
+
+`--app <name>` on any command that talks to a connector, such as `toon send`, `toon peer`,
+`toon route` and `toon channel`, says which TOON app it is about; the first TOON app is the
+default.
+
+`toon destroy <name>` stops a TOON app's connector and removes its files and its app's data,
+except an onion key. It needs the TOON app running, to read its channels, and fails with
+`funds_held`, naming each channel, while an outbound channel holds collateral or an inbound one
+a voucher that has not landed. It never removes the last TOON app (`last_toon_app`).
 
 ## The spending limit
 
