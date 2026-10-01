@@ -27,7 +27,8 @@ checks it against that file and `toon --help`, so add a new code to all of them 
 and listed in `nips/README.md`; `tests/nips.rs` checks both by reading the files, as
 `tests/exit_codes.rs` reads its document. A draft is the single source
 for what implements it: `nips/paid-subscription.md` for the subscribe commands, the fake
-remote relay and the Rust relay. Change the draft before the code that follows it.
+remote relay and the Rust relay, `nips/proposals-as-events.md` for `toon nip publish` and
+the skill for authoring a NIP. Change the draft before the code that follows it.
 
 ## The embedded connector
 
@@ -44,7 +45,10 @@ embedded connector on the dependency versions the connector was tested with.
 (`src/connector.rs`). Tests that start a connector use `tests/support/fake_chain.rs`,
 the connector's `FakeRpc` answering as an EVM chain with x402 deployed. It holds no
 channels and accepts no transaction: enough for a connector to start, not for a test
-that moves money.
+that moves money. A test that moves money uses `tests/support/local_chain.rs`: a
+disposable `anvil` with x402's contracts and a USDC on it, from the connector's
+`test-util` fixtures. It skips where `anvil` is missing, except under CI, where it fails,
+so CI installs Foundry in a `uses:` step.
 
 ## The AFK factory
 

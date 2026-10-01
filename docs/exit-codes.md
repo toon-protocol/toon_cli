@@ -73,11 +73,16 @@ A failed command with `--json` prints:
 | `send_failed` | 1 | The packet (or, for `toon event publish`, the event) could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
 | `unknown_name` | 1 | `toon logs` was given a name that is neither a TOON app nor an app of this agent node |
+| `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
+| `peer_not_peerable` | 1 | `peer add` named a connector that is not peerable: the refusal is on the other side, and only its operator can lift it |
+| `route_failed` | 1 | The connector's operator surface refused a route write or could not be reached; the message carries the reason |
+| `chain_failed` | 1 | A chain's JSON-RPC endpoint could not be reached or did not answer a read as expected; the message carries the reason |
+| `channel_failed` | 1 | A channel write was refused by the connector or could not be sent, the channel id is not one, or the terms file was unreadable; the message carries the reason |
 | `query_failed` | 1 | `toon event query` could not read events from the relay: it did not answer, is not a websocket relay this build dials, or closed the subscription with a reason the message carries |
 
 ## The wallet passphrase
 
-`toon init`, `toon wallet show` and `toon event publish` read the passphrase from the file named by
+`toon init`, `toon wallet show`, `toon wallet balances` and `toon event publish` read the passphrase from the file named by
 `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`. It is never a flag. One trailing
 newline in the file is not part of the passphrase.
 

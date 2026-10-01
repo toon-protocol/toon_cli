@@ -124,7 +124,7 @@ pub fn publish(
         hex::encode(keystore::random::<8>()?)
     ));
     node::write(&body, event.to_string().as_bytes(), 0o600)?;
-    let answer = operator::dispatch(home, node::RELAY_WRITE_PREFIX, amount, Some(&body));
+    let answer = operator::dispatch(home, node::RELAY_WRITE_PREFIX, amount, None, Some(&body));
     let _ = std::fs::remove_file(&body);
 
     let id = event["id"].as_str().unwrap_or_default().to_owned();

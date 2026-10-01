@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use zeroize::Zeroizing;
 
 use crate::control;
 use crate::node::{self, ConnectorFiles, State};
@@ -22,6 +23,8 @@ struct Surface {
     url: String,
     bearer_token: PathBuf,
     write_key: PathBuf,
+    /// Whether the connector may peer toward a plain `http://` address.
+    plaintext_peers: bool,
 }
 
 fn failed(code: ErrorCode, message: String) -> Error {
@@ -52,26 +55,108 @@ fn surface(home: &Path) -> Result<Surface, Error> {
         url: format!("http://{address}"),
         bearer_token: ConnectorFiles::of(home, app.connector).bearer_token,
         write_key: node::operator_key(home),
+        plaintext_peers: app.plaintext_peers,
     })
 }
 
-/// `toon route list`: the connector's routing table, as it answers it.
-pub fn route_list(home: &Path) -> Result<Report, Error> {
-    let surface = surface(home)?;
+/// A read of the connector's operator surface: `path`, with the bearer token.
+fn read(surface: &Surface, path: &str) -> Result<Vec<Value>, Error> {
     let token = std::fs::read_to_string(&surface.bearer_token).map_err(|source| {
         failed(
             ErrorCode::Io,
             format!("{}: {source}.", surface.bearer_token.display()),
         )
     })?;
-    let url = format!("{}/routes", surface.url);
-    let routes: Vec<Value> = reqwest::blocking::Client::builder()
+    let url = format!("{}{path}", surface.url);
+    reqwest::blocking::Client::builder()
         .timeout(PATIENCE)
         .build()
         .and_then(|client| client.get(&url).bearer_auth(token.trim()).send())
         .and_then(|response| response.error_for_status())
         .and_then(|response| response.json())
-        .map_err(|error| failed(ErrorCode::ConnectorFailed, format!("GET {url}: {error}.")))?;
+        .map_err(|error| failed(ErrorCode::ConnectorFailed, format!("GET {url}: {error}.")))
+}
+
+/// How long a signed write stays valid, in seconds.
+const SIGNATURE_TTL: u64 = 60;
+
+/// How long a write waits for the connector: a peering opens and funds a channel, which
+/// waits for the chain.
+const WRITE_PATIENCE: Duration = Duration::from_secs(300);
+
+/// A write to the connector's operator surface, signed with the wallet's operator write
+/// key. `body` is JSON, or empty for a delete. Returns the status and the body.
+fn write(
+    surface: &Surface,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<(u16, String), Error> {
+    let raw = std::fs::read(&surface.write_key).map_err(|source| {
+        failed(
+            ErrorCode::Io,
+            format!("{}: {source}.", surface.write_key.display()),
+        )
+    })?;
+    let keypair = ed25519_dalek_v1::SecretKey::from_bytes(&raw)
+        .map(|secret| ed25519_dalek_v1::Keypair {
+            public: (&secret).into(),
+            secret,
+        })
+        .map_err(|_| {
+            failed(
+                ErrorCode::Io,
+                format!("{} is not a 32-byte key.", surface.write_key.display()),
+            )
+        })?;
+    let body = body.map(Value::to_string).unwrap_or_default();
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let (signature_input, signature, content_digest) = connector_operator::signing::sign_request(
+        &keypair,
+        method.as_str(),
+        path,
+        body.as_bytes(),
+        created,
+        Some(created + SIGNATURE_TTL),
+    );
+    let url = format!("{}{path}", surface.url);
+    let mut request = reqwest::blocking::Client::builder()
+        .timeout(WRITE_PATIENCE)
+        .build()
+        .map_err(|error| {
+            failed(
+                ErrorCode::ConnectorFailed,
+                format!("{method} {url}: {error}."),
+            )
+        })?
+        .request(method.clone(), &url)
+        .header("content-digest", content_digest)
+        .header("signature-input", signature_input)
+        .header("signature", signature);
+    if !body.is_empty() {
+        request = request
+            .header("content-type", "application/json")
+            .body(body);
+    }
+    let response = request.send().map_err(|error| {
+        failed(
+            ErrorCode::ConnectorFailed,
+            format!("{method} {url}: {error}."),
+        )
+    })?;
+    let status = response.status().as_u16();
+    let text = response.text().unwrap_or_default();
+    Ok((status, text))
+}
+
+/// `toon route list`: the connector's routing table, as it answers it: the routes it
+/// terminates, then the routes it forwards.
+pub fn route_list(home: &Path) -> Result<Report, Error> {
+    let surface = surface(home)?;
+    let routes = read(&surface, "/routes")?;
+    let forwarding = read(&surface, "/routes/peers")?;
     let mut lines: Vec<String> = routes
         .iter()
         .map(|route| {
@@ -82,15 +167,404 @@ pub fn route_list(home: &Path) -> Result<Report, Error> {
                 route["price"]
             )
         })
+        .chain(forwarding.iter().map(|route| {
+            format!(
+                "{} -> peer {} (price {})",
+                route["prefix"].as_str().unwrap_or_default(),
+                route["peer_id"].as_str().unwrap_or_default(),
+                route["price"]
+            )
+        }))
         .collect();
     if lines.is_empty() {
         lines.push("The connector has no routes.".into());
     }
     Ok(Report {
         exit: Exit::Success,
-        json: json!({ "routes": routes }),
+        json: json!({ "routes": routes, "forwarding_routes": forwarding }),
         text: lines.join("\n"),
     })
+}
+
+/// A channel's amount as the connector reports it, which is absent while it is opening or
+/// when the chain could not be read.
+fn amount(value: &Value) -> String {
+    match value {
+        Value::Null => "unknown".into(),
+        other => other.to_string(),
+    }
+}
+
+fn describe_channel(channel: &Value) -> String {
+    format!(
+        "{} {} {} {} (counterparty {}, collateral {}, landed {}, watermark {})",
+        channel["id"].as_str().unwrap_or_default(),
+        channel["chain"].as_str().unwrap_or_default(),
+        channel["direction"].as_str().unwrap_or_default(),
+        channel["status"].as_str().unwrap_or_default(),
+        channel["counterparty"].as_str().unwrap_or_default(),
+        amount(&channel["collateral"]),
+        amount(&channel["landed"]),
+        amount(&channel["watermark"]),
+    )
+}
+
+/// `toon channel list`: every channel the connector holds, inbound and outbound.
+pub fn channel_list(home: &Path) -> Result<Report, Error> {
+    let channels = read(&surface(home)?, "/channels")?;
+    let mut lines: Vec<String> = channels.iter().map(describe_channel).collect();
+    if lines.is_empty() {
+        lines.push("The connector has no channels.".into());
+    }
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "channels": channels }),
+        text: lines.join("\n"),
+    })
+}
+
+/// A label for a peering that names its address: the connector's URL without its scheme,
+/// reduced to the characters a label can hold.
+fn label(address: &str) -> String {
+    let authority = address
+        .split_once("://")
+        .map_or(address, |(_, rest)| rest)
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    authority
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// What the connector said about a refused write, for a person.
+fn refusal(status: u16, text: &str) -> String {
+    format!("The connector answered {status}: {}", text.trim())
+}
+
+/// What `toon peer add` was asked for.
+pub struct PeerAdd<'a> {
+    pub address: &'a str,
+    pub deposit: u128,
+    pub id: Option<&'a str>,
+    pub fee: u64,
+    pub max_packet_amount: u64,
+}
+
+/// `toon peer add`: create a peering toward the connector at `address`, opening and
+/// funding the channel it pays on with `deposit`.
+pub fn peer_add(home: &Path, add: &PeerAdd) -> Result<Report, Error> {
+    let surface = surface(home)?;
+    let id = add.id.map_or_else(|| label(add.address), str::to_owned);
+    segment(ErrorCode::PeerFailed, "The peering's label", &id)?;
+    let body = json!({
+        "id": id,
+        "url": add.address,
+        "fee": add.fee,
+        "max_packet_amount": add.max_packet_amount,
+        "deposit": add.deposit,
+    });
+    let (status, text) = write(&surface, reqwest::Method::POST, "/peers", Some(&body))?;
+    if status != 200 {
+        // The connector reads the other side's self-description first, and a connector
+        // that is not peerable publishes none a peer can use. A connector that does not
+        // peer over plain `http://` refuses such an address, and finds no endpoint it
+        // can dial in a description that publishes only those: then the refusal is
+        // this side's.
+        let no_endpoint = status == 502 && text.contains("publishes no endpoint");
+        let no_client_edge = status == 502 && text.contains("publishes no httpEndpoint");
+        let plaintext = status == 502 && text.contains("peer_allow_plaintext_endpoints");
+        if !surface.plaintext_peers && (no_endpoint || plaintext) {
+            return Err(failed(
+                ErrorCode::PeerFailed,
+                format!(
+                    "This connector does not peer over plain `http://`. To peer on one \
+                     machine, run `toon init` with `--allow-plaintext-peers`. {}",
+                    refusal(status, &text)
+                ),
+            ));
+        }
+        return Err(if no_endpoint || no_client_edge {
+            failed(
+                ErrorCode::PeerNotPeerable,
+                format!(
+                    "{} is not peerable: the refusal is on the other side. {}",
+                    add.address,
+                    refusal(status, &text)
+                ),
+            )
+        } else {
+            failed(ErrorCode::PeerFailed, refusal(status, &text))
+        });
+    }
+    let peering: Value = serde_json::from_str(&text).map_err(|error| {
+        failed(
+            ErrorCode::PeerFailed,
+            format!("The connector's answer was not understood ({error}): {text}"),
+        )
+    })?;
+    let channel = peering["channel"]["id"].as_str().unwrap_or_default();
+    let channel_status = peering["channel"]["status"].as_str().unwrap_or_default();
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "peering": peering }),
+        text: format!(
+            "Peered with {} as {id}, paying on channel {channel} ({channel_status}), deposit {}.\n\
+             Packets forwarded to it are served by that connector. It forwards back to you \
+             only if its operator creates a peering toward you in return.",
+            add.address, add.deposit
+        ),
+    })
+}
+
+/// `toon peer list`: the connector's peerings.
+pub fn peer_list(home: &Path) -> Result<Report, Error> {
+    let surface = surface(home)?;
+    let peers = read(&surface, "/peers")?;
+    let mut lines: Vec<String> = peers
+        .iter()
+        .map(|peer| {
+            format!(
+                "{} (fee {}, cap {})",
+                peer["id"].as_str().unwrap_or_default(),
+                peer["fee"],
+                peer["max_packet_amount"]
+            )
+        })
+        .collect();
+    if lines.is_empty() {
+        lines.push("The connector has no peerings.".into());
+    }
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "peers": peers }),
+        text: lines.join("\n"),
+    })
+}
+
+/// `segment`, checked to be one path segment the connector reads as written: a peering's
+/// label or an ILP address prefix, which hold nothing a URL would escape.
+fn segment(code: ErrorCode, what: &str, segment: &str) -> Result<(), Error> {
+    if !segment.is_empty()
+        && segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '~'))
+    {
+        return Ok(());
+    }
+    Err(failed(
+        code,
+        format!("{what} {segment:?} holds a character other than letters, digits, `.`, `-`, `_` and `~`."),
+    ))
+}
+
+/// `toon peer remove`: remove the peering called `id`.
+pub fn peer_remove(home: &Path, id: &str) -> Result<Report, Error> {
+    segment(ErrorCode::PeerFailed, "The peering's label", id)?;
+    let surface = surface(home)?;
+    let (status, text) = write(
+        &surface,
+        reqwest::Method::DELETE,
+        &format!("/peers/{id}"),
+        None,
+    )?;
+    if status != 204 {
+        return Err(failed(ErrorCode::PeerFailed, refusal(status, &text)));
+    }
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "removed": id }),
+        text: format!("Removed the peering {id}."),
+    })
+}
+
+/// `toon route add`: forward packets for `prefix` to the peering `peer`, at `price`.
+pub fn route_add(home: &Path, prefix: &str, peer: &str, price: u64) -> Result<Report, Error> {
+    let surface = surface(home)?;
+    let body = json!({ "prefix": prefix, "peer_id": peer, "price": price });
+    let (status, text) = write(
+        &surface,
+        reqwest::Method::POST,
+        "/routes/peers",
+        Some(&body),
+    )?;
+    if status != 200 {
+        return Err(failed(ErrorCode::RouteFailed, refusal(status, &text)));
+    }
+    let route: Value = serde_json::from_str(&text).map_err(|error| {
+        failed(
+            ErrorCode::RouteFailed,
+            format!("The connector's answer was not understood ({error}): {text}"),
+        )
+    })?;
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "route": route }),
+        text: format!("Forwarding {prefix} to {peer} (price {price})."),
+    })
+}
+
+/// `toon route remove`: stop forwarding `prefix`.
+pub fn route_remove(home: &Path, prefix: &str) -> Result<Report, Error> {
+    segment(ErrorCode::RouteFailed, "The prefix", prefix)?;
+    let surface = surface(home)?;
+    let (status, text) = write(
+        &surface,
+        reqwest::Method::DELETE,
+        &format!("/routes/peers/{prefix}"),
+        None,
+    )?;
+    if status != 204 {
+        return Err(failed(ErrorCode::RouteFailed, refusal(status, &text)));
+    }
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "removed": prefix }),
+        text: format!("Stopped forwarding {prefix}."),
+    })
+}
+
+/// The wallet's operator write key, the 32 bytes `init` wrote, as the keypair the
+/// connector's request signing takes.
+fn write_keypair(path: &Path) -> Result<ed25519_dalek_v1::Keypair, Error> {
+    let unusable = |reason: String| failed(ErrorCode::Io, format!("{}: {reason}.", path.display()));
+    let raw = Zeroizing::new(std::fs::read(path).map_err(|source| unusable(source.to_string()))?);
+    let secret = ed25519_dalek_v1::SecretKey::from_bytes(&raw)
+        .map_err(|_| unusable("the operator write key is not 32 bytes".into()))?;
+    let public = ed25519_dalek_v1::PublicKey::from(&secret);
+    Ok(ed25519_dalek_v1::Keypair { secret, public })
+}
+
+/// A channel write: `POST path` with `body`, JSON or empty, signed with the wallet's
+/// operator write key. The connector's answer is the channel after the write.
+///
+/// The body is JSON text rather than a `Value`, because an amount is a `u128` and a
+/// `Value` holds no number above `u64::MAX`.
+fn channel_write(home: &Path, path: &str, body: String) -> Result<Value, Error> {
+    let surface = surface(home)?;
+    let channel_failed = |message: String| failed(ErrorCode::ChannelFailed, message);
+    let keypair = write_keypair(&surface.write_key)?;
+    let bytes = body.into_bytes();
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let (signature_input, signature, content_digest) = connector_operator::signing::sign_request(
+        &keypair,
+        "POST",
+        path,
+        &bytes,
+        created,
+        Some(created + SIGNATURE_TTL),
+    );
+    let url = format!("{}{path}", surface.url);
+    let mut request = reqwest::blocking::Client::builder()
+        .timeout(PATIENCE)
+        .build()
+        .map_err(|error| channel_failed(format!("POST {url}: {error}.")))?
+        .post(&url)
+        .header("content-digest", content_digest)
+        .header("signature-input", signature_input)
+        .header("signature", signature);
+    if !bytes.is_empty() {
+        request = request.header("content-type", "application/json");
+    }
+    let response = request
+        .body(bytes)
+        .send()
+        .map_err(|error| channel_failed(format!("POST {url}: {error}.")))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| channel_failed(format!("POST {url}: {error}.")))?;
+    if !status.is_success() {
+        return Err(channel_failed(format!(
+            "POST {url} answered {status}: {}",
+            text.trim()
+        )));
+    }
+    serde_json::from_str(&text).map_err(|error| {
+        channel_failed(format!(
+            "POST {url}: the answer was not understood ({error}): {text}"
+        ))
+    })
+}
+
+/// A channel id goes into the path the write is signed for, so it is only ever hex or base58.
+fn channel_path(id: &str, action: &str) -> Result<String, Error> {
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return Err(failed(
+            ErrorCode::ChannelFailed,
+            format!("'{id}' is not a channel id."),
+        ));
+    }
+    Ok(format!("/channels/{id}/{action}"))
+}
+
+fn channel_report(channel: Value, headline: &str) -> Report {
+    Report {
+        exit: Exit::Success,
+        text: format!("{headline}: {}", describe_channel(&channel)),
+        json: json!({ "channel": channel }),
+    }
+}
+
+/// `toon channel open`: open an outbound channel toward the counterparty whose terms
+/// `terms` holds, with `deposit` in it.
+pub fn channel_open(
+    home: &Path,
+    terms: &Path,
+    deposit: u128,
+    url: Option<&str>,
+) -> Result<Report, Error> {
+    let contents = std::fs::read_to_string(terms).map_err(|source| {
+        failed(
+            ErrorCode::ChannelFailed,
+            format!("{}: {source}.", terms.display()),
+        )
+    })?;
+    let terms: Value = serde_json::from_str(&contents).map_err(|source| {
+        failed(
+            ErrorCode::ChannelFailed,
+            format!("{}: the terms are not JSON ({source}).", terms.display()),
+        )
+    })?;
+    let url = url.map_or(String::new(), |url| format!(r#","url":{}"#, json!(url)));
+    let channel = channel_write(
+        home,
+        "/channels",
+        format!(r#"{{"terms":{terms},"deposit":{deposit}{url}}}"#),
+    )?;
+    let headline = if channel["resumed"] == true {
+        "Resumed an open"
+    } else {
+        "Opened"
+    };
+    Ok(channel_report(channel, headline))
+}
+
+/// `toon channel fund`: add `amount` to an outbound channel.
+pub fn channel_fund(home: &Path, id: &str, amount: u128) -> Result<Report, Error> {
+    let channel = channel_write(
+        home,
+        &channel_path(id, "fund")?,
+        format!(r#"{{"amount":{amount}}}"#),
+    )?;
+    Ok(channel_report(channel, &format!("Funded with {amount}")))
+}
+
+/// `toon channel withdraw`: the connector starts the withdrawal, or finishes it once it
+/// is due, and says which.
+pub fn channel_withdraw(home: &Path, id: &str) -> Result<Report, Error> {
+    let channel = channel_write(home, &channel_path(id, "withdraw")?, String::new())?;
+    let step = channel["step"].as_str().unwrap_or("withdraw").to_owned();
+    Ok(channel_report(channel, &format!("Withdrawal step {step}")))
+}
+
+/// `toon channel land`: land the latest voucher held on an inbound channel.
+pub fn channel_land(home: &Path, id: &str) -> Result<Report, Error> {
+    let channel = channel_write(home, &channel_path(id, "land")?, String::new())?;
+    Ok(channel_report(channel, "Landed"))
 }
 
 /// What a packet came to.
@@ -123,12 +597,14 @@ fn answer(summary: &str) -> Option<Answer> {
     })
 }
 
-/// Send one packet from the operator surface to `destination`, for `amount`, and return
-/// what the connector says it came to. `body` is a file the request carries as its JSON body.
+/// Send one packet from the operator surface to `destination`, for `amount`, sealed to the
+/// connector at `seal_to`, or to this one, and return what the connector says it came to.
+/// `body` is a file the request carries as its JSON body.
 pub fn dispatch(
     home: &Path,
     destination: &str,
     amount: u64,
+    seal_to: Option<&str>,
     body: Option<&Path>,
 ) -> Result<Answer, Error> {
     let surface = surface(home)?;
@@ -138,7 +614,7 @@ pub fn dispatch(
         .build()
         .map_err(|error| send_failed(format!("The async runtime did not start: {error}.")))?;
     let amount_text = amount.to_string();
-    let seal_to = format!("{}/ilp", surface.url);
+    let seal_to = seal_to.map_or_else(|| format!("{}/ilp", surface.url), str::to_owned);
     let write_key = surface.write_key.to_string_lossy();
     let body = body.map(|path| path.to_string_lossy().into_owned());
     let mut arguments = vec![
@@ -174,10 +650,16 @@ pub fn dispatch(
     })
 }
 
-/// `toon send`: one packet from the operator surface to `destination`, for `amount`.
+/// `toon send`: one packet from the operator surface to `destination`, for `amount`,
+/// sealed to the connector at `seal_to`, or to this one.
 /// A packet that is not fulfilled is a report, not an error, and exits 1.
-pub fn send(home: &Path, destination: &str, amount: u64) -> Result<Report, Error> {
-    let answer = dispatch(home, destination, amount, None)?;
+pub fn send(
+    home: &Path,
+    destination: &str,
+    amount: u64,
+    seal_to: Option<&str>,
+) -> Result<Report, Error> {
+    let answer = dispatch(home, destination, amount, seal_to, None)?;
     let sent = format!("{amount} base units to {destination}");
     Ok(match answer {
         Answer::Fulfilled { status, body } => Report {
