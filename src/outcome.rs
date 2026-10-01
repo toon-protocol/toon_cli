@@ -59,6 +59,9 @@ pub enum ErrorCode {
     AlreadyRunning,
     NotRunning,
     SendFailed,
+    PeerFailed,
+    PeerNotPeerable,
+    RouteFailed,
 }
 
 impl ErrorCode {
@@ -77,6 +80,9 @@ impl ErrorCode {
             ErrorCode::AlreadyRunning => "already_running",
             ErrorCode::NotRunning => "not_running",
             ErrorCode::SendFailed => "send_failed",
+            ErrorCode::PeerFailed => "peer_failed",
+            ErrorCode::PeerNotPeerable => "peer_not_peerable",
+            ErrorCode::RouteFailed => "route_failed",
         }
     }
 
@@ -93,7 +99,10 @@ impl ErrorCode {
             | ErrorCode::ConnectorFailed
             | ErrorCode::AlreadyRunning
             | ErrorCode::NotRunning
-            | ErrorCode::SendFailed => Exit::Failure,
+            | ErrorCode::SendFailed
+            | ErrorCode::PeerFailed
+            | ErrorCode::PeerNotPeerable
+            | ErrorCode::RouteFailed => Exit::Failure,
         }
     }
 }

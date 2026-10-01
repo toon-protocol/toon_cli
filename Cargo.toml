@@ -26,6 +26,9 @@ sha2 = "0.10"
 sha3 = "0.10"
 zeroize = "1"
 connector-cli = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+connector-operator = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+# The version `connector-operator` signs with: its `sign_request` takes this one's keypair.
+ed25519-dalek-v1 = { package = "ed25519-dalek", version = "1" }
 axum = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 reqwest = { version = "0.11", default-features = false, features = ["blocking", "json"] }
@@ -37,6 +40,10 @@ tempfile = "3"
 # The connector's own fake chain RPC, and the channel-id arithmetic the fake answers with.
 connector-chain-rpc = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705", features = ["test-support"] }
 connector-signer = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+# The connector's fixtures for a real local chain: x402's contracts and a USDC on an
+# `anvil`, which tests that move money run on (the spike's finding, on #2).
+connector-settlement-evm = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705", features = ["test-util"] }
+ethers = { version = "2", default-features = false }
 
 # The relay image `toon` runs as a container (ADR 0001), pinned by digest. `build.rs`
 # hands it to `toon --version`.

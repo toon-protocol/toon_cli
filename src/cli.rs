@@ -49,7 +49,12 @@ pub enum Command {
     },
     /// Send one packet to an address and say whether it was fulfilled or rejected
     Send(SendArgs),
-    /// Read the connector's routes
+    /// Manage peerings: the connectors this one forwards packets to
+    Peer {
+        #[command(subcommand)]
+        command: PeerCommand,
+    },
+    /// Manage the connector's forwarding routes
     Route {
         #[command(subcommand)]
         command: RouteCommand,
@@ -77,6 +82,9 @@ pub struct InitArgs {
     /// Where the relay app is served, which the connector delivers the relay's route to
     #[arg(long, default_value = node::DEFAULT_RELAY_URL)]
     pub relay_url: String,
+    /// Let the connector peer toward a plain `http://` address, for a trial on one machine
+    #[arg(long)]
+    pub allow_plaintext_peers: bool,
     /// The token's decimals
     #[arg(long, default_value_t = 6)]
     pub evm_decimals: u8,
@@ -96,6 +104,7 @@ impl InitArgs {
         Options {
             listen: self.listen.clone(),
             relay_url: self.relay_url.clone(),
+            plaintext_peers: self.allow_plaintext_peers,
             evm: self
                 .evm_rpc_url
                 .clone()
@@ -119,12 +128,63 @@ pub struct SendArgs {
     /// The amount, in the token's base units: a send always states it
     #[arg(long)]
     pub amount: u64,
+    /// The `/ilp` URL of the connector that terminates the packet, when it is not this
+    /// one: the payload is sealed to that connector's identity
+    #[arg(long)]
+    pub seal_to: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PeerCommand {
+    /// Peer toward another connector: open and fund the channel it is paid on
+    Add(PeerAddArgs),
+    /// List the peerings
+    List,
+    /// Remove a peering
+    Remove {
+        /// The peering's label, as `peer list` shows it
+        id: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct PeerAddArgs {
+    /// The other connector's address: the URL of its `/ilp` endpoint
+    pub address: String,
+    /// What the channel is opened with, in the token's base units
+    #[arg(long)]
+    pub deposit: u128,
+    /// A label for the peering; the address, reduced to letters and digits, if omitted
+    #[arg(long)]
+    pub id: Option<String>,
+    /// What this connector keeps of each packet it forwards over the peering
+    #[arg(long, default_value_t = 0)]
+    pub fee: u64,
+    /// The most one forwarded packet may carry; the connector's default if omitted
+    #[arg(long, default_value_t = 0)]
+    pub max_packet_amount: u64,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum RouteCommand {
-    /// List the connector's routing table
+    /// List the connector's routes: the ones it terminates and the ones it forwards
     List,
+    /// Forward packets for a prefix to a peering
+    Add {
+        /// The ILP address prefix to forward
+        prefix: String,
+        /// The peering's label, as `peer list` shows it
+        #[arg(long)]
+        peer: String,
+        /// What a client pays the connector for a packet on this route
+        #[arg(long, default_value_t = 0)]
+        price: u64,
+    },
+    /// Stop forwarding a prefix
+    Remove {
+        /// The ILP address prefix
+        prefix: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]

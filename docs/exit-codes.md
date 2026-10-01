@@ -63,6 +63,9 @@ A failed command with `--json` prints:
 | `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
 | `send_failed` | 1 | The packet could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
+| `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
+| `peer_not_peerable` | 1 | `peer add` named a connector that is not peerable: the refusal is on the other side, and only its operator can lift it |
+| `route_failed` | 1 | The connector's operator surface refused a route write or could not be reached; the message carries the reason |
 
 ## The wallet passphrase
 

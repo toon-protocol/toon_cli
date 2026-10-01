@@ -9,6 +9,9 @@
 # The toolchain is `stable` with clippy and rustfmt, as in the shared sandbox image
 # (connector's .sandcastle/Dockerfile). Neither pins a version.
 #
+# Tests that move money run on a local `anvil`, so Foundry is installed by a `uses:` step;
+# the shared sandbox image already carries it.
+#
 # The `aarch64` job is not part of the gate. `toon` ships for Linux on x86_64 and
 # aarch64, and the connector it embeds brings both chains' SDKs with it, so the tests
 # also run on an arm64 runner.
@@ -41,6 +44,9 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
       - name: Cache Cargo registry and target
         uses: actions/cache@v4
         with:
@@ -70,6 +76,9 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
 
       - name: Cache Cargo registry and target
         uses: actions/cache@v4

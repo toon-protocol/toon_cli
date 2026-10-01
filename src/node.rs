@@ -30,6 +30,9 @@ pub struct Options {
     pub evm: Option<Evm>,
     /// Where the relay app is served: what the connector delivers its route to.
     pub relay_url: String,
+    /// Whether the connector may peer toward a plain `http://` address, which it refuses
+    /// by default: a trial on one machine, where nothing is encrypted.
+    pub plaintext_peers: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +62,8 @@ pub struct ToonApp {
     pub connector: u32,
     pub listen: String,
     pub evm: Option<Evm>,
+    /// Whether the connector may peer toward a plain `http://` address.
+    pub plaintext_peers: bool,
     /// The apps behind the connector.
     pub apps: Vec<String>,
     /// The routes the connector terminates, one per app.
@@ -164,6 +169,7 @@ impl State {
                 connector: 0,
                 listen: options.listen.clone(),
                 evm: options.evm.clone(),
+                plaintext_peers: options.plaintext_peers,
                 apps: vec![RELAY.into()],
                 routes: vec![Route {
                     prefix: route_prefix(RELAY),
@@ -184,6 +190,7 @@ impl State {
                     "connector": app.connector,
                     "listen": app.listen,
                     "evm": app.evm.as_ref().map(Evm::json),
+                    "plaintext_peers": app.plaintext_peers,
                     "apps": app.apps,
                     "routes": app.routes.iter().map(|route| json!({
                         "prefix": route.prefix,
@@ -212,6 +219,8 @@ impl State {
                         Value::Null => None,
                         evm => Some(Evm::from_json(evm)?),
                     },
+                    // A state from before peerings has none.
+                    plaintext_peers: app["plaintext_peers"].as_bool().unwrap_or(false),
                     apps: app["apps"]
                         .as_array()?
                         .iter()
@@ -302,17 +311,45 @@ fn string(text: &str) -> String {
     Value::from(text).to_string()
 }
 
+/// `listen` with a port: a connector publishes where it can be paid, so it cannot be left
+/// to the system to pick one when it binds. Port 0 is replaced by a port that was free a
+/// moment ago.
+pub fn concrete(listen: &str) -> Result<String, Error> {
+    let Some((host, "0")) = listen.rsplit_once(':') else {
+        return Ok(listen.to_owned());
+    };
+    let free = std::net::TcpListener::bind(listen)
+        .and_then(|bound| bound.local_addr())
+        .map_err(|source| Error {
+            code: ErrorCode::Io,
+            message: format!("{listen}: no free port: {source}."),
+        })?;
+    Ok(format!("{host}:{}", free.port()))
+}
+
 /// Render the connector config of `app` into `home` and check it with the connector's
 /// own validation. The config is written whether or not it validates, so that the
 /// error can be read against it; a caller that gets `Err` starts nothing.
 pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
     let files = ConnectorFiles::of(home, app.connector);
     let operator = write_operator_files(home, &files)?;
+    let listen = concrete(&app.listen)?;
+    // Every connector is peerable: another operator can peer toward it. A peer reads
+    // where to pay it from the connector's self-description, so the connector must be
+    // told its own address, and `peer_expose` is a root key, which TOML wants first.
     let mut config = format!(
         "# Rendered by `toon` from state.json. Edits here are overwritten.\n\
-         client_edge_addr = {}\nstate_dir = {}\n\n[signer]\nkey_file = {}\n",
-        string(&app.listen),
+         client_edge_addr = {}\nstate_dir = {}\npeer_expose = \"http\"\n{}\n\
+         [node]\naddresses = [{}]\nhttp_endpoint = {}\n\n[signer]\nkey_file = {}\n",
+        string(&listen),
         string(&files.state_dir.to_string_lossy()),
+        if app.plaintext_peers {
+            "peer_allow_plaintext_endpoints = true\n"
+        } else {
+            ""
+        },
+        string(&route_prefix(&app.name)),
+        string(&format!("http://{listen}/ilp")),
         string(&files.identity_key.to_string_lossy()),
     );
     for route in &app.routes {

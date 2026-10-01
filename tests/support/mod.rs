@@ -7,8 +7,10 @@
 // Each test file compiles this module separately and uses a different part of it.
 #![allow(dead_code)]
 
+pub mod anvil_chain;
 pub mod fake_chain;
 pub mod stub_app;
+pub mod unpeerable;
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -102,6 +104,32 @@ impl Machine {
     /// Like `init_on`, for an agent node whose relay is served at `relay_url`.
     pub fn init_on_serving(&self, chain: &fake_chain::FakeChain, relay_url: &str) -> Run {
         self.init_on_with(chain, &["--relay-url", relay_url])
+    }
+
+    /// Like `init_on_serving`, on the local chain `anvil`: its token moves by ERC-3009.
+    pub fn init_on_anvil(&self, chain: &anvil_chain::AnvilChain, relay_url: &str) -> Run {
+        let decimals = anvil_chain::TOKEN_DECIMALS.to_string();
+        let rpc_url = chain.rpc_url();
+        let token = chain.token();
+        self.toon_with(
+            &[
+                "init",
+                "--json",
+                "--evm-rpc-url",
+                &rpc_url,
+                "--evm-token",
+                &token,
+                "--evm-decimals",
+                &decimals,
+                "--relay-url",
+                relay_url,
+                // The chain and the connectors share one machine.
+                "--allow-plaintext-peers",
+            ],
+            |command| {
+                command.env("TOON_PASSPHRASE", PASSPHRASE);
+            },
+        )
     }
 
     fn init_on_with(&self, chain: &fake_chain::FakeChain, more: &[&str]) -> Run {

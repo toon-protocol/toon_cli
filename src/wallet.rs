@@ -159,7 +159,13 @@ fn write_toon_app(
     options: &node::Options,
 ) -> Result<node::State, Error> {
     let seed = derive::seed(mnemonic);
-    let state = node::State::first(options);
+    // The port is chosen now, once, so that the address a connector publishes to its
+    // peers is the same one every time it starts.
+    let options = node::Options {
+        listen: node::concrete(&options.listen)?,
+        ..options.clone()
+    };
+    let state = node::State::first(&options);
     let operator = derive::operator_write_secret(&*seed).map_err(|source| Error {
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
