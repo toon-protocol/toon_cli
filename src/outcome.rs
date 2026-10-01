@@ -59,6 +59,8 @@ pub enum ErrorCode {
     AlreadyRunning,
     NotRunning,
     SendFailed,
+    ChainFailed,
+    ChannelFailed,
 }
 
 impl ErrorCode {
@@ -77,6 +79,8 @@ impl ErrorCode {
             ErrorCode::AlreadyRunning => "already_running",
             ErrorCode::NotRunning => "not_running",
             ErrorCode::SendFailed => "send_failed",
+            ErrorCode::ChainFailed => "chain_failed",
+            ErrorCode::ChannelFailed => "channel_failed",
         }
     }
 
@@ -93,7 +97,9 @@ impl ErrorCode {
             | ErrorCode::ConnectorFailed
             | ErrorCode::AlreadyRunning
             | ErrorCode::NotRunning
-            | ErrorCode::SendFailed => Exit::Failure,
+            | ErrorCode::SendFailed
+            | ErrorCode::ChainFailed
+            | ErrorCode::ChannelFailed => Exit::Failure,
         }
     }
 }

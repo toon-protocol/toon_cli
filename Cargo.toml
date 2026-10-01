@@ -26,6 +26,9 @@ sha2 = "0.10"
 sha3 = "0.10"
 zeroize = "1"
 connector-cli = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+connector-operator = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+# The connector signs a write with ed25519-dalek 1, whose key type `sign_request` takes.
+ed25519-dalek-v1 = { package = "ed25519-dalek", version = "1" }
 axum = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 reqwest = { version = "0.11", default-features = false, features = ["blocking", "json"] }

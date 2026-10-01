@@ -26,7 +26,7 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use serde_json::json;
 
-use cli::{Cli, Command, RouteCommand, WalletCommand};
+use cli::{ChannelCommand, Cli, Command, RouteCommand, WalletCommand};
 use outcome::{Error, ErrorCode, Exit, Report};
 use up::Stopped;
 
@@ -60,6 +60,28 @@ fn main() -> ExitCode {
         Command::Wallet {
             command: WalletCommand::Show,
         } => render(home::resolve().and_then(|home| wallet::show(&home)), json).into(),
+        Command::Wallet {
+            command: WalletCommand::Balances,
+        } => render(
+            home::resolve().and_then(|home| wallet::balances(&home)),
+            json,
+        )
+        .into(),
+        Command::Channel { command } => render(
+            home::resolve().and_then(|home| match command {
+                ChannelCommand::List => operator::channel_list(&home),
+                ChannelCommand::Open {
+                    terms,
+                    deposit,
+                    url,
+                } => operator::channel_open(&home, &terms, deposit, url.as_deref()),
+                ChannelCommand::Fund { id, amount } => operator::channel_fund(&home, &id, amount),
+                ChannelCommand::Withdraw { id } => operator::channel_withdraw(&home, &id),
+                ChannelCommand::Land { id } => operator::channel_land(&home, &id),
+            }),
+            json,
+        )
+        .into(),
         Command::Send(args) => render(
             home::resolve().and_then(|home| operator::send(&home, &args.address, args.amount)),
             json,

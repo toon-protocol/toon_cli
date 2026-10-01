@@ -12,7 +12,7 @@
 //! The token is a plain ERC-20 with no ERC-3009, so a connector on this chain is
 //! configured with `asset_transfer_method = "permit2"`.
 //!
-//! It holds no channels and no balances and accepts no transaction, so it carries a
+//! It holds no channels, says every address holds the same balance, and accepts no transaction, so it carries a
 //! connector that nobody pays. A test that moves money needs more than this.
 
 use connector_chain_rpc::{FakeRpc, RpcCall, RpcReply};
@@ -26,6 +26,13 @@ pub const CHAIN_ID: u64 = 31_337;
 pub const TOKEN: &str = "0x00000000000000000000000000000000000000bb";
 pub const TOKEN_DECIMALS: u8 = 6;
 
+/// What the fake chain says every address holds, native and in the token. Read-only: the
+/// chain accepts no transaction, so these never change.
+pub const NATIVE_BALANCE: u64 = 3_000_000_000_000_000_000;
+pub const TOKEN_BALANCE: u64 = 2_500_000;
+
+/// The token's `balanceOf(address)`.
+const BALANCE_OF: &str = "70a08231";
 /// The token's `decimals()`.
 const DECIMALS: &str = "313ce567";
 /// The contract's `getChannelId(ChannelConfig)`.
@@ -71,6 +78,7 @@ fn answer(call: &RpcCall) -> RpcReply {
         "eth_blockNumber" => RpcReply::Result(json!("0x1")),
         // Any code at all: the connector asks only whether the contract is deployed.
         "eth_getCode" => RpcReply::Result(json!("0x60")),
+        "eth_getBalance" => RpcReply::Result(json!(format!("{NATIVE_BALANCE:#x}"))),
         "eth_call" => eth_call(call),
         other => not_served(other),
     }
@@ -86,6 +94,9 @@ fn eth_call(call: &RpcCall) -> RpcReply {
     let (selector, arguments) = data.split_at(data.len().min(8));
     if selector == DECIMALS {
         return RpcReply::Result(json!(format!("0x{:064x}", TOKEN_DECIMALS)));
+    }
+    if selector == BALANCE_OF {
+        return RpcReply::Result(json!(format!("0x{:064x}", TOKEN_BALANCE)));
     }
     if selector == RECEIVERS {
         // Nothing claimed and nothing settled: two zero words.
