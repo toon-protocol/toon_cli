@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
-use crate::cli::{ChannelCommand, PeerCommand, RouteCommand};
+use crate::cli::{ChannelCommand, JoinArgs, PeerCommand, RouteCommand};
 use crate::control;
 use crate::node::{self, ConnectorFiles, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
@@ -810,4 +810,70 @@ pub fn route(home: &Path, command: &RouteCommand) -> Result<Report, Error> {
         }
         RouteCommand::Remove { prefix } => route_remove(home, prefix),
     }
+}
+
+/// The prefix a joined network's packets are forwarded under.
+const NETWORK_PREFIX: &str = "g.toon";
+
+/// `toon join`: peer toward the network's connector for `deposit`, forward the network's
+/// prefix over the peering, and read the network's relay. All of it is under the
+/// spending limit, as the one deposit.
+pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
+    // Refused before the spending limit is charged: a refused join moves nothing.
+    let Some(mut state) = State::load(home)? else {
+        return Err(node::no_agent_node(home));
+    };
+    let name = args.network.name();
+    if state.network != args.network {
+        return Err(failed(
+            ErrorCode::JoinRefused,
+            format!(
+                "This agent node was initialised for {}, whose chain it settles on: it cannot join {name}.",
+                state.network.name()
+            ),
+        ));
+    }
+    if let Some(joined) = &state.joined {
+        return Err(failed(
+            ErrorCode::JoinRefused,
+            format!("This agent node has already joined {joined}."),
+        ));
+    }
+    spending::spend(home, args.deposit, args.yes, || {
+        let peered = peer_add(
+            home,
+            &PeerAdd {
+                address: &state.connector_url,
+                deposit: args.deposit,
+                id: Some(name),
+                fee: 0,
+                max_packet_amount: 0,
+            },
+        )?;
+        let routed = route_add(home, NETWORK_PREFIX, name, 0)?;
+        let relay = state.relay_url.clone();
+        state.joined = Some(name.to_owned());
+        if !state.reads.contains(&relay) {
+            state.reads.push(relay.clone());
+        }
+        state.save(home)?;
+        Ok((
+            Report {
+                exit: Exit::Success,
+                json: json!({
+                    "network": name,
+                    "peering": peered.json["peering"],
+                    "route": routed.json["route"],
+                    "relay": relay,
+                }),
+                text: format!(
+                    "Joined {name}: peered with {} and forwarding {NETWORK_PREFIX} to it, deposit {}. \
+                     Reading its relay at {relay}.\n\
+                     Its connector forwards back to you only if its operator creates a peering toward you in return.",
+                    state.connector_url, args.deposit
+                ),
+            },
+            true,
+        ))
+    })
 }

@@ -62,6 +62,8 @@ pub enum Command {
         #[command(subcommand)]
         command: PeerCommand,
     },
+    /// Join a network: peer toward its connector and read its relay
+    Join(JoinArgs),
     /// Show or change the spending limit
     Limit {
         #[command(subcommand)]
@@ -212,6 +214,12 @@ pub struct InitArgs {
     /// Where `wallet fund` asks for funds, instead of the profile's faucet
     #[arg(long)]
     pub faucet_url: Option<String>,
+    /// The `/ilp` URL of the network's connector, which `join` peers toward, instead of the profile's
+    #[arg(long)]
+    pub connector_url: Option<String>,
+    /// The websocket URL of the network's relay, which `join` reads, instead of the profile's
+    #[arg(long)]
+    pub relay_url: Option<String>,
     /// The EVM chain's JSON-RPC endpoint, instead of the profile's
     #[arg(long)]
     pub evm_rpc_url: Option<String>,
@@ -279,6 +287,14 @@ impl InitArgs {
                 per_command: self.max_per_command,
                 per_day: self.max_per_day,
             },
+            connector_url: self
+                .connector_url
+                .clone()
+                .unwrap_or_else(|| self.network.connector_url().to_owned()),
+            relay_url: self
+                .relay_url
+                .clone()
+                .unwrap_or_else(|| self.network.relay_url().to_owned()),
             faucet_url: self
                 .faucet_url
                 .clone()
@@ -299,6 +315,19 @@ pub struct SendArgs {
     #[arg(long)]
     pub seal_to: Option<String>,
     /// Confirm that this command moves money: without it nothing is sent
+    #[arg(long)]
+    pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct JoinArgs {
+    /// The network to join: the one this agent node was initialised for
+    #[arg(value_enum)]
+    pub network: Profile,
+    /// What the channel toward the network's connector is opened with, in the token's base units
+    #[arg(long)]
+    pub deposit: u128,
+    /// Confirm that this command moves money: without it nothing is deposited
     #[arg(long)]
     pub yes: bool,
 }
