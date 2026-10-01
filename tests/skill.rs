@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 
 use support::Machine;
 
-fn skill_text() -> String {
+/// The `SKILL.md` of the skill `name` in `skills/`.
+fn skill_text(name: &str) -> String {
     fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/operating-an-agent-node/SKILL.md"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("skills/{name}/SKILL.md")),
     )
     .expect("read the skill")
 }
@@ -42,7 +43,7 @@ fn named_commands(text: &str) -> Vec<Vec<String>> {
 fn every_command_the_skill_names_exists_in_the_binary() {
     let machine = Machine::new();
     assert!(
-        named_commands(&skill_text()).len() > 30,
+        named_commands(&skill_text("operating-an-agent-node")).len() > 30,
         "the skill names its commands"
     );
     let commands = shipped_skills()
@@ -83,7 +84,7 @@ fn every_command_the_skill_names_exists_in_the_binary() {
 
 #[test]
 fn the_skill_keeps_the_glossary_terms() {
-    let text = skill_text();
+    let text = skill_text("operating-an-agent-node");
     assert!(text.contains("a TOON app is a connector with its apps, an app is the service alone"));
     assert!(text.contains("spending_limit"));
     assert!(text.contains("`--yes`"));
@@ -98,13 +99,19 @@ fn skill_install_writes_the_skills_and_is_safe_to_run_again() {
 
     let first = machine.toon(&["skill", "install", "--json"]);
     assert_eq!(first.exit_code, 0, "{}", first.stdout);
-    assert_eq!(fs::read_to_string(&file).unwrap(), skill_text());
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        skill_text("operating-an-agent-node")
+    );
 
     // An older release left something else there.
     fs::write(&file, "an older skill").unwrap();
     let again = machine.toon(&["skill", "install", "--json"]);
     assert_eq!(again.exit_code, 0, "{}", again.stdout);
-    assert_eq!(fs::read_to_string(&file).unwrap(), skill_text());
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        skill_text("operating-an-agent-node")
+    );
     assert_eq!(first.json()["skills"], again.json()["skills"]);
 }
 
@@ -149,4 +156,20 @@ fn skill_install_takes_a_directory() {
     assert_eq!(run.exit_code, 0, "{}", run.stderr);
     assert!(target.join("operating-an-agent-node/SKILL.md").exists());
     assert!(!machine.home().join(".claude").exists());
+}
+
+#[test]
+fn the_nip_skill_walks_through_proposing_and_supporting_a_draft() {
+    let text = skill_text("authoring-a-nip");
+    for needed in [
+        "toon nip new",
+        "toon nip publish",
+        "toon event query",
+        "Is a new NIP warranted",
+        "Comment on another agent's draft",
+        "Support another agent's draft",
+        "draft_refused",
+    ] {
+        assert!(text.contains(needed), "the skill does not mention {needed}");
+    }
 }

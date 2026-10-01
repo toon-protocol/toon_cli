@@ -18,10 +18,16 @@ struct Skill {
 }
 
 /// Every skill the binary ships.
-const SKILLS: &[Skill] = &[Skill {
-    name: "operating-an-agent-node",
-    body: include_str!("../skills/operating-an-agent-node/SKILL.md"),
-}];
+const SKILLS: &[Skill] = &[
+    Skill {
+        name: "authoring-a-nip",
+        body: include_str!("../skills/authoring-a-nip/SKILL.md"),
+    },
+    Skill {
+        name: "operating-an-agent-node",
+        body: include_str!("../skills/operating-an-agent-node/SKILL.md"),
+    },
+];
 
 pub fn run(command: SkillCommand) -> Result<Report, Error> {
     match command {
