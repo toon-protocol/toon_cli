@@ -8,7 +8,9 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use crate::cli::NipCommand;
 use crate::event;
+use crate::home;
 use crate::node;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 
@@ -53,6 +55,33 @@ fn slug(title: &str) -> String {
     }
     slug.truncate(64);
     slug.trim_end_matches('-').to_owned()
+}
+
+/// `toon nip`.
+pub fn run(command: NipCommand) -> Result<Report, Error> {
+    match command {
+        NipCommand::New { title } => {
+            let directory = std::env::current_dir().map_err(|error| Error {
+                code: ErrorCode::Io,
+                message: format!("The current directory is unreadable: {error}."),
+            })?;
+            new(&directory, &title)
+        }
+        NipCommand::Publish {
+            draft,
+            relay,
+            topics,
+            title_changed,
+            amount,
+        } => publish(
+            &home::resolve()?,
+            &draft,
+            &relay,
+            &topics,
+            title_changed,
+            amount,
+        ),
+    }
 }
 
 /// `toon nip new`: write a draft called `title` from the template into `directory`.

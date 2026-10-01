@@ -4,9 +4,10 @@ use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
-use crate::node::Options;
+use crate::node::{Expiry, Options, Reach};
 use crate::outcome::Exit;
 use crate::profile::Profile;
+use crate::relay;
 
 /// What `--version` prints after the name: this release, the connector it embeds and the
 /// relay image it runs.
@@ -75,6 +76,11 @@ pub enum Command {
         #[command(subcommand)]
         command: ChannelCommand,
     },
+    /// Set the relay and what a write to it costs
+    Relay {
+        #[command(subcommand)]
+        command: RelayCommand,
+    },
     /// Start the agent node as a `systemd --user` unit that outlives this session
     Up {
         /// Run the supervisor in this process instead of installing the unit
@@ -98,6 +104,12 @@ pub enum Command {
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
+    /// Agree to the Anyone Protocol's terms, which a hidden service needs
+    #[arg(long)]
+    pub accept_anyone_terms: bool,
+    /// Make the TOON app reachable at this public hostname instead of as a hidden service
+    #[arg(long, value_name = "HOSTNAME")]
+    pub clearnet: Option<String>,
     /// Where the connector listens; the system picks a port when it is 0
     #[arg(long, default_value = "127.0.0.1:0")]
     pub listen: String,
@@ -155,6 +167,13 @@ impl InitArgs {
             evm.transfer_method = method.clone();
         }
         Options {
+            reach: match &self.clearnet {
+                Some(hostname) => Reach::Clearnet {
+                    hostname: hostname.clone(),
+                },
+                None => Reach::Hidden,
+            },
+            accept_anyone_terms: self.accept_anyone_terms,
             listen: self.listen.clone(),
             network: self.network,
             evm: Some(evm),
@@ -286,6 +305,59 @@ pub enum RouteCommand {
         /// The ILP address prefix
         prefix: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum RelayCommand {
+    /// Show the relay's settings and prices, or change them and restart the relay
+    Config(RelayConfigArgs),
+    /// Set the price of a write on the connector's route, which restarts the connector
+    Price {
+        /// The price of one write, in the token's base units
+        amount: u64,
+        /// Restart a running connector without asking: a restart drops the packets it holds
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct RelayConfigArgs {
+    /// The relay's name; empty unsets it
+    #[arg(long)]
+    pub name: Option<String>,
+    /// The relay's description; empty unsets it
+    #[arg(long)]
+    pub description: Option<String>,
+    /// Whether the relay drops an event once it has expired (`honour`) or keeps it (`ignore`)
+    #[arg(long, value_parser = parse_expiry)]
+    pub expiry: Option<Expiry>,
+    /// Refuse events from this public key, in hex; repeat it for several
+    #[arg(long, value_parser = relay::public_key)]
+    pub block: Vec<String>,
+    /// Stop refusing events from this public key; repeat it for several
+    #[arg(long, value_parser = relay::public_key)]
+    pub unblock: Vec<String>,
+    /// Restart a running relay and its connector without asking: a restart drops the
+    /// packets the connector holds
+    #[arg(long)]
+    pub yes: bool,
+}
+
+fn parse_expiry(text: &str) -> Result<Expiry, String> {
+    Expiry::from_name(text).ok_or_else(|| "expected `honour` or `ignore`".into())
+}
+
+impl RelayConfigArgs {
+    pub fn change(&self) -> relay::Change {
+        relay::Change {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            expiry: self.expiry,
+            block: self.block.clone(),
+            unblock: self.unblock.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]

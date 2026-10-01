@@ -18,8 +18,11 @@ One Rust crate, `toon-cli`, at the repository root; it builds the binary `toon`.
 Tests live in `tests/` and go through one seam: `tests/support` runs the built binary
 against a temporary home directory, and a test asserts on its output, its exit code,
 the files it leaves, and what a connector it started answers over loopback. Exit codes and error codes are part of the interface and are listed
-in `docs/exit-codes.md`. `tests/exit_codes.rs` keeps its own copy of both lists and
-checks it against that file and `toon --help`, so add a new code to all of them together.
+in `docs/exit-codes.md`. `tests/exit_codes.rs` keeps its own copy of the exit codes, and `tests/error_codes.txt`
+holds the error codes; both are checked against that file, the exit codes against
+`toon --help` too. Add an error code to `src/error_codes.table`, `tests/error_codes.txt`
+and the table in `docs/exit-codes.md` together. Those lists take one line to a code and
+merge as a union (`.gitattributes`), so codes added on two branches do not conflict.
 
 ## Draft NIPs
 
