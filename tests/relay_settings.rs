@@ -93,7 +93,7 @@ fn config_is_recorded_when_no_agent_node_is_running_and_the_relay_gets_it_at_up(
 }
 
 #[test]
-fn config_restarts_a_running_relay_with_the_new_settings() {
+fn config_restarts_a_running_relay_with_the_new_settings_only_with_yes() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
@@ -101,8 +101,17 @@ fn config_restarts_a_running_relay_with_the_new_settings() {
     up.report();
     assert_eq!(settings(&machine), "TOON_RELAY_EXPIRY=honour\n");
 
+    let refused = machine.toon(&["relay", "config", "--name", "Renamed", "--json"]);
+
+    assert_eq!(refused.exit_code, 1);
+    assert_eq!(refused.json()["error"]["code"], "confirmation_required");
+    assert_eq!(
+        machine.toon(&["relay", "config", "--json"]).json()["relay"]["name"],
+        Value::Null
+    );
+
     let run = machine.toon(&[
-        "relay", "config", "--name", "Renamed", "--block", KEY, "--json",
+        "relay", "config", "--name", "Renamed", "--block", KEY, "--yes", "--json",
     ]);
 
     assert_eq!(run.exit_code, 0, "{}", run.stdout);
@@ -123,7 +132,7 @@ fn config_restarts_a_running_relay_with_the_new_settings() {
 }
 
 #[test]
-fn price_is_rendered_on_the_connectors_write_route_and_not_on_the_free_one() {
+fn price_is_recorded_when_no_agent_node_is_running() {
     let machine = Machine::new();
     machine.init_with(&[]);
 
@@ -138,7 +147,7 @@ fn price_is_rendered_on_the_connectors_write_route_and_not_on_the_free_one() {
 }
 
 #[test]
-fn price_restarts_a_running_connector_only_with_yes() {
+fn price_restarts_a_running_connector_only_with_yes_and_is_rendered_on_the_write_route() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);

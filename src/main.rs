@@ -84,7 +84,7 @@ fn main() -> ExitCode {
         Command::Relay {
             command: RelayCommand::Config(args),
         } => render(
-            home::resolve().and_then(|home| relay::config(&home, &args.change())),
+            home::resolve().and_then(|home| relay::config(&home, &args.change(), args.yes)),
             json,
         )
         .into(),

@@ -179,7 +179,7 @@ fn start_apps(home: &Path, app: &ToonApp, runner: &dyn AppRunner) -> Result<Star
         let spec = AppSpec {
             instance: format!("{}-{name}", instance(home)),
             image: env!("TOON_RELAY_IMAGE").to_owned(),
-            env: relay_env(app, name, &identity),
+            env: app_env(app, name, &identity),
             data_dir: files.data_dir,
         };
         match runner.start(&spec) {
@@ -197,7 +197,7 @@ fn start_apps(home: &Path, app: &ToonApp, runner: &dyn AppRunner) -> Result<Star
 
 /// The environment `name` is started with: the wallet's key, and for the relay what the
 /// operator set.
-fn relay_env(app: &ToonApp, name: &str, identity: &[u8]) -> Vec<(String, String)> {
+fn app_env(app: &ToonApp, name: &str, identity: &[u8]) -> Vec<(String, String)> {
     // The relay's own Nostr identity is the wallet's, in hex.
     let mut env = vec![("NOSTR_SECRET_KEY".to_owned(), hex::encode(identity))];
     if name == node::RELAY {

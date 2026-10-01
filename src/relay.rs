@@ -3,7 +3,9 @@
 //! What the operator asks for is recorded in `state.json`, as everything is. The relay
 //! reads its name, description, expiry behaviour and blocklist when it starts, so a change
 //! to them restarts it; the price of a write is on the connector's route, which is
-//! rendered when the connector starts, so changing it restarts the connector.
+//! rendered when the connector starts, so changing it restarts the connector. The
+//! supervisor restarts the relay and its connector together, so either change drops the
+//! packets the connector holds, and needs `--yes` while the agent node is running.
 
 use std::path::Path;
 use std::thread;
@@ -53,9 +55,32 @@ fn load(home: &Path) -> Result<State, Error> {
     State::load(home)?.ok_or_else(|| node::no_agent_node(home))
 }
 
-/// The settings of the relay of the first TOON app, the one that fronts it.
-fn relay_of(state: &mut State) -> &mut RelaySettings {
-    &mut state.toon_apps[0].relay
+/// The settings of the relay, held by the TOON app whose connector fronts it.
+fn relay_of(state: &mut State) -> Result<&mut RelaySettings, Error> {
+    state
+        .toon_apps
+        .iter_mut()
+        .find(|app| app.apps.iter().any(|name| name == node::RELAY))
+        .map(|app| &mut app.relay)
+        .ok_or_else(|| Error {
+            code: ErrorCode::UnknownName,
+            message: "No TOON app of this agent node has a relay.".into(),
+        })
+}
+
+/// A change restarts a running connector, which drops the packets it holds: refuse it
+/// unless the operator said `yes`.
+fn confirm(home: &Path, yes: bool, what: &str) -> Result<(), Error> {
+    if yes || !control::running(home) {
+        return Ok(());
+    }
+    Err(Error {
+        code: ErrorCode::ConfirmationRequired,
+        message: format!(
+            "{what} restarts the relay and its connector, and the packets the connector \
+             holds are dropped. Nothing was changed: run it again with `--yes`."
+        ),
+    })
 }
 
 /// Ask a running supervisor to start the apps and the connector again, and wait until it
@@ -75,7 +100,8 @@ fn restart(home: &Path) -> Result<bool, Error> {
             None => {
                 return Err(Error {
                     code: ErrorCode::AppFailed,
-                    message: "The relay did not start again, and the supervisor stopped. \
+                    message: "The relay and its connector did not start again, and the \
+                              supervisor stopped. \
                               Run `toon up` for the reason."
                         .into(),
                 })
@@ -85,7 +111,7 @@ fn restart(home: &Path) -> Result<bool, Error> {
     Err(Error {
         code: ErrorCode::AppFailed,
         message: format!(
-            "The relay did not start again within {} seconds.",
+            "The relay and its connector did not start again within {} seconds.",
             RESTART_WITHIN.as_secs()
         ),
     })
@@ -108,7 +134,7 @@ fn report(settings: &RelaySettings, restarted: bool, changed: bool) -> Report {
         node::RELAY_EPHEMERAL_PRICE,
     );
     if restarted {
-        text.push_str("\nThe relay was restarted.");
+        text.push_str("\nThe relay and its connector were restarted.");
     } else if changed {
         text.push_str("\nNo agent node is running: `toon up` starts the relay with these.");
     }
@@ -133,12 +159,13 @@ fn report(settings: &RelaySettings, restarted: bool, changed: bool) -> Report {
 
 /// `toon relay config`: show the relay's settings and prices, or change them and restart
 /// the relay.
-pub fn config(home: &Path, change: &Change) -> Result<Report, Error> {
+pub fn config(home: &Path, change: &Change, yes: bool) -> Result<Report, Error> {
     let mut state = load(home)?;
     if change.is_empty() {
-        return Ok(report(relay_of(&mut state), false, false));
+        return Ok(report(relay_of(&mut state)?, false, false));
     }
-    let settings = relay_of(&mut state);
+    confirm(home, yes, "Changing the relay's settings")?;
+    let settings = relay_of(&mut state)?;
     // An empty name or description unsets it.
     let set = |value: &String| Some(value.clone()).filter(|value| !value.is_empty());
     if let Some(name) = &change.name {
@@ -169,16 +196,10 @@ pub fn config(home: &Path, change: &Change) -> Result<Report, Error> {
 /// connector restarts for it, and drops the packets it holds, so that needs `yes`.
 pub fn price(home: &Path, amount: u64, yes: bool) -> Result<Report, Error> {
     let mut state = load(home)?;
-    if !yes && control::running(home) {
-        return Err(Error {
-            code: ErrorCode::ConfirmationRequired,
-            message: "A new price restarts the connector, and the packets it holds are \
-                      dropped. Nothing was changed: run it again with `--yes`."
-                .into(),
-        });
-    }
-    relay_of(&mut state).price = amount;
-    let settings = relay_of(&mut state).clone();
+    confirm(home, yes, "A new price")?;
+    let settings = relay_of(&mut state)?;
+    settings.price = amount;
+    let settings = settings.clone();
     state.save(home)?;
     let restarted = restart(home)?;
     Ok(report(&settings, restarted, true))

@@ -73,7 +73,7 @@ A failed command with `--json` prints:
 | `send_failed` | 1 | The packet could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
 | `unknown_name` | 1 | `toon logs` was given a name that is neither a TOON app nor an app of this agent node |
-| `confirmation_required` | 1 | `toon relay price` would restart a running connector and was not given `--yes`; nothing was changed |
+| `confirmation_required` | 1 | `toon relay config` or `toon relay price` would restart a running relay and its connector and was not given `--yes`; nothing was changed |
 
 ## The wallet passphrase
 

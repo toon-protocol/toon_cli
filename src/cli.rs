@@ -196,14 +196,14 @@ pub struct RelayConfigArgs {
     /// Stop refusing events from this public key; repeat it for several
     #[arg(long, value_parser = relay::public_key)]
     pub unblock: Vec<String>,
+    /// Restart a running relay and its connector without asking: a restart drops the
+    /// packets the connector holds
+    #[arg(long)]
+    pub yes: bool,
 }
 
 fn parse_expiry(text: &str) -> Result<Expiry, String> {
-    match text {
-        "honour" => Ok(Expiry::Honour),
-        "ignore" => Ok(Expiry::Ignore),
-        _ => Err("expected `honour` or `ignore`".into()),
-    }
+    Expiry::from_name(text).ok_or_else(|| "expected `honour` or `ignore`".into())
 }
 
 impl RelayConfigArgs {

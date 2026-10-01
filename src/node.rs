@@ -79,7 +79,7 @@ impl Expiry {
         }
     }
 
-    fn from_name(name: &str) -> Option<Self> {
+    pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "honour" => Some(Expiry::Honour),
             "ignore" => Some(Expiry::Ignore),
