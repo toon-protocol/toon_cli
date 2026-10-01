@@ -82,7 +82,7 @@ A failed command with `--json` prints:
 | `query_failed` | 1 | `toon event query`, or `toon nip publish` asking for a draft's current revision, could not read events from the relay: it did not answer, is not a websocket relay this build dials, or closed the subscription with a reason the message carries |
 | `draft_refused` | 1 | `toon nip new` or `toon nip publish` would not write or publish a draft: the file exists already, does not name a draft or begin with its title, is not UTF-8, or the relay holds the identifier under another title and `--title-changed` was not given; the message says which |
 | `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
-| `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap, so a hidden service was not created or started; nothing falls back to clearnet |
+| `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap (its `anon` release could not be downloaded or did not match its pinned checksum, its terms were not agreed to, or the daemon did not come up), so a hidden service was not created or started; nothing falls back to clearnet |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
 | `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
 
@@ -121,6 +121,13 @@ creates nothing and leaves nothing listening: it never falls back to clearnet.
 `--listen` address (`127.0.0.1:0` unless given), and the certificate and the reverse proxy
 that answer at the hostname are the operator's to provide. A clearnet TOON app needs no
 overlay and no terms flag.
+
+The overlay is Anyone's `anon` daemon. `toon` downloads the release pinned in `src/anon.rs`,
+checks its SHA-256 and only then runs it, one daemon per agent node home, detached so it
+outlives the command that started it and shared by every connector. The operator's agreement
+to the terms is recorded in `overlay/agreed` once the daemon has bootstrapped; `toon up` starts
+no daemon without it. `TOON_ANON_MIRROR` replaces the download location (the checksum still
+applies).
 
 A hidden service hides where the TOON app is reachable and not who it pays: payments are
 on a public chain. `toon init` says so.

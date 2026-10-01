@@ -442,7 +442,9 @@ impl Edge for Anon {
         let expected = zeroize::Zeroizing::new(key_file(&secret));
         if fs::read(&secret_file).ok().as_deref() != Some(expected.as_slice()) {
             // Whatever the daemon made for another key is not this connector's.
-            let _ = fs::remove_dir_all(&service);
+            for stale in ["hostname", "hs_ed25519_public_key"] {
+                let _ = fs::remove_file(service.join(stale));
+            }
             crate::node::write(&secret_file, &expected, 0o600)?;
         }
         fs::set_permissions(&service, fs::Permissions::from_mode(0o700))
