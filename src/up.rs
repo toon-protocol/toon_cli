@@ -15,6 +15,7 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -25,7 +26,7 @@ use sha2::Digest;
 use crate::connector::{self, Startup};
 use crate::control;
 use crate::funding;
-use crate::node::{self, AppFiles, ConnectorFiles, Reach, State, ToonApp};
+use crate::node::{self, App, AppFiles, ConnectorFiles, Reach, Source, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::overlay::{self, Edge};
 use crate::runner::{self, AppRunner, AppSpec, RunningApp};
@@ -64,19 +65,23 @@ struct Live {
     last_exit: Option<String>,
 }
 
+/// Why a reload failed, and whether the connector was stopped on the way: a reload that
+/// fails before it stops the connector leaves it as it was.
+struct Unreloaded {
+    error: Error,
+    stopped: bool,
+}
+
+/// Someone waiting for the connector to be started again with the state as it now is.
+type Reload = Sender<Result<(), Unreloaded>>;
+
 struct Shared {
     toon_app: String,
     apps: Mutex<Vec<AppStatus>>,
+    /// The `reload` requests that `wait` has not carried out yet.
+    reload: Mutex<Vec<Reload>>,
     stop: AtomicBool,
     live: Mutex<Live>,
-    reloads: Mutex<Reloads>,
-}
-
-/// How many times `toon relay` has asked the supervisor to start its apps and connector
-/// again from the state, and how many of those it has done.
-struct Reloads {
-    asked: u64,
-    done: u64,
 }
 
 /// A connector that is listening.
@@ -110,6 +115,20 @@ impl Hidden {
         }
         self.edge.publish(&self.endpoint, &ports);
     }
+
+    fn overlay(&self) -> node::Overlay {
+        node::Overlay {
+            proxy: self.edge.proxy(),
+            endpoint: self.endpoint.clone(),
+        }
+    }
+}
+
+/// Where the relay's read port is, if it runs.
+fn read_address(apps: &StartedApps) -> Option<SocketAddr> {
+    apps.iter()
+        .find(|(name, _)| name == node::RELAY)
+        .and_then(|(_, running)| running.read_address())
 }
 
 /// A supervisor whose connector is listening.
@@ -117,8 +136,11 @@ pub struct Supervisor {
     /// Held for as long as the connector runs, and dropped once it and the apps are stopped.
     hidden: Option<Hidden>,
     connector: Option<Started>,
-    /// The apps behind it, stopped after it.
-    apps: Vec<Box<dyn RunningApp>>,
+    /// The apps behind it that run, stopped after it.
+    apps: StartedApps,
+    runner: Box<dyn AppRunner>,
+    /// The TOON app as the connector now runs it.
+    app: ToonApp,
     files: ConnectorFiles,
     shared: Arc<Shared>,
     socket: PathBuf,
@@ -127,9 +149,6 @@ pub struct Supervisor {
     first: (u32, String),
     /// How long to wait before the next restart.
     delay: Duration,
-    runner: Box<dyn AppRunner>,
-    /// The TOON app this supervisor runs, by name, to find it again in the state.
-    toon_app: String,
 }
 
 /// How a supervisor ended.
@@ -190,26 +209,48 @@ pub fn start(home: &Path) -> Result<Supervisor, Error> {
 /// The apps that have been started, by name.
 type StartedApps = Vec<(String, Box<dyn RunningApp>)>;
 
+/// Start one app, if it is one the supervisor runs, and return once it is healthy.
+fn start_app(
+    home: &Path,
+    toon: &ToonApp,
+    app: &App,
+    runner: &dyn AppRunner,
+) -> Result<Option<Box<dyn RunningApp>>, Error> {
+    let files = AppFiles::of(home, &app.name);
+    let (image, env) = match &app.source {
+        Source::Url(_) => return Ok(None),
+        // The relay's own Nostr identity is the wallet's, in hex.
+        Source::Relay => {
+            let identity = fs::read(&files.identity_key).map_err(|error| Error {
+                code: ErrorCode::AppFailed,
+                message: format!(
+                    "The identity key of the app {} is not readable at {}: {error}.",
+                    app.name,
+                    files.identity_key.display()
+                ),
+            })?;
+            let mut env = vec![("NOSTR_SECRET_KEY".to_owned(), hex::encode(identity))];
+            env.extend(toon.relay.env());
+            (env!("TOON_RELAY_IMAGE").to_owned(), env)
+        }
+        Source::Image(image) => (image.clone(), Vec::new()),
+    };
+    let spec = AppSpec {
+        instance: format!("{}-{}", instance(home), app.name),
+        image,
+        env,
+        data_dir: files.data_dir,
+    };
+    runner.start(&spec).map(Some)
+}
+
 /// Start the apps behind `app`'s connector. What it started is stopped again if one fails.
 fn start_apps(home: &Path, app: &ToonApp, runner: &dyn AppRunner) -> Result<StartedApps, Error> {
     let mut started = StartedApps::new();
-    for name in &app.apps {
-        let files = AppFiles::of(home, name);
-        let identity = fs::read(&files.identity_key).map_err(|error| Error {
-            code: ErrorCode::AppFailed,
-            message: format!(
-                "The identity key of the app {name} is not readable at {}: {error}.",
-                files.identity_key.display()
-            ),
-        })?;
-        let spec = AppSpec {
-            instance: format!("{}-{name}", instance(home)),
-            image: env!("TOON_RELAY_IMAGE").to_owned(),
-            env: app_env(app, name, &identity),
-            data_dir: files.data_dir,
-        };
-        match runner.start(&spec) {
-            Ok(running) => started.push((name.clone(), running)),
+    for behind in &app.apps {
+        match start_app(home, app, behind, runner) {
+            Ok(Some(running)) => started.push((behind.name.clone(), running)),
+            Ok(None) => {}
             Err(error) => {
                 for (_, running) in &mut started {
                     running.stop();
@@ -219,17 +260,6 @@ fn start_apps(home: &Path, app: &ToonApp, runner: &dyn AppRunner) -> Result<Star
         }
     }
     Ok(started)
-}
-
-/// The environment `name` is started with: the wallet's key, and for the relay what the
-/// operator set.
-fn app_env(app: &ToonApp, name: &str, identity: &[u8]) -> Vec<(String, String)> {
-    // The relay's own Nostr identity is the wallet's, in hex.
-    let mut env = vec![("NOSTR_SECRET_KEY".to_owned(), hex::encode(identity))];
-    if name == node::RELAY {
-        env.extend(app.relay.env());
-    }
-    env
 }
 
 /// A name for the agent node at `home` that is the same every time and differs between
@@ -257,75 +287,15 @@ fn launch(
         }
         Reach::Clearnet { .. } => None,
     };
-    let mut apps = start_apps(home, app, &*runner)?;
-    let result = launch_connector(home, app, runner, overlay, &mut apps, listener, socket);
-    if result.is_err() {
-        for (_, running) in &mut apps {
-            running.stop();
-        }
-    }
-    result
+    let apps = start_apps(home, app, &*runner)?;
+    launch_connector(home, app, overlay, apps, runner, listener, socket)
 }
 
-fn launch_connector(
-    home: &Path,
-    app: &ToonApp,
-    runner: Box<dyn AppRunner>,
-    overlay: Option<(Box<dyn Edge>, String)>,
-    apps: &mut StartedApps,
-    listener: UnixListener,
-    socket: &Path,
-) -> Result<Supervisor, Error> {
-    let relay = apps
-        .iter()
-        .find(|(name, _)| name == node::RELAY)
-        .map(|(_, running)| running.write_address());
-    let hidden = overlay.map(|(edge, endpoint)| Hidden {
-        edge,
-        endpoint,
-        read: apps
-            .iter()
-            .find(|(name, _)| name == node::RELAY)
-            .and_then(|(_, running)| running.read_address()),
-    });
-    let rendering = hidden.as_ref().map(|hidden| node::Overlay {
-        proxy: hidden.edge.proxy(),
-        endpoint: hidden.endpoint.clone(),
-    });
-    let files = node::render(home, app, relay, rendering.as_ref())?;
-    let started = spawn(&files)?;
-    if let Some(hidden) = &hidden {
-        hidden.publish(&started.address);
-    }
-    let first = (started.child.id(), started.address.clone());
-    let shared = Arc::new(Shared {
-        toon_app: app.name.clone(),
-        apps: Mutex::new(statuses(apps)),
-        stop: AtomicBool::new(false),
-        reloads: Mutex::new(Reloads { asked: 0, done: 0 }),
-        live: Mutex::new(Live {
-            pid: Some(first.0),
-            address: Some(first.1.clone()),
-            running: true,
-            restarts: 0,
-            last_exit: None,
-        }),
-    });
-    let answering = Arc::clone(&shared);
-    thread::spawn(move || control::serve(listener, |request| answering.answer(request)));
-    Ok(Supervisor {
-        hidden,
-        connector: Some(started),
-        apps: apps.drain(..).map(|(_, running)| running).collect(),
-        files,
-        shared,
-        socket: socket.to_path_buf(),
-        home: home.to_path_buf(),
-        first,
-        delay: FIRST_RESTART_DELAY,
-        runner,
-        toon_app: app.name.clone(),
-    })
+/// Where each running app's write port is reached.
+fn addresses(apps: &StartedApps) -> Vec<(String, SocketAddr)> {
+    apps.iter()
+        .map(|(name, running)| (name.clone(), running.write_address()))
+        .collect()
 }
 
 fn statuses(apps: &StartedApps) -> Vec<AppStatus> {
@@ -336,6 +306,69 @@ fn statuses(apps: &StartedApps) -> Vec<AppStatus> {
             running: AtomicBool::new(true),
         })
         .collect()
+}
+
+fn launch_connector(
+    home: &Path,
+    app: &ToonApp,
+    overlay: Option<(Box<dyn Edge>, String)>,
+    mut apps: StartedApps,
+    runner: Box<dyn AppRunner>,
+    listener: UnixListener,
+    socket: &Path,
+) -> Result<Supervisor, Error> {
+    let hidden = overlay.map(|(edge, endpoint)| Hidden {
+        edge,
+        endpoint,
+        read: read_address(&apps),
+    });
+    let rendering = hidden.as_ref().map(Hidden::overlay);
+    let started =
+        node::render(home, app, &addresses(&apps), rendering.as_ref()).and_then(|files| {
+            let started = spawn(&files)?;
+            Ok((files, started))
+        });
+    let (files, started) = match started {
+        Ok(started) => started,
+        Err(error) => {
+            for (_, running) in &mut apps {
+                running.stop();
+            }
+            return Err(error);
+        }
+    };
+    if let Some(hidden) = &hidden {
+        hidden.publish(&started.address);
+    }
+    let first = (started.child.id(), started.address.clone());
+    let shared = Arc::new(Shared {
+        toon_app: app.name.clone(),
+        apps: Mutex::new(statuses(&apps)),
+        reload: Mutex::new(Vec::new()),
+        stop: AtomicBool::new(false),
+        live: Mutex::new(Live {
+            pid: Some(first.0),
+            address: Some(first.1.clone()),
+            running: true,
+            restarts: 0,
+            last_exit: None,
+        }),
+    });
+    let answering = Arc::clone(&shared);
+    thread::spawn(move || control::serve(listener, move |request| answering.answer(request)));
+    Ok(Supervisor {
+        hidden,
+        connector: Some(started),
+        apps,
+        runner,
+        app: app.clone(),
+        files,
+        shared,
+        socket: socket.to_path_buf(),
+        home: home.to_path_buf(),
+        first,
+        delay: FIRST_RESTART_DELAY,
+    })
 }
 
 /// Start the connector described by `files` as a child process, and return once it is
@@ -401,26 +434,46 @@ impl Shared {
                             "restarts": live.restarts,
                             "last_exit": live.last_exit,
                         },
-                        "apps": self.apps.lock().expect("the apps' state").iter().map(|app| json!({
+                        "apps": self.apps().iter().map(|app| json!({
                             "name": app.name,
                             "address": app.address.to_string(),
                             "running": app.running.load(Ordering::SeqCst),
                         })).collect::<Vec<_>>(),
                     }],
-                    "reloads": self.reloads.lock().expect("the reloads").done,
                 })
             }
-            "reload" => {
-                let mut reloads = self.reloads.lock().expect("the reloads");
-                reloads.asked += 1;
-                json!({ "ticket": reloads.asked })
-            }
+            "reload" => self.reload(),
             "down" => {
                 self.stop.store(true, Ordering::SeqCst);
                 json!({ "stopping": true })
             }
             _ => json!({ "error": "unknown request" }),
         }
+    }
+
+    /// Ask `wait` to start the connector again from the state as it now is, and wait for
+    /// the answer. Apps are started and stopped to match the state too.
+    fn reload(&self) -> Value {
+        let (answer, answered) = mpsc::channel();
+        self.reloads().push(answer);
+        match answered.recv() {
+            Ok(Ok(())) => json!({ "reloaded": true }),
+            Ok(Err(Unreloaded { error, stopped })) => {
+                let mut reply = error.json();
+                reply["stopped"] = json!(stopped);
+                reply
+            }
+            Err(_) => json!({ "error": { "code": "connector_failed",
+                "message": "The supervisor stopped before it reloaded." } }),
+        }
+    }
+
+    fn reloads(&self) -> std::sync::MutexGuard<'_, Vec<Reload>> {
+        self.reload.lock().expect("the reload requests")
+    }
+
+    fn apps(&self) -> std::sync::MutexGuard<'_, Vec<AppStatus>> {
+        self.apps.lock().expect("the apps' state")
     }
 
     fn live(&self) -> std::sync::MutexGuard<'_, Live> {
@@ -462,14 +515,6 @@ impl Supervisor {
         let mut apps_checked = Instant::now();
         let mut stopped = Stopped::Down;
         while !self.shared.stop.load(Ordering::SeqCst) {
-            if self.reload_asked() {
-                if let Err(error) = self.reload() {
-                    stopped = Stopped::Failed(error);
-                    break;
-                }
-                apps_checked = Instant::now();
-                continue;
-            }
             if apps_checked.elapsed() >= APPS_EVERY {
                 apps_checked = Instant::now();
                 if let Some(app) = self.stopped_app() {
@@ -479,6 +524,24 @@ impl Supervisor {
                     });
                     break;
                 }
+            }
+            // Requests that came in together are carried out by one restart.
+            let requested = std::mem::take(&mut *self.shared.reloads());
+            if !requested.is_empty() {
+                let reloaded = self.reload();
+                for answer in requested {
+                    let _ = answer.send(match &reloaded {
+                        Ok(()) => Ok(()),
+                        Err(unreloaded) => Err(Unreloaded {
+                            error: Error {
+                                code: unreloaded.error.code,
+                                message: unreloaded.error.message.clone(),
+                            },
+                            stopped: unreloaded.stopped,
+                        }),
+                    });
+                }
+                continue;
             }
             let Some(started) = self.connector.as_mut() else {
                 self.restart();
@@ -490,9 +553,11 @@ impl Supervisor {
                 Err(error) => self.stopped(format!("The connector stopped ({error}).")),
             }
         }
+        // Whoever still waits for a reload is told the supervisor stopped.
+        self.shared.reloads().clear();
         self.stop_connector();
         // The apps go once the connector that delivers to them has.
-        for app in &mut self.apps {
+        for (_, app) in &mut self.apps {
             app.stop();
         }
         self.hidden = None;
@@ -500,75 +565,6 @@ impl Supervisor {
         // Last, so that a `toon down` that sees the socket gone knows everything has.
         let _ = std::fs::remove_file(&self.socket);
         stopped
-    }
-
-    fn reload_asked(&self) -> bool {
-        let reloads = self.shared.reloads.lock().expect("the reloads");
-        reloads.asked > reloads.done
-    }
-
-    /// Start the apps and the connector again from the state as it is now, so that what
-    /// `toon relay` recorded takes effect. Whatever was asked for up to now is done by it.
-    /// An app that does not start leaves nothing running, and ends the supervisor.
-    fn reload(&mut self) -> Result<(), Error> {
-        let asked = self.shared.reloads.lock().expect("the reloads").asked;
-        self.stop_connector();
-        for app in &mut self.apps {
-            app.stop();
-        }
-        self.apps.clear();
-        self.shared.live().running = false;
-        let state = State::load(&self.home)?.ok_or_else(|| node::no_agent_node(&self.home))?;
-        let app = state
-            .toon_apps
-            .iter()
-            .find(|app| app.name == self.toon_app)
-            .ok_or_else(|| failed(format!("The TOON app {} is gone.", self.toon_app)))?;
-        let mut started = start_apps(&self.home, app, &*self.runner)?;
-        let relay = started
-            .iter()
-            .find(|(name, _)| name == node::RELAY)
-            .map(|(_, running)| running.write_address());
-        // The relay's read port moves with the relay, so the onion endpoint is told again.
-        let read = started
-            .iter()
-            .find(|(name, _)| name == node::RELAY)
-            .and_then(|(_, running)| running.read_address());
-        if let Some(hidden) = &mut self.hidden {
-            hidden.read = read;
-        }
-        let rendering = self.hidden.as_ref().map(|hidden| node::Overlay {
-            proxy: hidden.edge.proxy(),
-            endpoint: hidden.endpoint.clone(),
-        });
-        let spawned = node::render(&self.home, app, relay, rendering.as_ref()).and_then(|files| {
-            let connector = spawn(&files)?;
-            Ok((files, connector))
-        });
-        let (files, connector) = match spawned {
-            Ok(both) => both,
-            Err(error) => {
-                for (_, running) in &mut started {
-                    running.stop();
-                }
-                return Err(error);
-            }
-        };
-        if let Some(hidden) = &self.hidden {
-            hidden.publish(&connector.address);
-        }
-        *self.shared.apps.lock().expect("the apps' state") = statuses(&started);
-        let mut live = self.shared.live();
-        live.pid = Some(connector.child.id());
-        live.address = Some(connector.address.clone());
-        live.running = true;
-        drop(live);
-        self.apps = started.into_iter().map(|(_, running)| running).collect();
-        self.files = files;
-        self.connector = Some(connector);
-        self.delay = FIRST_RESTART_DELAY;
-        self.shared.reloads.lock().expect("the reloads").done = asked;
-        Ok(())
     }
 
     /// The connector is gone: note why, and let the next turn of `wait` restart it.
@@ -594,7 +590,8 @@ impl Supervisor {
     fn restart(&mut self) {
         let until = Instant::now() + self.delay;
         while Instant::now() < until {
-            if self.shared.stop.load(Ordering::SeqCst) {
+            // A reload starts the connector itself, without waiting out the delay.
+            if self.shared.stop.load(Ordering::SeqCst) || !self.shared.reloads().is_empty() {
                 return;
             }
             thread::sleep(Duration::from_millis(20));
@@ -620,11 +617,124 @@ impl Supervisor {
         }
     }
 
+    /// Start the connector again with the apps and routes the state now holds. An app that
+    /// is new starts first, and the new config is checked, so that a change that fails
+    /// either leaves the connector as it was. Then the connector stops, which drops what it
+    /// holds in flight, and the apps that were removed stop after it.
+    fn reload(&mut self) -> Result<(), Unreloaded> {
+        let untouched = |error| Unreloaded {
+            error,
+            stopped: false,
+        };
+        let state = State::load(&self.home)
+            .map_err(untouched)?
+            .ok_or_else(|| untouched(node::no_agent_node(&self.home)))?;
+        let toon_app = self.shared.toon_app.clone();
+        let Some(app) = state.toon_apps.iter().find(|app| app.name == toon_app) else {
+            return Err(untouched(failed(format!(
+                "The TOON app {toon_app} is no longer in the state."
+            ))));
+        };
+        // An app whose definition changed, or the relay with new settings, is started again,
+        // and the old one goes first: the two would share a name.
+        let mut touched = false;
+        for behind in &app.apps {
+            let old = self.app.apps.iter().find(|old| old.name == behind.name);
+            let changed = old.is_some_and(|old| {
+                old.source != behind.source
+                    || (behind.name == node::RELAY && self.app.relay != app.relay)
+            });
+            if let Some(position) = self.apps.iter().position(|(name, _)| *name == behind.name) {
+                if changed {
+                    self.apps.remove(position).1.stop();
+                    touched = true;
+                }
+            }
+        }
+        let unreloaded = |error| Unreloaded {
+            error,
+            stopped: touched,
+        };
+        let mut fresh = StartedApps::new();
+        let stop = |fresh: &mut StartedApps| {
+            for (_, running) in fresh {
+                running.stop();
+            }
+        };
+        for behind in &app.apps {
+            if self.apps.iter().any(|(name, _)| *name == behind.name) {
+                continue;
+            }
+            match start_app(&self.home, app, behind, &*self.runner) {
+                Ok(Some(running)) => fresh.push((behind.name.clone(), running)),
+                Ok(None) => {}
+                Err(error) => {
+                    stop(&mut fresh);
+                    return Err(unreloaded(error));
+                }
+            }
+        }
+        let mut reached = addresses(&self.apps);
+        reached.extend(addresses(&fresh));
+        // The relay's read port moves with the relay, so the onion endpoint is told again.
+        let read = read_address(&self.apps).or_else(|| read_address(&fresh));
+        let rendering = self.hidden.as_ref().map(Hidden::overlay);
+        let files = match node::render(&self.home, app, &reached, rendering.as_ref()) {
+            Ok(files) => files,
+            Err(error) => {
+                stop(&mut fresh);
+                // Put back the config the connector runs, for the next time it restarts.
+                let _ = node::render(
+                    &self.home,
+                    &self.app,
+                    &addresses(&self.apps),
+                    rendering.as_ref(),
+                );
+                return Err(unreloaded(error));
+            }
+        };
+        self.stop_connector();
+        {
+            let mut live = self.shared.live();
+            live.running = false;
+            live.pid = None;
+            live.address = None;
+        }
+        let (kept, removed): (StartedApps, StartedApps) = std::mem::take(&mut self.apps)
+            .into_iter()
+            .partition(|(name, _)| app.apps.iter().any(|behind| behind.name == *name));
+        for (_, mut running) in removed {
+            running.stop();
+        }
+        self.apps = kept;
+        self.apps.extend(fresh);
+        *self.shared.apps() = statuses(&self.apps);
+        self.app = app.clone();
+        if let Some(hidden) = &mut self.hidden {
+            hidden.read = read;
+        }
+        self.files = files;
+        let started = spawn(&self.files).map_err(|error| Unreloaded {
+            error,
+            stopped: true,
+        })?;
+        if let Some(hidden) = &self.hidden {
+            hidden.publish(&started.address);
+        }
+        let mut live = self.shared.live();
+        live.pid = Some(started.child.id());
+        live.address = Some(started.address.clone());
+        live.running = true;
+        drop(live);
+        self.connector = Some(started);
+        self.delay = FIRST_RESTART_DELAY;
+        Ok(())
+    }
+
     /// The name of an app that has stopped, if one has. Each app's status is kept current.
     fn stopped_app(&mut self) -> Option<String> {
         let mut stopped = None;
-        let statuses = self.shared.apps.lock().expect("the apps' state");
-        for (running, status) in self.apps.iter_mut().zip(statuses.iter()) {
+        for ((_, running), status) in self.apps.iter_mut().zip(self.shared.apps().iter()) {
             let alive = running.running();
             status.running.store(alive, Ordering::SeqCst);
             if !alive && stopped.is_none() {

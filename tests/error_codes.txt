@@ -21,6 +21,7 @@ peer_not_peerable
 route_failed
 chain_failed
 channel_failed
+name_taken
 query_failed
 confirmation_required
 overlay_unavailable

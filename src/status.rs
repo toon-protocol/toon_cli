@@ -71,15 +71,29 @@ pub fn status(home: &Path) -> Result<Report, Error> {
         let apps: Vec<Value> = app
             .apps
             .iter()
-            .map(|name| {
+            .map(|behind| {
+                let name = &behind.name;
                 let reported = reported
                     .and_then(|reported| reported["apps"].as_array())
                     .and_then(|apps| apps.iter().find(|app| app["name"] == name.as_str()));
                 let field = |field: &str| reported.map_or(Value::Null, |app| app[field].clone());
+                let route = format!("Route {} at price {}.", behind.prefix, behind.price);
+                // An app the operator serves is not the supervisor's to run, so it is
+                // neither running nor stopped as far as `status` can say.
+                if let node::Source::Url(url) = &behind.source {
+                    lines.push(format!(
+                        "App {name} of {}: served at {url}. {route}",
+                        app.name
+                    ));
+                    return json!({
+                        "name": name, "url": url, "running": null,
+                        "prefix": behind.prefix, "price": behind.price,
+                    });
+                }
                 let running = field("running") == true;
                 all_running &= running;
                 lines.push(format!(
-                    "App {name} of {}: {}{}.",
+                    "App {name} of {}: {}{}. {route}",
                     app.name,
                     if running { "running" } else { "not running" },
                     field("address")
@@ -87,7 +101,14 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                         .map(|address| format!(" on {address}"))
                         .unwrap_or_default()
                 ));
-                json!({ "name": name, "address": field("address"), "running": running })
+                let image = match &behind.source {
+                    node::Source::Image(image) => json!(image),
+                    _ => Value::Null,
+                };
+                json!({
+                    "name": name, "address": field("address"), "running": running,
+                    "image": image, "prefix": behind.prefix, "price": behind.price,
+                })
             })
             .collect();
         toon_apps.push(json!({
@@ -167,12 +188,14 @@ pub fn logs(home: &Path, name: &str, lines: usize) -> Result<Report, Error> {
     let Some(app) = state
         .toon_apps
         .iter()
-        .find(|app| app.name == name || app.apps.iter().any(|behind| behind == name))
+        .find(|app| app.name == name || app.apps.iter().any(|behind| behind.name == name))
     else {
         let known: Vec<&str> = state
             .toon_apps
             .iter()
-            .flat_map(|app| std::iter::once(&app.name).chain(&app.apps))
+            .flat_map(|app| {
+                std::iter::once(&app.name).chain(app.apps.iter().map(|behind| &behind.name))
+            })
             .map(String::as_str)
             .collect();
         return Err(Error {

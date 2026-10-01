@@ -8,18 +8,14 @@
 //! packets the connector holds, and needs `--yes` while the agent node is running.
 
 use std::path::Path;
-use std::thread;
-use std::time::{Duration, Instant};
 
 use serde_json::json;
 
+use crate::apps;
 use crate::cli::RelayCommand;
 use crate::control;
-use crate::node::{self, Expiry, RelaySettings, State};
+use crate::node::{self, Expiry, RelaySettings, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
-
-/// How long a restart gets: the relay has as long to answer its health check as at `up`.
-const RESTART_WITHIN: Duration = Duration::from_secs(180);
 
 /// What `toon relay config` was asked to change. Nothing asked is a read.
 #[derive(Debug, Default)]
@@ -56,17 +52,24 @@ fn load(home: &Path) -> Result<State, Error> {
     State::load(home)?.ok_or_else(|| node::no_agent_node(home))
 }
 
-/// The settings of the relay, held by the TOON app whose connector fronts it.
-fn relay_of(state: &mut State) -> Result<&mut RelaySettings, Error> {
+/// The TOON app whose connector fronts the relay, and the relay's settings.
+fn relay_of(state: &mut State) -> Result<&mut ToonApp, Error> {
     state
         .toon_apps
         .iter_mut()
-        .find(|app| app.apps.iter().any(|name| name == node::RELAY))
-        .map(|app| &mut app.relay)
+        .find(|app| app.apps.iter().any(|behind| behind.name == node::RELAY))
         .ok_or_else(|| Error {
             code: ErrorCode::UnknownName,
             message: "No TOON app of this agent node has a relay.".into(),
         })
+}
+
+/// The price of a write to the relay, on its route.
+fn write_price(app: &ToonApp) -> u64 {
+    app.apps
+        .iter()
+        .find(|behind| behind.name == node::RELAY)
+        .map_or(node::RELAY_WRITE_PRICE, |behind| behind.price)
 }
 
 /// A change restarts a running connector, which drops the packets it holds: refuse it
@@ -84,41 +87,7 @@ fn confirm(home: &Path, yes: bool, what: &str) -> Result<(), Error> {
     })
 }
 
-/// Ask a running supervisor to start the apps and the connector again, and wait until it
-/// has. `false` if none is running: the settings are read when `toon up` starts them.
-fn restart(home: &Path) -> Result<bool, Error> {
-    let Some(ticket) = control::ask(home, "reload").and_then(|reply| reply["ticket"].as_u64())
-    else {
-        return Ok(false);
-    };
-    let deadline = Instant::now() + RESTART_WITHIN;
-    while Instant::now() < deadline {
-        match control::ask(home, "status") {
-            Some(reply) if reply["reloads"].as_u64().is_some_and(|done| done >= ticket) => {
-                return Ok(true)
-            }
-            Some(_) => thread::sleep(Duration::from_millis(50)),
-            None => {
-                return Err(Error {
-                    code: ErrorCode::AppFailed,
-                    message: "The relay and its connector did not start again, and the \
-                              supervisor stopped. \
-                              Run `toon up` for the reason."
-                        .into(),
-                })
-            }
-        }
-    }
-    Err(Error {
-        code: ErrorCode::AppFailed,
-        message: format!(
-            "The relay and its connector did not start again within {} seconds.",
-            RESTART_WITHIN.as_secs()
-        ),
-    })
-}
-
-fn report(settings: &RelaySettings, restarted: bool, changed: bool) -> Report {
+fn report(settings: &RelaySettings, price: u64, restarted: bool, changed: bool) -> Report {
     let shown = |value: &Option<String>| value.clone().unwrap_or_else(|| "(not set)".into());
     let blocklist = if settings.blocklist.is_empty() {
         "(empty)".to_owned()
@@ -131,7 +100,7 @@ fn report(settings: &RelaySettings, restarted: bool, changed: bool) -> Report {
         shown(&settings.name),
         shown(&settings.description),
         settings.expiry.as_str(),
-        settings.price,
+        price,
         node::RELAY_EPHEMERAL_PRICE,
     );
     if restarted {
@@ -149,7 +118,7 @@ fn report(settings: &RelaySettings, restarted: bool, changed: bool) -> Report {
                 "blocklist": settings.blocklist,
             },
             "prices": {
-                "write": settings.price,
+                "write": price,
                 "ephemeral": node::RELAY_EPHEMERAL_PRICE,
             },
             "restarted": restarted,
@@ -163,10 +132,14 @@ fn report(settings: &RelaySettings, restarted: bool, changed: bool) -> Report {
 pub fn config(home: &Path, change: &Change, yes: bool) -> Result<Report, Error> {
     let mut state = load(home)?;
     if change.is_empty() {
-        return Ok(report(relay_of(&mut state)?, false, false));
+        let app = relay_of(&mut state)?;
+        return Ok(report(&app.relay, write_price(app), false, false));
     }
     confirm(home, yes, "Changing the relay's settings")?;
-    let settings = relay_of(&mut state)?;
+    let before = state.clone();
+    let app = relay_of(&mut state)?;
+    let toon_app = app.name.clone();
+    let settings = &mut app.relay;
     // An empty name or description unsets it.
     let set = |value: &String| Some(value.clone()).filter(|value| !value.is_empty());
     if let Some(name) = &change.name {
@@ -187,10 +160,10 @@ pub fn config(home: &Path, change: &Change, yes: bool) -> Result<Report, Error> 
     settings
         .blocklist
         .retain(|key| !change.unblock.contains(key));
-    let settings = settings.clone();
-    state.save(home)?;
-    let restarted = restart(home)?;
-    Ok(report(&settings, restarted, true))
+    let price = write_price(app);
+    let settings = app.relay.clone();
+    let restarted = apps::apply(home, &before, &state, &toon_app)?;
+    Ok(report(&settings, price, restarted, true))
 }
 
 /// `toon relay price`: set the price of a write on the connector's route. A running
@@ -198,12 +171,19 @@ pub fn config(home: &Path, change: &Change, yes: bool) -> Result<Report, Error> 
 pub fn price(home: &Path, amount: u64, yes: bool) -> Result<Report, Error> {
     let mut state = load(home)?;
     confirm(home, yes, "A new price")?;
-    let settings = relay_of(&mut state)?;
-    settings.price = amount;
-    let settings = settings.clone();
-    state.save(home)?;
-    let restarted = restart(home)?;
-    Ok(report(&settings, restarted, true))
+    let before = state.clone();
+    let app = relay_of(&mut state)?;
+    let toon_app = app.name.clone();
+    for behind in app
+        .apps
+        .iter_mut()
+        .filter(|behind| behind.name == node::RELAY)
+    {
+        behind.price = amount;
+    }
+    let settings = app.relay.clone();
+    let restarted = apps::apply(home, &before, &state, &toon_app)?;
+    Ok(report(&settings, amount, restarted, true))
 }
 
 /// `toon relay`.
