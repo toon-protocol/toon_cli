@@ -7,6 +7,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -21,8 +23,13 @@ pub fn path(home: &Path) -> PathBuf {
 /// Ask the supervisor of the agent node at `home` a question. `None` if no supervisor
 /// answers: there is none, or the socket is a dead one's.
 pub fn ask(home: &Path, request: &str) -> Option<Value> {
+    ask_within(home, request, PATIENCE)
+}
+
+/// `ask`, for a request that takes longer than `PATIENCE` to answer.
+pub fn ask_within(home: &Path, request: &str, patience: Duration) -> Option<Value> {
     let mut stream = UnixStream::connect(path(home)).ok()?;
-    stream.set_read_timeout(Some(PATIENCE)).ok()?;
+    stream.set_read_timeout(Some(patience)).ok()?;
     stream.set_write_timeout(Some(PATIENCE)).ok()?;
     writeln!(stream, "{}", json!({ "request": request })).ok()?;
     let mut line = String::new();
@@ -49,23 +56,28 @@ pub fn bind(home: &Path) -> std::io::Result<Option<UnixListener>> {
     UnixListener::bind(&socket).map(Some)
 }
 
-/// Answer requests, one connection at a time, until the process ends. `answer` gets the
-/// request's name and returns the reply.
-pub fn serve(listener: UnixListener, answer: impl Fn(&str) -> Value) {
+/// Answer requests until the process ends, each connection on its own thread, so that a
+/// request that takes long to answer, such as `reload`, does not hold up `status` or
+/// `down`. `answer` gets the request's name and returns the reply.
+pub fn serve(listener: UnixListener, answer: impl Fn(&str) -> Value + Send + Sync + 'static) {
+    let answer = Arc::new(answer);
     for stream in listener.incoming().flatten() {
-        let _ = stream.set_read_timeout(Some(PATIENCE));
-        let _ = stream.set_write_timeout(Some(PATIENCE));
-        let mut line = String::new();
-        if BufReader::new(&stream).read_line(&mut line).is_err() {
-            continue;
-        }
-        let request: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
-        let reply = match request["request"].as_str() {
-            Some(name) => answer(name),
-            None => json!({ "error": "not a request" }),
-        };
-        let mut stream = stream;
-        let _ = writeln!(stream, "{reply}");
-        let _ = stream.shutdown(Shutdown::Both);
+        let answer = Arc::clone(&answer);
+        thread::spawn(move || {
+            let _ = stream.set_read_timeout(Some(PATIENCE));
+            let _ = stream.set_write_timeout(Some(PATIENCE));
+            let mut line = String::new();
+            if BufReader::new(&stream).read_line(&mut line).is_err() {
+                return;
+            }
+            let request: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+            let reply = match request["request"].as_str() {
+                Some(name) => answer(name),
+                None => json!({ "error": "not a request" }),
+            };
+            let mut stream = stream;
+            let _ = writeln!(stream, "{reply}");
+            let _ = stream.shutdown(Shutdown::Both);
+        });
     }
 }

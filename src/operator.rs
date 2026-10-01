@@ -739,6 +739,9 @@ pub fn route(home: &Path, command: &RouteCommand) -> Result<Report, Error> {
             peer,
             price,
         } => route_add(home, prefix, peer, *price),
+        RouteCommand::Price { prefix, price, yes } => {
+            crate::apps::route_price(home, prefix, *price, *yes)
+        }
         RouteCommand::Remove { prefix } => route_remove(home, prefix),
     }
 }
