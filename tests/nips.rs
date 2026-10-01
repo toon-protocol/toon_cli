@@ -1,8 +1,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-fn nips() -> PathBuf {
+fn nips_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("nips")
+}
+
+fn file_name(path: &Path) -> &str {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .expect("a file in nips/ has a name in UTF-8")
 }
 
 fn read(path: &Path) -> String {
@@ -19,18 +25,11 @@ fn sections(document: &str) -> Vec<&str> {
 
 /// Every draft in `nips/`: each Markdown file but the template and the README.
 fn drafts() -> Vec<PathBuf> {
-    let mut drafts: Vec<PathBuf> = fs::read_dir(nips())
+    let mut drafts: Vec<PathBuf> = fs::read_dir(nips_dir())
         .expect("read nips/")
         .map(|entry| entry.expect("read an entry of nips/").path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "md"))
-        .filter(|path| {
-            !["TEMPLATE.md", "README.md"].contains(
-                &path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(""),
-            )
-        })
+        .filter(|path| !["TEMPLATE.md", "README.md"].contains(&file_name(path)))
         .collect();
     drafts.sort();
     drafts
@@ -38,7 +37,7 @@ fn drafts() -> Vec<PathBuf> {
 
 #[test]
 fn every_draft_has_the_sections_of_the_template() {
-    let template = read(&nips().join("TEMPLATE.md"));
+    let template = read(&nips_dir().join("TEMPLATE.md"));
     let expected = sections(&template);
     assert!(!expected.is_empty(), "nips/TEMPLATE.md has no sections");
 
@@ -76,10 +75,10 @@ fn every_draft_says_it_is_a_draft() {
 
 #[test]
 fn the_readme_lists_every_draft() {
-    let readme = read(&nips().join("README.md"));
+    let readme = read(&nips_dir().join("README.md"));
 
     for draft in drafts() {
-        let name = draft.file_name().and_then(|name| name.to_str()).unwrap();
+        let name = file_name(&draft);
         assert!(
             readme.contains(&format!("]({name})")),
             "nips/README.md does not link to {name}"

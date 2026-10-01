@@ -51,7 +51,8 @@ holds, and this draft uses both rather than a new message.
 - **Broadcast price**: what the relay debits from a subscription for each event it
   broadcasts to that subscriber.
 - **Live feed**: the events a relay accepts after it has sent `EOSE` on a `REQ`.
-- **Free read**: a `REQ` from a connection that holds no subscription.
+- **Free read**: a `REQ` on a connection that holds no subscription, or an exhausted
+  one.
 - **Exhausted**: said of a subscription whose balance is less than the broadcast
   price.
 
@@ -84,6 +85,8 @@ edge (TOON Network spec §13):
   with the size of the packet would make a packet credit something other than `price`,
   and a connector states no payer on a route that charges nothing. A relay whose
   connector prices the route otherwise MUST NOT publish `toon_subscription`.
+- `carriage` comes from the same route of the self-description, as `toon.carriage`
+  does from the write route.
 - `ilp_address` and `broadcast_price` are the relay's own settings.
 - The relay MUST list `42` in `supported_nips`.
 - A client MUST ignore a field of `toon_subscription` that this draft does not name.
@@ -111,7 +114,8 @@ The relay handles the request as follows.
    relay would accept in a `REQ`, or `pubkey` is present and is not 64 lower-case hex
    characters, it answers `400` with `invalid_request`.
 3. If the payer has no subscription, this is a first payment: `filter` and `pubkey`
-   are both required. If either is missing, it answers `400` with `not_subscribed`.
+   are both required. If either is missing, it answers `400` with
+   `first_payment_incomplete`.
 4. If `pubkey` is present and is the subscriber key of another payer's subscription,
    it answers `409` with `pubkey_in_use`.
 5. Otherwise it creates the subscription if there is none, adds the amount the
@@ -155,11 +159,17 @@ a packet admitted on a claim it verified on that channel (connector ADR 0040). T
 things follow, and a subscriber MUST take them into account before it pays.
 
 - A subscriber MUST pay the relay's connector directly, as a client, on a channel of
-  its own. An agent node does this over a peering it created toward that connector.
+  its own. An agent node does this over a peering it created toward that connector:
+  until the relay's operator creates a peering in return, the agent node's packets
+  reach the relay's connector as a client's, and the payer is the channel that peering
+  opened.
+- Once the relay's operator has created a peering in return, the subscriber's packets
+  arrive on the peer wire and state no payer. The relay answers `payer_not_stated`,
+  the price is spent, and that subscriber cannot subscribe or top up.
 - A packet that reaches the relay's connector through another connector states either
-  no payer, in which case the relay answers `payer_not_stated` and the price is spent,
-  or that other connector's channel, in which case the subscription belongs to whoever
-  else pays through it. A subscriber MUST NOT subscribe through an intermediary.
+  no payer, with the same result, or that other connector's channel, in which case the
+  subscription belongs to whoever else pays through it. A subscriber MUST NOT
+  subscribe through an intermediary.
 - A subscriber that pays from a second channel is a second payer and opens a second
   subscription. A balance cannot be moved from one payer to another.
 
@@ -172,7 +182,9 @@ The live feed is read on the relay's ordinary websocket. A subscriber proves whi
 subscription it holds with NIP-42: the relay sends an `AUTH` challenge when a
 connection opens, and the subscriber answers with an `AUTH` event (kind `22242`) signed
 by its subscriber key. A connection authenticated with a key holds the subscription
-whose subscriber key that is, if there is one.
+whose subscriber key that is, if there is one. NIP-42 lets a connection authenticate
+with several keys; it holds the subscription of the one it authenticated with last,
+and no other.
 
 The relay answers every `REQ` on every connection with the stored events that match,
 then `EOSE`, as NIP-01 says. Stored events are never debited. What happens next
@@ -203,7 +215,10 @@ authenticated with the earlier key no longer holds the subscription, and the rel
 closes its open `REQ`s with `payment-required:`.
 
 `payment-required:` is a `CLOSED` prefix this draft adds to those of NIP-01 and
-NIP-42. A client MUST branch on the prefix and not on the text after it.
+NIP-42. A client MUST branch on the prefix and not on the text after it. The prefix
+says only that this connection holds nothing that pays for the feed. A subscriber
+whose `REQ` was open and is closed this way, and that has not changed its subscriber
+key, has run out; one that needs to know more reads its balance.
 
 ### When the balance runs out
 
@@ -214,9 +229,15 @@ after the last event the balance paid for, not when the next event arrives. The 
 leaves the connection open.
 
 Whatever is left of the balance stays in the subscription and counts toward the next
-payment. To resume, the subscriber subscribes again and sends its `REQ` again, with
-`since` set to the last event it received; events it missed in between are stored
-events and are not debited.
+payment. To resume, the subscriber subscribes again and sends its `REQ` again.
+
+The same holds after a dropped connection or a restart. A relay broadcasts events in
+the order it accepts them, which is not the order of `created_at`, so a subscriber
+that wants what it missed sets `since` some way before the newest `created_at` it has
+seen and drops the events whose ids it already has. What it missed comes back as
+stored events and is not debited. Events the relay does not keep are the exception:
+an ephemeral event, and a replaceable or addressable event that a newer one replaced
+in the meantime, cannot be read afterwards.
 
 ### Reading the balance
 
@@ -230,13 +251,16 @@ subscriber key, whose `u` tag is that URL and whose `method` tag is `GET`.
   `payer`, `balance`, `broadcast_price`, `filter` and `pubkey`, as in the answer to a
   payment.
 - `401`, error code `unauthorized`: the authorization is missing or does not verify.
-- `404`, error code `not_subscribed`: the key is no subscription's subscriber key.
+- `404`, error code `not_subscribed`: the key is no subscription's subscriber key,
+  either because there never was one or because the relay forgot an exhausted one.
 
 Reading the balance is free and changes nothing.
 
 A relay checks the `relay` tag of a NIP-42 event and the `u` tag of a NIP-98 event
-against the URLs it is reached at. A relay that is a hidden service, or sits behind a
-proxy, cannot see which URL the client used, so matching the host is enough.
+against the URLs it is reached at. NIP-98 asks for the exact URL of the request. A
+relay that is a hidden service, or that its operator serves through a reverse proxy,
+cannot see which URL the client used, so here a relay MAY accept a `u` whose host is
+one of its own, as NIP-42 already allows for `relay`.
 
 ### A free read
 
@@ -245,8 +269,9 @@ above. The relay MUST NOT send an event it accepted after `EOSE` on a `REQ` whos
 connection holds no subscription that is not exhausted, with one exception.
 
 A relay MAY broadcast to a connection authenticated with a key its operator has named,
-without a subscription and without a debit. This is how an operator follows their own
-relay. How the operator names the key is the relay's business.
+without a subscription and without a debit. This is how an operator reads the live
+feed of their own relay without paying themselves. How the operator names the key is
+the relay's business.
 
 ### Balances
 
@@ -255,7 +280,7 @@ relay. How the operator names the key is the relay's business.
 - A balance is not refundable. Nothing in this draft lets a subscriber withdraw one,
   and a relay owes nothing for a balance it holds when the subscriber stops reading.
 - A debit is for a broadcast, not for a receipt. An event that was debited and did not
-  arrive, because the connection dropped, is still stored and can be read for free.
+  arrive, because the connection dropped, can be read for free if the relay stores it.
 - A debit is made at the broadcast price in force when the event is broadcast. A
   balance is an amount of money, not a number of events.
 - A relay MUST NOT forget a subscription that is not exhausted. It MAY forget an
@@ -267,7 +292,7 @@ relay. How the operator names the key is the relay's business.
 
 None new.
 
-| Kind | Event | Class | Signer | Defined by |
+| Kind | Event | Class | Signed with | Defined by |
 | --- | --- | --- | --- | --- |
 | `22242` | Client authentication | ephemeral | Subscriber key | NIP-42 |
 | `27235` | HTTP authorization | ephemeral | Subscriber key | NIP-98 |
@@ -327,7 +352,7 @@ The connector delivers it to the relay with `X-TOON-Payer: evm:0x5c3b…e1f2` an
 }
 ```
 
-**A top-up.** Two more packets with the body `{}` each answer `"credited": 1000`, and
+**Paying again.** Two more packets with the body `{}` each answer `"credited": 1000`, and
 the second answers `"balance": 3000`.
 
 **The live feed.** The subscriber connects to `wss://relay.example`:
@@ -380,6 +405,7 @@ The relay answers `200`:
 **A free read.** A connection that never authenticates:
 
 ```
+relay:      ["AUTH", "09be7d"]
 reader:     ["REQ", "q", {"kinds": [1], "limit": 20}]
 relay:      ["EVENT", "q", {…}]
 relay:      ["EOSE", "q"]
@@ -390,7 +416,7 @@ relay:      ["CLOSED", "q", "auth-required: the live feed is for subscribers"]
 answers `400`:
 
 ```json
-{ "error": { "code": "not_subscribed", "message": "a first payment needs a filter and a pubkey" } }
+{ "error": { "code": "first_payment_incomplete", "message": "a first payment needs a filter and a pubkey" } }
 ```
 
 ## Limits
@@ -422,16 +448,17 @@ answers `400`:
 - **A subscriber has to be a direct client of the relay's connector.** The balance is
   keyed by the payer the connector states, and a connector states one only for a
   claim it admitted itself. That excludes a subscriber that reaches the relay through
-  another connector, and one whose connector the relay's connector treats as a peer,
-  because a packet on the peer wire states no payer. The alternative is to key the
-  balance by the subscriber key and credit every packet the subscribe route delivers,
-  whoever paid it; the relay would then trust that its connector delivers only what
-  it charged for, which it already does for writes. This draft keeps the payer,
-  because that is the decision on record (toon_cli ADR 0005), and it is the first
-  thing to settle before a relay implements it.
+  another connector, and it stops a subscriber topping up once the relay's operator
+  has created a peering in return, because a packet on the peer wire states no payer.
+  The alternative is to key the balance by the subscriber key and credit every packet
+  the subscribe route delivers, whoever paid it; the relay would then trust that its
+  connector delivers only what it charged for, which it already does for writes. This
+  draft keeps the payer, because that is the decision on record (toon_cli ADR 0005).
+  The lean is toward the subscriber key, and it is the first thing to settle before a
+  relay implements this.
 - **One filter.** A subscription has one filter, where a `REQ` takes several. A list
   would let one subscription cover what today needs a broad filter and narrower
-  `REQ`s.
+  `REQ`s. The lean is to keep one until a subscriber needs more.
 - **No number.** A draft has no NIP number, so a relay cannot list it in
-  `supported_nips`. Until it has one, the presence of `toon_subscription` is the only
-  way to tell that a relay implements it.
+  `supported_nips`. The lean is to leave it so: the presence of `toon_subscription`
+  is how a client tells that a relay implements this.

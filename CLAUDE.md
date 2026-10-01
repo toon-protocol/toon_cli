@@ -24,7 +24,8 @@ checks it against that file and `toon --help`, so add a new code to all of them 
 ## Draft NIPs
 
 `nips/` holds the draft NIPs that ship with the CLI, each written from `nips/TEMPLATE.md`
-and listed in `nips/README.md`; `tests/nips.rs` checks both. A draft is the single source
+and listed in `nips/README.md`; `tests/nips.rs` checks both by reading the files, as
+`tests/exit_codes.rs` reads its document. A draft is the single source
 for what implements it: `nips/paid-subscription.md` for the subscribe commands, the fake
 remote relay and the Rust relay. Change the draft before the code that follows it.
 
