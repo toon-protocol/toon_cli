@@ -20,7 +20,7 @@ fn running() -> Running {
     let machine = Machine::new();
     let init = machine.init_on_serving(&chain, app.url());
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
     Running {
         machine,
@@ -161,7 +161,7 @@ fn an_agent_node_from_before_the_operator_write_key_still_comes_up() {
     fs::remove_file(home.join("connectors/0/operator-write-keys")).expect("and its allowlist");
     fs::remove_file(home.join("connectors/0/operator-bearer-token")).expect("and the token");
 
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
 
     let report = up.report();
     assert!(report.get("error").is_none(), "{report}");

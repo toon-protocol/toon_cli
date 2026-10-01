@@ -1,9 +1,10 @@
-//! `toon up`: the supervisor, in the foreground.
+//! The supervisor, in the foreground: what `toon up --foreground` runs, and what the
+//! `systemd --user` unit (`service`) runs.
 //!
 //! It renders each TOON app's connector config from the agent node's state, starts the
-//! connector as a child process of this same binary (`connector`), and serves lifecycle
-//! requests on a local socket (`control`): `status` asks what runs, and `down` stops the
-//! connector and then this process.
+//! connector as a child process of this same binary (`connector`), restarts it when it
+//! exits, and serves lifecycle requests on a local socket (`control`): `status` asks what
+//! runs, and `down` stops the connector and then this process.
 
 use std::env;
 use std::fs::File;
@@ -12,7 +13,7 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,39 +22,59 @@ use serde_json::{json, Value};
 use crate::connector::{self, Startup};
 use crate::control;
 use crate::funding;
-use crate::node::{self, State, ToonApp};
+use crate::node::{self, ConnectorFiles, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 
 /// How long a connector gets to exit once its supervisor is stopping, before it is killed.
 const GRACE: Duration = Duration::from_secs(10);
 
-/// What the control socket reports of the running connector.
+/// How long the supervisor waits before it restarts a connector that has just stopped,
+/// and the longest it waits between attempts that keep failing.
+const FIRST_RESTART_DELAY: Duration = Duration::from_millis(250);
+const LONGEST_RESTART_DELAY: Duration = Duration::from_secs(30);
+
+/// A connector that ran this long was healthy, so its next restart starts over at the
+/// shortest delay.
+const HEALTHY: Duration = Duration::from_secs(60);
+
+/// What the control socket reports of the connector.
+struct Live {
+    pid: Option<u32>,
+    address: Option<String>,
+    running: bool,
+    /// How many times the supervisor has started the connector again.
+    restarts: u32,
+    /// Why the connector last stopped, if it has.
+    last_exit: Option<String>,
+}
+
 struct Shared {
-    pid: u32,
-    address: String,
     toon_app: String,
     stop: AtomicBool,
-    running: AtomicBool,
+    live: Mutex<Live>,
+}
+
+/// A connector that is listening.
+struct Started {
+    child: Child,
+    /// The connector exits when this closes, so it is held for as long as the connector
+    /// is wanted and is never written to.
+    alive: ChildStdin,
+    address: String,
+    since: Instant,
 }
 
 /// A supervisor whose connector is listening.
 pub struct Supervisor {
-    connector: Child,
-    /// The connector exits when this closes, so it is held for as long as the
-    /// supervisor lives and is never written to.
-    alive: Option<ChildStdin>,
+    connector: Option<Started>,
+    files: ConnectorFiles,
     shared: Arc<Shared>,
     socket: PathBuf,
     home: PathBuf,
-    log: PathBuf,
-}
-
-/// How a supervisor ended.
-pub enum Stopped {
-    /// `toon down` asked it to.
-    Down,
-    /// The connector stopped by itself.
-    Failed(Error),
+    /// What the first start reported, for `report`.
+    first: (u32, String),
+    /// How long to wait before the next restart.
+    delay: Duration,
 }
 
 fn failed(message: String) -> Error {
@@ -110,11 +131,40 @@ fn launch(
     socket: &Path,
 ) -> Result<Supervisor, Error> {
     let files = node::render(home, app)?;
-    let log = files.log;
+    let started = spawn(&files)?;
+    let first = (started.child.id(), started.address.clone());
+    let shared = Arc::new(Shared {
+        toon_app: app.name.clone(),
+        stop: AtomicBool::new(false),
+        live: Mutex::new(Live {
+            pid: Some(first.0),
+            address: Some(first.1.clone()),
+            running: true,
+            restarts: 0,
+            last_exit: None,
+        }),
+    });
+    let answering = Arc::clone(&shared);
+    thread::spawn(move || control::serve(listener, |request| answering.answer(request)));
+    Ok(Supervisor {
+        connector: Some(started),
+        files,
+        shared,
+        socket: socket.to_path_buf(),
+        home: home.to_path_buf(),
+        first,
+        delay: FIRST_RESTART_DELAY,
+    })
+}
+
+/// Start the connector described by `files` as a child process, and return once it is
+/// listening or has said why it is not.
+fn spawn(files: &ConnectorFiles) -> Result<Started, Error> {
+    let log = &files.log;
     let logs = File::options()
         .create(true)
         .append(true)
-        .open(&log)
+        .open(log)
         .map_err(|error| failed(format!("The connector's log could not be opened: {error}.")))?;
     let toon = env::current_exe()
         .map_err(|error| failed(format!("This binary could not find itself: {error}.")))?;
@@ -137,23 +187,12 @@ fn launch(
     let _ = BufReader::new(stdout).read_line(&mut line);
     let refusal = match Startup::heard(&line) {
         Some(Startup::Listening(address)) => {
-            let shared = Arc::new(Shared {
-                pid: child.id(),
+            return Ok(Started {
+                child,
+                alive,
                 address,
-                toon_app: app.name.clone(),
-                stop: AtomicBool::new(false),
-                running: AtomicBool::new(true),
-            });
-            let answering = Arc::clone(&shared);
-            thread::spawn(move || control::serve(listener, |request| answering.answer(request)));
-            return Ok(Supervisor {
-                connector: child,
-                alive: Some(alive),
-                shared,
-                socket: socket.to_path_buf(),
-                home: home.to_path_buf(),
-                log,
-            });
+                since: Instant::now(),
+            })
         }
         Some(Startup::Refused(why)) => format!("The connector refused to start: {why}"),
         None => format!(
@@ -169,16 +208,21 @@ fn launch(
 impl Shared {
     fn answer(&self, request: &str) -> Value {
         match request {
-            "status" => json!({
-                "toon_apps": [{
-                    "name": self.toon_app,
-                    "connector": {
-                        "address": self.address,
-                        "pid": self.pid,
-                        "running": self.running.load(Ordering::SeqCst),
-                    },
-                }],
-            }),
+            "status" => {
+                let live = self.live();
+                json!({
+                    "toon_apps": [{
+                        "name": self.toon_app,
+                        "connector": {
+                            "address": live.address,
+                            "pid": live.pid,
+                            "running": live.running,
+                            "restarts": live.restarts,
+                            "last_exit": live.last_exit,
+                        },
+                    }],
+                })
+            }
             "down" => {
                 self.stop.store(true, Ordering::SeqCst);
                 json!({ "stopping": true })
@@ -186,16 +230,19 @@ impl Shared {
             _ => json!({ "error": "unknown request" }),
         }
     }
+
+    fn live(&self) -> std::sync::MutexGuard<'_, Live> {
+        self.live.lock().expect("the connector's state")
+    }
 }
 
 impl Supervisor {
     /// What is running.
     pub fn report(&self) -> Report {
-        let pid = self.connector.id();
-        let address = &self.shared.address;
+        let (pid, address) = &self.first;
         let revision = connector::REVISION;
         let home = self.home.to_string_lossy();
-        let log = self.log.to_string_lossy();
+        let log = self.files.log.to_string_lossy();
         let socket = self.socket.to_string_lossy();
         Report {
             exit: Exit::Success,
@@ -216,43 +263,87 @@ impl Supervisor {
         }
     }
 
-    /// Stay in the foreground until `toon down` or until the connector stops. A
-    /// supervisor has nothing else to wait for, so a connector that stops by itself is a
-    /// failure.
-    pub fn wait(mut self) -> Stopped {
-        let stopped = loop {
-            if self.shared.stop.load(Ordering::SeqCst) {
-                break self.stop_connector();
-            }
-            match self.connector.try_wait() {
+    /// Stay in the foreground until `toon down`. A connector that stops by itself is
+    /// started again, after a delay that doubles while the starts keep failing.
+    pub fn wait(mut self) {
+        while !self.shared.stop.load(Ordering::SeqCst) {
+            let Some(started) = self.connector.as_mut() else {
+                self.restart();
+                continue;
+            };
+            match started.child.try_wait() {
                 Ok(None) => thread::sleep(Duration::from_millis(50)),
-                Ok(Some(status)) => {
-                    break Stopped::Failed(failed(format!("The connector stopped ({status}).")))
-                }
-                Err(error) => {
-                    break Stopped::Failed(failed(format!("The connector stopped ({error}).")))
-                }
+                Ok(Some(status)) => self.stopped(format!("The connector stopped ({status}).")),
+                Err(error) => self.stopped(format!("The connector stopped ({error}).")),
             }
-        };
-        self.shared.running.store(false, Ordering::SeqCst);
+        }
+        self.stop_connector();
+        self.shared.live().running = false;
         // Last, so that a `toon down` that sees the socket gone knows everything has.
         let _ = std::fs::remove_file(&self.socket);
-        stopped
+    }
+
+    /// The connector is gone: note why, and let the next turn of `wait` restart it.
+    fn stopped(&mut self, why: String) {
+        if let Some(started) = self.connector.take() {
+            eprintln!("{why}");
+            let mut live = self.shared.live();
+            live.running = false;
+            live.pid = None;
+            live.address = None;
+            live.last_exit = Some(why);
+            drop(live);
+            drop(started.alive);
+            // A connector that ran for a while was not crash-looping.
+            if started.since.elapsed() >= HEALTHY {
+                self.delay = FIRST_RESTART_DELAY;
+            }
+        }
+    }
+
+    /// Wait out the delay, then start the connector again. A start that fails leaves it
+    /// down, and `wait` comes back for another go after a longer delay.
+    fn restart(&mut self) {
+        let until = Instant::now() + self.delay;
+        while Instant::now() < until {
+            if self.shared.stop.load(Ordering::SeqCst) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        self.delay = (self.delay * 2).min(LONGEST_RESTART_DELAY);
+        match spawn(&self.files) {
+            Ok(started) => {
+                let mut live = self.shared.live();
+                live.pid = Some(started.child.id());
+                live.address = Some(started.address.clone());
+                live.running = true;
+                live.restarts += 1;
+                drop(live);
+                self.connector = Some(started);
+            }
+            Err(error) => {
+                eprintln!("{}", error.message);
+                self.shared.live().last_exit = Some(error.message);
+            }
+        }
     }
 
     /// Close the connector's stdin, which it takes as its cue to exit, and kill it if
     /// it does not.
-    fn stop_connector(&mut self) -> Stopped {
-        drop(self.alive.take());
+    fn stop_connector(&mut self) {
+        let Some(mut started) = self.connector.take() else {
+            return;
+        };
+        drop(started.alive);
         let deadline = Instant::now() + GRACE;
         while Instant::now() < deadline {
-            if matches!(self.connector.try_wait(), Ok(Some(_))) {
-                return Stopped::Down;
+            if matches!(started.child.try_wait(), Ok(Some(_))) {
+                return;
             }
             thread::sleep(Duration::from_millis(20));
         }
-        let _ = self.connector.kill();
-        let _ = self.connector.wait();
-        Stopped::Down
+        let _ = started.child.kill();
+        let _ = started.child.wait();
     }
 }

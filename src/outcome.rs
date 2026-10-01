@@ -61,6 +61,8 @@ pub enum ErrorCode {
     FaucetUnavailable,
     NotRunning,
     SendFailed,
+    SystemdFailed,
+    UnknownName,
 }
 
 impl ErrorCode {
@@ -81,6 +83,8 @@ impl ErrorCode {
             ErrorCode::FaucetUnavailable => "faucet_unavailable",
             ErrorCode::NotRunning => "not_running",
             ErrorCode::SendFailed => "send_failed",
+            ErrorCode::SystemdFailed => "systemd_failed",
+            ErrorCode::UnknownName => "unknown_name",
         }
     }
 
@@ -99,7 +103,9 @@ impl ErrorCode {
             | ErrorCode::Unfunded
             | ErrorCode::FaucetUnavailable
             | ErrorCode::NotRunning
-            | ErrorCode::SendFailed => Exit::Failure,
+            | ErrorCode::SendFailed
+            | ErrorCode::SystemdFailed
+            | ErrorCode::UnknownName => Exit::Failure,
         }
     }
 }

@@ -185,7 +185,7 @@ fn up_does_not_start_a_connector_whose_settlement_key_is_unfunded() {
         .unwrap()
         .to_owned();
 
-    let up = machine.toon(&["up", "--json"]);
+    let up = machine.toon(&["up", "--foreground", "--json"]);
 
     assert_eq!(up.exit_code, 1, "{}", up.stdout);
     let error = &up.json()["error"];
@@ -206,7 +206,7 @@ fn the_unfunded_refusal_on_mainnet_offers_no_funding_command() {
     let init = machine.init_with(&["--network", "mainnet", "--evm-rpc-url", &chain.rpc_url()]);
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
 
-    let up = machine.toon(&["up", "--json"]);
+    let up = machine.toon(&["up", "--foreground", "--json"]);
 
     assert_eq!(up.json()["error"]["code"], "unfunded");
     let message = up.json()["error"]["message"].as_str().unwrap().to_owned();
@@ -239,7 +239,7 @@ fn wallet_fund_asks_the_faucet_for_the_addresses_and_then_up_starts() {
         vec![("/api/base-sepolia/request".to_owned(), address)]
     );
     assert_eq!(fund.json()["lacking"].as_array().unwrap().len(), 0);
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
 }
 
@@ -308,7 +308,7 @@ fn up_refuses_when_a_settlement_key_cannot_be_read() {
     )
     .unwrap();
 
-    let up = machine.toon(&["up", "--json"]);
+    let up = machine.toon(&["up", "--foreground", "--json"]);
 
     assert_eq!(up.json()["error"]["code"], "io", "{}", up.stdout);
     assert!(!machine.agent_node_home().join("control.sock").exists());
