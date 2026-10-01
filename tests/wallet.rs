@@ -167,7 +167,11 @@ fn init_again_does_not_create_a_second_wallet() {
         assert!(run.json().get("mnemonic").is_none());
     }
     assert_eq!(fs::read(&keystore).unwrap(), before);
-    assert_eq!(keystore_files(&machine), vec!["keystore.json".to_owned()]);
+    // The agent node's home holds other files now; there is still one keystore, and no
+    // half-written one beside it.
+    let mut keystores = keystore_files(&machine);
+    keystores.retain(|name| name.starts_with("keystore"));
+    assert_eq!(keystores, vec!["keystore.json".to_owned()]);
     let shown = with_passphrase(&machine, &["wallet", "show", "--json"]);
     assert_eq!(shown.exit_code, 0);
 }

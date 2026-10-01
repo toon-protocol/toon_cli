@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 
 use crate::derive::{self, Addresses};
 use crate::keystore;
+use crate::node;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 
 /// How many connectors a wallet lists. An agent node starts as one TOON app, so one
@@ -79,10 +80,21 @@ fn listing(wallet: &Value) -> String {
     lines.join("\n")
 }
 
-/// Create the wallet, once. A second `init` finds the first and changes nothing.
-pub fn init(home: &Path) -> Result<Report, Error> {
+/// Create the wallet and the first TOON app, once each. A second `init` finds them and
+/// changes nothing: it does not even need the passphrase, unless the TOON app is missing
+/// and has to be made from the wallet's keys.
+pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
     if keystore::exists(home) {
-        return Ok(existing(home));
+        return existing(home, options);
+    }
+    if node::State::load(home)?.is_some() {
+        return Err(Error {
+            code: ErrorCode::Io,
+            message: format!(
+                "{} has an agent node's state but no wallet.",
+                node::state_path(home).display()
+            ),
+        });
     }
     let passphrase = keystore::passphrase()?;
     let entropy = zeroize::Zeroizing::new(keystore::random::<16>()?);
@@ -90,31 +102,122 @@ pub fn init(home: &Path) -> Result<Report, Error> {
         bip39::Mnemonic::from_entropy(&*entropy).expect("16 bytes is a valid entropy length");
     let phrase = zeroize::Zeroizing::new(mnemonic.to_string());
     let wallet = describe(&addresses(&phrase)?);
+    // The TOON app is made and checked before the wallet is kept, so that a command line
+    // the connector would refuse does not leave a wallet whose mnemonic nobody saw.
+    let state = match create_toon_app(home, &mnemonic, options) {
+        Ok(state) => state,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(home.join("connectors"));
+            return Err(error);
+        }
+    };
     if !keystore::create(home, &passphrase, &phrase)? {
-        return Ok(existing(home));
+        return existing(home, options);
     }
+    state.save(home)?;
     let text = format!(
-        "Wallet created at {}.\n\nYour mnemonic. It is shown this once and no command shows it again; write it down now:\n\n  {}\n\n{}",
+        "Wallet created at {}.\n\nYour mnemonic. It is shown this once and no command shows it again; write it down now:\n\n  {}\n\n{}\n\n{}",
         keystore::path(home).display(),
         *phrase,
-        listing(&wallet)
+        listing(&wallet),
+        toon_app_text(&state, true)
     );
     Ok(Report {
         exit: Exit::Success,
-        json: json!({ "created": true, "mnemonic": &*phrase, "wallet": wallet }),
+        json: json!({
+            "created": true,
+            "mnemonic": &*phrase,
+            "wallet": wallet,
+            "toon_apps": toon_apps(home, &state, true),
+        }),
         text,
     })
 }
 
-fn existing(home: &Path) -> Report {
+/// Write the keys of the first TOON app's connector, and render and check its config.
+fn create_toon_app(
+    home: &Path,
+    mnemonic: &bip39::Mnemonic,
+    options: &node::Options,
+) -> Result<node::State, Error> {
+    let seed = derive::seed(mnemonic);
+    let state = node::State::first(options);
+    for app in &state.toon_apps {
+        let files = node::ConnectorFiles::of(home, app.connector);
+        let corrupt = |source: derive::DeriveError| Error {
+            code: ErrorCode::KeystoreCorrupt,
+            message: source.0,
+        };
+        let identity = derive::identity_secret(&*seed, app.connector).map_err(corrupt)?;
+        let settlement = derive::evm_settlement_secret(&*seed, app.connector).map_err(corrupt)?;
+        node::write(&files.identity_key, &*identity, 0o600)?;
+        node::write(&files.settlement_key, &*settlement, 0o600)?;
+        node::render(home, app)?;
+    }
+    Ok(state)
+}
+
+/// The wallet was there already. If the TOON app is not, make it from the wallet.
+fn existing(home: &Path, options: &node::Options) -> Result<Report, Error> {
     let file = keystore::path(home);
-    Report {
+    let (state, created) = match node::State::load(home)? {
+        Some(state) => (state, false),
+        None => {
+            let passphrase = keystore::passphrase()?;
+            let mnemonic: bip39::Mnemonic =
+                keystore::open(home, &passphrase)?
+                    .parse()
+                    .map_err(|_| Error {
+                        code: ErrorCode::KeystoreCorrupt,
+                        message: "The keystore does not hold a valid mnemonic.".into(),
+                    })?;
+            let state = create_toon_app(home, &mnemonic, options)?;
+            state.save(home)?;
+            (state, true)
+        }
+    };
+    Ok(Report {
         exit: Exit::Success,
-        json: json!({ "created": false, "keystore": file }),
+        json: json!({
+            "created": false,
+            "keystore": file,
+            "toon_apps": toon_apps(home, &state, created),
+        }),
         text: format!(
-            "A wallet already exists at {}. Nothing was changed.",
-            file.display()
+            "A wallet already exists at {}. {}",
+            file.display(),
+            toon_app_text(&state, created)
         ),
+    })
+}
+
+fn toon_apps(home: &Path, state: &node::State, created: bool) -> Vec<Value> {
+    state
+        .toon_apps
+        .iter()
+        .map(|app| {
+            json!({
+                "name": app.name,
+                "created": created,
+                "config": node::ConnectorFiles::of(home, app.connector).config,
+            })
+        })
+        .collect()
+}
+
+fn toon_app_text(state: &node::State, created: bool) -> String {
+    let names: Vec<&str> = state
+        .toon_apps
+        .iter()
+        .map(|app| app.name.as_str())
+        .collect();
+    if created {
+        format!(
+            "TOON app created: {}. Run `toon up` to start it.",
+            names.join(", ")
+        )
+    } else {
+        "Nothing was changed.".into()
     }
 }
 

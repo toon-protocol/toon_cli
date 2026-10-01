@@ -32,7 +32,8 @@ is missing here. Add a new code to the test and to this file together.
 | 3 | There is no agent node on this machine |
 
 `toon status` exits with the code that describes the agent node, and still prints its
-report: on a machine with no agent node it prints `{"home": "<path>", "agent_node": null}`
+report. It exits 1 when the supervisor or a connector is not running, and `toon down` exits 0
+whether or not anything was running. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
 and exits 3.
 
 ## Errors
@@ -57,6 +58,7 @@ A failed command with `--json` prints:
 | `io` | 1 | A file or the system's randomness could not be used |
 | `no_agent_node` | 3 | The command needs an agent node and this machine has none |
 | `connector_failed` | 1 | A connector did not start, or stopped; the message carries the connector's own reason |
+| `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
 
 ## The wallet passphrase
 
