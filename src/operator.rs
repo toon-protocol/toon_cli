@@ -207,6 +207,36 @@ pub fn route_list(home: &Path) -> Result<Report, Error> {
     })
 }
 
+/// Whether `prefix` covers `address`: the same address, or one beneath it.
+fn covers(prefix: &str, address: &str) -> bool {
+    address == prefix
+        || address
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('.'))
+}
+
+/// Whether a packet to `address` would leave through a peering: the longest route that
+/// covers it forwards to a peer, and does not end at an app of this connector.
+pub fn forwards(home: &Path, address: &str) -> Result<bool, Error> {
+    let surface = surface(home)?;
+    let prefix_of = |route: &Value| route["prefix"].as_str().unwrap_or_default().to_owned();
+    let longest = |routes: &[Value]| {
+        routes
+            .iter()
+            .map(prefix_of)
+            .filter(|prefix| covers(prefix, address))
+            .map(|prefix| prefix.len())
+            .max()
+    };
+    let terminating = longest(&read(&surface, "/routes")?);
+    let forwarding = longest(&read(&surface, "/routes/peers")?);
+    Ok(match (forwarding, terminating) {
+        (Some(forwarding), Some(terminating)) => forwarding >= terminating,
+        (Some(_), None) => true,
+        (None, _) => false,
+    })
+}
+
 /// A channel's amount as the connector reports it, which is absent while it is opening or
 /// when the chain could not be read.
 fn amount(value: &Value) -> String {

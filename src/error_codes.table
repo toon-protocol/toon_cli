@@ -33,4 +33,6 @@ error_codes! {
     OverlayUnavailable => "overlay_unavailable" => Failure,
     FundsHeld => "funds_held" => Failure,
     LastToonApp => "last_toon_app" => Failure,
+    RelayNotPayable => "relay_not_payable" => Failure,
+    PeeringNeeded => "peering_needed" => Failure,
 }

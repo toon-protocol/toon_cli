@@ -30,3 +30,5 @@ confirmation_required
 overlay_unavailable
 funds_held
 last_toon_app
+relay_not_payable
+peering_needed
