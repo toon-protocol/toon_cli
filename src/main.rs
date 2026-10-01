@@ -15,6 +15,7 @@ mod event;
 mod funding;
 mod home;
 mod keystore;
+mod lifecycle;
 mod nip;
 mod node;
 mod operator;
@@ -45,7 +46,10 @@ use up::Stopped;
 fn main() -> ExitCode {
     let json = wants_json(env::args_os().skip(1));
     let command = match Cli::from_command_line() {
-        Ok(cli) => cli.command,
+        Ok(cli) => {
+            operator::target(cli.app.as_deref());
+            (cli.app, cli.command)
+        }
         Err(error) if json && error.kind() != ErrorKind::DisplayHelp => {
             return render(unparsed(error), json).into()
         }
@@ -59,6 +63,7 @@ fn main() -> ExitCode {
             return written(error.print(), exit).into();
         }
     };
+    let (app, command) = command;
     match command {
         Command::Status => {
             render(home::resolve().and_then(|home| status::status(&home)), json).into()
@@ -114,6 +119,40 @@ fn main() -> ExitCode {
             json,
         )
         .into(),
+        Command::Create(args) => render(
+            home::resolve().and_then(|home| {
+                lifecycle::create(
+                    &home,
+                    &lifecycle::Create {
+                        name: &args.name,
+                        from: app.as_deref(),
+                        origin: match (&args.image, &args.url) {
+                            (_, Some(url)) => apps::Origin::Url(url),
+                            (Some(image), None) => apps::Origin::Image(image),
+                            (None, None) => unreachable!("clap requires one of them"),
+                        },
+                        price: args.price,
+                        reach: match &args.clearnet {
+                            Some(hostname) => node::Reach::Clearnet {
+                                hostname: hostname.clone(),
+                            },
+                            None => node::Reach::Hidden,
+                        },
+                        accept_anyone_terms: args.accept_anyone_terms,
+                        listen: &args.listen,
+                        deposit: args.deposit,
+                        yes: args.yes,
+                    },
+                )
+            }),
+            json,
+        )
+        .into(),
+        Command::Destroy { name } => render(
+            home::resolve().and_then(|home| lifecycle::destroy(&home, &name)),
+            json,
+        )
+        .into(),
         Command::Remove { app, yes } => render(
             home::resolve().and_then(|home| apps::remove(&home, &app, yes)),
             json,
@@ -121,6 +160,11 @@ fn main() -> ExitCode {
         .into(),
         Command::Peer { command } => render(
             home::resolve().and_then(|home| operator::peer(&home, &command)),
+            json,
+        )
+        .into(),
+        Command::Join(args) => render(
+            home::resolve().and_then(|home| operator::join(&home, &args)),
             json,
         )
         .into(),

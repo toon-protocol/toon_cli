@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -75,13 +75,23 @@ struct Unreloaded {
 /// Someone waiting for the connector to be started again with the state as it now is.
 type Reload = Sender<Result<(), Unreloaded>>;
 
-struct Shared {
+/// What the control socket reads of one TOON app's connector.
+struct UnitShared {
     toon_app: String,
     apps: Mutex<Vec<AppStatus>>,
     /// The `reload` requests that `wait` has not carried out yet.
     reload: Mutex<Vec<Reload>>,
-    stop: AtomicBool,
     live: Mutex<Live>,
+}
+
+/// What the control socket reads of the supervisor.
+struct Shared {
+    stop: AtomicBool,
+    /// Every TOON app's connector that runs.
+    units: Mutex<Vec<Arc<UnitShared>>>,
+    /// The `sync` requests that `wait` has not carried out yet: the state holds a TOON app
+    /// that does not run, or one that runs is gone from it.
+    sync: Mutex<Vec<Reload>>,
 }
 
 /// A connector that is listening.
@@ -96,7 +106,7 @@ struct Started {
 
 /// The overlay a hidden service's connector is reached and reaches out through.
 struct Hidden {
-    edge: Box<dyn Edge>,
+    edge: Arc<dyn Edge>,
     endpoint: String,
     /// Where the relay's read port is, if the TOON app fronts a relay.
     read: Option<SocketAddr>,
@@ -131,31 +141,41 @@ fn read_address(apps: &StartedApps) -> Option<SocketAddr> {
         .and_then(|(_, running)| running.read_address())
 }
 
-/// A supervisor whose connector is listening.
-pub struct Supervisor {
+/// One TOON app's connector, and the apps behind it, as the supervisor runs them.
+struct Unit {
     /// Held for as long as the connector runs, and dropped once it and the apps are stopped.
     hidden: Option<Hidden>,
     connector: Option<Started>,
     /// The apps behind it that run, stopped after it.
     apps: StartedApps,
-    runner: Box<dyn AppRunner>,
     /// The TOON app as the connector now runs it.
     app: ToonApp,
     files: ConnectorFiles,
-    shared: Arc<Shared>,
-    socket: PathBuf,
-    home: PathBuf,
+    shared: Arc<UnitShared>,
     /// What the first start reported, for `report`.
     first: (u32, String),
     /// How long to wait before the next restart.
     delay: Duration,
+    /// When the connector, which is down, is started again.
+    restart_at: Option<Instant>,
+}
+
+/// A supervisor whose connectors are listening: one for every TOON app.
+pub struct Supervisor {
+    units: Vec<Unit>,
+    runner: Box<dyn AppRunner>,
+    /// The overlay, bootstrapped by the first hidden service that needs it.
+    edge: Option<Arc<dyn Edge>>,
+    shared: Arc<Shared>,
+    socket: PathBuf,
+    home: PathBuf,
 }
 
 /// How a supervisor ended.
 pub enum Stopped {
     /// `toon down` asked it to.
     Down,
-    /// An app behind the connector stopped by itself.
+    /// An app behind a connector stopped by itself.
     Failed(Error),
 }
 
@@ -166,22 +186,25 @@ fn failed(message: String) -> Error {
     }
 }
 
-/// Start the connector of the agent node at `home`, and return once it is listening.
+/// Start the connector of every TOON app of the agent node at `home`, and return once
+/// they are listening.
 pub fn start(home: &Path) -> Result<Supervisor, Error> {
     let Some(state) = State::load(home)? else {
         return Err(node::no_agent_node(home));
     };
-    // One connector per supervisor until a command creates a second TOON app.
-    let app = &state.toon_apps[0];
     // A connector whose settlement key is empty is not started: it would only fail
     // later, and not say why.
     // A chain that cannot be asked is not a verdict: the connector binds to its chain
     // before it listens, and refuses with its own reason if the chain is not there.
     // A settlement key that cannot be read is.
-    if let Ok(lacking) = funding::shortfalls(funding::needs(home, app)?) {
-        if !lacking.is_empty() {
-            return Err(funding::unfunded(state.network, &lacking));
+    let mut lacking = Vec::new();
+    for app in &state.toon_apps {
+        if let Ok(short) = funding::shortfalls(funding::needs(home, app)?) {
+            lacking.extend(short);
         }
+    }
+    if !lacking.is_empty() {
+        return Err(funding::unfunded(state.network, &lacking));
     }
     let Some(listener) = control::bind(home).map_err(|error| Error {
         code: ErrorCode::Io,
@@ -197,7 +220,7 @@ pub fn start(home: &Path) -> Result<Supervisor, Error> {
         });
     };
     let socket = control::path(home);
-    match launch(home, app, runner::from_environment(), listener, &socket) {
+    match launch(home, &state, runner::from_environment(), listener, &socket) {
         Ok(supervisor) => Ok(supervisor),
         Err(error) => {
             let _ = std::fs::remove_file(&socket);
@@ -271,24 +294,36 @@ fn instance(home: &Path) -> String {
 
 fn launch(
     home: &Path,
-    app: &ToonApp,
+    state: &State,
     runner: Box<dyn AppRunner>,
     listener: UnixListener,
     socket: &Path,
 ) -> Result<Supervisor, Error> {
-    // A hidden service is not started without its overlay, and never on clearnet instead,
-    // so the overlay comes up before anything behind it listens.
-    let overlay = match app.reach {
-        Reach::Hidden => {
-            let edge = overlay::bootstrap(home, false)?;
-            let key = ConnectorFiles::of(home, app.connector).onion_key;
-            let endpoint = edge.issue(app.connector, &key)?;
-            Some((edge, endpoint))
-        }
-        Reach::Clearnet { .. } => None,
+    let mut supervisor = Supervisor {
+        units: Vec::new(),
+        runner,
+        edge: None,
+        shared: Arc::new(Shared {
+            stop: AtomicBool::new(false),
+            units: Mutex::new(Vec::new()),
+            sync: Mutex::new(Vec::new()),
+        }),
+        socket: socket.to_path_buf(),
+        home: home.to_path_buf(),
     };
-    let apps = start_apps(home, app, &*runner)?;
-    launch_connector(home, app, overlay, apps, runner, listener, socket)
+    for app in &state.toon_apps {
+        if let Err(error) = supervisor.add(app) {
+            supervisor.shutdown();
+            return Err(error);
+        }
+    }
+    let answering = Arc::clone(&supervisor.shared);
+    thread::spawn(move || {
+        control::serve(listener, move |request, toon_app| {
+            answering.answer(request, toon_app)
+        })
+    });
+    Ok(supervisor)
 }
 
 /// Where each running app's write port is reached.
@@ -311,12 +346,9 @@ fn statuses(apps: &StartedApps) -> Vec<AppStatus> {
 fn launch_connector(
     home: &Path,
     app: &ToonApp,
-    overlay: Option<(Box<dyn Edge>, String)>,
+    overlay: Option<(Arc<dyn Edge>, String)>,
     mut apps: StartedApps,
-    runner: Box<dyn AppRunner>,
-    listener: UnixListener,
-    socket: &Path,
-) -> Result<Supervisor, Error> {
+) -> Result<Unit, Error> {
     let hidden = overlay.map(|(edge, endpoint)| Hidden {
         edge,
         endpoint,
@@ -347,17 +379,13 @@ fn launch_connector(
         for (_, running) in &mut apps {
             running.stop();
         }
-        if let Some(hidden) = &hidden {
-            hidden.edge.release();
-        }
         return Err(error);
     }
     let first = (started.child.id(), started.address.clone());
-    let shared = Arc::new(Shared {
+    let shared = Arc::new(UnitShared {
         toon_app: app.name.clone(),
         apps: Mutex::new(statuses(&apps)),
         reload: Mutex::new(Vec::new()),
-        stop: AtomicBool::new(false),
         live: Mutex::new(Live {
             pid: Some(first.0),
             address: Some(first.1.clone()),
@@ -366,20 +394,16 @@ fn launch_connector(
             last_exit: None,
         }),
     });
-    let answering = Arc::clone(&shared);
-    thread::spawn(move || control::serve(listener, move |request| answering.answer(request)));
-    Ok(Supervisor {
+    Ok(Unit {
         hidden,
         connector: Some(started),
         apps,
-        runner,
         app: app.clone(),
         files,
         shared,
-        socket: socket.to_path_buf(),
-        home: home.to_path_buf(),
         first,
         delay: FIRST_RESTART_DELAY,
+        restart_at: None,
     })
 }
 
@@ -431,30 +455,43 @@ fn spawn(files: &ConnectorFiles) -> Result<Started, Error> {
     Err(failed(refusal))
 }
 
+/// Ask `queue`'s consumer to carry out a request, and wait for the answer.
+fn wait_for(queue: &Mutex<Vec<Reload>>) -> Value {
+    let (answer, answered) = mpsc::channel();
+    queue.lock().expect("the requests").push(answer);
+    match answered.recv() {
+        Ok(Ok(())) => json!({ "reloaded": true }),
+        Ok(Err(Unreloaded { error, stopped })) => {
+            let mut reply = error.json();
+            reply["stopped"] = json!(stopped);
+            reply
+        }
+        Err(_) => json!({ "error": { "code": "connector_failed",
+            "message": "The supervisor stopped before it reloaded." } }),
+    }
+}
+
 impl Shared {
-    fn answer(&self, request: &str) -> Value {
+    fn answer(&self, request: &str, toon_app: Option<&str>) -> Value {
         match request {
-            "status" => {
-                let live = self.live();
-                json!({
-                    "toon_apps": [{
-                        "name": self.toon_app,
-                        "connector": {
-                            "address": live.address,
-                            "pid": live.pid,
-                            "running": live.running,
-                            "restarts": live.restarts,
-                            "last_exit": live.last_exit,
-                        },
-                        "apps": self.apps().iter().map(|app| json!({
-                            "name": app.name,
-                            "address": app.address.to_string(),
-                            "running": app.running.load(Ordering::SeqCst),
-                        })).collect::<Vec<_>>(),
-                    }],
-                })
-            }
-            "reload" => self.reload(),
+            "status" => json!({
+                "toon_apps": self.units().iter().map(|unit| unit.status()).collect::<Vec<_>>(),
+            }),
+            // Start the connector of one TOON app again from the state as it now is, and
+            // wait for the answer. Apps are started and stopped to match the state too.
+            "reload" => match self
+                .units()
+                .iter()
+                .find(|unit| Some(unit.toon_app.as_str()) == toon_app)
+            {
+                Some(unit) => wait_for(&unit.reload),
+                None => json!({ "error": { "code": "connector_failed", "message": format!(
+                    "No connector runs for the TOON app {}.", toon_app.unwrap_or_default()
+                ) }, "stopped": false }),
+            },
+            // Start the connector of each TOON app the state holds that does not run, and
+            // stop each one that is no longer in it.
+            "sync" => wait_for(&self.sync),
             "down" => {
                 self.stop.store(true, Ordering::SeqCst);
                 json!({ "stopping": true })
@@ -463,43 +500,67 @@ impl Shared {
         }
     }
 
-    /// Ask `wait` to start the connector again from the state as it now is, and wait for
-    /// the answer. Apps are started and stopped to match the state too.
-    fn reload(&self) -> Value {
-        let (answer, answered) = mpsc::channel();
-        self.reloads().push(answer);
-        match answered.recv() {
-            Ok(Ok(())) => json!({ "reloaded": true }),
-            Ok(Err(Unreloaded { error, stopped })) => {
-                let mut reply = error.json();
-                reply["stopped"] = json!(stopped);
-                reply
-            }
-            Err(_) => json!({ "error": { "code": "connector_failed",
-                "message": "The supervisor stopped before it reloaded." } }),
-        }
+    fn units(&self) -> MutexGuard<'_, Vec<Arc<UnitShared>>> {
+        self.units.lock().expect("the connectors' state")
+    }
+}
+
+impl UnitShared {
+    fn status(&self) -> Value {
+        let live = self.live();
+        json!({
+            "name": self.toon_app,
+            "connector": {
+                "address": live.address,
+                "pid": live.pid,
+                "running": live.running,
+                "restarts": live.restarts,
+                "last_exit": live.last_exit,
+            },
+            "apps": self.apps().iter().map(|app| json!({
+                "name": app.name,
+                "address": app.address.to_string(),
+                "running": app.running.load(Ordering::SeqCst),
+            })).collect::<Vec<_>>(),
+        })
     }
 
-    fn reloads(&self) -> std::sync::MutexGuard<'_, Vec<Reload>> {
+    fn reloads(&self) -> MutexGuard<'_, Vec<Reload>> {
         self.reload.lock().expect("the reload requests")
     }
 
-    fn apps(&self) -> std::sync::MutexGuard<'_, Vec<AppStatus>> {
+    fn apps(&self) -> MutexGuard<'_, Vec<AppStatus>> {
         self.apps.lock().expect("the apps' state")
     }
 
-    fn live(&self) -> std::sync::MutexGuard<'_, Live> {
+    fn live(&self) -> MutexGuard<'_, Live> {
         self.live.lock().expect("the connector's state")
     }
 }
 
+/// Tell each waiter how a request ended.
+fn answer_all(waiting: Vec<Reload>, result: &Result<(), Unreloaded>) {
+    for answer in waiting {
+        let _ = answer.send(match result {
+            Ok(()) => Ok(()),
+            Err(unreloaded) => Err(Unreloaded {
+                error: Error {
+                    code: unreloaded.error.code,
+                    message: unreloaded.error.message.clone(),
+                },
+                stopped: unreloaded.stopped,
+            }),
+        });
+    }
+}
+
 impl Supervisor {
-    /// What is running.
+    /// What is running: the first TOON app's connector, which `up` reports.
     pub fn report(&self) -> Report {
-        let (pid, address) = &self.first;
+        let (pid, address) = &self.units[0].first;
         let revision = connector::REVISION;
         let home = self.home.to_string_lossy();
-        let log = self.files.log.to_string_lossy();
+        let log = self.units[0].files.log.to_string_lossy();
         let socket = self.socket.to_string_lossy();
         Report {
             exit: Exit::Success,
@@ -520,6 +581,33 @@ impl Supervisor {
         }
     }
 
+    /// Start the connector of `app`, and the apps behind it, and keep them.
+    fn add(&mut self, app: &ToonApp) -> Result<(), Error> {
+        // A hidden service is not started without its overlay, and never on clearnet
+        // instead, so the overlay comes up before anything behind it listens.
+        let overlay = match app.reach {
+            Reach::Hidden => {
+                let edge = match &self.edge {
+                    Some(edge) => Arc::clone(edge),
+                    None => {
+                        let edge: Arc<dyn Edge> = Arc::from(overlay::bootstrap(&self.home, false)?);
+                        self.edge = Some(Arc::clone(&edge));
+                        edge
+                    }
+                };
+                let key = ConnectorFiles::of(&self.home, app.connector).onion_key;
+                let endpoint = edge.issue(app.connector, &key)?;
+                Some((edge, endpoint))
+            }
+            Reach::Clearnet { .. } => None,
+        };
+        let apps = start_apps(&self.home, app, &*self.runner)?;
+        let unit = launch_connector(&self.home, app, overlay, apps)?;
+        self.shared.units().push(Arc::clone(&unit.shared));
+        self.units.push(unit);
+        Ok(())
+    }
+
     /// Stay in the foreground until `toon down`, or until an app stops. A connector that
     /// stops by itself is started again, after a delay that doubles while the starts keep
     /// failing. An app that stops is not: the supervisor stops with it.
@@ -529,7 +617,7 @@ impl Supervisor {
         while !self.shared.stop.load(Ordering::SeqCst) {
             if apps_checked.elapsed() >= APPS_EVERY {
                 apps_checked = Instant::now();
-                if let Some(app) = self.stopped_app() {
+                if let Some(app) = self.units.iter_mut().find_map(Unit::stopped_app) {
                     stopped = Stopped::Failed(Error {
                         code: ErrorCode::AppFailed,
                         message: format!("The app {app} stopped."),
@@ -537,51 +625,91 @@ impl Supervisor {
                     break;
                 }
             }
-            // Requests that came in together are carried out by one restart.
-            let requested = std::mem::take(&mut *self.shared.reloads());
+            // Requests that came in together are carried out by one sync.
+            let requested = std::mem::take(&mut *self.shared.sync.lock().expect("the syncs"));
             if !requested.is_empty() {
-                let reloaded = self.reload();
-                for answer in requested {
-                    let _ = answer.send(match &reloaded {
-                        Ok(()) => Ok(()),
-                        Err(unreloaded) => Err(Unreloaded {
-                            error: Error {
-                                code: unreloaded.error.code,
-                                message: unreloaded.error.message.clone(),
-                            },
-                            stopped: unreloaded.stopped,
-                        }),
-                    });
-                }
-                continue;
+                let synced = self.sync();
+                answer_all(requested, &synced);
             }
-            let Some(started) = self.connector.as_mut() else {
-                self.restart();
-                continue;
-            };
-            match started.child.try_wait() {
-                Ok(None) => thread::sleep(Duration::from_millis(50)),
-                Ok(Some(status)) => self.stopped(format!("The connector stopped ({status}).")),
-                Err(error) => self.stopped(format!("The connector stopped ({error}).")),
+            for unit in &mut self.units {
+                unit.tick(&self.home, &*self.runner);
             }
+            thread::sleep(Duration::from_millis(50));
         }
         // Whoever still waits for a reload is told the supervisor stopped.
-        self.shared.reloads().clear();
-        self.stop_connector();
-        // The apps go once the connector that delivers to them has.
-        for (_, app) in &mut self.apps {
-            app.stop();
-        }
-        if let Some(hidden) = self.hidden.take() {
-            hidden.edge.release();
-        }
-        self.shared.live().running = false;
+        self.shared.sync.lock().expect("the syncs").clear();
+        self.shutdown();
         // Last, so that a `toon down` that sees the socket gone knows everything has.
         let _ = std::fs::remove_file(&self.socket);
         stopped
     }
 
-    /// The connector is gone: note why, and let the next turn of `wait` restart it.
+    /// Stop every connector, and then the apps that were behind them, and let the overlay
+    /// they shared go.
+    fn shutdown(&mut self) {
+        for unit in &mut self.units {
+            unit.shared.reloads().clear();
+            unit.stop();
+        }
+        self.units.clear();
+        self.shared.units().clear();
+        if let Some(edge) = self.edge.take() {
+            edge.release();
+        }
+    }
+
+    /// Make what runs match the state: a TOON app that is new gets its connector and its
+    /// apps, one that is gone has them stopped. One that stays is not touched.
+    fn sync(&mut self) -> Result<(), Unreloaded> {
+        let untouched = |error| Unreloaded {
+            error,
+            stopped: false,
+        };
+        let state = State::load(&self.home)
+            .map_err(untouched)?
+            .ok_or_else(|| untouched(node::no_agent_node(&self.home)))?;
+        for app in &state.toon_apps {
+            if !self.units.iter().any(|unit| unit.app.name == app.name) {
+                self.add(app).map_err(untouched)?;
+            }
+        }
+        let (kept, gone): (Vec<Unit>, Vec<Unit>) = std::mem::take(&mut self.units)
+            .into_iter()
+            .partition(|unit| state.toon_apps.iter().any(|app| app.name == unit.app.name));
+        self.units = kept;
+        for mut unit in gone {
+            self.shared
+                .units()
+                .retain(|shared| !Arc::ptr_eq(shared, &unit.shared));
+            unit.stop();
+        }
+        Ok(())
+    }
+}
+
+impl Unit {
+    /// Carry out a reload that was asked for, or start the connector again if it has
+    /// stopped and its delay is over, or note that it has stopped.
+    fn tick(&mut self, home: &Path, runner: &dyn AppRunner) {
+        // Requests that came in together are carried out by one restart.
+        let requested = std::mem::take(&mut *self.shared.reloads());
+        if !requested.is_empty() {
+            let reloaded = self.reload(home, runner);
+            answer_all(requested, &reloaded);
+            return;
+        }
+        let Some(started) = self.connector.as_mut() else {
+            self.restart();
+            return;
+        };
+        match started.child.try_wait() {
+            Ok(None) => {}
+            Ok(Some(status)) => self.stopped(format!("The connector stopped ({status}).")),
+            Err(error) => self.stopped(format!("The connector stopped ({error}).")),
+        }
+    }
+
+    /// The connector is gone: note why, and let the next turn of `tick` restart it.
     fn stopped(&mut self, why: String) {
         if let Some(started) = self.connector.take() {
             eprintln!("{why}");
@@ -592,6 +720,7 @@ impl Supervisor {
             live.last_exit = Some(why);
             drop(live);
             drop(started.alive);
+            self.restart_at = None;
             // A connector that ran for a while was not crash-looping.
             if started.since.elapsed() >= HEALTHY {
                 self.delay = FIRST_RESTART_DELAY;
@@ -599,17 +728,16 @@ impl Supervisor {
         }
     }
 
-    /// Wait out the delay, then start the connector again. A start that fails leaves it
-    /// down, and `wait` comes back for another go after a longer delay.
+    /// Start the connector again once the delay is over. A start that fails leaves it
+    /// down, and `tick` comes back for another go after a longer delay.
     fn restart(&mut self) {
-        let until = Instant::now() + self.delay;
-        while Instant::now() < until {
-            // A reload starts the connector itself, without waiting out the delay.
-            if self.shared.stop.load(Ordering::SeqCst) || !self.shared.reloads().is_empty() {
-                return;
-            }
-            thread::sleep(Duration::from_millis(20));
+        let due = *self
+            .restart_at
+            .get_or_insert_with(|| Instant::now() + self.delay);
+        if Instant::now() < due {
+            return;
         }
+        self.restart_at = None;
         self.delay = (self.delay * 2).min(LONGEST_RESTART_DELAY);
         match spawn(&self.files) {
             Ok(started) => {
@@ -639,14 +767,14 @@ impl Supervisor {
     /// is new starts first, and the new config is checked, so that a change that fails
     /// either leaves the connector as it was. Then the connector stops, which drops what it
     /// holds in flight, and the apps that were removed stop after it.
-    fn reload(&mut self) -> Result<(), Unreloaded> {
+    fn reload(&mut self, home: &Path, runner: &dyn AppRunner) -> Result<(), Unreloaded> {
         let untouched = |error| Unreloaded {
             error,
             stopped: false,
         };
-        let state = State::load(&self.home)
+        let state = State::load(home)
             .map_err(untouched)?
-            .ok_or_else(|| untouched(node::no_agent_node(&self.home)))?;
+            .ok_or_else(|| untouched(node::no_agent_node(home)))?;
         let toon_app = self.shared.toon_app.clone();
         let Some(app) = state.toon_apps.iter().find(|app| app.name == toon_app) else {
             return Err(untouched(failed(format!(
@@ -683,7 +811,7 @@ impl Supervisor {
             if self.apps.iter().any(|(name, _)| *name == behind.name) {
                 continue;
             }
-            match start_app(&self.home, app, behind, &*self.runner) {
+            match start_app(home, app, behind, runner) {
                 Ok(Some(running)) => fresh.push((behind.name.clone(), running)),
                 Ok(None) => {}
                 Err(error) => {
@@ -697,17 +825,12 @@ impl Supervisor {
         // The relay's read port moves with the relay, so the onion endpoint is told again.
         let read = read_address(&self.apps).or_else(|| read_address(&fresh));
         let rendering = self.hidden.as_ref().map(Hidden::overlay);
-        let files = match node::render(&self.home, app, &reached, rendering.as_ref()) {
+        let files = match node::render(home, app, &reached, rendering.as_ref()) {
             Ok(files) => files,
             Err(error) => {
                 stop(&mut fresh);
                 // Put back the config the connector runs, for the next time it restarts.
-                let _ = node::render(
-                    &self.home,
-                    &self.app,
-                    &addresses(&self.apps),
-                    rendering.as_ref(),
-                );
+                let _ = node::render(home, &self.app, &addresses(&self.apps), rendering.as_ref());
                 return Err(unreloaded(error));
             }
         };
@@ -765,6 +888,16 @@ impl Supervisor {
             }
         }
         stopped
+    }
+
+    /// Stop the connector, and then the apps behind it.
+    fn stop(&mut self) {
+        self.stop_connector();
+        for (_, app) in &mut self.apps {
+            app.stop();
+        }
+        self.hidden = None;
+        self.shared.live().running = false;
     }
 
     /// Close the connector's stdin, which it takes as its cue to exit, and kill it if

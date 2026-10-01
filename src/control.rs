@@ -28,10 +28,25 @@ pub fn ask(home: &Path, request: &str) -> Option<Value> {
 
 /// `ask`, for a request that takes longer than `PATIENCE` to answer.
 pub fn ask_within(home: &Path, request: &str, patience: Duration) -> Option<Value> {
+    ask_about(home, request, None, patience)
+}
+
+/// `ask_within`, for a request that is about one TOON app, named `toon_app`.
+pub fn ask_about(
+    home: &Path,
+    request: &str,
+    toon_app: Option<&str>,
+    patience: Duration,
+) -> Option<Value> {
     let mut stream = UnixStream::connect(path(home)).ok()?;
     stream.set_read_timeout(Some(patience)).ok()?;
     stream.set_write_timeout(Some(PATIENCE)).ok()?;
-    writeln!(stream, "{}", json!({ "request": request })).ok()?;
+    writeln!(
+        stream,
+        "{}",
+        json!({ "request": request, "toon_app": toon_app })
+    )
+    .ok()?;
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).ok()?;
     serde_json::from_str(&line).ok()
@@ -58,8 +73,12 @@ pub fn bind(home: &Path) -> std::io::Result<Option<UnixListener>> {
 
 /// Answer requests until the process ends, each connection on its own thread, so that a
 /// request that takes long to answer, such as `reload`, does not hold up `status` or
-/// `down`. `answer` gets the request's name and returns the reply.
-pub fn serve(listener: UnixListener, answer: impl Fn(&str) -> Value + Send + Sync + 'static) {
+/// `down`. `answer` gets the request's name and the TOON app it is about, if it names one,
+/// and returns the reply.
+pub fn serve(
+    listener: UnixListener,
+    answer: impl Fn(&str, Option<&str>) -> Value + Send + Sync + 'static,
+) {
     let answer = Arc::new(answer);
     for stream in listener.incoming().flatten() {
         let answer = Arc::clone(&answer);
@@ -72,7 +91,7 @@ pub fn serve(listener: UnixListener, answer: impl Fn(&str) -> Value + Send + Syn
             }
             let request: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
             let reply = match request["request"].as_str() {
-                Some(name) => answer(name),
+                Some(name) => answer(name, request["toon_app"].as_str()),
                 None => json!({ "error": "not a request" }),
             };
             let mut stream = stream;
