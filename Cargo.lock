@@ -6359,6 +6359,7 @@ dependencies = [
  "tracing-subscriber",
  "tungstenite",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

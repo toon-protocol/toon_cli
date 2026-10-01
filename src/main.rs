@@ -5,6 +5,7 @@
 //! readable text, and errors go to standard error. The exit codes are in `outcome` and
 //! in `docs/exit-codes.md`.
 
+mod anon;
 mod apps;
 mod cli;
 mod connector;

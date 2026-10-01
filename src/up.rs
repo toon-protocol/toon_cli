@@ -115,7 +115,7 @@ struct Hidden {
 impl Hidden {
     /// Publish the connector, now listening at `address`, and the relay's read port, at the
     /// onion endpoint.
-    fn publish(&self, address: &str) {
+    fn publish(&self, address: &str) -> Result<(), Error> {
         let mut ports = Vec::new();
         if let Ok(address) = address.parse() {
             ports.push((overlay::CONNECTOR_PORT, address));
@@ -123,7 +123,7 @@ impl Hidden {
         if let Some(read) = self.read {
             ports.push((overlay::RELAY_READ_PORT, read));
         }
-        self.edge.publish(&self.endpoint, &ports);
+        self.edge.publish(&self.endpoint, &ports)
     }
 
     fn overlay(&self) -> node::Overlay {
@@ -369,8 +369,17 @@ fn launch_connector(
             return Err(error);
         }
     };
-    if let Some(hidden) = &hidden {
-        hidden.publish(&started.address);
+    let mut started = started;
+    if let Some(Err(error)) = hidden
+        .as_ref()
+        .map(|hidden| hidden.publish(&started.address))
+    {
+        let _ = started.child.kill();
+        let _ = started.child.wait();
+        for (_, running) in &mut apps {
+            running.stop();
+        }
+        return Err(error);
     }
     let first = (started.child.id(), started.address.clone());
     let shared = Arc::new(UnitShared {
@@ -581,7 +590,7 @@ impl Supervisor {
                 let edge = match &self.edge {
                     Some(edge) => Arc::clone(edge),
                     None => {
-                        let edge: Arc<dyn Edge> = Arc::from(overlay::bootstrap(&self.home)?);
+                        let edge: Arc<dyn Edge> = Arc::from(overlay::bootstrap(&self.home, false)?);
                         self.edge = Some(Arc::clone(&edge));
                         edge
                     }
@@ -635,7 +644,8 @@ impl Supervisor {
         stopped
     }
 
-    /// Stop every connector, and then the apps that were behind them.
+    /// Stop every connector, and then the apps that were behind them, and let the overlay
+    /// they shared go.
     fn shutdown(&mut self) {
         for unit in &mut self.units {
             unit.shared.reloads().clear();
@@ -643,6 +653,9 @@ impl Supervisor {
         }
         self.units.clear();
         self.shared.units().clear();
+        if let Some(edge) = self.edge.take() {
+            edge.release();
+        }
     }
 
     /// Make what runs match the state: a TOON app that is new gets its connector and its
@@ -728,8 +741,12 @@ impl Unit {
         self.delay = (self.delay * 2).min(LONGEST_RESTART_DELAY);
         match spawn(&self.files) {
             Ok(started) => {
-                if let Some(hidden) = &self.hidden {
-                    hidden.publish(&started.address);
+                if let Some(Err(error)) = self.hidden.as_ref().map(|h| h.publish(&started.address))
+                {
+                    eprintln!(
+                        "toon: the restarted connector was not published: {}",
+                        error.message
+                    );
                 }
                 let mut live = self.shared.live();
                 live.pid = Some(started.child.id());
@@ -838,12 +855,17 @@ impl Unit {
             hidden.read = read;
         }
         self.files = files;
-        let started = spawn(&self.files).map_err(|error| Unreloaded {
+        let mut started = spawn(&self.files).map_err(|error| Unreloaded {
             error,
             stopped: true,
         })?;
-        if let Some(hidden) = &self.hidden {
-            hidden.publish(&started.address);
+        if let Some(Err(error)) = self.hidden.as_ref().map(|h| h.publish(&started.address)) {
+            let _ = started.child.kill();
+            let _ = started.child.wait();
+            return Err(Unreloaded {
+                error,
+                stopped: true,
+            });
         }
         let mut live = self.shared.live();
         live.pid = Some(started.child.id());

@@ -154,7 +154,9 @@ pub fn init(home: &Path, options: &node::Options, restore: bool) -> Result<Repor
     let wallet = describe(&addresses(&phrase, FIRST_CONNECTORS)?);
     // The TOON app is made and checked before the wallet is kept, so that a command line
     // the connector would refuse does not leave a wallet whose mnemonic nobody saw.
-    let state = create_toon_app(home, &mnemonic, options, edge.as_deref(), onion)?;
+    let state = create_toon_app(home, &mnemonic, options, edge.as_deref(), onion);
+    release(home, edge.as_deref());
+    let state = state?;
     if !keystore::create(home, &passphrase, &phrase)? {
         return existing(home, options);
     }
@@ -278,6 +280,7 @@ fn discard_toon_apps(home: &Path) {
         let _ = std::fs::remove_dir_all(home.join("connectors"));
     }
     let _ = std::fs::remove_dir_all(home.join("apps"));
+    crate::anon::stop(home);
     let _ = std::fs::remove_dir_all(home.join("overlay"));
     let _ = std::fs::remove_file(node::operator_key(home));
     let _ = std::fs::remove_file(spending::limits_path(home));
@@ -418,7 +421,9 @@ fn existing(home: &Path, options: &node::Options) -> Result<Report, Error> {
                         code: ErrorCode::KeystoreCorrupt,
                         message: "The keystore does not hold a valid mnemonic.".into(),
                     })?;
-            let state = create_toon_app(home, &mnemonic, options, edge.as_deref(), Onion::Derived)?;
+            let state = create_toon_app(home, &mnemonic, options, edge.as_deref(), Onion::Derived);
+            release(home, edge.as_deref());
+            let state = state?;
             if let Err(error) = state.save(home) {
                 discard_toon_apps(home);
                 return Err(error);
@@ -546,7 +551,7 @@ fn edge_for(home: &Path, options: &node::Options) -> Result<Option<Box<dyn Edge>
     check_reach(&options.reach, options.accept_anyone_terms, &options.listen)?;
     match options.reach {
         Reach::Clearnet { .. } => Ok(None),
-        Reach::Hidden => overlay::bootstrap(home).map(Some),
+        Reach::Hidden => overlay::bootstrap(home, true).map(Some),
     }
 }
 
@@ -588,6 +593,16 @@ pub fn check_reach(reach: &Reach, accept_anyone_terms: bool, listen: &str) -> Re
         });
     }
     Ok(())
+}
+
+/// Let the overlay go once the TOON app is made, unless a supervisor is running on it: the
+/// daemon is started again by `toon up`.
+fn release(home: &Path, edge: Option<&dyn Edge>) {
+    if let Some(edge) = edge {
+        if !home.join("supervisor.sock").exists() {
+            edge.release();
+        }
+    }
 }
 
 /// List the wallet's addresses.
