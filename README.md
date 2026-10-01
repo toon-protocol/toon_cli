@@ -1,7 +1,8 @@
 # toon_cli
 
 `toon` runs and manages an agent node. The vocabulary is in [`CONTEXT.md`](CONTEXT.md)
-and the decisions are in [`docs/adr/`](docs/adr/).
+and the decisions are in [`docs/adr/`](docs/adr/). Protocol that relays and agents agree
+on and no existing NIP covers is drafted in [`nips/`](nips/).
 
 ## Install
 

@@ -23,6 +23,7 @@ use sha2::Digest;
 
 use crate::connector::{self, Startup};
 use crate::control;
+use crate::funding;
 use crate::node::{self, AppFiles, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::runner::{self, AppRunner, AppSpec, RunningApp};
@@ -87,6 +88,16 @@ pub fn start(home: &Path) -> Result<Supervisor, Error> {
     };
     // One connector per supervisor until a command creates a second TOON app.
     let app = &state.toon_apps[0];
+    // A connector whose settlement key is empty is not started: it would only fail
+    // later, and not say why.
+    // A chain that cannot be asked is not a verdict: the connector binds to its chain
+    // before it listens, and refuses with its own reason if the chain is not there.
+    // A settlement key that cannot be read is.
+    if let Ok(lacking) = funding::shortfalls(funding::needs(home, app)?) {
+        if !lacking.is_empty() {
+            return Err(funding::unfunded(state.network, &lacking));
+        }
+    }
     let Some(listener) = control::bind(home).map_err(|error| Error {
         code: ErrorCode::Io,
         message: format!("{}: {error}.", control::path(home).display()),

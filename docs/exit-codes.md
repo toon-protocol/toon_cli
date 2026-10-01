@@ -33,7 +33,9 @@ is missing here. Add a new code to the test and to this file together.
 
 `toon status` exits with the code that describes the agent node, and still prints its
 report. It exits 1 when the supervisor or a connector is not running, and `toon down` exits 0
-whether or not anything was running. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
+whether or not anything was running. `toon send` exits 1 when the packet was rejected, and still prints its report: the
+reject code is in `reject.code`. It exits 1 too, with `"outcome": "wrong_fulfilment"`, when
+the packet was fulfilled with a fulfilment that does not match it. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
 and exits 3.
 
 ## Errors
@@ -60,9 +62,24 @@ A failed command with `--json` prints:
 | `connector_failed` | 1 | A connector did not start, or stopped; the message carries the connector's own reason |
 | `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
 | `app_failed` | 1 | An app behind a connector did not start, or stopped; the message carries the reason |
+| `unfunded` | 1 | A settlement key does not hold what the connector needs, so `toon up` did not start it; the message names each address and the amount |
+| `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused |
+| `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
+| `send_failed` | 1 | The packet could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
 
 ## The wallet passphrase
 
 `toon init` and `toon wallet show` read the passphrase from the file named by
 `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`. It is never a flag. One trailing
 newline in the file is not part of the passphrase.
+
+`toon wallet fund` reads the settlement keys the agent node holds, not the keystore, so it
+needs no passphrase.
+
+## Network profiles and funding
+
+`toon init --network` takes `devnet` (the default), `sandbox` or `mainnet`. Solana
+settlement is off unless `--solana` is given. `toon up` does not start a connector whose
+settlement key holds less than 0.0001 ETH (0.01 SOL) for gas and one whole token; it fails
+with `unfunded`. Only the devnet has a faucet: on the other networks `toon wallet fund`
+fails with `faucet_unavailable`, and on mainnet the operator funds the addresses themselves.

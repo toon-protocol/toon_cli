@@ -58,6 +58,10 @@ pub enum ErrorCode {
     ConnectorFailed,
     AlreadyRunning,
     AppFailed,
+    Unfunded,
+    FaucetUnavailable,
+    NotRunning,
+    SendFailed,
 }
 
 impl ErrorCode {
@@ -75,6 +79,10 @@ impl ErrorCode {
             ErrorCode::ConnectorFailed => "connector_failed",
             ErrorCode::AlreadyRunning => "already_running",
             ErrorCode::AppFailed => "app_failed",
+            ErrorCode::Unfunded => "unfunded",
+            ErrorCode::FaucetUnavailable => "faucet_unavailable",
+            ErrorCode::NotRunning => "not_running",
+            ErrorCode::SendFailed => "send_failed",
         }
     }
 
@@ -90,7 +98,11 @@ impl ErrorCode {
             | ErrorCode::Io
             | ErrorCode::ConnectorFailed
             | ErrorCode::AlreadyRunning
-            | ErrorCode::AppFailed => Exit::Failure,
+            | ErrorCode::AppFailed
+            | ErrorCode::Unfunded
+            | ErrorCode::FaucetUnavailable
+            | ErrorCode::NotRunning
+            | ErrorCode::SendFailed => Exit::Failure,
         }
     }
 }
