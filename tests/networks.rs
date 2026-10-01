@@ -285,3 +285,51 @@ fn wallet_fund_needs_an_agent_node() {
     assert_eq!(fund.exit_code, 3);
     assert_eq!(fund.json()["error"]["code"], "no_agent_node");
 }
+
+#[test]
+fn init_refuses_more_decimals_than_a_token_amount_can_hold() {
+    let machine = Machine::new();
+
+    let init = machine.init_with(&["--evm-decimals", "19"]);
+
+    assert_eq!(init.exit_code, 2, "{}", init.stdout);
+    assert_eq!(init.json()["error"]["code"], "usage");
+}
+
+#[test]
+fn up_refuses_when_a_settlement_key_cannot_be_read() {
+    let chain = FakeChain::start_unfunded();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    fs::remove_file(
+        machine
+            .agent_node_home()
+            .join("connectors/0/settlement.key"),
+    )
+    .unwrap();
+
+    let up = machine.toon(&["up", "--json"]);
+
+    assert_eq!(up.json()["error"]["code"], "io", "{}", up.stdout);
+    assert!(!machine.agent_node_home().join("control.sock").exists());
+}
+
+#[test]
+fn wallet_fund_says_when_the_balances_cannot_be_read_after_asking_the_faucet() {
+    let chain = FakeChain::start_unfunded();
+    let faucet = FakeFaucet::funding(chain.funded());
+    let machine = Machine::new();
+    machine.init_with(&[
+        "--evm-rpc-url",
+        &chain.rpc_url(),
+        "--faucet-url",
+        faucet.url(),
+    ]);
+    drop(chain);
+
+    let fund = machine.toon(&["wallet", "fund", "--json"]);
+
+    assert_eq!(fund.exit_code, 0, "{}", fund.stdout);
+    assert_eq!(faucet.asked().len(), 1);
+    assert!(fund.json()["lacking"].is_null(), "{}", fund.stdout);
+}

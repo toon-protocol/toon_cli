@@ -74,8 +74,8 @@ pub struct InitArgs {
     /// The token the connector is paid in on that chain, instead of the profile's
     #[arg(long)]
     pub evm_token: Option<String>,
-    /// The token's decimals
-    #[arg(long)]
+    /// The token's decimals, at most 18
+    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=18))]
     pub evm_decimals: Option<u8>,
     /// The token's EIP-712 domain name
     #[arg(long)]

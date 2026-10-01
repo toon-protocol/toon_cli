@@ -216,15 +216,11 @@ fn balance(need: &Need) -> Result<u128, String> {
     }
 }
 
-/// What `app`'s settlement keys still lack, asked of the chains.
-pub fn shortfalls(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
+/// Which of `needs` the chains say is not yet held, or why a balance could not be read.
+pub fn shortfalls(needs: Vec<Need>) -> Result<Vec<Need>, String> {
     let mut lacking = Vec::new();
-    for need in needs(home, app)? {
-        let held = balance(&need).map_err(|message| Error {
-            code: ErrorCode::ConnectorFailed,
-            message: format!("The settlement key's balance could not be read: {message}."),
-        })?;
-        if held < need.amount {
+    for need in needs {
+        if balance(&need)? < need.amount {
             lacking.push(need);
         }
     }
@@ -348,10 +344,13 @@ pub fn fund(home: &Path) -> Result<Report, Error> {
             }));
         }
     }
-    let mut lacking = Vec::new();
+    let mut all = Vec::new();
     for app in &state.toon_apps {
-        lacking.extend(shortfalls(home, app)?);
+        all.extend(needs(home, app)?);
     }
+    // The faucet has been asked either way: a balance that cannot be read is said, not
+    // a failure of the command.
+    let lacking = shortfalls(all);
     let mut text = String::from("Asked the devnet faucet for:\n");
     for entry in &funded {
         text.push_str(&format!(
@@ -360,20 +359,31 @@ pub fn fund(home: &Path) -> Result<Report, Error> {
             entry["chain"].as_str().unwrap_or_default()
         ));
     }
-    if lacking.is_empty() {
-        text.push_str("Every settlement key is funded. Run `toon up`.");
-    } else {
-        let list: Vec<String> = lacking.iter().map(Need::text).collect();
-        text.push_str(&format!(
-            "Still lacking, which the faucet did not send: {}.",
-            list.join("; ")
-        ));
+    match &lacking {
+        Ok(lacking) if lacking.is_empty() => {
+            text.push_str("Every settlement key is funded. Run `toon up`.");
+        }
+        Ok(lacking) => {
+            let list: Vec<String> = lacking.iter().map(Need::text).collect();
+            text.push_str(&format!(
+                "Still lacking, which the faucet did not send: {}.",
+                list.join("; ")
+            ));
+        }
+        Err(message) => {
+            text.push_str(&format!(
+                "The settlement keys' balances could not be read: {message}."
+            ));
+        }
     }
     Ok(Report {
         exit: Exit::Success,
         json: json!({
             "funded": funded,
-            "lacking": lacking.iter().map(Need::json).collect::<Vec<_>>(),
+            "lacking": lacking
+                .as_ref()
+                .map(|lacking| lacking.iter().map(Need::json).collect::<Vec<_>>())
+                .ok(),
         }),
         text,
     })

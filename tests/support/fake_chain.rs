@@ -33,9 +33,9 @@ pub const TOKEN_DECIMALS: u8 = 6;
 
 /// The token's `decimals()`.
 const DECIMALS: &str = "313ce567";
-/// The contract's `getChannelId(ChannelConfig)`.
 /// The token's `balanceOf(owner)`.
 const BALANCE_OF: &str = "70a08231";
+/// The contract's `getChannelId(ChannelConfig)`.
 const GET_CHANNEL_ID: &str = "5e5e0b87";
 /// The contract's `receivers(receiver, token)`: what a receiver has claimed and settled.
 const RECEIVERS: &str = "21ff6389";

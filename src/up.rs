@@ -74,7 +74,8 @@ pub fn start(home: &Path) -> Result<Supervisor, Error> {
     // later, and not say why.
     // A chain that cannot be asked is not a verdict: the connector binds to its chain
     // before it listens, and refuses with its own reason if the chain is not there.
-    if let Ok(lacking) = funding::shortfalls(home, app) {
+    // A settlement key that cannot be read is.
+    if let Ok(lacking) = funding::shortfalls(funding::needs(home, app)?) {
         if !lacking.is_empty() {
             return Err(funding::unfunded(state.network, &lacking));
         }
