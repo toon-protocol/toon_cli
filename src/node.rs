@@ -40,6 +40,9 @@ pub struct Options {
     pub evm: Option<Evm>,
     /// The Solana chain it settles on, if the operator opted in.
     pub solana: Option<Solana>,
+    /// Whether the connector may peer toward a plain `http://` address, which it refuses
+    /// by default: a trial on one machine, where nothing is encrypted.
+    pub plaintext_peers: bool,
     /// The faucet `toon wallet fund` asks, if the network has one.
     pub faucet_url: Option<String>,
 }
@@ -169,6 +172,8 @@ pub struct ToonApp {
     pub listen: String,
     pub evm: Option<Evm>,
     pub solana: Option<Solana>,
+    /// Whether the connector may peer toward a plain `http://` address.
+    pub plaintext_peers: bool,
     /// The apps behind the connector.
     pub apps: Vec<String>,
     /// How the relay behind it is set, if it has one.
@@ -308,6 +313,7 @@ impl State {
                 listen: options.listen.clone(),
                 evm: options.evm.clone(),
                 solana: options.solana.clone(),
+                plaintext_peers: options.plaintext_peers,
                 apps: vec![RELAY.into()],
                 relay: RelaySettings::default(),
             }],
@@ -325,6 +331,7 @@ impl State {
                     "listen": app.listen,
                     "evm": app.evm.as_ref().map(Evm::json),
                     "solana": app.solana.as_ref().map(Solana::json),
+                    "plaintext_peers": app.plaintext_peers,
                     "apps": app.apps,
                     "relay": app.relay.json(),
                 })
@@ -358,6 +365,8 @@ impl State {
                         Value::Null => None,
                         solana => Some(Solana::from_json(solana)?),
                     },
+                    // A state from before peerings has none.
+                    plaintext_peers: app["plaintext_peers"].as_bool().unwrap_or(false),
                     apps: app["apps"]
                         .as_array()?
                         .iter()
@@ -450,6 +459,22 @@ fn string(text: &str) -> String {
     Value::from(text).to_string()
 }
 
+/// `listen` with a port: a connector publishes where it can be paid, so it cannot be left
+/// to the system to pick one when it binds. Port 0 is replaced by a port that was free a
+/// moment ago.
+pub fn concrete(listen: &str) -> Result<String, Error> {
+    let Some((host, "0")) = listen.rsplit_once(':') else {
+        return Ok(listen.to_owned());
+    };
+    let free = std::net::TcpListener::bind(listen)
+        .and_then(|bound| bound.local_addr())
+        .map_err(|source| Error {
+            code: ErrorCode::Io,
+            message: format!("{listen}: no free port: {source}."),
+        })?;
+    Ok(format!("{host}:{}", free.port()))
+}
+
 /// Render the connector config of `app` into `home` and check it with the connector's
 /// own validation. `relay` is where the relay's write port is reached, if `app` fronts
 /// one. The config is written whether or not it validates, so that the error can be read
@@ -461,11 +486,23 @@ pub fn render(
 ) -> Result<ConnectorFiles, Error> {
     let files = ConnectorFiles::of(home, app.connector);
     let operator = write_operator_files(home, &files)?;
+    let listen = concrete(&app.listen)?;
+    // Every connector is peerable: another operator can peer toward it. A peer reads
+    // where to pay it from the connector's self-description, so the connector must be
+    // told its own address, and `peer_expose` is a root key, which TOML wants first.
     let mut config = format!(
         "# Rendered by `toon` from state.json. Edits here are overwritten.\n\
-         client_edge_addr = {}\nstate_dir = {}\n\n[signer]\nkey_file = {}\n",
-        string(&app.listen),
+         client_edge_addr = {}\nstate_dir = {}\npeer_expose = \"http\"\n{}\n\
+         [node]\naddresses = [{}]\nhttp_endpoint = {}\n\n[signer]\nkey_file = {}\n",
+        string(&listen),
         string(&files.state_dir.to_string_lossy()),
+        if app.plaintext_peers {
+            "peer_allow_plaintext_endpoints = true\n"
+        } else {
+            ""
+        },
+        string(&format!("g.toon.{}", app.name)),
+        string(&format!("http://{listen}/ilp")),
         string(&files.identity_key.to_string_lossy()),
     );
     if let Some(relay) = relay.filter(|_| app.apps.iter().any(|name| name == RELAY)) {

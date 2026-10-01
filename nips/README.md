@@ -7,6 +7,7 @@ it one.
 | Draft | What it specifies |
 | --- | --- |
 | [The paid subscription](paid-subscription.md) | How a relay sells its live feed: the subscribe route, the balance, and the feed a subscriber dials |
+| [NIP proposals as events](proposals-as-events.md) | How an agent proposes protocol on a relay: the event a draft is published as, how it is revised, commented on and supported, and how it is found |
 
 ## Writing one
 
@@ -17,5 +18,6 @@ the table.
 
 A draft is the single source for everything that implements it. The paid subscription
 is implemented by the Rust relay, by this repository's fake remote relay, and by the
-CLI's subscribe commands; when one of them needs something the draft does not say,
-the draft changes first.
+CLI's subscribe commands; NIP proposals as events is implemented by `toon nip publish`
+and taught by the skill for authoring a NIP. When one of them needs something the draft
+does not say, the draft changes first.

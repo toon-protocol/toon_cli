@@ -20,15 +20,19 @@ ed25519-dalek = "2"
 getrandom = "0.2"
 hex = "0.4"
 hmac = "0.12"
-k256 = "0.13"
+k256 = { version = "0.13", features = ["schnorr"] }
 scrypt = "0.11"
 sha2 = "0.10"
 sha3 = "0.10"
 zeroize = "1"
 connector-cli = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+connector-operator = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+# The version `connector-operator` signs with: its `sign_request` takes this one's keypair.
+ed25519-dalek-v1 = { package = "ed25519-dalek", version = "1" }
 axum = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tracing = "0.1"
+tungstenite = "0.20"
 reqwest = { version = "0.11", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
@@ -40,6 +44,10 @@ connector-signer = { git = "https://github.com/toon-protocol/connector", rev = "
 # The packet a client sends, to test that the connector delivers it to the relay.
 connector-domain = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
 chrono = "0.4"
+# The connector's fixtures for a real local chain: x402's contracts and a USDC on an
+# `anvil`, which tests that move money run on (the spike's finding, on #2).
+connector-settlement-evm = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705", features = ["test-util"] }
+ethers = { version = "2", default-features = false }
 
 # The relay image `toon` runs as a container (ADR 0001), pinned by digest. `build.rs`
 # hands it to `toon --version`.

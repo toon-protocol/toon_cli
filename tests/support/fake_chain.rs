@@ -13,8 +13,8 @@
 //! configured with `asset_transfer_method = "permit2"`.
 //!
 //! It holds no channels and accepts no transaction, so it carries a connector that
-//! nobody pays. A test that moves money needs more than this. Every address holds a
-//! vast balance of gas and of the token, unless the chain was started unfunded and
+//! nobody pays. A test that moves money needs more than this. Every address holds the
+//! same balance of gas and of the token, unless the chain was started unfunded and
 //! nobody has funded it yet.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,6 +30,11 @@ pub const CHAIN_ID: u64 = 31_337;
 /// The token the fake chain has, and how many decimals it reports.
 pub const TOKEN: &str = "0x00000000000000000000000000000000000000bb";
 pub const TOKEN_DECIMALS: u8 = 6;
+
+/// What the fake chain says a funded address holds, native and in the token. The chain
+/// accepts no transaction, so these change only when an unfunded chain is funded.
+pub const NATIVE_BALANCE: u64 = 3_000_000_000_000_000_000;
+pub const TOKEN_BALANCE: u64 = 2_500_000;
 
 /// The token's `decimals()`.
 const DECIMALS: &str = "313ce567";
@@ -100,9 +105,9 @@ fn answer(call: &RpcCall, funded: bool) -> RpcReply {
         // Any code at all: the connector asks only whether the contract is deployed.
         "eth_getCode" => RpcReply::Result(json!("0x60")),
         "eth_getBalance" => RpcReply::Result(json!(if funded {
-            "0xde0b6b3a7640000000"
+            format!("{NATIVE_BALANCE:#x}")
         } else {
-            "0x0"
+            "0x0".into()
         })),
         "eth_call" => eth_call(call, funded),
         other => not_served(other),
@@ -121,7 +126,7 @@ fn eth_call(call: &RpcCall, funded: bool) -> RpcReply {
         return RpcReply::Result(json!(format!("0x{:064x}", TOKEN_DECIMALS)));
     }
     if selector == BALANCE_OF {
-        let held: u128 = if funded { 1_000_000_000_000 } else { 0 };
+        let held = if funded { TOKEN_BALANCE } else { 0 };
         return RpcReply::Result(json!(format!("0x{held:064x}")));
     }
     if selector == RECEIVERS {

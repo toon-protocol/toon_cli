@@ -51,10 +51,25 @@ pub enum Command {
     },
     /// Send one packet to an address and say whether it was fulfilled or rejected
     Send(SendArgs),
-    /// Read the connector's routes
+    /// Manage peerings: the connectors this one forwards packets to
+    Peer {
+        #[command(subcommand)]
+        command: PeerCommand,
+    },
+    /// Manage the connector's forwarding routes
     Route {
         #[command(subcommand)]
         command: RouteCommand,
+    },
+    /// Publish and read Nostr events under the agent identity
+    Event {
+        #[command(subcommand)]
+        command: EventCommand,
+    },
+    /// Manage the channels the connector pays and is paid on
+    Channel {
+        #[command(subcommand)]
+        command: ChannelCommand,
     },
     /// Set the relay and what a write to it costs
     Relay {
@@ -102,6 +117,9 @@ pub struct InitArgs {
     /// The token the connector is paid in on that chain, instead of the profile's
     #[arg(long)]
     pub evm_token: Option<String>,
+    /// Let the connector peer toward a plain `http://` address, for a trial on one machine
+    #[arg(long)]
+    pub allow_plaintext_peers: bool,
     /// The token's decimals, at most 18
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..=18))]
     pub evm_decimals: Option<u8>,
@@ -142,6 +160,7 @@ impl InitArgs {
             network: self.network,
             evm: Some(evm),
             solana: self.solana.then(|| self.network.solana()),
+            plaintext_peers: self.allow_plaintext_peers,
             faucet_url: self
                 .faucet_url
                 .clone()
@@ -157,12 +176,90 @@ pub struct SendArgs {
     /// The amount, in the token's base units: a send always states it
     #[arg(long)]
     pub amount: u64,
+    /// The `/ilp` URL of the connector that terminates the packet, when it is not this
+    /// one: the payload is sealed to that connector's identity
+    #[arg(long)]
+    pub seal_to: Option<String>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PeerCommand {
+    /// Peer toward another connector: open and fund the channel it is paid on
+    Add(PeerAddArgs),
+    /// List the peerings
+    List,
+    /// Remove a peering
+    Remove {
+        /// The peering's label, as `peer list` shows it
+        id: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct PeerAddArgs {
+    /// The other connector's address: the URL of its `/ilp` endpoint
+    pub address: String,
+    /// What the channel is opened with, in the token's base units
+    #[arg(long)]
+    pub deposit: u128,
+    /// A label for the peering; the address, reduced to letters and digits, if omitted
+    #[arg(long)]
+    pub id: Option<String>,
+    /// What this connector keeps of each packet it forwards over the peering
+    #[arg(long, default_value_t = 0)]
+    pub fee: u64,
+    /// The most one forwarded packet may carry; the connector's default if omitted
+    #[arg(long, default_value_t = 0)]
+    pub max_packet_amount: u64,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EventCommand {
+    /// Sign an event with the agent identity and publish it to the agent node's own relay
+    Publish {
+        /// The event's kind
+        #[arg(long)]
+        kind: u64,
+        /// The event's content
+        #[arg(long, default_value = "")]
+        content: String,
+        /// The event's tags, as a JSON array of arrays of strings
+        #[arg(long, default_value = "[]")]
+        tags: String,
+        /// What the write is paid, in the token's base units
+        #[arg(long, default_value_t = 0)]
+        amount: u64,
+    },
+    /// Read the stored events of a relay that match a filter
+    Query {
+        /// The relay's websocket URL, `ws://host:port`
+        relay: String,
+        /// A NIP-01 filter, as one JSON object
+        #[arg(long)]
+        filter: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum RouteCommand {
-    /// List the connector's routing table
+    /// List the connector's routes: the ones it terminates and the ones it forwards
     List,
+    /// Forward packets for a prefix to a peering
+    Add {
+        /// The ILP address prefix to forward
+        prefix: String,
+        /// The peering's label, as `peer list` shows it
+        #[arg(long)]
+        peer: String,
+        /// What a client pays the connector for a packet on this route
+        #[arg(long, default_value_t = 0)]
+        price: u64,
+    },
+    /// Stop forwarding a prefix
+    Remove {
+        /// The ILP address prefix
+        prefix: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -224,6 +321,45 @@ pub enum WalletCommand {
     Show,
     /// Fund the wallet's addresses from the devnet faucet
     Fund,
+    /// Show the balance of every address by TOON app and chain
+    Balances,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ChannelCommand {
+    /// List the channels in both directions, with collateral and status
+    List,
+    /// Open an outbound channel toward a counterparty and deposit into it
+    Open {
+        /// A file holding the counterparty's `batchSettlements` entry for one chain, as its
+        /// self-description publishes it
+        #[arg(long)]
+        terms: PathBuf,
+        /// The opening deposit, in the token's base units
+        #[arg(long)]
+        deposit: u128,
+        /// The counterparty's URL, which a Solana sponsor endpoint published as a path resolves against
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Deposit more into an outbound channel
+    Fund {
+        /// The channel's id, as `channel list` shows it
+        id: String,
+        /// The amount to add, in the token's base units
+        #[arg(long)]
+        amount: u128,
+    },
+    /// Start or finish withdrawing an outbound channel's collateral; the chain decides which
+    Withdraw {
+        /// The channel's id, as `channel list` shows it
+        id: String,
+    },
+    /// Land the latest voucher held on an inbound channel now
+    Land {
+        /// The channel's id, as `channel list` shows it
+        id: String,
+    },
 }
 
 impl Cli {

@@ -64,6 +64,12 @@ pub enum ErrorCode {
     SendFailed,
     SystemdFailed,
     UnknownName,
+    PeerFailed,
+    PeerNotPeerable,
+    RouteFailed,
+    ChainFailed,
+    ChannelFailed,
+    QueryFailed,
     ConfirmationRequired,
 }
 
@@ -88,6 +94,12 @@ impl ErrorCode {
             ErrorCode::SendFailed => "send_failed",
             ErrorCode::SystemdFailed => "systemd_failed",
             ErrorCode::UnknownName => "unknown_name",
+            ErrorCode::PeerFailed => "peer_failed",
+            ErrorCode::PeerNotPeerable => "peer_not_peerable",
+            ErrorCode::RouteFailed => "route_failed",
+            ErrorCode::ChainFailed => "chain_failed",
+            ErrorCode::ChannelFailed => "channel_failed",
+            ErrorCode::QueryFailed => "query_failed",
             ErrorCode::ConfirmationRequired => "confirmation_required",
         }
     }
@@ -111,6 +123,12 @@ impl ErrorCode {
             | ErrorCode::SendFailed
             | ErrorCode::SystemdFailed
             | ErrorCode::UnknownName
+            | ErrorCode::PeerFailed
+            | ErrorCode::PeerNotPeerable
+            | ErrorCode::RouteFailed
+            | ErrorCode::ChainFailed
+            | ErrorCode::ChannelFailed
+            | ErrorCode::QueryFailed
             | ErrorCode::ConfirmationRequired => Exit::Failure,
         }
     }

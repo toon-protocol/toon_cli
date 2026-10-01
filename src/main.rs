@@ -9,6 +9,7 @@ mod cli;
 mod connector;
 mod control;
 mod derive;
+mod event;
 mod funding;
 mod home;
 mod keystore;
@@ -32,7 +33,10 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use serde_json::json;
 
-use cli::{Cli, Command, RelayCommand, RouteCommand, WalletCommand};
+use cli::{
+    ChannelCommand, Cli, Command, EventCommand, PeerCommand, RelayCommand, RouteCommand,
+    WalletCommand,
+};
 use outcome::{Error, ErrorCode, Exit, Report};
 use up::Stopped;
 
@@ -69,18 +73,82 @@ fn main() -> ExitCode {
         Command::Wallet {
             command: WalletCommand::Fund,
         } => render(home::resolve().and_then(|home| funding::fund(&home)), json).into(),
-        Command::Send(args) => render(
-            home::resolve().and_then(|home| operator::send(&home, &args.address, args.amount)),
-            json,
-        )
-        .into(),
-        Command::Route {
-            command: RouteCommand::List,
+        Command::Wallet {
+            command: WalletCommand::Balances,
         } => render(
-            home::resolve().and_then(|home| operator::route_list(&home)),
+            home::resolve().and_then(|home| wallet::balances(&home)),
             json,
         )
         .into(),
+        Command::Channel { command } => render(
+            home::resolve().and_then(|home| match command {
+                ChannelCommand::List => operator::channel_list(&home),
+                ChannelCommand::Open {
+                    terms,
+                    deposit,
+                    url,
+                } => operator::channel_open(&home, &terms, deposit, url.as_deref()),
+                ChannelCommand::Fund { id, amount } => operator::channel_fund(&home, &id, amount),
+                ChannelCommand::Withdraw { id } => operator::channel_withdraw(&home, &id),
+                ChannelCommand::Land { id } => operator::channel_land(&home, &id),
+            }),
+            json,
+        )
+        .into(),
+        Command::Send(args) => render(
+            home::resolve().and_then(|home| {
+                operator::send(&home, &args.address, args.amount, args.seal_to.as_deref())
+            }),
+            json,
+        )
+        .into(),
+        Command::Peer { command } => render(
+            home::resolve().and_then(|home| match &command {
+                PeerCommand::Add(args) => operator::peer_add(
+                    &home,
+                    &operator::PeerAdd {
+                        address: &args.address,
+                        deposit: args.deposit,
+                        id: args.id.as_deref(),
+                        fee: args.fee,
+                        max_packet_amount: args.max_packet_amount,
+                    },
+                ),
+                PeerCommand::List => operator::peer_list(&home),
+                PeerCommand::Remove { id } => operator::peer_remove(&home, id),
+            }),
+            json,
+        )
+        .into(),
+        Command::Route { command } => render(
+            home::resolve().and_then(|home| match &command {
+                RouteCommand::List => operator::route_list(&home),
+                RouteCommand::Add {
+                    prefix,
+                    peer,
+                    price,
+                } => operator::route_add(&home, prefix, peer, *price),
+                RouteCommand::Remove { prefix } => operator::route_remove(&home, prefix),
+            }),
+            json,
+        )
+        .into(),
+        Command::Event {
+            command:
+                EventCommand::Publish {
+                    kind,
+                    content,
+                    tags,
+                    amount,
+                },
+        } => render(
+            home::resolve().and_then(|home| event::publish(&home, kind, &content, &tags, amount)),
+            json,
+        )
+        .into(),
+        Command::Event {
+            command: EventCommand::Query { relay, filter },
+        } => render(event::query(&relay, &filter), json).into(),
         Command::Relay {
             command: RelayCommand::Config(args),
         } => render(
