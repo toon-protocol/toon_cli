@@ -48,8 +48,15 @@ pub struct Report {
 pub enum ErrorCode {
     Usage,
     HomeUnresolved,
+    NoWallet,
+    PassphraseMissing,
+    PassphraseUnreadable,
+    PassphraseWrong,
+    KeystoreCorrupt,
+    Io,
     NoAgentNode,
     ConnectorFailed,
+    AlreadyRunning,
 }
 
 impl ErrorCode {
@@ -57,17 +64,30 @@ impl ErrorCode {
         match self {
             ErrorCode::Usage => "usage",
             ErrorCode::HomeUnresolved => "home_unresolved",
+            ErrorCode::NoWallet => "no_wallet",
+            ErrorCode::PassphraseMissing => "passphrase_missing",
+            ErrorCode::PassphraseUnreadable => "passphrase_unreadable",
+            ErrorCode::PassphraseWrong => "passphrase_wrong",
+            ErrorCode::KeystoreCorrupt => "keystore_corrupt",
+            ErrorCode::Io => "io",
             ErrorCode::NoAgentNode => "no_agent_node",
             ErrorCode::ConnectorFailed => "connector_failed",
+            ErrorCode::AlreadyRunning => "already_running",
         }
     }
 
     pub fn exit(self) -> Exit {
         match self {
             ErrorCode::Usage => Exit::Usage,
-            ErrorCode::HomeUnresolved => Exit::Failure,
-            ErrorCode::NoAgentNode => Exit::NoAgentNode,
-            ErrorCode::ConnectorFailed => Exit::Failure,
+            ErrorCode::NoWallet | ErrorCode::NoAgentNode => Exit::NoAgentNode,
+            ErrorCode::HomeUnresolved
+            | ErrorCode::PassphraseMissing
+            | ErrorCode::PassphraseUnreadable
+            | ErrorCode::PassphraseWrong
+            | ErrorCode::KeystoreCorrupt
+            | ErrorCode::Io
+            | ErrorCode::ConnectorFailed
+            | ErrorCode::AlreadyRunning => Exit::Failure,
         }
     }
 }

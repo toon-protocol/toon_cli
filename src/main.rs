@@ -7,10 +7,15 @@
 
 mod cli;
 mod connector;
+mod control;
+mod derive;
 mod home;
+mod keystore;
+mod node;
 mod outcome;
 mod status;
 mod up;
+mod wallet;
 
 use std::env;
 use std::ffi::OsString;
@@ -20,8 +25,9 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use serde_json::json;
 
-use cli::{Cli, Command};
+use cli::{Cli, Command, WalletCommand};
 use outcome::{Error, ErrorCode, Exit, Report};
+use up::Stopped;
 
 fn main() -> ExitCode {
     let json = wants_json(env::args_os().skip(1));
@@ -41,7 +47,18 @@ fn main() -> ExitCode {
         }
     };
     match command {
-        Command::Status => render(home::resolve().map(|home| status::status(&home)), json).into(),
+        Command::Status => {
+            render(home::resolve().and_then(|home| status::status(&home)), json).into()
+        }
+        Command::Down => render(home::resolve().and_then(|home| status::down(&home)), json).into(),
+        Command::Init(args) => render(
+            home::resolve().and_then(|home| wallet::init(&home, &args.options())),
+            json,
+        )
+        .into(),
+        Command::Wallet {
+            command: WalletCommand::Show,
+        } => render(home::resolve().and_then(|home| wallet::show(&home)), json).into(),
         Command::Up => up(json).into(),
         // The connector this binary embeds, as the supervisor's child: it reports to
         // the supervisor and not to an operator.
@@ -60,12 +77,12 @@ fn up(json: bool) -> Exit {
         Exit::Success => {}
         unwritten => return unwritten,
     }
-    let stopped = supervisor.wait();
-    if json {
+    match supervisor.wait() {
+        Stopped::Down => Exit::Success,
         // The one JSON document has been printed; the exit code is all that is left.
-        return stopped.code.exit();
+        Stopped::Failed(error) if json => error.code.exit(),
+        Stopped::Failed(error) => render(Err(error), json),
     }
-    render(Err(stopped), json)
 }
 
 /// Whether the arguments ask for JSON. Asked of the raw arguments because a command

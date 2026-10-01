@@ -32,7 +32,8 @@ is missing here. Add a new code to the test and to this file together.
 | 3 | There is no agent node on this machine |
 
 `toon status` exits with the code that describes the agent node, and still prints its
-report: on a machine with no agent node it prints `{"home": "<path>", "agent_node": null}`
+report. It exits 1 when the supervisor or a connector is not running, and `toon down` exits 0
+whether or not anything was running. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
 and exits 3.
 
 ## Errors
@@ -49,5 +50,18 @@ A failed command with `--json` prints:
 | --- | --- | --- |
 | `usage` | 2 | The command line was not understood: an unknown command or flag, or a missing argument |
 | `home_unresolved` | 1 | `HOME` is not set or is empty, so there is nowhere to look for an agent node |
+| `no_wallet` | 3 | There is no wallet on this machine: run `toon init` |
+| `passphrase_missing` | 1 | Neither `TOON_PASSPHRASE_FILE` nor `TOON_PASSPHRASE` is set, or the passphrase is empty |
+| `passphrase_unreadable` | 1 | `TOON_PASSPHRASE_FILE` names a file that cannot be read, or the passphrase is not valid UTF-8 |
+| `passphrase_wrong` | 1 | The passphrase does not open the keystore |
+| `keystore_corrupt` | 1 | The keystore file is not one this version reads |
+| `io` | 1 | A file or the system's randomness could not be used |
 | `no_agent_node` | 3 | The command needs an agent node and this machine has none |
 | `connector_failed` | 1 | A connector did not start, or stopped; the message carries the connector's own reason |
+| `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
+
+## The wallet passphrase
+
+`toon init` and `toon wallet show` read the passphrase from the file named by
+`TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`. It is never a flag. One trailing
+newline in the file is not part of the passphrase.
