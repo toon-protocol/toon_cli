@@ -13,6 +13,18 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
+aes-gcm = "0.10"
+bip39 = "2"
+bs58 = "0.5"
+ed25519-dalek = "2"
+getrandom = "0.2"
+hex = "0.4"
+hmac = "0.12"
+k256 = "0.13"
+scrypt = "0.11"
+sha2 = "0.10"
+sha3 = "0.10"
+zeroize = "1"
 connector-cli = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
 axum = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread"] }
@@ -28,3 +40,17 @@ reqwest = { version = "0.11", default-features = false, features = ["blocking", 
 
 [lints.rust]
 unsafe_code = "forbid"
+
+# The keystore's scrypt is deliberately slow; unoptimised it makes every test that opens
+# a wallet take seconds. Only the crates that do that work are optimised: scrypt and what
+# it runs on, and the PBKDF2 that turns the mnemonic into a seed. The parameters are unchanged.
+[profile.dev.package.scrypt]
+opt-level = 3
+[profile.dev.package.salsa20]
+opt-level = 3
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.hmac]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3

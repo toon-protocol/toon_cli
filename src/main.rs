@@ -7,10 +7,13 @@
 
 mod cli;
 mod connector;
+mod derive;
 mod home;
+mod keystore;
 mod outcome;
 mod status;
 mod up;
+mod wallet;
 
 use std::env;
 use std::ffi::OsString;
@@ -20,7 +23,7 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use serde_json::json;
 
-use cli::{Cli, Command};
+use cli::{Cli, Command, WalletCommand};
 use outcome::{Error, ErrorCode, Exit, Report};
 
 fn main() -> ExitCode {
@@ -42,6 +45,10 @@ fn main() -> ExitCode {
     };
     match command {
         Command::Status => render(home::resolve().map(|home| status::status(&home)), json).into(),
+        Command::Init => render(home::resolve().and_then(|home| wallet::init(&home)), json).into(),
+        Command::Wallet {
+            command: WalletCommand::Show,
+        } => render(home::resolve().and_then(|home| wallet::show(&home)), json).into(),
         Command::Up => up(json).into(),
         // The connector this binary embeds, as the supervisor's child: it reports to
         // the supervisor and not to an operator.

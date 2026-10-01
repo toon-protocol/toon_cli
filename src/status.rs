@@ -8,8 +8,8 @@ use crate::outcome::{Exit, Report};
 
 /// The agent node at `home`.
 ///
-/// No command creates an agent node yet, so there is never one to find. `init` brings
-/// the state this will read.
+/// `toon init` creates the wallet, but status does not read it yet: an agent node is a
+/// wallet and its TOON apps, and no command creates a TOON app yet.
 pub fn status(home: &Path) -> Report {
     let home = home.to_string_lossy();
     Report {

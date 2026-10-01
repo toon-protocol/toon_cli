@@ -36,11 +36,24 @@ pub struct Cli {
 pub enum Command {
     /// Show the agent node on this machine
     Status,
+    /// Create the wallet: one mnemonic, shown once, and an encrypted keystore
+    Init,
+    /// Manage the wallet
+    Wallet {
+        #[command(subcommand)]
+        command: WalletCommand,
+    },
     /// Run the agent node in the foreground
     Up,
     /// Serve one connector from its config file: what `up` starts as a child process
     #[command(hide = true)]
     Connector { config: PathBuf },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum WalletCommand {
+    /// List the wallet's addresses by chain
+    Show,
 }
 
 impl Cli {
