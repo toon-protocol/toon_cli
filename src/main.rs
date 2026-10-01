@@ -25,6 +25,7 @@ mod profile;
 mod relay;
 mod runner;
 mod service;
+mod skill;
 mod spending;
 mod status;
 mod subscribe;
@@ -187,6 +188,7 @@ fn main() -> ExitCode {
         .into(),
         Command::Event { command } => render(event::run(command), json).into(),
         Command::Nip { command } => render(nip::run(command), json).into(),
+        Command::Skill { command } => render(skill::run(command), json).into(),
         Command::Relay { command } => render(
             home::resolve().and_then(|home| relay::run(&home, command)),
             json,
