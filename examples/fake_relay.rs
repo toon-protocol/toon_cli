@@ -99,12 +99,7 @@ fn serve(stream: TcpStream, data: &Path) {
                     .collect::<String>()
             );
             if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&body) {
-                let mut events = OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(data.join("events.log"))
-                    .expect("open the event log");
-                let _ = writeln!(events, "{event}");
+                store(data, event);
             }
             ("200 OK", "stored")
         }
@@ -117,14 +112,72 @@ fn serve(stream: TcpStream, data: &Path) {
     );
 }
 
+/// The value of the first `d` tag of `event`: what an addressable event is addressed by.
+fn identifier(event: &serde_json::Value) -> Option<&str> {
+    event["tags"]
+        .as_array()?
+        .iter()
+        .find(|tag| tag[0] == "d")
+        .and_then(|tag| tag[1].as_str())
+}
+
+/// Append `event` to the event log. As NIP-01 says of an addressable kind (30000 to
+/// 39999), only the newest event of an address is kept, and of two made in the same
+/// second the one with the lower id.
+fn store(data: &Path, event: serde_json::Value) {
+    let path = data.join("events.log");
+    let mut kept: Vec<serde_json::Value> = fs::read_to_string(&path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    if event["kind"]
+        .as_u64()
+        .is_some_and(|kind| (30000..40000).contains(&kind))
+    {
+        let same_address = |other: &serde_json::Value| {
+            other["kind"] == event["kind"]
+                && other["pubkey"] == event["pubkey"]
+                && identifier(other) == identifier(&event)
+        };
+        let newer = |a: &serde_json::Value, b: &serde_json::Value| {
+            (a["created_at"].as_u64(), b["id"].as_str())
+                > (b["created_at"].as_u64(), a["id"].as_str())
+        };
+        if kept
+            .iter()
+            .any(|other| same_address(other) && !newer(&event, other))
+        {
+            return;
+        }
+        kept.retain(|other| !same_address(other));
+    }
+    kept.push(event);
+    let lines: String = kept.iter().map(|event| format!("{event}\n")).collect();
+    fs::write(path, lines).expect("write the event log");
+}
+
 /// Whether `event` is among what `filter` asks for.
 fn matches(filter: &serde_json::Value, event: &serde_json::Value) -> bool {
-    [("ids", "id"), ("authors", "pubkey"), ("kinds", "kind")]
+    let fields = [("ids", "id"), ("authors", "pubkey"), ("kinds", "kind")]
         .iter()
         .all(|(wanted, field)| match filter[wanted].as_array() {
             Some(allowed) => allowed.contains(&event[field]),
             None => true,
+        });
+    // A `#x` entry asks for an event with a tag `x` that has one of the values.
+    let tags = filter.as_object().is_none_or(|filter| {
+        filter.iter().all(|(name, wanted)| {
+            let (Some(letter), Some(wanted)) = (name.strip_prefix('#'), wanted.as_array()) else {
+                return true;
+            };
+            event["tags"].as_array().is_some_and(|tags| {
+                tags.iter()
+                    .any(|tag| tag[0] == letter && wanted.contains(&tag[1]))
+            })
         })
+    });
+    fields && tags
 }
 
 fn websocket(stream: TcpStream, data: &Path) {

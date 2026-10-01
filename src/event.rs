@@ -39,7 +39,7 @@ fn event_id(pubkey: &str, created_at: u64, kind: u64, tags: &Value, content: &st
 }
 
 /// A signed event of `kind`, made `created_at`, by the key `secret`.
-fn sign(
+pub fn sign(
     secret: &[u8; 32],
     created_at: u64,
     kind: u64,
@@ -101,6 +101,20 @@ pub fn publish(
     if node::State::load(home)?.is_none() {
         return Err(node::no_agent_node(home));
     }
+    let secret = agent_secret(home)?;
+    let event = sign(&secret, now(), kind, tags, content)?;
+    write(home, event, amount)
+}
+
+/// The present time, in seconds since the epoch.
+pub fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// The agent identity's secret, opened with the passphrase (ADR 0004).
+pub fn agent_secret(home: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
     let passphrase = keystore::passphrase()?;
     let mnemonic: bip39::Mnemonic =
         keystore::open(home, &passphrase)?
@@ -109,16 +123,24 @@ pub fn publish(
                 code: ErrorCode::KeystoreCorrupt,
                 message: "The keystore does not hold a valid mnemonic.".into(),
             })?;
-    let secret =
-        derive::agent_identity_secret(&*derive::seed(&mnemonic)).map_err(|source| Error {
-            code: ErrorCode::KeystoreCorrupt,
-            message: source.0,
-        })?;
-    let created_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
-    let event = sign(&secret, created_at, kind, tags, content)?;
+    derive::agent_identity_secret(&*derive::seed(&mnemonic)).map_err(|source| Error {
+        code: ErrorCode::KeystoreCorrupt,
+        message: source.0,
+    })
+}
 
+/// The x-only public key, in hex, of the key `secret`.
+pub fn public_key(secret: &[u8; 32]) -> Result<String, Error> {
+    SigningKey::from_bytes(secret)
+        .map(|key| hex::encode(key.verifying_key().to_bytes()))
+        .map_err(|_| Error {
+            code: ErrorCode::KeystoreCorrupt,
+            message: "The agent identity is not a valid key.".into(),
+        })
+}
+
+/// Write a signed event to the agent node's own relay through the relay's write route.
+pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
     let body = home.join(format!(
         "event.{}.json",
         hex::encode(keystore::random::<8>()?)
@@ -170,6 +192,25 @@ pub fn query(relay: &str, filter: &str) -> Result<Report, Error> {
         .ok()
         .filter(Value::is_object)
         .ok_or_else(|| usage("--filter must be one JSON object, like {\"kinds\":[1]}."))?;
+    let events = fetch(relay, &filter)?;
+    let text = if events.is_empty() {
+        "No stored event matches.".to_owned()
+    } else {
+        events
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "relay": relay, "filter": filter, "events": events }),
+        text,
+    })
+}
+
+/// The stored events of `relay` that match `filter`, read with a NIP-01 `REQ`.
+pub fn fetch(relay: &str, filter: &Value) -> Result<Vec<Value>, Error> {
     let failed = |message: String| Error {
         code: ErrorCode::QueryFailed,
         message,
@@ -218,20 +259,7 @@ pub fn query(relay: &str, filter: &str) -> Result<Report, Error> {
     let _ = socket.send(Message::text(json!(["CLOSE", SUBSCRIPTION]).to_string()));
     let _ = socket.close(None);
 
-    let text = if events.is_empty() {
-        "No stored event matches.".to_owned()
-    } else {
-        events
-            .iter()
-            .map(Value::to_string)
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-    Ok(Report {
-        exit: Exit::Success,
-        json: json!({ "relay": relay, "filter": filter, "events": events }),
-        text,
-    })
+    Ok(events)
 }
 
 fn set_timeouts(stream: &TcpStream) -> std::io::Result<()> {

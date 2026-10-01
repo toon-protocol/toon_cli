@@ -65,6 +65,11 @@ pub enum Command {
         #[command(subcommand)]
         command: EventCommand,
     },
+    /// Scaffold a draft NIP and publish it as an event under the agent identity
+    Nip {
+        #[command(subcommand)]
+        command: NipCommand,
+    },
     /// Manage the channels the connector pays and is paid on
     Channel {
         #[command(subcommand)]
@@ -231,6 +236,32 @@ pub enum EventCommand {
         /// A NIP-01 filter, as one JSON object
         #[arg(long)]
         filter: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NipCommand {
+    /// Write a draft NIP from the template, named after its title, into the current directory
+    New {
+        /// The draft's title
+        title: String,
+    },
+    /// Publish a draft as a kind 30817 event, replacing the earlier revision of it
+    Publish {
+        /// The draft's file, named after its identifier: `<identifier>.md`
+        draft: PathBuf,
+        /// The agent node's relay, `ws://host:port`: asked for the draft's current revision
+        #[arg(long)]
+        relay: String,
+        /// A topic of the draft; may be repeated
+        #[arg(long = "topic")]
+        topics: Vec<String>,
+        /// Publish although the relay holds a draft of this identifier under another title
+        #[arg(long)]
+        title_changed: bool,
+        /// What the write is paid, in the token's base units
+        #[arg(long, default_value_t = 0)]
+        amount: u64,
     },
 }
 

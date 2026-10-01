@@ -82,7 +82,7 @@ A failed command with `--json` prints:
 
 ## The wallet passphrase
 
-`toon init`, `toon wallet show`, `toon wallet balances` and `toon event publish` read the passphrase from the file named by
+`toon init`, `toon wallet show`, `toon wallet balances`, `toon event publish` and `toon nip publish` read the passphrase from the file named by
 `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`. It is never a flag. One trailing
 newline in the file is not part of the passphrase.
 

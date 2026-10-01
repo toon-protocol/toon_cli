@@ -13,6 +13,7 @@ mod event;
 mod funding;
 mod home;
 mod keystore;
+mod nip;
 mod node;
 mod operator;
 mod outcome;
@@ -32,7 +33,10 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use serde_json::json;
 
-use cli::{ChannelCommand, Cli, Command, EventCommand, PeerCommand, RouteCommand, WalletCommand};
+use cli::{
+    ChannelCommand, Cli, Command, EventCommand, NipCommand, PeerCommand, RouteCommand,
+    WalletCommand,
+};
 use outcome::{Error, ErrorCode, Exit, Report};
 use up::Stopped;
 
@@ -145,6 +149,34 @@ fn main() -> ExitCode {
         Command::Event {
             command: EventCommand::Query { relay, filter },
         } => render(event::query(&relay, &filter), json).into(),
+        Command::Nip {
+            command: NipCommand::New { title },
+        } => render(
+            env::current_dir()
+                .map_err(|error| Error {
+                    code: ErrorCode::Io,
+                    message: format!("The current directory is unreadable: {error}."),
+                })
+                .and_then(|directory| nip::new(&directory, &title)),
+            json,
+        )
+        .into(),
+        Command::Nip {
+            command:
+                NipCommand::Publish {
+                    draft,
+                    relay,
+                    topics,
+                    title_changed,
+                    amount,
+                },
+        } => render(
+            home::resolve().and_then(|home| {
+                nip::publish(&home, &draft, &relay, &topics, title_changed, amount)
+            }),
+            json,
+        )
+        .into(),
         Command::Up { foreground: true } => up(json).into(),
         Command::Up { foreground: false } => {
             render(home::resolve().and_then(|home| install(&home)), json).into()
