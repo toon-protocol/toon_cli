@@ -85,13 +85,9 @@ pub fn init(home: &Path) -> Result<Report, Error> {
         return Ok(existing(home));
     }
     let passphrase = keystore::passphrase()?;
-    let mut entropy = [0u8; 16];
-    getrandom::getrandom(&mut entropy).map_err(|source| Error {
-        code: ErrorCode::Io,
-        message: format!("No source of randomness: {source}."),
-    })?;
+    let entropy = zeroize::Zeroizing::new(keystore::random::<16>()?);
     let mnemonic =
-        bip39::Mnemonic::from_entropy(&entropy).expect("16 bytes is a valid entropy length");
+        bip39::Mnemonic::from_entropy(&*entropy).expect("16 bytes is a valid entropy length");
     let phrase = zeroize::Zeroizing::new(mnemonic.to_string());
     let wallet = describe(&addresses(&phrase)?);
     if !keystore::create(home, &passphrase, &phrase)? {
@@ -125,10 +121,7 @@ fn existing(home: &Path) -> Report {
 /// List the wallet's addresses.
 pub fn show(home: &Path) -> Result<Report, Error> {
     if !keystore::exists(home) {
-        return Err(Error {
-            code: ErrorCode::NoWallet,
-            message: format!("There is no wallet at {}. Run `toon init`.", home.display()),
-        });
+        return Err(keystore::no_wallet(home));
     }
     let passphrase = keystore::passphrase()?;
     let mnemonic = keystore::open(home, &passphrase)?;

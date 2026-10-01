@@ -274,3 +274,66 @@ fn a_damaged_keystore_is_reported_not_guessed_at() {
     assert_eq!(run.exit_code, 1);
     assert_eq!(run.json()["error"]["code"], "keystore_corrupt");
 }
+
+/// Foundry's and Hardhat's default mnemonic, which `toon-client`'s tests use too.
+const ANVIL: &str = "test test test test test test test test test test test junk";
+
+/// Put a keystore holding `mnemonic` where `toon` looks for one, as `toon init` would
+/// write it but with a cheap scrypt, so a test can open a wallet of a known mnemonic.
+fn keystore_of(machine: &Machine, mnemonic: &str) {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Key, Nonce};
+
+    let (log_n, salt, nonce) = (1u8, [7u8; 16], [9u8; 12]);
+    let mut key = [0u8; 32];
+    let params = scrypt::Params::new(log_n, 8, 1, 32).unwrap();
+    scrypt::scrypt(PASSPHRASE.as_bytes(), &salt, &params, &mut key).unwrap();
+    let ciphertext = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key))
+        .encrypt(Nonce::from_slice(&nonce), mnemonic.as_bytes())
+        .unwrap();
+    let document = serde_json::json!({
+        "version": 1,
+        "kdf": { "name": "scrypt", "log_n": log_n, "r": 8, "p": 1, "salt": hex::encode(salt) },
+        "cipher": { "name": "aes-256-gcm", "nonce": hex::encode(nonce) },
+        "ciphertext": hex::encode(ciphertext),
+    });
+    fs::create_dir_all(machine.agent_node_home()).unwrap();
+    fs::write(
+        machine.agent_node_home().join("keystore.json"),
+        document.to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn wallet_show_gives_the_settlement_addresses_toon_client_gives() {
+    let machine = Machine::new();
+    keystore_of(&machine, ANVIL);
+
+    let run = with_passphrase(&machine, &["wallet", "show", "--json"]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let wallet = &run.json()["wallet"];
+    // `toon-client`'s own vectors (`KeyDerivation.test.ts`) for account index 0.
+    assert_eq!(
+        wallet["chains"]["evm"][0]["address"],
+        "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+    );
+    assert_eq!(
+        wallet["chains"]["solana"][0]["address"],
+        "oeYf6KAJkLYhBuR8CiGc6L4D4Xtfepr85fuDgA9kq96"
+    );
+    // The wallet's own keys, as pinned in `src/derive.rs`.
+    assert_eq!(
+        wallet["agent_identity"],
+        "ff535e30a4f7288a270c465f6d8c033b177342d5c5162bda8c4c3ed8e6b3267b"
+    );
+    assert_eq!(
+        wallet["operator_write_key"],
+        "4c262604bf69c4902a52add1a89044248af354ab63a8b5a084d701ad4ccf12fd"
+    );
+    assert_eq!(
+        wallet["connector_identities"][0]["public_key"],
+        "41c5dadd3b76286c4f4c4b0869b2d05e1c1a61bba8b75b7b884d2b1e1ee04079"
+    );
+}

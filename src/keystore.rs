@@ -79,23 +79,21 @@ pub fn passphrase() -> Result<Zeroizing<String>, Error> {
 }
 
 fn derive_key(passphrase: &str, salt: &[u8], log_n: u8) -> Result<Zeroizing<[u8; 32]>, Error> {
-    let params = scrypt::Params::new(log_n, R, P, 32).map_err(|_| {
+    let invalid = || {
         error(
             ErrorCode::KeystoreCorrupt,
             "The keystore's scrypt parameters are not valid.",
         )
-    })?;
+    };
+    let params = scrypt::Params::new(log_n, R, P, 32).map_err(|_| invalid())?;
     let mut key = Zeroizing::new([0u8; 32]);
-    scrypt::scrypt(passphrase.as_bytes(), salt, &params, key.as_mut_slice()).map_err(|_| {
-        error(
-            ErrorCode::KeystoreCorrupt,
-            "The keystore's scrypt parameters are not valid.",
-        )
-    })?;
+    scrypt::scrypt(passphrase.as_bytes(), salt, &params, key.as_mut_slice())
+        .map_err(|_| invalid())?;
     Ok(key)
 }
 
-fn random<const N: usize>() -> Result<[u8; N], Error> {
+/// `N` bytes from the system's randomness.
+pub fn random<const N: usize>() -> Result<[u8; N], Error> {
     let mut bytes = [0u8; N];
     getrandom::getrandom(&mut bytes)
         .map_err(|source| error(ErrorCode::Io, format!("No source of randomness: {source}.")))?;
@@ -130,23 +128,38 @@ pub fn create(home: &Path, passphrase: &str, mnemonic: &str) -> Result<bool, Err
         .create(home)
         .map_err(|source| io(home, source))?;
     let file = path(home);
-    let opened = OpenOptions::new()
+    // Written in full to a file of its own first, so a crash leaves no half-written
+    // keystore that reads as a wallet that cannot be opened.
+    let staged = home.join(format!("keystore.json.{}.tmp", hex::encode(random::<8>()?)));
+    let written = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(&file);
-    let mut opened = match opened {
-        Ok(opened) => opened,
-        Err(source) if source.kind() == ErrorKind::AlreadyExists => return Ok(false),
-        Err(source) => return Err(io(&file, source)),
-    };
-    let written = writeln!(opened, "{document:#}").and_then(|()| opened.sync_all());
+        .open(&staged)
+        .and_then(|mut opened| {
+            writeln!(opened, "{document:#}")?;
+            opened.sync_all()
+        });
     if let Err(source) = written {
-        // A half-written keystore would otherwise read as a wallet that cannot be opened.
-        let _ = fs::remove_file(&file);
-        return Err(io(&file, source));
+        let _ = fs::remove_file(&staged);
+        return Err(io(&staged, source));
     }
-    Ok(true)
+    // A link, unlike a rename, refuses to replace a keystore that is already there.
+    let linked = fs::hard_link(&staged, &file);
+    let _ = fs::remove_file(&staged);
+    match linked {
+        Ok(()) => Ok(true),
+        Err(source) if source.kind() == ErrorKind::AlreadyExists => Ok(false),
+        Err(source) => Err(io(&file, source)),
+    }
+}
+
+/// The error for a `home` with no keystore.
+pub fn no_wallet(home: &Path) -> Error {
+    error(
+        ErrorCode::NoWallet,
+        format!("There is no wallet at {}. Run `toon init`.", home.display()),
+    )
 }
 
 /// Whether `home` has a keystore.
@@ -158,10 +171,7 @@ pub fn exists(home: &Path) -> bool {
 pub fn open(home: &Path, passphrase: &str) -> Result<Zeroizing<String>, Error> {
     let file = path(home);
     let text = fs::read_to_string(&file).map_err(|source| match source.kind() {
-        ErrorKind::NotFound => error(
-            ErrorCode::NoWallet,
-            format!("There is no wallet at {}. Run `toon init`.", home.display()),
-        ),
+        ErrorKind::NotFound => no_wallet(home),
         _ => io(&file, source),
     })?;
     let corrupt = || {
