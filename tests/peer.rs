@@ -2,7 +2,6 @@ mod support;
 
 use support::anvil_chain::AnvilChain;
 use support::fake_chain::FakeChain;
-use support::stub_app::StubApp;
 use support::{Foreground, Machine, Run};
 
 /// What the peering's channel is opened with, in the token's base units: one USDC.
@@ -29,15 +28,16 @@ impl Node {
     }
 }
 
-/// An agent node whose relay is `relay_url` and whose wallet holds `DEPOSIT * 10`.
-fn node_on(chain: &AnvilChain, relay_url: &str) -> Node {
-    node_with(chain, relay_url, true)
+/// An agent node with the fake relay behind its connector, whose wallet holds
+/// `DEPOSIT * 10`.
+fn node_on(chain: &AnvilChain) -> Node {
+    node_with(chain, true)
 }
 
 /// Like `node_on`, saying whether its connector may peer toward a plain `http://` address.
-fn node_with(chain: &AnvilChain, relay_url: &str, plaintext_peers: bool) -> Node {
+fn node_with(chain: &AnvilChain, plaintext_peers: bool) -> Node {
     let machine = Machine::new();
-    let init = machine.init_on_anvil(chain, relay_url, plaintext_peers);
+    let init = machine.init_on_anvil(chain, plaintext_peers);
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
     let shown = machine.toon_with(&["wallet", "show", "--json"], |command| {
         command.env("TOON_PASSPHRASE", support::PASSPHRASE);
@@ -47,7 +47,7 @@ fn node_with(chain: &AnvilChain, relay_url: &str, plaintext_peers: bool) -> Node
         .expect("the wallet's EVM address")
         .to_owned();
     chain.fund(&evm, DEPOSIT * 10);
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     let address = up.report()["connector"]["address"]
         .as_str()
         .expect("the connector's address")
@@ -63,9 +63,8 @@ fn node_with(chain: &AnvilChain, relay_url: &str, plaintext_peers: bool) -> Node
 #[test]
 fn one_operator_peers_alone_and_a_packet_crosses_and_is_fulfilled() {
     let chain = AnvilChain::start();
-    let app = StubApp::start();
-    let near = node_on(&chain, StubApp::start().url());
-    let far = node_on(&chain, app.url());
+    let near = node_on(&chain);
+    let far = node_on(&chain);
 
     let peered = near.toon(&[
         "peer",
@@ -97,18 +96,19 @@ fn one_operator_peers_alone_and_a_packet_crosses_and_is_fulfilled() {
     ]);
     assert_eq!(routed.exit_code, 0, "{}", routed.stdout);
 
+    // The far connector charges the relay's write price, so the packet carries it.
     let sent = near.toon(&[
         "send",
         "g.toon.relay.far",
         "--amount",
-        "0",
+        "1",
         "--seal-to",
         &far.url(),
         "--json",
     ]);
     let report = sent.json();
     assert_eq!(report["outcome"], "fulfilled", "{report}");
-    assert_eq!(report["response"]["body"], "ok");
+    assert_eq!(report["response"]["body"], "stored");
     assert_eq!(sent.exit_code, 0);
 
     // The other operator did nothing, and has nothing to forward back over.
@@ -119,8 +119,8 @@ fn one_operator_peers_alone_and_a_packet_crosses_and_is_fulfilled() {
 #[test]
 fn peer_add_says_the_other_connector_forwards_back_only_if_its_operator_peers_in_return() {
     let chain = AnvilChain::start();
-    let near = node_on(&chain, StubApp::start().url());
-    let far = node_on(&chain, StubApp::start().url());
+    let near = node_on(&chain);
+    let far = node_on(&chain);
 
     let peered = near.toon(&["peer", "add", &far.url(), "--deposit", &DEPOSIT.to_string()]);
 
@@ -137,8 +137,8 @@ fn peer_add_says_the_other_connector_forwards_back_only_if_its_operator_peers_in
 #[test]
 fn peers_and_routes_are_listed_and_removed() {
     let chain = AnvilChain::start();
-    let near = node_on(&chain, StubApp::start().url());
-    let far = node_on(&chain, StubApp::start().url());
+    let near = node_on(&chain);
+    let far = node_on(&chain);
     let added = near.toon(&[
         "peer",
         "add",
@@ -203,7 +203,7 @@ fn every_connector_the_cli_renders_a_config_for_is_peerable() {
 #[test]
 fn a_peering_toward_a_connector_that_is_not_peerable_says_the_refusal_is_on_the_other_side() {
     let chain = AnvilChain::start();
-    let near = node_on(&chain, StubApp::start().url());
+    let near = node_on(&chain);
     // A connector somebody else configured, which exposes no peer carriage.
     let unpeerable = support::unpeerable::start(&chain);
 
@@ -267,8 +267,8 @@ fn peer_commands_need_the_agent_node_to_be_running() {
 #[test]
 fn a_connector_that_dials_no_plaintext_says_the_refusal_is_on_this_side() {
     let chain = AnvilChain::start();
-    let near = node_with(&chain, StubApp::start().url(), false);
-    let far = node_on(&chain, StubApp::start().url());
+    let near = node_with(&chain, false);
+    let far = node_on(&chain);
 
     let peered = near.toon(&[
         "peer",

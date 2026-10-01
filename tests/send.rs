@@ -3,30 +3,26 @@ mod support;
 use std::fs;
 
 use support::fake_chain::FakeChain;
-use support::stub_app::StubApp;
 use support::{Foreground, Machine};
 
-/// An agent node whose relay is the stub app, running.
+/// An agent node, running, with the fake relay behind its connector.
 struct Running {
     machine: Machine,
     _up: Foreground,
     _chain: FakeChain,
-    app: StubApp,
 }
 
 fn running() -> Running {
     let chain = FakeChain::start();
-    let app = StubApp::start();
     let machine = Machine::new();
-    let init = machine.init_on_serving(&chain, app.url());
+    let init = machine.init_on(&chain);
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
     Running {
         machine,
         _up: up,
         _chain: chain,
-        app,
     }
 }
 
@@ -41,7 +37,7 @@ fn a_packet_to_the_operators_own_route_is_fulfilled() {
     let report = run.json();
     assert_eq!(report["outcome"], "fulfilled", "{report}");
     assert_eq!(report["response"]["status"], 200);
-    assert_eq!(report["response"]["body"], "ok");
+    assert_eq!(report["response"]["body"], "stored");
     assert_eq!(run.exit_code, 0);
     assert_eq!(run.stderr, "");
 }
@@ -161,7 +157,7 @@ fn an_agent_node_from_before_the_operator_write_key_still_comes_up() {
     fs::remove_file(home.join("connectors/0/operator-write-keys")).expect("and its allowlist");
     fs::remove_file(home.join("connectors/0/operator-bearer-token")).expect("and the token");
 
-    let up = machine.start(&["up", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
 
     let report = up.report();
     assert!(report.get("error").is_none(), "{report}");
@@ -174,9 +170,19 @@ fn route_list_shows_the_routing_table() {
     let run = node.machine.toon(&["route", "list", "--json"]);
 
     let routes = run.json()["routes"].clone();
-    assert_eq!(routes.as_array().map(Vec::len), Some(1), "{routes}");
+    let status = node.machine.toon(&["status", "--json"]).json();
+    let relay = status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
+        .as_str()
+        .expect("the relay's address")
+        .to_owned();
+    assert_eq!(routes.as_array().map(Vec::len), Some(2), "{routes}");
     assert_eq!(routes[0]["prefix"], "g.toon.relay");
-    assert_eq!(routes[0]["handler_url"], node.app.url());
+    assert_eq!(routes[0]["handler_url"], format!("http://{relay}/write"));
+    assert_eq!(routes[1]["prefix"], "g.toon.relay.ephemeral");
+    assert_eq!(
+        routes[1]["handler_url"],
+        format!("http://{relay}/write-ephemeral")
+    );
     assert_eq!(run.exit_code, 0);
     assert_eq!(run.stderr, "");
 }
