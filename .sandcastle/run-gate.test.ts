@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { gateFromCi } from './run-gate.ts';
+import { spawnSync } from 'node:child_process';
+import { gateFromCi, stepScript } from './run-gate.ts';
 
 const CI = `
 name: CI
@@ -99,4 +100,24 @@ test('a GitHub expression in env or working-directory skips the step too', () =>
 test('the expression note names the expression syntax literally', () => {
   const { notes } = gateFromCi('jobs:\n  gate:\n    steps:\n      - run: echo ${{ x }}\n');
   assert.match(notes.join('\n'), /a \$\{\{ \}\} expression/);
+});
+
+// The sandbox runs a step with `sh`, which in the image is dash.
+const asTheSandboxRuns = (command: string) =>
+  spawnSync('sh', ['-c', stepScript(command)], { encoding: 'utf8' });
+
+test('a step runs under sh, which has no pipefail of its own', () => {
+  const run = asTheSandboxRuns(`echo "it's" 'a "step"'`);
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout, `it's a "step"\n`);
+});
+
+test('a step fails when a command inside a pipeline fails', () => {
+  assert.notEqual(asTheSandboxRuns('false | cat').status, 0);
+});
+
+test('a step stops at its first failing line', () => {
+  const run = asTheSandboxRuns('false\necho reached');
+  assert.notEqual(run.status, 0);
+  assert.equal(run.stdout, '');
 });
