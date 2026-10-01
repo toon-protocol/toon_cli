@@ -24,6 +24,8 @@ pub const RELAY: &str = "relay";
 /// The connector's route to the relay's paid write endpoint, and its price per write.
 pub const RELAY_WRITE_PREFIX: &str = "g.toon.relay";
 pub const RELAY_WRITE_PRICE: u64 = 1;
+/// The price of the relay's free ephemeral write.
+pub const RELAY_EPHEMERAL_PRICE: u64 = 0;
 /// The route to the relay's free ephemeral write endpoint.
 pub const RELAY_EPHEMERAL_PREFIX: &str = "g.toon.relay.ephemeral";
 
@@ -52,6 +54,9 @@ pub struct Options {
     pub evm: Option<Evm>,
     /// The Solana chain it settles on, if the operator opted in.
     pub solana: Option<Solana>,
+    /// Whether the connector may peer toward a plain `http://` address, which it refuses
+    /// by default: a trial on one machine, where nothing is encrypted.
+    pub plaintext_peers: bool,
     /// The faucet `toon wallet fund` asks, if the network has one.
     pub faucet_url: Option<String>,
 }
@@ -73,6 +78,105 @@ pub struct Solana {
     pub decimals: u8,
 }
 
+/// What the relay does with an event that carries an expiration (NIP-40).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Expiry {
+    /// Drop it once it has expired.
+    #[default]
+    Honour,
+    /// Keep it for ever.
+    Ignore,
+}
+
+impl Expiry {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Expiry::Honour => "honour",
+            Expiry::Ignore => "ignore",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "honour" => Some(Expiry::Honour),
+            "ignore" => Some(Expiry::Ignore),
+            _ => None,
+        }
+    }
+}
+
+/// What the operator set for the relay. The relay reads the first four when it starts;
+/// the price is the connector's, on the relay's write route.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelaySettings {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub expiry: Expiry,
+    /// Nostr public keys, in hex, whose events the relay refuses.
+    pub blocklist: Vec<String>,
+    /// The price of a write, on the connector's route.
+    pub price: u64,
+}
+
+impl Default for RelaySettings {
+    fn default() -> Self {
+        Self {
+            name: None,
+            description: None,
+            expiry: Expiry::default(),
+            blocklist: Vec::new(),
+            price: RELAY_WRITE_PRICE,
+        }
+    }
+}
+
+impl RelaySettings {
+    /// The environment the relay is started with, besides its identity key. A setting
+    /// the operator never made is not passed, so the relay keeps its own default.
+    pub fn env(&self) -> Vec<(String, String)> {
+        let mut env = Vec::new();
+        if let Some(name) = &self.name {
+            env.push(("TOON_RELAY_NAME".into(), name.clone()));
+        }
+        if let Some(description) = &self.description {
+            env.push(("TOON_RELAY_DESCRIPTION".into(), description.clone()));
+        }
+        env.push(("TOON_RELAY_EXPIRY".into(), self.expiry.as_str().into()));
+        if !self.blocklist.is_empty() {
+            env.push(("TOON_RELAY_BLOCKLIST".into(), self.blocklist.join(",")));
+        }
+        env
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "name": self.name,
+            "description": self.description,
+            "expiry": self.expiry.as_str(),
+            "blocklist": self.blocklist,
+            "price": self.price,
+        })
+    }
+
+    fn from_json(value: &Value) -> Option<Self> {
+        let optional = |key: &str| match &value[key] {
+            Value::Null => Some(None),
+            text => text.as_str().map(|text| Some(text.to_owned())),
+        };
+        Some(Self {
+            name: optional("name")?,
+            description: optional("description")?,
+            expiry: Expiry::from_name(value["expiry"].as_str()?)?,
+            blocklist: value["blocklist"]
+                .as_array()?
+                .iter()
+                .map(|key| key.as_str().map(str::to_owned))
+                .collect::<Option<_>>()?,
+            price: value["price"].as_u64()?,
+        })
+    }
+}
+
 /// One TOON app as the operator asked for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToonApp {
@@ -83,8 +187,12 @@ pub struct ToonApp {
     pub listen: String,
     pub evm: Option<Evm>,
     pub solana: Option<Solana>,
+    /// Whether the connector may peer toward a plain `http://` address.
+    pub plaintext_peers: bool,
     /// The apps behind the connector.
     pub apps: Vec<String>,
+    /// How the relay behind it is set, if it has one.
+    pub relay: RelaySettings,
 }
 
 /// The agent node's state: every TOON app.
@@ -243,7 +351,9 @@ impl State {
                 listen: options.listen.clone(),
                 evm: options.evm.clone(),
                 solana: options.solana.clone(),
+                plaintext_peers: options.plaintext_peers,
                 apps: vec![RELAY.into()],
+                relay: RelaySettings::default(),
             }],
         }
     }
@@ -260,7 +370,9 @@ impl State {
                     "listen": app.listen,
                     "evm": app.evm.as_ref().map(Evm::json),
                     "solana": app.solana.as_ref().map(Solana::json),
+                    "plaintext_peers": app.plaintext_peers,
                     "apps": app.apps,
+                    "relay": app.relay.json(),
                 })
             })
             .collect();
@@ -293,11 +405,18 @@ impl State {
                         Value::Null => None,
                         solana => Some(Solana::from_json(solana)?),
                     },
+                    // A state from before peerings has none.
+                    plaintext_peers: app["plaintext_peers"].as_bool().unwrap_or(false),
                     apps: app["apps"]
                         .as_array()?
                         .iter()
                         .map(|name| name.as_str().map(str::to_owned))
                         .collect::<Option<_>>()?,
+                    // A state written before the relay had settings has none.
+                    relay: match &app["relay"] {
+                        Value::Null => RelaySettings::default(),
+                        relay => RelaySettings::from_json(relay)?,
+                    },
                 })
             })
             .collect::<Option<Vec<_>>>()?;
@@ -417,6 +536,22 @@ pub struct Overlay {
     pub endpoint: String,
 }
 
+/// `listen` with a port: a connector publishes where it can be paid, so it cannot be left
+/// to the system to pick one when it binds. Port 0 is replaced by a port that was free a
+/// moment ago.
+pub fn concrete(listen: &str) -> Result<String, Error> {
+    let Some((host, "0")) = listen.rsplit_once(':') else {
+        return Ok(listen.to_owned());
+    };
+    let free = std::net::TcpListener::bind(listen)
+        .and_then(|bound| bound.local_addr())
+        .map_err(|source| Error {
+            code: ErrorCode::Io,
+            message: format!("{listen}: no free port: {source}."),
+        })?;
+    Ok(format!("{host}:{}", free.port()))
+}
+
 /// Render the connector config of `app` into `home` and check it with the connector's
 /// own validation. `relay` is where the relay's write port is reached, if `app` fronts
 /// one. `overlay` is what a hidden service is rendered with: an app that is one has no
@@ -443,6 +578,7 @@ pub fn render(
     };
     let files = ConnectorFiles::of(home, app.connector);
     let operator = write_operator_files(home, &files)?;
+    let listen = concrete(&app.listen)?;
     // `socks_proxy` is one top-level key, so it goes before the first table: all the
     // connector dials out goes through it, and `socks5h` because no local resolver
     // resolves an onion name.
@@ -454,28 +590,45 @@ pub fn render(
             )
         })
         .unwrap_or_default();
+    // A hidden service is paid at its onion endpoint, over HTTP and BTP; any other
+    // connector at the address it listens on.
+    let (http_endpoint, btp_endpoint) = match overlay {
+        Some(overlay) => (
+            format!("http://{}/ilp", overlay.endpoint),
+            format!(
+                "btp_endpoint = {}\n",
+                string(&format!("ws://{}/ilp/btp", overlay.endpoint))
+            ),
+        ),
+        None => (format!("http://{listen}/ilp"), String::new()),
+    };
+    // Every connector is peerable: another operator can peer toward it. A peer reads
+    // where to pay it from the connector's self-description, so the connector must be
+    // told its own address, and `peer_expose` is a root key, which TOML wants first.
     let mut config = format!(
         "# Rendered by `toon` from state.json. Edits here are overwritten.\n\
-         client_edge_addr = {}\nstate_dir = {}\n{socks}\n[signer]\nkey_file = {}\n",
-        string(&app.listen),
+         client_edge_addr = {}\nstate_dir = {}\npeer_expose = \"http\"\n{}{socks}\n\
+         [node]\naddresses = [{}]\nhttp_endpoint = {}\n{btp_endpoint}\n\
+         [signer]\nkey_file = {}\n",
+        string(&listen),
         string(&files.state_dir.to_string_lossy()),
+        if app.plaintext_peers {
+            "peer_allow_plaintext_endpoints = true\n"
+        } else {
+            ""
+        },
+        string(&format!("g.toon.{}", app.name)),
+        string(&http_endpoint),
         string(&files.identity_key.to_string_lossy()),
     );
-    if let Some(overlay) = overlay {
-        config.push_str(&format!(
-            "\n[node]\naddresses = [{}]\nhttp_endpoint = {}\nbtp_endpoint = {}\n",
-            string(&format!("g.toon.{}", app.name)),
-            string(&format!("http://{}/ilp", overlay.endpoint)),
-            string(&format!("ws://{}/ilp/btp", overlay.endpoint)),
-        ));
-    }
     if let Some(relay) = relay.filter(|_| app.apps.iter().any(|name| name == RELAY)) {
         // The relay is paid to write to, and takes a free ephemeral write beside it.
         config.push_str(&format!(
-            "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = {RELAY_WRITE_PRICE}\n\n\
-             [[routes]]\nprefix = {}\nhandler_url = {}\nprice = 0\n",
+            "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = {}\n\n\
+             [[routes]]\nprefix = {}\nhandler_url = {}\nprice = {RELAY_EPHEMERAL_PRICE}\n",
             string(RELAY_WRITE_PREFIX),
             string(&format!("http://{relay}/write")),
+            app.relay.price,
             string(RELAY_EPHEMERAL_PREFIX),
             string(&format!("http://{relay}/write-ephemeral")),
         ));
