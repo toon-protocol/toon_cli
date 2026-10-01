@@ -72,10 +72,12 @@ A failed command with `--json` prints:
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
 | `send_failed` | 1 | The packet could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
-| `unknown_name` | 1 | `toon logs` was given a name that is neither a TOON app nor an app of this agent node |
+| `unknown_name` | 1 | `toon logs`, `toon add` or `toon remove` was given a name that is not a TOON app or an app of this agent node, as that command needs |
 | `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
 | `peer_not_peerable` | 1 | `peer add` named a connector that is not peerable: the refusal is on the other side, and only its operator can lift it |
 | `route_failed` | 1 | The connector's operator surface refused a route write or could not be reached; the message carries the reason |
+| `name_taken` | 1 | `toon add` was given a name that is not usable, or that a TOON app or an app of this agent node already has |
+| `confirmation_required` | 1 | `toon add`, `toon remove` or `toon route price` restarts the connector, which drops the packets it holds in flight, and was not given `--yes` |
 
 ## The wallet passphrase
 

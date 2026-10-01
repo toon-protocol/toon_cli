@@ -74,7 +74,87 @@ pub struct ToonApp {
     /// Whether the connector may peer toward a plain `http://` address.
     pub plaintext_peers: bool,
     /// The apps behind the connector.
-    pub apps: Vec<String>,
+    pub apps: Vec<App>,
+}
+
+/// Where an app comes from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// The relay, run from the relay image the CLI ships with.
+    Relay,
+    /// A container image the supervisor runs.
+    Image(String),
+    /// A URL the operator already serves: the supervisor runs nothing.
+    Url(String),
+}
+
+/// One app behind a connector, and the route that delivers to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct App {
+    pub name: String,
+    pub source: Source,
+    /// The ILP address prefix the connector terminates at this app.
+    pub prefix: String,
+    /// What a client pays the connector for a packet on that route.
+    pub price: u64,
+}
+
+impl App {
+    /// The relay, with the price and the address it has when nothing is changed.
+    pub fn relay() -> Self {
+        Self {
+            name: RELAY.into(),
+            source: Source::Relay,
+            prefix: RELAY_WRITE_PREFIX.into(),
+            price: RELAY_WRITE_PRICE,
+        }
+    }
+
+    fn json(&self) -> Value {
+        match &self.source {
+            Source::Relay if self.price == RELAY_WRITE_PRICE => json!(self.name),
+            Source::Relay => json!({ "name": self.name, "price": self.price }),
+            Source::Image(image) => json!({
+                "name": self.name, "image": image, "prefix": self.prefix, "price": self.price,
+            }),
+            Source::Url(url) => json!({
+                "name": self.name, "url": url, "prefix": self.prefix, "price": self.price,
+            }),
+        }
+    }
+
+    fn from_json(value: &Value) -> Option<Self> {
+        // A state from before apps could be added holds each app as its name: the relay.
+        if let Some(name) = value.as_str() {
+            return Some(Self {
+                name: name.to_owned(),
+                ..Self::relay()
+            });
+        }
+        let name = value["name"].as_str()?.to_owned();
+        let price = value["price"].as_u64()?;
+        if let Some(image) = value["image"].as_str() {
+            return Some(Self {
+                name,
+                source: Source::Image(image.to_owned()),
+                prefix: value["prefix"].as_str()?.to_owned(),
+                price,
+            });
+        }
+        if let Some(url) = value["url"].as_str() {
+            return Some(Self {
+                name,
+                source: Source::Url(url.to_owned()),
+                prefix: value["prefix"].as_str()?.to_owned(),
+                price,
+            });
+        }
+        Some(Self {
+            name,
+            price,
+            ..Self::relay()
+        })
+    }
 }
 
 /// The agent node's state: every TOON app.
@@ -211,7 +291,7 @@ impl State {
                 evm: options.evm.clone(),
                 solana: options.solana.clone(),
                 plaintext_peers: options.plaintext_peers,
-                apps: vec![RELAY.into()],
+                apps: vec![App::relay()],
             }],
         }
     }
@@ -228,7 +308,7 @@ impl State {
                     "evm": app.evm.as_ref().map(Evm::json),
                     "solana": app.solana.as_ref().map(Solana::json),
                     "plaintext_peers": app.plaintext_peers,
-                    "apps": app.apps,
+                    "apps": app.apps.iter().map(App::json).collect::<Vec<_>>(),
                 })
             })
             .collect();
@@ -265,7 +345,7 @@ impl State {
                     apps: app["apps"]
                         .as_array()?
                         .iter()
-                        .map(|name| name.as_str().map(str::to_owned))
+                        .map(App::from_json)
                         .collect::<Option<_>>()?,
                 })
             })
@@ -365,15 +445,14 @@ pub fn concrete(listen: &str) -> Result<String, Error> {
     Ok(format!("{host}:{}", free.port()))
 }
 
+/// Where an app's write port is reached, by the app's name.
+pub type Addresses = [(String, SocketAddr)];
+
 /// Render the connector config of `app` into `home` and check it with the connector's
-/// own validation. `relay` is where the relay's write port is reached, if `app` fronts
-/// one. The config is written whether or not it validates, so that the error can be read
+/// own validation. `addresses` is where each app that runs is reached; a route is
+/// rendered for an app that has no address yet only if the operator serves it. The config is written whether or not it validates, so that the error can be read
 /// against it; a caller that gets `Err` starts nothing.
-pub fn render(
-    home: &Path,
-    app: &ToonApp,
-    relay: Option<SocketAddr>,
-) -> Result<ConnectorFiles, Error> {
+pub fn render(home: &Path, app: &ToonApp, addresses: &Addresses) -> Result<ConnectorFiles, Error> {
     let files = ConnectorFiles::of(home, app.connector);
     let operator = write_operator_files(home, &files)?;
     let listen = concrete(&app.listen)?;
@@ -395,16 +474,34 @@ pub fn render(
         string(&format!("http://{listen}/ilp")),
         string(&files.identity_key.to_string_lossy()),
     );
-    if let Some(relay) = relay.filter(|_| app.apps.iter().any(|name| name == RELAY)) {
-        // The relay is paid to write to, and takes a free ephemeral write beside it.
+    for behind in &app.apps {
+        let reached = addresses
+            .iter()
+            .find(|(name, _)| *name == behind.name)
+            .map(|(_, address)| address);
+        let (handler, ephemeral) = match (&behind.source, reached) {
+            (Source::Url(url), _) => (url.clone(), None),
+            // The relay is paid to write to, and takes a free ephemeral write beside it.
+            (Source::Relay, Some(relay)) => (
+                format!("http://{relay}/write"),
+                Some(format!("http://{relay}/write-ephemeral")),
+            ),
+            (Source::Image(_), Some(address)) => (format!("http://{address}/"), None),
+            (_, None) => continue,
+        };
         config.push_str(&format!(
-            "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = {RELAY_WRITE_PRICE}\n\n\
-             [[routes]]\nprefix = {}\nhandler_url = {}\nprice = 0\n",
-            string(RELAY_WRITE_PREFIX),
-            string(&format!("http://{relay}/write")),
-            string(RELAY_EPHEMERAL_PREFIX),
-            string(&format!("http://{relay}/write-ephemeral")),
+            "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = {}\n",
+            string(&behind.prefix),
+            string(&handler),
+            behind.price,
         ));
+        if let Some(ephemeral) = ephemeral {
+            config.push_str(&format!(
+                "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = 0\n",
+                string(RELAY_EPHEMERAL_PREFIX),
+                string(&ephemeral),
+            ));
+        }
     }
     if operator {
         config.push_str(&format!(

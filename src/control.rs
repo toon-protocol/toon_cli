@@ -21,8 +21,13 @@ pub fn path(home: &Path) -> PathBuf {
 /// Ask the supervisor of the agent node at `home` a question. `None` if no supervisor
 /// answers: there is none, or the socket is a dead one's.
 pub fn ask(home: &Path, request: &str) -> Option<Value> {
+    ask_within(home, request, PATIENCE)
+}
+
+/// `ask`, for a request that takes longer than `PATIENCE` to answer.
+pub fn ask_within(home: &Path, request: &str, patience: Duration) -> Option<Value> {
     let mut stream = UnixStream::connect(path(home)).ok()?;
-    stream.set_read_timeout(Some(PATIENCE)).ok()?;
+    stream.set_read_timeout(Some(patience)).ok()?;
     stream.set_write_timeout(Some(PATIENCE)).ok()?;
     writeln!(stream, "{}", json!({ "request": request })).ok()?;
     let mut line = String::new();

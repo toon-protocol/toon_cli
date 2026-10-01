@@ -5,6 +5,7 @@
 //! readable text, and errors go to standard error. The exit codes are in `outcome` and
 //! in `docs/exit-codes.md`.
 
+mod apps;
 mod cli;
 mod connector;
 mod control;
@@ -75,6 +76,32 @@ fn main() -> ExitCode {
             json,
         )
         .into(),
+        Command::Add(args) => render(
+            home::resolve().and_then(|home| {
+                apps::add(
+                    &home,
+                    &apps::Add {
+                        name: &args.app,
+                        to: &args.to,
+                        origin: match (&args.image, &args.url) {
+                            (_, Some(url)) => apps::Origin::Url(url),
+                            (Some(image), None) => apps::Origin::Image(image),
+                            (None, None) => unreachable!("clap requires one of them"),
+                        },
+                        address: args.address.as_deref(),
+                        price: args.price,
+                        yes: args.yes,
+                    },
+                )
+            }),
+            json,
+        )
+        .into(),
+        Command::Remove { app, yes } => render(
+            home::resolve().and_then(|home| apps::remove(&home, &app, yes)),
+            json,
+        )
+        .into(),
         Command::Peer { command } => render(
             home::resolve().and_then(|home| match &command {
                 PeerCommand::Add(args) => operator::peer_add(
@@ -101,6 +128,9 @@ fn main() -> ExitCode {
                     peer,
                     price,
                 } => operator::route_add(&home, prefix, peer, *price),
+                RouteCommand::Price { prefix, price, yes } => {
+                    apps::route_price(&home, prefix, *price, *yes)
+                }
                 RouteCommand::Remove { prefix } => operator::route_remove(&home, prefix),
             }),
             json,

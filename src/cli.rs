@@ -60,6 +60,16 @@ pub enum Command {
         #[command(subcommand)]
         command: RouteCommand,
     },
+    /// Put an app behind the connector of a TOON app: this restarts that connector
+    Add(AddArgs),
+    /// Take an app, and its route, away from its connector: this restarts that connector
+    Remove {
+        /// The app's name
+        app: String,
+        /// Go ahead although the connector restarts and drops packets in flight
+        #[arg(long)]
+        yes: bool,
+    },
     /// Start the agent node as a `systemd --user` unit that outlives this session
     Up {
         /// Run the supervisor in this process instead of installing the unit
@@ -79,6 +89,30 @@ pub enum Command {
     /// Serve one connector from its config file: what `up` starts as a child process
     #[command(hide = true)]
     Connector { config: PathBuf },
+}
+
+#[derive(Debug, Args)]
+pub struct AddArgs {
+    /// A name for the app, unique in this agent node
+    pub app: String,
+    /// The TOON app whose connector the app goes behind
+    #[arg(long)]
+    pub to: String,
+    /// A container image to run as the app
+    #[arg(long, conflicts_with = "url", required_unless_present = "url")]
+    pub image: Option<String>,
+    /// The URL of an app you already serve: nothing is run
+    #[arg(long)]
+    pub url: Option<String>,
+    /// The ILP address prefix the connector delivers to the app; `g.toon.<app>` if omitted
+    #[arg(long)]
+    pub address: Option<String>,
+    /// What a client pays the connector for a packet to the app
+    #[arg(long, default_value_t = 0)]
+    pub price: u64,
+    /// Go ahead although the connector restarts and drops packets in flight
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -211,6 +245,16 @@ pub enum RouteCommand {
         /// What a client pays the connector for a packet on this route
         #[arg(long, default_value_t = 0)]
         price: u64,
+    },
+    /// Set what a client pays for a packet on the route to an app: this restarts the connector
+    Price {
+        /// The ILP address prefix the route terminates at
+        prefix: String,
+        /// The price, in the token's base units
+        price: u64,
+        /// Go ahead although the connector restarts and drops packets in flight
+        #[arg(long)]
+        yes: bool,
     },
     /// Stop forwarding a prefix
     Remove {

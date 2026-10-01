@@ -1,7 +1,7 @@
 //! A stand-in for the relay, for the tests of the app runners and of `toon up`.
 //!
 //! It takes what the relay's image takes (`TOON_BLS_PORT`, `TOON_DATA_DIR`,
-//! `NOSTR_SECRET_KEY`), answers `GET /health`, and answers a `POST` to `/write` or
+//! `NOSTR_SECRET_KEY`), answers `GET /health`, and answers a `POST` to `/`, `/write` or
 //! `/write-ephemeral` with 200 after appending `<path> <body in hex>` to `writes.log` in its
 //! data directory. It writes the secret key it was handed to `environment` there, and it
 //! exits when its standard input closes, as a supervisor's apps do.
@@ -73,7 +73,7 @@ fn serve(stream: TcpStream, data: &Path) {
 
     let (status, answer) = match (method.as_str(), path.as_str()) {
         ("GET", "/health") => ("200 OK", "ok"),
-        ("POST", "/write" | "/write-ephemeral") => {
+        ("POST", "/" | "/write" | "/write-ephemeral") => {
             let mut log = OpenOptions::new()
                 .create(true)
                 .append(true)

@@ -67,6 +67,8 @@ pub enum ErrorCode {
     PeerFailed,
     PeerNotPeerable,
     RouteFailed,
+    NameTaken,
+    ConfirmationRequired,
 }
 
 impl ErrorCode {
@@ -93,6 +95,8 @@ impl ErrorCode {
             ErrorCode::PeerFailed => "peer_failed",
             ErrorCode::PeerNotPeerable => "peer_not_peerable",
             ErrorCode::RouteFailed => "route_failed",
+            ErrorCode::NameTaken => "name_taken",
+            ErrorCode::ConfirmationRequired => "confirmation_required",
         }
     }
 
@@ -117,7 +121,9 @@ impl ErrorCode {
             | ErrorCode::UnknownName
             | ErrorCode::PeerFailed
             | ErrorCode::PeerNotPeerable
-            | ErrorCode::RouteFailed => Exit::Failure,
+            | ErrorCode::RouteFailed
+            | ErrorCode::NameTaken
+            | ErrorCode::ConfirmationRequired => Exit::Failure,
         }
     }
 }

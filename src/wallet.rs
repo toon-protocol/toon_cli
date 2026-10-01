@@ -197,7 +197,7 @@ fn write_toon_app(
                 derive::solana_settlement_secret(&*seed, app.connector).map_err(corrupt)?;
             node::write(&files.solana_settlement_key, &*solana, 0o600)?;
         }
-        if app.apps.iter().any(|name| name == node::RELAY) {
+        if app.apps.iter().any(|app| app.source == node::Source::Relay) {
             // The relay's identity key is the wallet's, handed over as a file that only
             // this user reads. `up` reads it and gives it to the relay.
             let relay = derive::relay_identity_secret(&*seed, RELAY_INDEX).map_err(corrupt)?;
@@ -210,7 +210,7 @@ fn write_toon_app(
         // Nothing runs yet, so the route is checked against the address the relay's
         // container serves on.
         let placeholder = SocketAddr::from((Ipv4Addr::LOCALHOST, runner::WRITE_PORT));
-        node::render(home, app, Some(placeholder))?;
+        node::render(home, app, &[(node::RELAY.to_owned(), placeholder)])?;
     }
     Ok(state)
 }
