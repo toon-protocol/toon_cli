@@ -387,10 +387,13 @@ fn publish_to(
             edge.price,
             Some(&edge.connector_url),
         )?;
-        // Only a fulfilled packet moved money.
-        let paid = report.exit == Exit::Success || report.json["outcome"] == "refused";
+        // A fulfilled packet moved money, whatever the relay or its fulfilment said.
+        let paid = report.json["outcome"] != "rejected";
         report.json["relay"] = json!(relay);
-        report.json["paid"] = json!(edge.price);
+        report.json["paid"] = json!(if paid { edge.price } else { 0 });
+        if paid {
+            report.text = format!("{} Paid {} base units to {relay}.", report.text, edge.price);
+        }
         Ok((report, paid))
     })
 }

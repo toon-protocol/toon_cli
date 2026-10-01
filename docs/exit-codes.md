@@ -142,7 +142,9 @@ reads the relay's NIP-11 information document (`GET` of the relay's URL as `http
 `price`. It shows the price and publishes only with `--yes`, under the spending limit, paying
 from this agent node's own connector over a peering. If no peering of the agent node reaches
 the relay's `ilp_address` it fails with `peering_needed` and creates nothing. The report has
-the same outcomes as a publish to the own relay, plus `relay` and `paid`.
+the same outcomes as a publish to the own relay, plus `relay` and `paid`: the price, or `0`
+when the packet was rejected and nothing moved. `--amount` is refused with `--relay`, and
+`--yes` without it.
 
 `toon nip publish` signs a draft (`nips/proposals-as-events.md`) the same way and writes it
 to the agent node's own relay as `toon event publish` does, with the same outcomes. It first

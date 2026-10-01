@@ -221,3 +221,27 @@ fn with_no_peering_the_command_says_one_is_needed_and_creates_none() {
     let peers = near.toon(&["peer", "list", "--json"]).json();
     assert_eq!(peers["peers"].as_array().map(Vec::len), Some(0));
 }
+
+#[test]
+fn an_amount_is_refused_with_relay_and_yes_without_it() {
+    let machine = Machine::new();
+
+    for args in [
+        &[
+            "event",
+            "publish",
+            "--relay",
+            "ws://127.0.0.1:1",
+            "--kind",
+            "1",
+            "--amount",
+            "5",
+            "--json",
+        ][..],
+        &["event", "publish", "--kind", "1", "--yes", "--json"][..],
+    ] {
+        let run = machine.toon(args);
+        assert_eq!(run.json()["error"]["code"], "usage", "{}", run.stdout);
+        assert_eq!(run.exit_code, 2);
+    }
+}
