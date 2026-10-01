@@ -28,8 +28,8 @@ zeroize = "1"
 connector-cli = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
 axum = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread"] }
-reqwest = { version = "0.11", default-features = false, features = ["blocking", "json"] }
 tracing = "0.1"
+reqwest = { version = "0.11", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [dev-dependencies]

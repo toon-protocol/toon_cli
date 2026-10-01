@@ -57,6 +57,8 @@ pub enum ErrorCode {
     NoAgentNode,
     ConnectorFailed,
     AlreadyRunning,
+    Unfunded,
+    FaucetUnavailable,
     NotRunning,
     SendFailed,
 }
@@ -75,6 +77,8 @@ impl ErrorCode {
             ErrorCode::NoAgentNode => "no_agent_node",
             ErrorCode::ConnectorFailed => "connector_failed",
             ErrorCode::AlreadyRunning => "already_running",
+            ErrorCode::Unfunded => "unfunded",
+            ErrorCode::FaucetUnavailable => "faucet_unavailable",
             ErrorCode::NotRunning => "not_running",
             ErrorCode::SendFailed => "send_failed",
         }
@@ -92,6 +96,8 @@ impl ErrorCode {
             | ErrorCode::Io
             | ErrorCode::ConnectorFailed
             | ErrorCode::AlreadyRunning
+            | ErrorCode::Unfunded
+            | ErrorCode::FaucetUnavailable
             | ErrorCode::NotRunning
             | ErrorCode::SendFailed => Exit::Failure,
         }

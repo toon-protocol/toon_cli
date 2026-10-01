@@ -136,7 +136,7 @@ fn check_connector(connector: u32) -> Result<(), DeriveError> {
 }
 
 /// The EVM address (EIP-55) of a secp256k1 secret.
-fn evm_address(secret: &[u8; 32]) -> String {
+pub fn evm_address(secret: &[u8; 32]) -> String {
     let scalar = scalar(secret).expect("a derived key is a valid scalar");
     let point = (ProjectivePoint::GENERATOR * scalar).to_affine();
     let uncompressed = point.to_encoded_point(false);
@@ -234,7 +234,7 @@ pub fn operator_write_public_key(secret: &[u8; 32]) -> String {
 }
 
 /// The Solana address of a SLIP-0010 seed: base58 of the Ed25519 public key.
-fn solana_address(secret: &[u8; 32]) -> String {
+pub fn solana_address(secret: &[u8; 32]) -> String {
     let signing = ed25519_dalek::SigningKey::from_bytes(secret);
     bs58::encode(signing.verifying_key().as_bytes()).into_string()
 }

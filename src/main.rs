@@ -9,11 +9,13 @@ mod cli;
 mod connector;
 mod control;
 mod derive;
+mod funding;
 mod home;
 mod keystore;
 mod node;
 mod operator;
 mod outcome;
+mod profile;
 mod status;
 mod up;
 mod wallet;
@@ -60,6 +62,9 @@ fn main() -> ExitCode {
         Command::Wallet {
             command: WalletCommand::Show,
         } => render(home::resolve().and_then(|home| wallet::show(&home)), json).into(),
+        Command::Wallet {
+            command: WalletCommand::Fund,
+        } => render(home::resolve().and_then(|home| funding::fund(&home)), json).into(),
         Command::Send(args) => render(
             home::resolve().and_then(|home| operator::send(&home, &args.address, args.amount)),
             json,
