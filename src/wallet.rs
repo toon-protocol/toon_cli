@@ -5,6 +5,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use crate::derive::{self, Addresses};
+use crate::funding;
 use crate::keystore;
 use crate::node;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
@@ -111,15 +112,17 @@ pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
     if let Err(error) = state.save(home) {
         // The mnemonic has not been shown, so the wallet goes with the TOON app.
         let _ = std::fs::remove_file(keystore::path(home));
-        let _ = std::fs::remove_dir_all(home.join("connectors"));
+        discard_toon_apps(home);
         return Err(error);
     }
+    let (needs, funding_text) = funding::requirements(home, &state)?;
     let text = format!(
-        "Wallet created at {}.\n\nYour mnemonic. It is shown this once and no command shows it again; write it down now:\n\n  {}\n\n{}\n\n{}",
+        "Wallet created at {}.\n\nYour mnemonic. It is shown this once and no command shows it again; write it down now:\n\n  {}\n\n{}\n\n{}\n\n{}",
         keystore::path(home).display(),
         *phrase,
         listing(&wallet),
-        toon_app_text(&state, true)
+        toon_app_text(&state, true),
+        funding_text
     );
     Ok(Report {
         exit: Exit::Success,
@@ -128,9 +131,17 @@ pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
             "mnemonic": &*phrase,
             "wallet": wallet,
             "toon_apps": toon_apps(home, &state, true),
+            "network": state.network.name(),
+            "needs": needs.iter().map(funding::Need::json).collect::<Vec<_>>(),
         }),
         text,
     })
+}
+
+/// Remove what writing a TOON app's keys left.
+fn discard_toon_apps(home: &Path) {
+    let _ = std::fs::remove_dir_all(home.join("connectors"));
+    let _ = std::fs::remove_file(node::operator_key(home));
 }
 
 /// Write the keys of the first TOON app's connector, and render and check its config.
@@ -142,7 +153,7 @@ fn create_toon_app(
 ) -> Result<node::State, Error> {
     let created = write_toon_app(home, mnemonic, options);
     if created.is_err() {
-        let _ = std::fs::remove_dir_all(home.join("connectors"));
+        discard_toon_apps(home);
     }
     created
 }
@@ -154,6 +165,11 @@ fn write_toon_app(
 ) -> Result<node::State, Error> {
     let seed = derive::seed(mnemonic);
     let state = node::State::first(options);
+    let operator = derive::operator_write_secret(&*seed).map_err(|source| Error {
+        code: ErrorCode::KeystoreCorrupt,
+        message: source.0,
+    })?;
+    node::write(&node::operator_key(home), &*operator, 0o600)?;
     for app in &state.toon_apps {
         let files = node::ConnectorFiles::of(home, app.connector);
         let corrupt = |source: derive::DeriveError| Error {
@@ -164,6 +180,11 @@ fn write_toon_app(
         let settlement = derive::evm_settlement_secret(&*seed, app.connector).map_err(corrupt)?;
         node::write(&files.identity_key, &*identity, 0o600)?;
         node::write(&files.settlement_key, &*settlement, 0o600)?;
+        if app.solana.is_some() {
+            let solana =
+                derive::solana_settlement_secret(&*seed, app.connector).map_err(corrupt)?;
+            node::write(&files.solana_settlement_key, &*solana, 0o600)?;
+        }
         node::render(home, app)?;
     }
     Ok(state)
@@ -185,7 +206,7 @@ fn existing(home: &Path, options: &node::Options) -> Result<Report, Error> {
                     })?;
             let state = create_toon_app(home, &mnemonic, options)?;
             if let Err(error) = state.save(home) {
-                let _ = std::fs::remove_dir_all(home.join("connectors"));
+                discard_toon_apps(home);
                 return Err(error);
             }
             (state, true)
@@ -228,7 +249,7 @@ fn toon_app_text(state: &node::State, created: bool) -> String {
         .collect();
     if created {
         format!(
-            "TOON app created: {}. Run `toon up` to start it.",
+            "TOON app created: {}. Fund its settlement keys, then run `toon up` to start it.",
             names.join(", ")
         )
     } else {

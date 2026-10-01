@@ -12,19 +12,31 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use crate::keystore;
 use crate::outcome::{Error, ErrorCode};
+use crate::profile::Profile;
+use crate::{derive, keystore};
 
 /// The name of the first TOON app, the one whose connector fronts the relay.
 pub const RELAY: &str = "relay";
+
+/// Where the relay is served unless `init` is told otherwise.
+pub const DEFAULT_RELAY_URL: &str = "http://127.0.0.1:7100/";
 
 /// What `init` was asked for, for the first TOON app.
 #[derive(Clone, Debug)]
 pub struct Options {
     /// Where the connector listens.
     pub listen: String,
+    /// The network profile the chain settings come from.
+    pub network: Profile,
     /// The EVM chain it settles on, if any.
     pub evm: Option<Evm>,
+    /// The Solana chain it settles on, if the operator opted in.
+    pub solana: Option<Solana>,
+    /// The faucet `toon wallet fund` asks, if the network has one.
+    pub faucet_url: Option<String>,
+    /// Where the relay app is served: what the connector delivers its route to.
+    pub relay_url: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +49,22 @@ pub struct Evm {
     pub transfer_method: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Solana {
+    pub rpc_url: String,
+    pub token: String,
+    pub decimals: u8,
+}
+
+/// A route the connector terminates: packets for `prefix` are delivered to the app at
+/// `handler_url`, for `price` base units each.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Route {
+    pub prefix: String,
+    pub handler_url: String,
+    pub price: u64,
+}
+
 /// One TOON app as the operator asked for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToonApp {
@@ -45,13 +73,19 @@ pub struct ToonApp {
     pub connector: u32,
     pub listen: String,
     pub evm: Option<Evm>,
+    pub solana: Option<Solana>,
     /// The apps behind the connector.
     pub apps: Vec<String>,
+    /// The routes the connector terminates, one per app.
+    pub routes: Vec<Route>,
 }
 
 /// The agent node's state: every TOON app.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
+    pub network: Profile,
+    /// Where `toon wallet fund` asks for funds; the networks without a faucet have none.
+    pub faucet_url: Option<String>,
     pub toon_apps: Vec<ToonApp>,
 }
 
@@ -60,6 +94,11 @@ fn io(path: &Path, source: std::io::Error) -> Error {
         code: ErrorCode::Io,
         message: format!("{}: {source}.", path.display()),
     }
+}
+
+/// The ILP address prefix of the route to the app called `name`.
+pub fn route_prefix(name: &str) -> String {
+    format!("g.toon.{name}")
 }
 
 /// What a command that needs an agent node says when `home` has none.
@@ -74,10 +113,22 @@ pub fn state_path(home: &Path) -> PathBuf {
     home.join("state.json")
 }
 
+/// The wallet's operator write key, written once by `init`. The connector verifies writes
+/// with ed25519, and this file holds the 32 bytes the wallet derived, read as an ed25519
+/// secret key.
+pub fn operator_key(home: &Path) -> PathBuf {
+    home.join("operator.key")
+}
+
 /// The files of one connector's key material, config, state directory and log.
 pub struct ConnectorFiles {
+    /// The bearer token the connector's operator surface wants on every read.
+    pub bearer_token: PathBuf,
+    /// The public keys it accepts a signed write from: the wallet's operator write key.
+    pub write_keys: PathBuf,
     pub identity_key: PathBuf,
     pub settlement_key: PathBuf,
+    pub solana_settlement_key: PathBuf,
     pub config: PathBuf,
     pub state_dir: PathBuf,
     pub log: PathBuf,
@@ -87,8 +138,11 @@ impl ConnectorFiles {
     pub fn of(home: &Path, connector: u32) -> Self {
         let dir = home.join("connectors").join(connector.to_string());
         Self {
+            bearer_token: dir.join("operator-bearer-token"),
+            write_keys: dir.join("operator-write-keys"),
             identity_key: dir.join("identity.key"),
             settlement_key: dir.join("settlement.key"),
+            solana_settlement_key: dir.join("settlement-solana.key"),
             config: dir.join("connector.toml"),
             state_dir: dir.join("state"),
             log: dir.join("connector.log"),
@@ -121,16 +175,38 @@ impl Evm {
     }
 }
 
+impl Solana {
+    fn json(&self) -> Value {
+        json!({ "rpc_url": self.rpc_url, "token": self.token, "decimals": self.decimals })
+    }
+
+    fn from_json(value: &Value) -> Option<Self> {
+        Some(Self {
+            rpc_url: value["rpc_url"].as_str()?.to_owned(),
+            token: value["token"].as_str()?.to_owned(),
+            decimals: u8::try_from(value["decimals"].as_u64()?).ok()?,
+        })
+    }
+}
+
 impl State {
     /// The state `init` records: one TOON app, the relay's, with the relay behind it.
     pub fn first(options: &Options) -> Self {
         Self {
+            network: options.network,
+            faucet_url: options.faucet_url.clone(),
             toon_apps: vec![ToonApp {
                 name: RELAY.into(),
                 connector: 0,
                 listen: options.listen.clone(),
                 evm: options.evm.clone(),
+                solana: options.solana.clone(),
                 apps: vec![RELAY.into()],
+                routes: vec![Route {
+                    prefix: route_prefix(RELAY),
+                    handler_url: options.relay_url.clone(),
+                    price: 0,
+                }],
             }],
         }
     }
@@ -145,11 +221,22 @@ impl State {
                     "connector": app.connector,
                     "listen": app.listen,
                     "evm": app.evm.as_ref().map(Evm::json),
+                    "solana": app.solana.as_ref().map(Solana::json),
                     "apps": app.apps,
+                    "routes": app.routes.iter().map(|route| json!({
+                        "prefix": route.prefix,
+                        "handler_url": route.handler_url,
+                        "price": route.price,
+                    })).collect::<Vec<_>>(),
                 })
             })
             .collect();
-        json!({ "version": 1, "toon_apps": apps })
+        json!({
+            "version": 1,
+            "network": self.network.name(),
+            "faucet_url": self.faucet_url,
+            "toon_apps": apps,
+        })
     }
 
     fn from_json(value: &Value) -> Option<Self> {
@@ -168,11 +255,30 @@ impl State {
                         Value::Null => None,
                         evm => Some(Evm::from_json(evm)?),
                     },
+                    solana: match &app["solana"] {
+                        Value::Null => None,
+                        solana => Some(Solana::from_json(solana)?),
+                    },
                     apps: app["apps"]
                         .as_array()?
                         .iter()
                         .map(|name| name.as_str().map(str::to_owned))
                         .collect::<Option<_>>()?,
+                    // A state from before routes were recorded has none.
+                    routes: match &app["routes"] {
+                        Value::Null => Vec::new(),
+                        routes => routes
+                            .as_array()?
+                            .iter()
+                            .map(|route| {
+                                Some(Route {
+                                    prefix: route["prefix"].as_str()?.to_owned(),
+                                    handler_url: route["handler_url"].as_str()?.to_owned(),
+                                    price: route["price"].as_u64()?,
+                                })
+                            })
+                            .collect::<Option<_>>()?,
+                    },
                 })
             })
             .collect::<Option<Vec<_>>>()?;
@@ -180,7 +286,19 @@ impl State {
         if toon_apps.is_empty() {
             return None;
         }
-        Some(Self { toon_apps })
+        let network = match &value["network"] {
+            Value::Null => Profile::default(),
+            network => Profile::from_name(network.as_str()?)?,
+        };
+        let faucet_url = match &value["faucet_url"] {
+            Value::Null => None,
+            url => Some(url.as_str()?.to_owned()),
+        };
+        Some(Self {
+            network,
+            faucet_url,
+            toon_apps,
+        })
     }
 
     /// The state in `home`, or `None` if there is no agent node there.
@@ -248,6 +366,7 @@ fn string(text: &str) -> String {
 /// error can be read against it; a caller that gets `Err` starts nothing.
 pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
     let files = ConnectorFiles::of(home, app.connector);
+    let operator = write_operator_files(home, &files)?;
     let mut config = format!(
         "# Rendered by `toon` from state.json. Edits here are overwritten.\n\
          client_edge_addr = {}\nstate_dir = {}\n\n[signer]\nkey_file = {}\n",
@@ -255,6 +374,21 @@ pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
         string(&files.state_dir.to_string_lossy()),
         string(&files.identity_key.to_string_lossy()),
     );
+    for route in &app.routes {
+        config.push_str(&format!(
+            "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = {}\n",
+            string(&route.prefix),
+            string(&route.handler_url),
+            route.price,
+        ));
+    }
+    if operator {
+        config.push_str(&format!(
+            "\n[operator]\nbearer_token_file = {}\nwrite_keys_file = {}\n",
+            string(&files.bearer_token.to_string_lossy()),
+            string(&files.write_keys.to_string_lossy()),
+        ));
+    }
     if let Some(evm) = &app.evm {
         config.push_str(&format!(
             "\n[settlement.evm]\nrpc_url = {}\ntoken_address = {}\ndecimals = {}\n\
@@ -269,6 +403,17 @@ pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
             string(&files.settlement_key.to_string_lossy()),
         ));
     }
+    if let Some(solana) = &app.solana {
+        config.push_str(&format!(
+            "\n[settlement.solana]\nrpc_url = {}\ntoken_address = {}\ndecimals = {}\n\
+             min_sponsored_deposit = {}\n\n[settlement.solana.key]\nkey_file = {}\n",
+            string(&solana.rpc_url),
+            string(&solana.token),
+            solana.decimals,
+            10u64.pow(u32::from(solana.decimals)),
+            string(&files.solana_settlement_key.to_string_lossy()),
+        ));
+    }
     write(&files.config, config.as_bytes(), 0o600)?;
     fs::create_dir_all(&files.state_dir).map_err(|source| io(&files.state_dir, source))?;
     connector_cli::load_config(&["toon connector", &files.config.to_string_lossy()]).map_err(
@@ -278,4 +423,32 @@ pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
         },
     )?;
     Ok(files)
+}
+
+/// The files the connector's operator surface reads: a bearer token, made once and kept,
+/// and the allowlist of write keys, which is the public half of the wallet's operator
+/// write key and is written again every time. An agent node made before `init` wrote the
+/// operator write key has none, and its connector runs without an operator surface, as it
+/// did then: `false`.
+fn write_operator_files(home: &Path, files: &ConnectorFiles) -> Result<bool, Error> {
+    let key = operator_key(home);
+    if !key.exists() {
+        return Ok(false);
+    }
+    if !files.bearer_token.exists() {
+        let token = hex::encode(keystore::random::<32>()?);
+        write(&files.bearer_token, token.as_bytes(), 0o600)?;
+    }
+    let bytes = zeroize::Zeroizing::new(fs::read(&key).map_err(|source| io(&key, source))?);
+    let secret: zeroize::Zeroizing<[u8; 32]> =
+        zeroize::Zeroizing::new(bytes.as_slice().try_into().map_err(|_| Error {
+            code: ErrorCode::Io,
+            message: format!("{} is not a 32-byte key.", key.display()),
+        })?);
+    write(
+        &files.write_keys,
+        format!("{}\n", derive::operator_write_public_key(&secret)).as_bytes(),
+        0o600,
+    )?;
+    Ok(true)
 }
