@@ -9,6 +9,7 @@ mod cli;
 mod connector;
 mod control;
 mod derive;
+mod event;
 mod funding;
 mod home;
 mod keystore;
@@ -31,7 +32,7 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use serde_json::json;
 
-use cli::{ChannelCommand, Cli, Command, PeerCommand, RouteCommand, WalletCommand};
+use cli::{ChannelCommand, Cli, Command, EventCommand, PeerCommand, RouteCommand, WalletCommand};
 use outcome::{Error, ErrorCode, Exit, Report};
 use up::Stopped;
 
@@ -128,6 +129,22 @@ fn main() -> ExitCode {
             json,
         )
         .into(),
+        Command::Event {
+            command:
+                EventCommand::Publish {
+                    kind,
+                    content,
+                    tags,
+                    amount,
+                },
+        } => render(
+            home::resolve().and_then(|home| event::publish(&home, kind, &content, &tags, amount)),
+            json,
+        )
+        .into(),
+        Command::Event {
+            command: EventCommand::Query { relay, filter },
+        } => render(event::query(&relay, &filter), json).into(),
         Command::Up { foreground: true } => up(json).into(),
         Command::Up { foreground: false } => {
             render(home::resolve().and_then(|home| install(&home)), json).into()

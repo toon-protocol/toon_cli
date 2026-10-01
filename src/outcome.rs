@@ -69,6 +69,7 @@ pub enum ErrorCode {
     RouteFailed,
     ChainFailed,
     ChannelFailed,
+    QueryFailed,
 }
 
 impl ErrorCode {
@@ -97,6 +98,7 @@ impl ErrorCode {
             ErrorCode::RouteFailed => "route_failed",
             ErrorCode::ChainFailed => "chain_failed",
             ErrorCode::ChannelFailed => "channel_failed",
+            ErrorCode::QueryFailed => "query_failed",
         }
     }
 
@@ -122,7 +124,9 @@ impl ErrorCode {
             | ErrorCode::PeerFailed
             | ErrorCode::PeerNotPeerable
             | ErrorCode::RouteFailed => Exit::Failure,
-            ErrorCode::ChainFailed | ErrorCode::ChannelFailed => Exit::Failure,
+            ErrorCode::ChainFailed | ErrorCode::ChannelFailed | ErrorCode::QueryFailed => {
+                Exit::Failure
+            }
         }
     }
 }
