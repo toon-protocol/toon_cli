@@ -35,6 +35,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// The TOON app a command that talks to a connector is about: the first one if omitted.
+    /// For `create`, the TOON app the new one is created from
+    #[arg(long = "app", id = "toon_app", value_name = "TOON_APP", global = true)]
+    pub app: Option<String>,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -71,6 +76,13 @@ pub enum Command {
     },
     /// Put an app behind the connector of a TOON app: this restarts that connector
     Add(AddArgs),
+    /// Create a second TOON app: a new connector with its own keys, and an app behind it
+    Create(CreateArgs),
+    /// Stop and remove a TOON app, unless one of its channels still holds funds
+    Destroy {
+        /// The TOON app's name
+        name: String,
+    },
     /// Take an app, and its route, away from its connector: this restarts that connector
     Remove {
         /// The app's name
@@ -140,6 +152,40 @@ pub struct AddArgs {
     #[arg(long, default_value_t = 0)]
     pub price: u64,
     /// Go ahead although the connector restarts and drops packets in flight
+    #[arg(long)]
+    pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct CreateArgs {
+    /// A name for the TOON app, and for the app behind it, unique in this agent node
+    pub name: String,
+    /// A container image to run as the app behind the new connector
+    #[arg(long, conflicts_with = "url", required_unless_present = "url")]
+    pub image: Option<String>,
+    /// The URL of an app you already serve: nothing is run
+    #[arg(long)]
+    pub url: Option<String>,
+    /// What a client pays the connector for a packet to the app
+    #[arg(long, default_value_t = 0)]
+    pub price: u64,
+    /// What each of the two channels toward the TOON app it was created from is opened
+    /// with, in the token's base units
+    #[arg(long, conflicts_with = "no_peer", required_unless_present = "no_peer")]
+    pub deposit: Option<u128>,
+    /// Create no peerings
+    #[arg(long)]
+    pub no_peer: bool,
+    /// Agree to the Anyone Protocol's terms, which a hidden service needs
+    #[arg(long)]
+    pub accept_anyone_terms: bool,
+    /// Make the TOON app reachable at this public hostname instead of as a hidden service
+    #[arg(long, value_name = "HOSTNAME")]
+    pub clearnet: Option<String>,
+    /// Where the connector listens; the system picks a port when it is 0
+    #[arg(long, default_value = "127.0.0.1:0")]
+    pub listen: String,
+    /// Confirm that the peerings move money: without it nothing is deposited
     #[arg(long)]
     pub yes: bool,
 }

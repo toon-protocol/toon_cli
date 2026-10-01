@@ -5,6 +5,7 @@
 //! loopback to the address the supervisor says its connector listens on.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -20,9 +21,9 @@ use crate::spending;
 const PATIENCE: Duration = Duration::from_secs(30);
 
 /// A running connector's operator surface.
-struct Surface {
+pub struct Surface {
     /// `http://host:port`, with no trailing slash.
-    url: String,
+    pub url: String,
     bearer_token: PathBuf,
     write_key: PathBuf,
     /// Whether the connector may peer toward a plain `http://` address.
@@ -33,12 +34,30 @@ fn failed(code: ErrorCode, message: String) -> Error {
     Error { code, message }
 }
 
-/// The operator surface of the first TOON app's connector, which must be running.
+/// The TOON app every command that talks to a connector is about, when the operator named
+/// one with `--app`: the first TOON app's otherwise.
+static TARGET: OnceLock<String> = OnceLock::new();
+
+/// Name the TOON app this process's commands are about.
+pub fn target(app: Option<&str>) {
+    if let Some(app) = app {
+        let _ = TARGET.set(app.to_owned());
+    }
+}
+
+/// The operator surface of the TOON app named by `--app`, or the first one, whose
+/// connector must be running.
 fn surface(home: &Path) -> Result<Surface, Error> {
+    surface_of(home, TARGET.get().map(String::as_str))
+}
+
+/// The operator surface of the connector of the TOON app `name`, or of the first TOON app,
+/// which must be running.
+pub fn surface_of(home: &Path, name: Option<&str>) -> Result<Surface, Error> {
     let Some(state) = State::load(home)? else {
         return Err(node::no_agent_node(home));
     };
-    let app = &state.toon_apps[0];
+    let app = crate::apps::toon_app(&state, name)?;
     let address = control::ask(home, "status")
         .and_then(|reply| {
             reply["toon_apps"]
@@ -227,7 +246,7 @@ fn amount(value: &Value) -> String {
     }
 }
 
-fn describe_channel(channel: &Value) -> String {
+pub fn describe_channel(channel: &Value) -> String {
     format!(
         "{} {} {} {} (counterparty {}, collateral {}, landed {}, watermark {})",
         channel["id"].as_str().unwrap_or_default(),
@@ -241,9 +260,14 @@ fn describe_channel(channel: &Value) -> String {
     )
 }
 
+/// Every channel the connector whose operator surface is `surface` holds.
+pub fn channels_on(surface: &Surface) -> Result<Vec<Value>, Error> {
+    read(surface, "/channels")
+}
+
 /// `toon channel list`: every channel the connector holds, inbound and outbound.
 pub fn channel_list(home: &Path) -> Result<Report, Error> {
-    let channels = read(&surface(home)?, "/channels")?;
+    let channels = channels_on(&surface(home)?)?;
     let mut lines: Vec<String> = channels.iter().map(describe_channel).collect();
     if lines.is_empty() {
         lines.push("The connector has no channels.".into());
@@ -287,7 +311,11 @@ pub struct PeerAdd<'a> {
 /// `toon peer add`: create a peering toward the connector at `address`, opening and
 /// funding the channel it pays on with `deposit`.
 pub fn peer_add(home: &Path, add: &PeerAdd) -> Result<Report, Error> {
-    let surface = surface(home)?;
+    peer_add_on(&surface(home)?, add)
+}
+
+/// `peer_add`, on the connector whose operator surface is `surface`.
+pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Report, Error> {
     let id = add.id.map_or_else(|| label(add.address), str::to_owned);
     segment(ErrorCode::PeerFailed, "The peering's label", &id)?;
     let body = json!({
@@ -297,7 +325,7 @@ pub fn peer_add(home: &Path, add: &PeerAdd) -> Result<Report, Error> {
         "max_packet_amount": add.max_packet_amount,
         "deposit": add.deposit,
     });
-    let (status, text) = write(&surface, reqwest::Method::POST, "/peers", Some(&body))?;
+    let (status, text) = write(surface, reqwest::Method::POST, "/peers", Some(&body))?;
     if status != 200 {
         // The connector reads the other side's self-description first, and a connector
         // that is not peerable publishes none a peer can use. A connector that does not
@@ -413,14 +441,18 @@ pub fn peer_remove(home: &Path, id: &str) -> Result<Report, Error> {
 
 /// `toon route add`: forward packets for `prefix` to the peering `peer`, at `price`.
 pub fn route_add(home: &Path, prefix: &str, peer: &str, price: u64) -> Result<Report, Error> {
-    let surface = surface(home)?;
+    route_add_on(&surface(home)?, prefix, peer, price)
+}
+
+/// `route_add`, on the connector whose operator surface is `surface`.
+pub fn route_add_on(
+    surface: &Surface,
+    prefix: &str,
+    peer: &str,
+    price: u64,
+) -> Result<Report, Error> {
     let body = json!({ "prefix": prefix, "peer_id": peer, "price": price });
-    let (status, text) = write(
-        &surface,
-        reqwest::Method::POST,
-        "/routes/peers",
-        Some(&body),
-    )?;
+    let (status, text) = write(surface, reqwest::Method::POST, "/routes/peers", Some(&body))?;
     if status != 200 {
         return Err(failed(ErrorCode::RouteFailed, refusal(status, &text)));
     }
