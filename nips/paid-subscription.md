@@ -3,8 +3,8 @@
 `draft` `optional`
 
 A relay sells its live feed. A subscriber pays the relay's subscribe route, which opens
-a prepaid balance at that relay, and then dials the relay and reads events as they
-arrive. The relay debits the balance by its broadcast price for each event it
+a prepaid balance at that relay under a key the subscriber holds, and then dials the
+relay and reads events as they arrive. The relay debits the balance by its broadcast price for each event it
 broadcasts to that subscriber, and the feed stops when the balance runs out. A reader
 who has not paid still gets the stored events that match its filter, and nothing after
 them.
@@ -27,6 +27,13 @@ Two designs were turned down:
   more means sending more packets. That is why subscribing and topping up are one
   action here.
 
+The balance belongs to a Nostr key and not to whoever paid. A connector states a payer
+to an app only for a claim it admitted itself (connector ADR 0040): a packet that
+arrives through another connector, or on the peer wire, states none or states the
+intermediary. A balance keyed by that payer could be opened only by a direct client of
+the relay's connector, and would be shared by everyone who pays through the same
+intermediary. A key the subscriber signs with works over any path.
+
 NIP-11's `fees.subscription` describes admission for a period of time, not a balance
 drawn down per event, and no NIP says how a payment made outside the websocket is tied
 to a connection on it. NIP-42 and NIP-98 already say how a client proves which key it
@@ -36,18 +43,14 @@ holds, and this draft uses both rather than a new message.
 
 - **Subscribe route**: a route of the relay's connector, delivered to the relay, whose
   price is credited to a subscription.
-- **Payer**: what the relay's connector states as the payer of a packet it delivers:
-  the `X-TOON-Payer` header of connector ADR 0040, for example
-  `evm:0x<64 lower-case hex>` or `solana:<base58>`. It names a channel toward that
-  connector. The relay treats it as an opaque string.
-- **Subscription**: the balance a relay holds for one payer, with the filter and the
-  subscriber key that payer set.
+- **Subscriber key**: a Nostr key a subscription belongs to. Whoever holds it
+  authorizes payments into that subscription, sets its filter, and reads its feed and
+  its balance.
+- **Subscription**: the balance a relay holds for one subscriber key, with that
+  subscription's filter.
 - **Subscribe**: pay the subscribe route. The first payment opens a subscription and
   every later one tops it up.
-- **Subscriber key**: the Nostr public key a payer names when it subscribes. Whoever
-  proves they hold it reads that subscription's feed and its balance.
-- **Subscriber**: whoever holds a subscription: it pays as the payer and reads with
-  the subscriber key.
+- **Subscriber**: whoever holds a subscriber key that has a subscription.
 - **Broadcast price**: what the relay debits from a subscription for each event it
   broadcasts to that subscriber.
 - **Live feed**: the events a relay accepts after it has sent `EOSE` on a `REQ`.
@@ -83,8 +86,8 @@ edge (TOON Network spec §13):
   address.
 - The subscribe route MUST charge a flat price greater than `0`. A price that grows
   with the size of the packet would make a packet credit something other than `price`,
-  and a connector states no payer on a route that charges nothing. A relay whose
-  connector prices the route otherwise MUST NOT publish `toon_subscription`.
+  and a route that charges nothing would credit nothing. A relay whose connector
+  prices the route otherwise MUST NOT publish `toon_subscription`.
 - `carriage` comes from the same route of the self-description, as `toon.carriage`
   does from the write route.
 - `ilp_address` and `broadcast_price` are the relay's own settings.
@@ -98,44 +101,58 @@ and nothing in this draft says how it answers a `REQ`.
 
 To subscribe, a subscriber sends a paid packet to `ilp_address` through the relay's
 connector, as it would send a write. The request the packet carries is a `POST` to the
-route's own path (target `/`) with `Content-Type: application/json` and this body:
+route's own path (target `/`) with two headers and a JSON body:
+
+- `Content-Type: application/json`.
+- `Authorization: Nostr <base64>`, NIP-98 authorization: a kind `27235` event signed
+  by the subscriber key, with a `method` tag of `POST`, a `u` tag that is the HTTP
+  form of the relay's URL (the URL its information document is served at), and a
+  `payload` tag that is the SHA-256 of the body in lower-case hex. A request inside a
+  packet has no URL of its own, so `u` names the relay the payment is meant for.
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `filter` | object? | One NIP-01 filter: the events this subscription pays for |
-| `pubkey` | string? | The subscriber key: 32 bytes, lower-case hex |
 
-The relay handles the request as follows.
+The subscriber key is the `pubkey` of the authorization event. The relay handles the
+request as follows.
 
-1. It reads the payer and the amount from the `X-TOON-Payer` and `X-TOON-Amount`
-   headers its connector set. If either is absent or malformed, it answers `403` with
-   the error code `payer_not_stated` and credits nothing.
+1. If the authorization is missing, does not verify, is not of kind `27235`, has a
+   `method` other than `POST`, a `u` that is not this relay, a `payload` that is not
+   the hash of the body, or a `created_at` more than 60 seconds from the relay's
+   clock, it answers `401` with the error code `unauthorized`.
 2. If the body is not a JSON object, or `filter` is present and is not a filter the
-   relay would accept in a `REQ`, or `pubkey` is present and is not 64 lower-case hex
-   characters, it answers `400` with `invalid_request`.
-3. If the payer has no subscription, this is a first payment: `filter` and `pubkey`
-   are both required. If either is missing, it answers `400` with
-   `first_payment_incomplete`.
-4. If `pubkey` is present and is the subscriber key of another payer's subscription,
-   it answers `409` with `pubkey_in_use`.
-5. Otherwise it creates the subscription if there is none, adds the amount the
-   connector stated to its balance, replaces the filter if `filter` is present,
-   replaces the subscriber key if `pubkey` is present, and answers `200`.
+   relay would accept in a `REQ`, it answers `400` with `invalid_request`.
+3. If the subscriber key has no subscription, this is a first payment and `filter` is
+   required. If it is missing, it answers `400` with `filter_required`.
+4. Otherwise it creates the subscription if there is none, credits the packet to its
+   balance, replaces the filter if `filter` is present, and answers `200`.
 
-A relay MUST credit exactly the amount in `X-TOON-Amount`, once per packet, and MUST
-NOT credit a request it refuses. A field that is absent on a later payment leaves that
-part of the subscription as it was, so a body of `{}` only tops up.
+What a packet credits is what the subscribe route charged for it: the amount in the
+`X-TOON-Amount` header when the relay's connector states one, and otherwise the
+route's price as that connector's self-description gives it, which is `price`. A relay
+MUST credit a packet once and MUST NOT credit a request it refuses. A body of `{}` on
+a later payment only tops up.
+
+The relay does not use the payer its connector may state. Any packet the subscribe
+route delivers is credited, whichever path it took and whoever paid for it, so a
+subscriber can pay through an intermediary, over a peering in either direction, or
+have someone else pay. For the same reason a relay MUST accept a subscribe request
+only from its own connector: the route's handler is reachable by nothing else.
+
+A relay MUST NOT refuse an authorization because it has seen it before. A subscriber
+that pays several packets with the same body MAY sign once and reuse the event while
+it is fresh.
 
 The `200` body is the subscription as it now stands:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `payer` | string | The payer the connector stated |
+| `pubkey` | string | The subscriber key: 32 bytes, lower-case hex |
 | `credited` | int | What this packet added to the balance |
 | `balance` | int | The balance after it |
 | `broadcast_price` | int | The broadcast price now |
 | `filter` | object | The subscription's filter |
-| `pubkey` | string | The subscriber key |
 
 A refusal has the status given above and the body
 `{ "error": { "code": "<code>", "message": "<text>" } }`. `code` is stable; `message`
@@ -146,35 +163,11 @@ refusal reaches the subscriber as an HTTP status inside a fulfilled packet, and 
 price of that packet is spent. A subscriber SHOULD read the information document and
 check its request before it pays, and MUST read the status of every answer.
 
-To pay more than `price`, a subscriber sends more packets. `filter` and `pubkey` MAY be
-repeated on each of them; repeating the same values changes nothing.
+To pay more than `price`, a subscriber sends more packets. `filter` MAY be repeated on
+each of them; repeating the same filter changes nothing.
 
 A filter's `limit` has no meaning for a live feed and is ignored. `since` and `until`
 bound `created_at` as in NIP-01.
-
-### Who the payer is
-
-A payer is a channel toward the relay's connector, and a connector states one only for
-a packet admitted on a claim it verified on that channel (connector ADR 0040). Three
-things follow, and a subscriber MUST take them into account before it pays.
-
-- A subscriber MUST pay the relay's connector directly, as a client, on a channel of
-  its own. An agent node does this over a peering it created toward that connector:
-  until the relay's operator creates a peering in return, the agent node's packets
-  reach the relay's connector as a client's, and the payer is the channel that peering
-  opened.
-- Once the relay's operator has created a peering in return, the subscriber's packets
-  arrive on the peer wire and state no payer. The relay answers `payer_not_stated`,
-  the price is spent, and that subscriber cannot subscribe or top up.
-- A packet that reaches the relay's connector through another connector states either
-  no payer, with the same result, or that other connector's channel, in which case the
-  subscription belongs to whoever else pays through it. A subscriber MUST NOT
-  subscribe through an intermediary.
-- A subscriber that pays from a second channel is a second payer and opens a second
-  subscription. A balance cannot be moved from one payer to another.
-
-A subscriber SHOULD send one packet first and check that `payer` in the answer is its
-own channel before it sends the rest.
 
 ### The live feed
 
@@ -210,15 +203,13 @@ subscription's filter, and costs one broadcast price however many of the subscri
 `REQ`s or connections it is sent on.
 
 A payment or a change of filter takes effect for events accepted after the relay has
-answered it; open `REQ`s stay open. After a change of subscriber key, a connection
-authenticated with the earlier key no longer holds the subscription, and the relay
-closes its open `REQ`s with `payment-required:`.
+answered it; open `REQ`s stay open.
 
 `payment-required:` is a `CLOSED` prefix this draft adds to those of NIP-01 and
 NIP-42. A client MUST branch on the prefix and not on the text after it. The prefix
 says only that this connection holds nothing that pays for the feed. A subscriber
-whose `REQ` was open and is closed this way, and that has not changed its subscriber
-key, has run out; one that needs to know more reads its balance.
+whose `REQ` was open and is closed this way has run out; one that needs to know more
+reads its balance.
 
 ### When the balance runs out
 
@@ -245,14 +236,14 @@ A subscriber reads its subscription with a `GET` of the HTTP form of the relay's
 the URL the information document is served at, with the header
 `Accept: application/toon-subscription+json` and NIP-98 authorization: an
 `Authorization: Nostr <base64>` header carrying a kind `27235` event signed by the
-subscriber key, whose `u` tag is that URL and whose `method` tag is `GET`.
+subscriber key, whose `u` tag is that URL and whose `method` tag is `GET`. It is the
+authorization a payment carries, with the other method and no `payload`.
 
 - `200`, with `Content-Type: application/toon-subscription+json`: the body has
-  `payer`, `balance`, `broadcast_price`, `filter` and `pubkey`, as in the answer to a
-  payment.
+  `pubkey`, `balance`, `broadcast_price` and `filter`, as in the answer to a payment.
 - `401`, error code `unauthorized`: the authorization is missing or does not verify.
-- `404`, error code `not_subscribed`: the key is no subscription's subscriber key,
-  either because there never was one or because the relay forgot an exhausted one.
+- `404`, error code `not_subscribed`: the key has no subscription, either because
+  there never was one or because the relay forgot an exhausted one.
 
 Reading the balance is free and changes nothing.
 
@@ -275,8 +266,9 @@ the relay's business.
 
 ### Balances
 
-- A relay holds one balance per payer. Balances at different relays have nothing to do
-  with each other.
+- A relay holds one balance per subscriber key. Balances at different relays have
+  nothing to do with each other, and a balance cannot be moved from one key to
+  another.
 - A balance is not refundable. Nothing in this draft lets a subscriber withdraw one,
   and a relay owes nothing for a balance it holds when the subscriber stops reading.
 - A debit is for a broadcast, not for a receipt. An event that was debited and did not
@@ -284,9 +276,9 @@ the relay's business.
 - A debit is made at the broadcast price in force when the event is broadcast. A
   balance is an amount of money, not a number of events.
 - A relay MUST NOT forget a subscription that is not exhausted. It MAY forget an
-  exhausted one, and the next packet from that payer is then a first payment. A
-  subscriber that is not sure its subscription still exists SHOULD send `filter` and
-  `pubkey` with its payment.
+  exhausted one, and the next payment under that key is then a first payment. A
+  subscriber that is not sure its subscription still exists SHOULD send `filter` with
+  its payment.
 
 ## Kinds
 
@@ -331,29 +323,31 @@ carrying:
 ```http
 POST / HTTP/1.1
 Content-Type: application/json
+Authorization: Nostr <base64 of the event below>
 
-{
-  "filter": { "kinds": [1], "authors": ["3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"] },
-  "pubkey": "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e"
-}
+{"filter":{"kinds":[1],"authors":["3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"]}}
 ```
 
-The connector delivers it to the relay with `X-TOON-Payer: evm:0x5c3b…e1f2` and
-`X-TOON-Amount: 1000`. The packet is fulfilled, and the answer it carries is:
+```json
+{"kind": 27235, "pubkey": "7e7e9c42…", "tags": [["u", "https://relay.example/"], ["method", "POST"], ["payload", "<SHA-256 of the body, in hex>"]], "content": "", …}
+```
+
+The connector delivers it to the relay, here with `X-TOON-Amount: 1000`. The packet is
+fulfilled, and the answer it carries is:
 
 ```json
 {
-  "payer": "evm:0x5c3b…e1f2",
+  "pubkey": "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e",
   "credited": 1000,
   "balance": 1000,
   "broadcast_price": 10,
-  "filter": { "kinds": [1], "authors": ["3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"] },
-  "pubkey": "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e"
+  "filter": { "kinds": [1], "authors": ["3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"] }
 }
 ```
 
-**Paying again.** Two more packets with the body `{}` each answer `"credited": 1000`, and
-the second answers `"balance": 3000`.
+**Paying again.** Two more packets with the body `{}`, authorized the same way with
+the hash of that body, each answer `"credited": 1000`, and the second answers
+`"balance": 3000`.
 
 **The live feed.** The subscriber connects to `wss://relay.example`:
 
@@ -394,11 +388,10 @@ The relay answers `200`:
 
 ```json
 {
-  "payer": "evm:0x5c3b…e1f2",
+  "pubkey": "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e",
   "balance": 0,
   "broadcast_price": 10,
-  "filter": { "kinds": [1], "authors": ["3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"] },
-  "pubkey": "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e"
+  "filter": { "kinds": [1], "authors": ["3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d"] }
 }
 ```
 
@@ -412,11 +405,11 @@ relay:      ["EOSE", "q"]
 relay:      ["CLOSED", "q", "auth-required: the live feed is for subscribers"]
 ```
 
-**A refusal.** A first payment with the body `{}` is fulfilled, costs `1000`, and
-answers `400`:
+**A refusal.** A first payment with the body `{}`, correctly authorized, is fulfilled,
+costs `1000`, and answers `400`:
 
 ```json
-{ "error": { "code": "first_payment_incomplete", "message": "a first payment needs a filter and a pubkey" } }
+{ "error": { "code": "filter_required", "message": "a first payment needs a filter" } }
 ```
 
 ## Limits
@@ -430,32 +423,24 @@ answers `400`:
   its balance.
 - **A refused request still costs its price.** The connector charges for a packet the
   relay answered, whatever the answer.
-- **The relay learns who pays for which key.** It sees the payer and the subscriber
-  key together. A subscriber that signs public events with one key and does not want
-  its payments tied to them SHOULD use a subscriber key made for this purpose.
-- **A subscriber key that is known can be taken.** A relay refuses a key that another
-  payer's subscription already names, so someone who learns a key before its owner
-  subscribes can subscribe with it first. The owner loses nothing but has to choose
-  another key. A key made for this purpose and not published cannot be taken.
+- **The balance is the key's.** Whoever holds the subscriber key can pay into the
+  subscription, change its filter and draw it down. A subscriber that loses the key
+  loses the balance, and nobody else can recover it.
+- **The relay may learn who pays for which key.** When its connector states a payer,
+  the relay sees it beside the subscriber key. A subscriber that signs public events
+  with one key and does not want its payments tied to them SHOULD use a subscriber
+  key made for this purpose.
+- **The relay trusts its connector for the credit.** It credits what the connector
+  says it charged, or the route's price when the connector says nothing, and cannot
+  check either. It trusts the same connector for every write.
+- **An authorization can be replayed while it is fresh.** Each replay is a packet
+  somebody paid for and credits the key it names, so it gives away money. The most
+  it takes is to put back a filter the subscriber replaced within that minute.
 - **A reader can poll instead of paying.** Stored events are free, so repeated free
   reads approximate the feed. A relay that sells its feed needs a rate limit on free
   reads; that limit is not part of this draft.
-- **The subscriber key reads the feed that the payer pays for.** Whoever holds the key
-  can draw the balance down. Only the payer can change the key.
-
 ## Open questions
 
-- **A subscriber has to be a direct client of the relay's connector.** The balance is
-  keyed by the payer the connector states, and a connector states one only for a
-  claim it admitted itself. That excludes a subscriber that reaches the relay through
-  another connector, and it stops a subscriber topping up once the relay's operator
-  has created a peering in return, because a packet on the peer wire states no payer.
-  The alternative is to key the balance by the subscriber key and credit every packet
-  the subscribe route delivers, whoever paid it; the relay would then trust that its
-  connector delivers only what it charged for, which it already does for writes. This
-  draft keeps the payer, because that is the decision on record (toon_cli ADR 0005).
-  The lean is toward the subscriber key, and it is the first thing to settle before a
-  relay implements this.
 - **One filter.** A subscription has one filter, where a `REQ` takes several. A list
   would let one subscription cover what today needs a broad filter and narrower
   `REQ`s. The lean is to keep one until a subscriber needs more.

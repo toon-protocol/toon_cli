@@ -74,8 +74,8 @@ What a relay debits from a subscription for each event it broadcasts. Set by tha
 _Avoid_: Read price, subscription fee
 
 **Subscriber key**:
-The Nostr key a subscriber names when it subscribes, and proves it holds when it reads that subscription's live feed or its balance.
-_Avoid_: Token, credential, payer (the payer is the channel that paid)
+The Nostr key a subscription belongs to. A subscriber signs each payment of the subscribe route with it, and proves it holds it when it reads that subscription's live feed or its balance. A relay holds one balance per subscriber key, whoever paid.
+_Avoid_: Token, credential, payer (the payer is the channel that paid, and a subscription does not depend on it)
 
 ### How it is reached
 
