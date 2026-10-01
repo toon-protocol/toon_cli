@@ -154,11 +154,12 @@ events the amount buys. It pays only with `--yes`, under the spending limit, ove
 whole packets at the subscribe price, each authorized by NIP-98 with the subscriber key
 (`m/10473'/6'/0'`, not the agent identity), and the report gives `packets`, `paid`,
 `credited`, `balance`, `broadcast_price` and `filter`; a packet the relay refuses still cost
-its price, and `outcome` says `refused` or `rejected` with the exit code 1. A first
-subscription needs `--filter`; a later one may leave it out to top up, or give a new one to
-replace the old, and keeps the balance. `toon relay subscriptions` lists, per relay, the
-`balance`, `filter` and `subscriber_key`, read from the relay now (`current: true`) or as it
-last answered.
+its price, and `outcome` says `refused`, `rejected`, `wrong_fulfilment` or, when a later
+packet could not be sent, `failed`, with the exit code 1. A first subscription needs
+`--filter`; a later one may leave it out to top up with the filter last kept, or give a new
+one to replace the old, and keeps the balance. `toon relay subscriptions` lists, per relay, the
+`balance`, `filter` and `subscriber_key`, read from the relay now (`current: true`; a relay
+that holds no subscription for the key answers a balance of 0) or as it last answered.
 
 `toon nip publish` signs a draft (`nips/proposals-as-events.md`) the same way and writes it
 to the agent node's own relay as `toon event publish` does, with the same outcomes. It first

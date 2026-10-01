@@ -99,6 +99,11 @@ impl FakeRemoteRelay {
             .cloned()
     }
 
+    /// Forget the subscription of `pubkey`, as a relay may forget an exhausted one.
+    pub fn forget(&self, pubkey: &str) {
+        self.state.lock().unwrap().subscriptions.remove(pubkey);
+    }
+
     /// The subscriber key of each request credited, in order.
     pub fn credited(&self) -> Vec<String> {
         self.state.lock().unwrap().credited.clone()

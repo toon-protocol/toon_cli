@@ -139,7 +139,10 @@ impl Kept {
             subscriber_key: answer["pubkey"].as_str()?.to_owned(),
             filter: answer["filter"].clone(),
             balance: answer["balance"].as_u64()?,
-            broadcast_price: answer["broadcast_price"].as_u64()?,
+            // What the events a balance buys are counted with: a price of 0 is no answer.
+            broadcast_price: answer["broadcast_price"]
+                .as_u64()
+                .filter(|price| *price > 0)?,
         })
     }
 }
@@ -202,11 +205,21 @@ pub fn subscribe(
         return Err(node::no_agent_node(home));
     }
     let terms = terms(relay)?;
-    if filter.is_none() && !load(home)?.iter().any(|kept| kept.relay == relay) {
-        return Err(usage(format!(
-            "A first subscription to {relay} needs a filter: add --filter."
-        )));
-    }
+    // A top-up sends the filter last kept again: the relay may have forgotten an exhausted
+    // subscription, and the draft says to send `filter` when that may be so.
+    let filter = match filter {
+        Some(filter) => filter,
+        None => load(home)?
+            .into_iter()
+            .find(|kept| kept.relay == relay)
+            .map(|kept| kept.filter)
+            .filter(Value::is_object)
+            .ok_or_else(|| {
+                usage(format!(
+                    "A first subscription to {relay} needs a filter: add --filter."
+                ))
+            })?,
+    };
     let packets = amount / terms.price;
     if packets == 0 {
         return Err(usage(format!(
@@ -243,12 +256,8 @@ pub fn subscribe(
 
     let secret = subscriber_secret(home)?;
     let url = format!("{}/", event::http_url(relay)?);
-    let body = match &filter {
-        Some(filter) => json!({ "filter": filter }),
-        None => json!({}),
-    }
-    .to_string()
-    .into_bytes();
+    let subscriber_key = derive::nostr_public_key(&secret);
+    let body = json!({ "filter": filter }).to_string().into_bytes();
 
     spending::spend(home, paid.into(), yes, || {
         let mut paid_so_far = 0;
@@ -284,7 +293,11 @@ pub fn subscribe(
                     paid_so_far += terms.price;
                     let credit = (200..300).contains(&status).then(|| {
                         let answer: Value = serde_json::from_str(&body).unwrap_or_default();
-                        (answer["credited"].as_u64(), Kept::from_answer(relay, &body))
+                        (
+                            answer["credited"].as_u64(),
+                            Kept::from_answer(relay, &body)
+                                .filter(|kept| kept.subscriber_key == subscriber_key),
+                        )
                     });
                     match credit {
                         Some((Some(added), Some(kept))) => {
@@ -364,10 +377,36 @@ pub fn subscribe(
     })
 }
 
+/// What a relay answered to a read of a balance.
+enum Read {
+    /// The subscription as the relay holds it now.
+    Held(Kept),
+    /// `404`: the relay holds no subscription for the key, so the balance is 0.
+    NotSubscribed,
+    /// No answer that could be read.
+    Unanswered,
+}
+
 /// A relay's answer to a read of the balance of the subscriber key `secret`.
-fn read_balance(relay: &str, secret: &[u8; 32]) -> Option<Kept> {
+fn read_balance(relay: &str, secret: &[u8; 32]) -> Read {
+    let Some(response) = balance_response(relay, secret) else {
+        return Read::Unanswered;
+    };
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Read::NotSubscribed;
+    }
+    response
+        .error_for_status()
+        .ok()
+        .and_then(|response| response.text().ok())
+        .and_then(|text| Kept::from_answer(relay, &text))
+        .filter(|kept| kept.subscriber_key == derive::nostr_public_key(secret))
+        .map_or(Read::Unanswered, Read::Held)
+}
+
+fn balance_response(relay: &str, secret: &[u8; 32]) -> Option<reqwest::blocking::Response> {
     let url = format!("{}/", event::http_url(relay).ok()?);
-    let response = reqwest::blocking::Client::builder()
+    reqwest::blocking::Client::builder()
         .timeout(PATIENCE)
         .build()
         .ok()?
@@ -378,10 +417,7 @@ fn read_balance(relay: &str, secret: &[u8; 32]) -> Option<Kept> {
             authorization(secret, "GET", &url, None).ok()?,
         )
         .send()
-        .ok()?
-        .error_for_status()
-        .ok()?;
-    Kept::from_answer(relay, &response.text().ok()?)
+        .ok()
 }
 
 /// `toon relay subscriptions`: the balance and filter at each relay the operator
@@ -399,12 +435,15 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
     let mut shown = Vec::new();
     let mut lines = Vec::new();
     for entry in &mut kept {
-        let fresh = secret
-            .as_deref()
-            .and_then(|secret| read_balance(&entry.relay, secret));
-        let current = fresh.is_some();
-        if let Some(fresh) = fresh {
-            *entry = fresh;
+        let read = secret.as_deref().map_or(Read::Unanswered, |secret| {
+            read_balance(&entry.relay, secret)
+        });
+        let current = !matches!(read, Read::Unanswered);
+        match read {
+            Read::Held(fresh) => *entry = fresh,
+            // The filter is kept, for the next payment to open the subscription again with.
+            Read::NotSubscribed => entry.balance = 0,
+            Read::Unanswered => {}
         }
         let mut item = entry.json();
         item["current"] = json!(current);

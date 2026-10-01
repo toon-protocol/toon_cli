@@ -167,7 +167,7 @@ pub fn evm_address(secret: &[u8; 32]) -> String {
 }
 
 /// The Nostr public key (x-only, hex) of a secp256k1 secret.
-fn nostr_public_key(secret: &[u8; 32]) -> String {
+pub fn nostr_public_key(secret: &[u8; 32]) -> String {
     hex::encode(&public_key(secret)[1..])
 }
 

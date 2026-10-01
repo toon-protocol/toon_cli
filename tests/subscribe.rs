@@ -259,6 +259,32 @@ fn subscriptions_lists_the_balance_and_filter_at_each_relay() {
 }
 
 #[test]
+fn a_subscription_the_relay_forgot_lists_as_empty_and_a_top_up_opens_it_again() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    let paid = subscribe(
+        &near,
+        &relay,
+        &["--filter", FILTER, "--amount", "1000", "--yes"],
+    );
+    assert_eq!(paid.exit_code, 0, "{}{}", paid.stdout, paid.stderr);
+    let key = paid.json()["subscriber_key"].as_str().unwrap().to_owned();
+    relay.forget(&key);
+
+    let listed = near.toon(&["relay", "subscriptions", "--json"]).json();
+    assert_eq!(listed["subscriptions"][0]["balance"], 0, "{listed}");
+    assert_eq!(listed["subscriptions"][0]["current"], true);
+
+    // The top-up sends the filter last kept, so the relay opens the subscription again.
+    let topped = subscribe(&near, &relay, &["--amount", "1000", "--yes"]);
+    assert_eq!(topped.exit_code, 0, "{}{}", topped.stdout, topped.stderr);
+    let held = relay.subscription(&key).unwrap();
+    assert_eq!((held.balance, held.filter), (1000, json!({"kinds":[1]})));
+}
+
+#[test]
 fn the_subscriber_key_is_not_the_agent_identity() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);
