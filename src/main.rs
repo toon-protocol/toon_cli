@@ -64,7 +64,8 @@ fn main() -> ExitCode {
         }
         Command::Down => render(home::resolve().and_then(|home| status::down(&home)), json).into(),
         Command::Init(args) => render(
-            home::resolve().and_then(|home| wallet::init(&home, &args.options())),
+            home::resolve()
+                .and_then(|home| wallet::init(&home, &args.options(), args.from_mnemonic)),
             json,
         )
         .into(),
@@ -78,6 +79,20 @@ fn main() -> ExitCode {
             command: WalletCommand::Balances,
         } => render(
             home::resolve().and_then(|home| wallet::balances(&home)),
+            json,
+        )
+        .into(),
+        Command::Wallet {
+            command: WalletCommand::Backup { out },
+        } => render(
+            home::resolve().and_then(|home| wallet::backup(&home, &out)),
+            json,
+        )
+        .into(),
+        Command::Wallet {
+            command: WalletCommand::Restore { file },
+        } => render(
+            home::resolve().and_then(|home| wallet::restore(&home, &file)),
             json,
         )
         .into(),
