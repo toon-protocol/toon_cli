@@ -73,6 +73,7 @@ A failed command with `--json` prints:
 | `send_failed` | 1 | The packet could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
 | `unknown_name` | 1 | `toon logs` was given a name that is neither a TOON app nor an app of this agent node |
+| `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap, so a hidden service was not created or started; nothing falls back to clearnet |
 
 ## The wallet passphrase
 
@@ -90,3 +91,24 @@ settlement is off unless `--solana` is given. `toon up` does not start a connect
 settlement key holds less than 0.0001 ETH (0.01 SOL) for gas and one whole token; it fails
 with `unfunded`. Only the devnet has a faucet: on the other networks `toon wallet fund`
 fails with `faucet_unavailable`, and on mainnet the operator funds the addresses themselves.
+
+## Hidden service and clearnet
+
+A new TOON app is a hidden service (ADR 0003): its connector is reachable only at its onion
+endpoint, a `.anyone` address, on port 80, and the relay's read port at the same address on
+port 7100. Its connector listens on loopback only, and all of its outbound traffic goes
+through the overlay's SOCKS proxy, settlement RPC included. The endpoint is made from a key
+the wallet derives, so it is the same after a restart and after the wallet is restored.
+
+`toon init` creates a hidden service only with `--accept-anyone-terms`, which says the
+operator agrees to the Anyone Protocol's terms; without it `init` fails with `usage` and
+creates nothing. If the overlay cannot bootstrap, `init` fails with `overlay_unavailable`,
+creates nothing and leaves nothing listening: it never falls back to clearnet.
+
+`toon init --clearnet <hostname>` asks for clearnet instead. The connector binds the
+`--listen` address (`127.0.0.1:0` unless given), and the certificate and the reverse proxy
+that answer at the hostname are the operator's to provide. A clearnet TOON app needs no
+overlay and no terms flag.
+
+A hidden service hides where the TOON app is reachable and not who it pays: payments are
+on a public chain. `toon init` says so.

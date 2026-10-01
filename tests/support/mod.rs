@@ -103,6 +103,8 @@ impl Machine {
             .env("HOME", self.home())
             // Apps run as local processes of the fake relay, never as containers.
             .env("TOON_APP_COMMAND", fake_relay())
+            // The overlay is the loopback stand-in, never the Anyone daemon.
+            .env("TOON_OVERLAY", "loopback")
             .current_dir(self.home())
             .stdin(Stdio::null());
         command
@@ -110,7 +112,7 @@ impl Machine {
 
     /// Run `toon init --json` with `args` after it, and the passphrase every test uses.
     pub fn init_with(&self, args: &[&str]) -> Run {
-        let mut all = vec!["init", "--json"];
+        let mut all = vec!["init", "--json", "--accept-anyone-terms"];
         all.extend_from_slice(args);
         self.toon_with(&all, |command| {
             command.env("TOON_PASSPHRASE", PASSPHRASE);
@@ -124,6 +126,7 @@ impl Machine {
             &[
                 "init",
                 "--json",
+                "--accept-anyone-terms",
                 "--evm-rpc-url",
                 &chain.rpc_url(),
                 "--evm-token",

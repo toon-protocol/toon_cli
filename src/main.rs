@@ -15,6 +15,7 @@ mod keystore;
 mod node;
 mod operator;
 mod outcome;
+mod overlay;
 mod profile;
 mod runner;
 mod service;

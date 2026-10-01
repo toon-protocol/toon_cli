@@ -25,8 +25,9 @@ use sha2::Digest;
 use crate::connector::{self, Startup};
 use crate::control;
 use crate::funding;
-use crate::node::{self, AppFiles, ConnectorFiles, State, ToonApp};
+use crate::node::{self, AppFiles, ConnectorFiles, Reach, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::overlay::{self, Edge};
 use crate::runner::{self, AppRunner, AppSpec, RunningApp};
 
 /// How long a connector gets to exit once its supervisor is stopping, before it is killed.
@@ -80,8 +81,33 @@ struct Started {
     since: Instant,
 }
 
+/// The overlay a hidden service's connector is reached and reaches out through.
+struct Hidden {
+    edge: Box<dyn Edge>,
+    endpoint: String,
+    /// Where the relay's read port is, if the TOON app fronts a relay.
+    read: Option<SocketAddr>,
+}
+
+impl Hidden {
+    /// Publish the connector, now listening at `address`, and the relay's read port, at the
+    /// onion endpoint.
+    fn publish(&self, address: &str) {
+        let mut ports = Vec::new();
+        if let Ok(address) = address.parse() {
+            ports.push((overlay::CONNECTOR_PORT, address));
+        }
+        if let Some(read) = self.read {
+            ports.push((overlay::RELAY_READ_PORT, read));
+        }
+        self.edge.publish(&self.endpoint, &ports);
+    }
+}
+
 /// A supervisor whose connector is listening.
 pub struct Supervisor {
+    /// Held for as long as the connector runs, and dropped after it.
+    hidden: Option<Hidden>,
     connector: Option<Started>,
     /// The apps behind it, stopped after it.
     apps: Vec<Box<dyn RunningApp>>,
@@ -220,8 +246,33 @@ fn launch_connector(
         .iter()
         .find(|(name, _)| name == node::RELAY)
         .map(|(_, running)| running.write_address());
-    let files = node::render(home, app, relay)?;
+    // A hidden service is not started without its overlay, and never on clearnet instead.
+    let hidden = match app.reach {
+        Reach::Hidden => {
+            let edge = overlay::bootstrap(home)?;
+            let key = ConnectorFiles::of(home, app.connector).onion_key;
+            let endpoint = edge.issue(app.connector, &key)?;
+            let read = apps
+                .iter()
+                .find(|(name, _)| name == node::RELAY)
+                .and_then(|(_, running)| running.read_address());
+            Some(Hidden {
+                edge,
+                endpoint,
+                read,
+            })
+        }
+        Reach::Clearnet { .. } => None,
+    };
+    let rendering = hidden.as_ref().map(|hidden| node::Overlay {
+        proxy: hidden.edge.proxy(),
+        endpoint: hidden.endpoint.clone(),
+    });
+    let files = node::render(home, app, relay, rendering.as_ref())?;
     let started = spawn(&files)?;
+    if let Some(hidden) = &hidden {
+        hidden.publish(&started.address);
+    }
     let first = (started.child.id(), started.address.clone());
     let shared = Arc::new(Shared {
         toon_app: app.name.clone(),
@@ -245,6 +296,7 @@ fn launch_connector(
     let answering = Arc::clone(&shared);
     thread::spawn(move || control::serve(listener, |request| answering.answer(request)));
     Ok(Supervisor {
+        hidden,
         connector: Some(started),
         apps: apps.drain(..).map(|(_, running)| running).collect(),
         files,
@@ -436,6 +488,9 @@ impl Supervisor {
         self.delay = (self.delay * 2).min(LONGEST_RESTART_DELAY);
         match spawn(&self.files) {
             Ok(started) => {
+                if let Some(hidden) = &self.hidden {
+                    hidden.publish(&started.address);
+                }
                 let mut live = self.shared.live();
                 live.pid = Some(started.child.id());
                 live.address = Some(started.address.clone());

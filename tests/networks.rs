@@ -156,7 +156,7 @@ fn init_says_which_address_needs_how_much_and_how_to_fund_it() {
 
 fn fresh_text_init() -> String {
     let machine = Machine::new();
-    let run = machine.toon_with(&["init"], |command| {
+    let run = machine.toon_with(&["init", "--accept-anyone-terms"], |command| {
         command.env("TOON_PASSPHRASE", support::PASSPHRASE);
     });
     assert_eq!(run.exit_code, 0, "{}", run.stderr);
@@ -166,9 +166,12 @@ fn fresh_text_init() -> String {
 #[test]
 fn mainnet_init_tells_the_operator_to_fund_the_addresses_themselves() {
     let machine = Machine::new();
-    let run = machine.toon_with(&["init", "--network", "mainnet"], |command| {
-        command.env("TOON_PASSPHRASE", support::PASSPHRASE);
-    });
+    let run = machine.toon_with(
+        &["init", "--accept-anyone-terms", "--network", "mainnet"],
+        |command| {
+            command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+        },
+    );
 
     assert_eq!(run.exit_code, 0, "{}", run.stderr);
     assert!(run.stdout.contains("fund them yourself"), "{}", run.stdout);
