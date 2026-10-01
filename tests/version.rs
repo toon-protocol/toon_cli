@@ -33,11 +33,20 @@ fn pinned_relay_image() -> String {
     let image = manifest
         .lines()
         .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
         .skip_while(|line| *line != "[package.metadata.toon]")
+        .take_while(|line| *line == "[package.metadata.toon]" || !line.starts_with('['))
         .find_map(|line| line.strip_prefix("relay_image = \""))
         .and_then(|rest| rest.split_once('"'))
         .map(|(image, _)| image)
         .expect("Cargo.toml pins a relay image");
+    let (_, digest) = image
+        .split_once("@sha256:")
+        .expect("the relay image is pinned by digest");
+    assert!(
+        digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "the relay image digest is a sha256: {image}"
+    );
     image.to_string()
 }
 
