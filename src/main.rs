@@ -9,13 +9,16 @@ mod cli;
 mod connector;
 mod control;
 mod derive;
+mod event;
 mod funding;
 mod home;
 mod keystore;
 mod node;
 mod operator;
 mod outcome;
+mod overlay;
 mod profile;
+mod relay;
 mod runner;
 mod service;
 mod spending;
@@ -32,7 +35,7 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use serde_json::json;
 
-use cli::{Cli, Command, LimitCommand, PeerCommand, RouteCommand, WalletCommand};
+use cli::{Cli, Command, LimitCommand};
 use outcome::{Error, ErrorCode, Exit, Report};
 use up::Stopped;
 
@@ -63,12 +66,16 @@ fn main() -> ExitCode {
             json,
         )
         .into(),
-        Command::Wallet {
-            command: WalletCommand::Show,
-        } => render(home::resolve().and_then(|home| wallet::show(&home)), json).into(),
-        Command::Wallet {
-            command: WalletCommand::Fund,
-        } => render(home::resolve().and_then(|home| funding::fund(&home)), json).into(),
+        Command::Wallet { command } => render(
+            home::resolve().and_then(|home| wallet::run(&home, &command)),
+            json,
+        )
+        .into(),
+        Command::Channel { command } => render(
+            home::resolve().and_then(|home| operator::channel(&home, command)),
+            json,
+        )
+        .into(),
         Command::Send(args) => render(
             home::resolve().and_then(|home| {
                 spending::spend(&home, args.amount.into(), args.yes, || {
@@ -83,23 +90,7 @@ fn main() -> ExitCode {
         )
         .into(),
         Command::Peer { command } => render(
-            home::resolve().and_then(|home| match &command {
-                PeerCommand::Add(args) => spending::spend(&home, args.deposit, args.yes, || {
-                    let report = operator::peer_add(
-                        &home,
-                        &operator::PeerAdd {
-                            address: &args.address,
-                            deposit: args.deposit,
-                            id: args.id.as_deref(),
-                            fee: args.fee,
-                            max_packet_amount: args.max_packet_amount,
-                        },
-                    )?;
-                    Ok((report, true))
-                }),
-                PeerCommand::List => operator::peer_list(&home),
-                PeerCommand::Remove { id } => operator::peer_remove(&home, id),
-            }),
+            home::resolve().and_then(|home| operator::peer(&home, &command)),
             json,
         )
         .into(),
@@ -115,15 +106,13 @@ fn main() -> ExitCode {
         )
         .into(),
         Command::Route { command } => render(
-            home::resolve().and_then(|home| match &command {
-                RouteCommand::List => operator::route_list(&home),
-                RouteCommand::Add {
-                    prefix,
-                    peer,
-                    price,
-                } => operator::route_add(&home, prefix, peer, *price),
-                RouteCommand::Remove { prefix } => operator::route_remove(&home, prefix),
-            }),
+            home::resolve().and_then(|home| operator::route(&home, &command)),
+            json,
+        )
+        .into(),
+        Command::Event { command } => render(event::run(command), json).into(),
+        Command::Relay { command } => render(
+            home::resolve().and_then(|home| relay::run(&home, command)),
             json,
         )
         .into(),

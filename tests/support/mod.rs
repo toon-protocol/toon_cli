@@ -10,6 +10,7 @@
 pub mod anvil_chain;
 pub mod fake_chain;
 pub mod fake_faucet;
+pub mod local_chain;
 pub mod unpeerable;
 
 use std::fs::{self, File};
@@ -105,6 +106,8 @@ impl Machine {
             .env("HOME", self.home())
             // Apps run as local processes of the fake relay, never as containers.
             .env("TOON_APP_COMMAND", fake_relay())
+            // The overlay is the loopback stand-in, never the Anyone daemon.
+            .env("TOON_OVERLAY", "loopback")
             .current_dir(self.home())
             .stdin(Stdio::null());
         command
@@ -112,7 +115,7 @@ impl Machine {
 
     /// Run `toon init --json` with `args` after it, and the passphrase every test uses.
     pub fn init_with(&self, args: &[&str]) -> Run {
-        let mut all = vec!["init", "--json"];
+        let mut all = vec!["init", "--json", "--accept-anyone-terms"];
         all.extend_from_slice(args);
         self.toon_with(&all, |command| {
             command.env("TOON_PASSPHRASE", PASSPHRASE);
@@ -126,6 +129,7 @@ impl Machine {
             &[
                 "init",
                 "--json",
+                "--accept-anyone-terms",
                 "--evm-rpc-url",
                 &chain.rpc_url(),
                 "--evm-token",
@@ -145,6 +149,27 @@ impl Machine {
         )
     }
 
+    /// Like `init_on`, for a connector that is reached on clearnet: a connector peers over
+    /// plain HTTP at the address it listens on, which a hidden service does not.
+    pub fn init_on_clearnet(&self, chain: &fake_chain::FakeChain) -> Run {
+        self.init_with(&[
+            "--clearnet",
+            "toon.example.com",
+            "--evm-rpc-url",
+            &chain.rpc_url(),
+            "--evm-token",
+            fake_chain::TOKEN,
+            "--evm-decimals",
+            &fake_chain::TOKEN_DECIMALS.to_string(),
+            "--evm-asset-name",
+            "USDC",
+            "--evm-asset-version",
+            "2",
+            "--evm-transfer-method",
+            "permit2",
+        ])
+    }
+
     /// Like `init_on`, on the local chain `anvil`: its token moves by ERC-3009, as the
     /// profile's does. The chain and the connectors share one machine, so a connector
     /// that peers needs `plaintext_peers`.
@@ -153,6 +178,8 @@ impl Machine {
         let rpc_url = chain.rpc_url();
         let token = chain.token();
         let mut args = vec![
+            "--clearnet",
+            "toon.example.com",
             "--evm-rpc-url",
             &rpc_url,
             "--evm-token",
@@ -164,6 +191,23 @@ impl Machine {
             args.push("--allow-plaintext-peers");
         }
         self.init_with(&args)
+    }
+
+    /// Run `toon init` for an agent node that settles in USDC on a local chain, paying
+    /// into a channel with ERC-3009 as on Base.
+    pub fn init_on_local(&self, chain: &local_chain::LocalChain) -> Run {
+        let decimals = local_chain::TOKEN_DECIMALS.to_string();
+        let token = chain.token();
+        self.init_with(&[
+            "--clearnet",
+            "toon.example.com",
+            "--evm-rpc-url",
+            chain.rpc_url(),
+            "--evm-token",
+            &token,
+            "--evm-decimals",
+            &decimals,
+        ])
     }
 
     /// Write `contents` to `name` in the agent node's home, and return its path.

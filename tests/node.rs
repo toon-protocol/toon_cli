@@ -72,7 +72,7 @@ fn init_twice_creates_nothing_twice() {
     machine.init_on(&chain);
     let before = tree(&machine.agent_node_home());
 
-    let again = machine.toon(&["init", "--json"]);
+    let again = machine.toon(&["init", "--json", "--accept-anyone-terms"]);
 
     assert_eq!(again.exit_code, 0, "{}", again.stdout);
     let report = again.json();
@@ -86,7 +86,13 @@ fn init_that_the_connector_would_refuse_leaves_no_wallet() {
     let machine = Machine::new();
 
     let run = machine.toon_with(
-        &["init", "--json", "--listen", "not an address"],
+        &[
+            "init",
+            "--json",
+            "--accept-anyone-terms",
+            "--listen",
+            "not an address",
+        ],
         |command| {
             command.env("TOON_PASSPHRASE", support::PASSPHRASE);
         },
@@ -112,15 +118,23 @@ fn the_connector_config_is_rendered_from_the_state_on_every_up() {
     up.report();
 
     // What changes is where the relay was found: `init` could only point at where its
-    // container will serve, and `up` knows where the relay is.
+    // container will serve, and `up` knows where the relay is. The overlay's proxy is
+    // another: each overlay that starts picks its own port.
+    let without_proxy = |config: String| {
+        config
+            .lines()
+            .filter(|line| !line.starts_with("socks_proxy"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     let status = machine.toon(&["status", "--json"]).json();
     let relay = status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
         .as_str()
         .unwrap()
         .to_owned();
     assert_eq!(
-        fs::read_to_string(&config).unwrap(),
-        rendered.replace("127.0.0.1:3100", &relay)
+        without_proxy(fs::read_to_string(&config).unwrap()),
+        without_proxy(rendered.replace("127.0.0.1:3100", &relay))
     );
 }
 

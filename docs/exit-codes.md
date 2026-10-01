@@ -70,18 +70,23 @@ A failed command with `--json` prints:
 | `unfunded` | 1 | A settlement key does not hold what the connector needs, so `toon up` did not start it; the message names each address and the amount |
 | `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
-| `send_failed` | 1 | The packet could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
+| `send_failed` | 1 | The packet (or, for `toon event publish`, the event) could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
 | `unknown_name` | 1 | `toon logs` was given a name that is neither a TOON app nor an app of this agent node |
 | `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
 | `peer_not_peerable` | 1 | `peer add` named a connector that is not peerable: the refusal is on the other side, and only its operator can lift it |
 | `route_failed` | 1 | The connector's operator surface refused a route write or could not be reached; the message carries the reason |
+| `chain_failed` | 1 | A chain's JSON-RPC endpoint could not be reached or did not answer a read as expected; the message carries the reason |
+| `channel_failed` | 1 | A channel write was refused by the connector or could not be sent, the channel id is not one, or the terms file was unreadable; the message carries the reason |
+| `query_failed` | 1 | `toon event query` could not read events from the relay: it did not answer, is not a websocket relay this build dials, or closed the subscription with a reason the message carries |
+| `confirmation_required` | 1 | `toon relay config` or `toon relay price` would restart a running relay and its connector and was not given `--yes`; nothing was changed |
+| `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap, so a hidden service was not created or started; nothing falls back to clearnet |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
 | `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
 
 ## The wallet passphrase
 
-`toon init` and `toon wallet show` read the passphrase from the file named by
+`toon init`, `toon wallet show`, `toon wallet balances` and `toon event publish` read the passphrase from the file named by
 `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`. It is never a flag. One trailing
 newline in the file is not part of the passphrase.
 
@@ -96,6 +101,35 @@ settlement key holds less than 0.0001 ETH (0.01 SOL) for gas and one whole token
 with `unfunded`. Only the devnet has a faucet: on the other networks `toon wallet fund`
 fails with `faucet_unavailable`, and on mainnet the operator funds the addresses themselves.
 
+## Hidden service and clearnet
+
+A new TOON app is a hidden service (ADR 0003): its connector is reachable only at its onion
+endpoint, a `.anyone` address, on port 80, and the relay's read port at the same address on
+port 7100. Its connector listens on loopback only, and all of its outbound traffic goes
+through the overlay's SOCKS proxy, settlement RPC included. The endpoint is made from a key
+the wallet derives, so it is the same after a restart and after the wallet is restored.
+
+`toon init` creates a hidden service only with `--accept-anyone-terms`, which says the
+operator agrees to the Anyone Protocol's terms; without it `init` fails with `usage` and
+creates nothing. If the overlay cannot bootstrap, `init` fails with `overlay_unavailable`,
+creates nothing and leaves nothing listening: it never falls back to clearnet.
+
+`toon init --clearnet <hostname>` asks for clearnet instead. The connector binds the
+`--listen` address (`127.0.0.1:0` unless given), and the certificate and the reverse proxy
+that answer at the hostname are the operator's to provide. A clearnet TOON app needs no
+overlay and no terms flag.
+
+A hidden service hides where the TOON app is reachable and not who it pays: payments are
+on a public chain. `toon init` says so.
+
+## Events
+
+`toon event publish` signs with the agent identity, which is why it needs the passphrase,
+and sends the event to the agent node's own relay as an operator write: it exits 1 with
+`"outcome": "rejected"` when the packet is rejected, `"outcome": "refused"` when the relay
+answers with a status that is not 2xx, and `"outcome": "wrong_fulfilment"` when the packet is
+fulfilled but not by this connector. `toon event query` is a plain NIP-01 `REQ` and needs no
+passphrase; it reads from `ws://` relays only.
 ## The spending limit
 
 Every command that moves money (`toon send`, `toon peer add`) states its amount and needs

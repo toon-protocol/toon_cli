@@ -193,7 +193,7 @@ fn peers_and_routes_are_listed_and_removed() {
 fn every_connector_the_cli_renders_a_config_for_is_peerable() {
     let chain = FakeChain::start();
     let machine = Machine::new();
-    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    assert_eq!(machine.init_on_clearnet(&chain).exit_code, 0);
 
     let config = std::fs::read_to_string(
         machine
@@ -253,7 +253,7 @@ fn peer_add_needs_a_deposit() {
 fn peer_commands_need_the_agent_node_to_be_running() {
     let chain = FakeChain::start();
     let machine = Machine::new();
-    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    assert_eq!(machine.init_on_clearnet(&chain).exit_code, 0);
 
     for args in [
         &[
@@ -308,7 +308,7 @@ fn a_connector_that_dials_no_plaintext_says_the_refusal_is_on_this_side() {
 fn a_label_or_prefix_that_is_not_one_path_segment_is_refused() {
     let chain = FakeChain::start();
     let machine = Machine::new();
-    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    assert_eq!(machine.init_on_clearnet(&chain).exit_code, 0);
 
     for (args, code) in [
         (&["peer", "remove", "far/../x", "--json"][..], "peer_failed"),
