@@ -4,8 +4,11 @@
 //! The connector reads its routes only at start (ADR 0002), so each of these records the
 //! change in the state and then asks the supervisor to start the connector again. That
 //! drops the packets it holds in flight, so each refuses without `--yes`. If the restart
-//! fails, the state is put back and the connector is started again as it was.
+//! fails, the state is put back and the connector is started again as it was. If the
+//! agent node is not running, the change is checked and recorded, and `toon up` starts
+//! the connector with it.
 
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::time::Duration;
 
@@ -14,6 +17,7 @@ use serde_json::json;
 use crate::control;
 use crate::node::{self, App, Source, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::runner;
 
 /// How long a restart waits: an image is pulled and started, then the connector binds to
 /// its chain.
@@ -84,15 +88,19 @@ fn confirm(yes: bool, toon_app: &str) -> Result<(), Error> {
 }
 
 /// Record `changed` as the state, and start the connector again if it runs. If it does not
-/// start again with the change, the state is put back, and the connector started again
-/// without it. Returns whether a connector was restarted.
+/// start again with the change, the state is put back, and the connector, if the failed
+/// restart stopped it, started again without it. If nothing runs, the change is checked
+/// against the connector's own validation before it is recorded. Returns whether a
+/// connector was restarted.
 fn apply(home: &Path, before: &State, changed: &State, toon_app: &str) -> Result<bool, Error> {
-    changed.save(home)?;
     if !control::running(home) {
+        check(home, changed, toon_app)?;
+        changed.save(home)?;
         return Ok(false);
     }
+    changed.save(home)?;
     let reply = control::ask_within(home, "reload", RESTART_PATIENCE);
-    let error = match &reply {
+    let mut error = match &reply {
         Some(reply) if reply["reloaded"] == true => return Ok(true),
         Some(reply) if reply["error"].is_object() => {
             let code = match reply["error"]["code"].as_str() {
@@ -113,12 +121,36 @@ fn apply(home: &Path, before: &State, changed: &State, toon_app: &str) -> Result
         ),
     };
     before.save(home)?;
-    let _ = control::ask_within(home, "reload", RESTART_PATIENCE);
+    // A restart that failed before it stopped the connector left it as it was.
+    let untouched = reply.is_some_and(|reply| reply["stopped"] == false);
+    if !untouched {
+        let back = control::ask_within(home, "reload", RESTART_PATIENCE);
+        if !back.is_some_and(|back| back["reloaded"] == true) {
+            error.message.push_str(&format!(
+                " The connector of {toon_app} did not start again as it was either."
+            ));
+        }
+    }
     Err(error)
 }
 
-fn restarted(restarted: bool, toon_app: &str) -> String {
-    if restarted {
+/// Render the config of `toon_app` in `changed`, with each app that runs reached where its
+/// container serves, and check it with the connector's own validation.
+fn check(home: &Path, changed: &State, toon_app: &str) -> Result<(), Error> {
+    let Some(app) = changed.toon_apps.iter().find(|app| app.name == toon_app) else {
+        return Ok(());
+    };
+    let placeholder = SocketAddr::from((Ipv4Addr::LOCALHOST, runner::WRITE_PORT));
+    let addresses: Vec<(String, SocketAddr)> = app
+        .apps
+        .iter()
+        .map(|behind| (behind.name.clone(), placeholder))
+        .collect();
+    node::render(home, app, &addresses).map(|_| ())
+}
+
+fn restarted(now: bool, toon_app: &str) -> String {
+    if now {
         format!("The connector of {toon_app} restarted.")
     } else {
         format!(

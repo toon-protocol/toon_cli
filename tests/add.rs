@@ -339,6 +339,37 @@ fn a_node_that_is_not_running_records_the_change_without_a_restart() {
 }
 
 #[test]
+fn a_node_that_is_not_running_refuses_a_change_the_connector_would_refuse() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let before = fs::read_to_string(machine.agent_node_home().join("state.json")).unwrap();
+
+    // A route the connector's own validation refuses.
+    let run = machine.toon(&[
+        "add",
+        "x",
+        "--to",
+        "relay",
+        "--url",
+        "not a url",
+        "--address",
+        "bad",
+        "--yes",
+        "--json",
+    ]);
+
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
+    assert_eq!(
+        fs::read_to_string(machine.agent_node_home().join("state.json")).unwrap(),
+        before
+    );
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+    send(connector(&machine), "g.toon.relay.ephemeral", b"ok").expect("fulfilled");
+}
+
+#[test]
 fn add_refuses_names_and_addresses_that_are_taken_or_unknown() {
     let (machine, _chain, _up) = running();
 
@@ -390,11 +421,16 @@ fn add_refuses_names_and_addresses_that_are_taken_or_unknown() {
 }
 
 #[test]
-fn a_failed_restart_puts_the_state_back() {
+fn a_failed_restart_puts_the_state_back_and_leaves_the_connector_running() {
     let (machine, _chain, _up) = running();
     let before = fs::read_to_string(machine.agent_node_home().join("state.json")).unwrap();
+    let pid = |machine: &Machine| {
+        machine.toon(&["status", "--json"]).json()["agent_node"]["toon_apps"][0]["connector"]["pid"]
+            .clone()
+    };
+    let first = pid(&machine);
 
-    // An address the connector's own validation refuses: no leading `g.`.
+    // A route the connector's own validation refuses.
     let run = machine.toon(&[
         "add",
         "x",
@@ -413,8 +449,7 @@ fn a_failed_restart_puts_the_state_back() {
         fs::read_to_string(machine.agent_node_home().join("state.json")).unwrap(),
         before
     );
-    wait_until("the connector never came back", || {
-        machine.toon(&["status", "--json"]).exit_code == 0
-    });
+    // The config was refused before the connector stopped, so it never did.
+    assert_eq!(pid(&machine), first);
     send(connector(&machine), "g.toon.relay.ephemeral", b"ok").expect("fulfilled");
 }

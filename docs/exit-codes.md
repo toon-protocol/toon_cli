@@ -75,7 +75,7 @@ A failed command with `--json` prints:
 | `unknown_name` | 1 | `toon logs`, `toon add` or `toon remove` was given a name that is not a TOON app or an app of this agent node, as that command needs |
 | `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
 | `peer_not_peerable` | 1 | `peer add` named a connector that is not peerable: the refusal is on the other side, and only its operator can lift it |
-| `route_failed` | 1 | The connector's operator surface refused a route write or could not be reached; the message carries the reason |
+| `route_failed` | 1 | The connector's operator surface refused a route write or could not be reached, or a route command was given an address prefix it cannot use or that no route has; the message carries the reason |
 | `name_taken` | 1 | `toon add` was given a name that is not usable, or that a TOON app or an app of this agent node already has |
 | `confirmation_required` | 1 | `toon add`, `toon remove` or `toon route price` restarts the connector, which drops the packets it holds in flight, and was not given `--yes` |
 

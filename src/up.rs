@@ -64,14 +64,21 @@ struct Live {
     last_exit: Option<String>,
 }
 
+/// Why a reload failed, and whether the connector was stopped on the way: a reload that
+/// fails before it stops the connector leaves it as it was.
+struct Unreloaded {
+    error: Error,
+    stopped: bool,
+}
+
 /// Someone waiting for the connector to be started again with the state as it now is.
-type Reload = Sender<Result<(), Error>>;
+type Reload = Sender<Result<(), Unreloaded>>;
 
 struct Shared {
     toon_app: String,
     apps: Mutex<Vec<AppStatus>>,
-    /// A `reload` request that `wait` has not carried out yet.
-    reload: Mutex<Option<Reload>>,
+    /// The `reload` requests that `wait` has not carried out yet.
+    reload: Mutex<Vec<Reload>>,
     stop: AtomicBool,
     live: Mutex<Live>,
 }
@@ -92,6 +99,8 @@ pub struct Supervisor {
     /// The apps behind it that run, stopped after it.
     apps: StartedApps,
     runner: Box<dyn AppRunner>,
+    /// The TOON app as the connector now runs it.
+    app: ToonApp,
     files: ConnectorFiles,
     shared: Arc<Shared>,
     socket: PathBuf,
@@ -273,7 +282,7 @@ fn launch_connector(
     let shared = Arc::new(Shared {
         toon_app: app.name.clone(),
         apps: Mutex::new(statuses(&apps)),
-        reload: Mutex::new(None),
+        reload: Mutex::new(Vec::new()),
         stop: AtomicBool::new(false),
         live: Mutex::new(Live {
             pid: Some(first.0),
@@ -284,11 +293,12 @@ fn launch_connector(
         }),
     });
     let answering = Arc::clone(&shared);
-    thread::spawn(move || control::serve(listener, |request| answering.answer(request)));
+    thread::spawn(move || control::serve(listener, move |request| answering.answer(request)));
     Ok(Supervisor {
         connector: Some(started),
         apps,
         runner,
+        app: app.clone(),
         files,
         shared,
         socket: socket.to_path_buf(),
@@ -382,13 +392,21 @@ impl Shared {
     /// the answer. Apps are started and stopped to match the state too.
     fn reload(&self) -> Value {
         let (answer, answered) = mpsc::channel();
-        *self.reload.lock().expect("the reload request") = Some(answer);
+        self.reloads().push(answer);
         match answered.recv() {
             Ok(Ok(())) => json!({ "reloaded": true }),
-            Ok(Err(error)) => error.json(),
+            Ok(Err(Unreloaded { error, stopped })) => {
+                let mut reply = error.json();
+                reply["stopped"] = json!(stopped);
+                reply
+            }
             Err(_) => json!({ "error": { "code": "connector_failed",
                 "message": "The supervisor stopped before it reloaded." } }),
         }
+    }
+
+    fn reloads(&self) -> std::sync::MutexGuard<'_, Vec<Reload>> {
+        self.reload.lock().expect("the reload requests")
     }
 
     fn apps(&self) -> std::sync::MutexGuard<'_, Vec<AppStatus>> {
@@ -444,14 +462,22 @@ impl Supervisor {
                     break;
                 }
             }
-            let requested = self
-                .shared
-                .reload
-                .lock()
-                .expect("the reload request")
-                .take();
-            if let Some(answer) = requested {
-                let _ = answer.send(self.reload());
+            // Requests that came in together are carried out by one restart.
+            let requested = std::mem::take(&mut *self.shared.reloads());
+            if !requested.is_empty() {
+                let reloaded = self.reload();
+                for answer in requested {
+                    let _ = answer.send(match &reloaded {
+                        Ok(()) => Ok(()),
+                        Err(unreloaded) => Err(Unreloaded {
+                            error: Error {
+                                code: unreloaded.error.code,
+                                message: unreloaded.error.message.clone(),
+                            },
+                            stopped: unreloaded.stopped,
+                        }),
+                    });
+                }
                 continue;
             }
             let Some(started) = self.connector.as_mut() else {
@@ -464,6 +490,8 @@ impl Supervisor {
                 Err(error) => self.stopped(format!("The connector stopped ({error}).")),
             }
         }
+        // Whoever still waits for a reload is told the supervisor stopped.
+        self.shared.reloads().clear();
         self.stop_connector();
         // The apps go once the connector that delivers to them has.
         for (_, app) in &mut self.apps {
@@ -498,7 +526,8 @@ impl Supervisor {
     fn restart(&mut self) {
         let until = Instant::now() + self.delay;
         while Instant::now() < until {
-            if self.shared.stop.load(Ordering::SeqCst) {
+            // A reload starts the connector itself, without waiting out the delay.
+            if self.shared.stop.load(Ordering::SeqCst) || !self.shared.reloads().is_empty() {
                 return;
             }
             thread::sleep(Duration::from_millis(20));
@@ -522,20 +551,29 @@ impl Supervisor {
     }
 
     /// Start the connector again with the apps and routes the state now holds. An app that
-    /// is new starts first, so that one that does not start leaves the connector as it was.
-    /// Then the connector stops, which drops what it holds in flight, and the apps that
-    /// were removed stop after it.
-    fn reload(&mut self) -> Result<(), Error> {
-        let Some(state) = State::load(&self.home)? else {
-            return Err(node::no_agent_node(&self.home));
+    /// is new starts first, and the new config is checked, so that a change that fails
+    /// either leaves the connector as it was. Then the connector stops, which drops what it
+    /// holds in flight, and the apps that were removed stop after it.
+    fn reload(&mut self) -> Result<(), Unreloaded> {
+        let untouched = |error| Unreloaded {
+            error,
+            stopped: false,
         };
+        let state = State::load(&self.home)
+            .map_err(untouched)?
+            .ok_or_else(|| untouched(node::no_agent_node(&self.home)))?;
         let toon_app = self.shared.toon_app.clone();
         let Some(app) = state.toon_apps.iter().find(|app| app.name == toon_app) else {
-            return Err(failed(format!(
+            return Err(untouched(failed(format!(
                 "The TOON app {toon_app} is no longer in the state."
-            )));
+            ))));
         };
         let mut fresh = StartedApps::new();
+        let stop = |fresh: &mut StartedApps| {
+            for (_, running) in fresh {
+                running.stop();
+            }
+        };
         for behind in &app.apps {
             if self.apps.iter().any(|(name, _)| *name == behind.name) {
                 continue;
@@ -544,13 +582,22 @@ impl Supervisor {
                 Ok(Some(running)) => fresh.push((behind.name.clone(), running)),
                 Ok(None) => {}
                 Err(error) => {
-                    for (_, running) in &mut fresh {
-                        running.stop();
-                    }
-                    return Err(error);
+                    stop(&mut fresh);
+                    return Err(untouched(error));
                 }
             }
         }
+        let mut reached = addresses(&self.apps);
+        reached.extend(addresses(&fresh));
+        let files = match node::render(&self.home, app, &reached) {
+            Ok(files) => files,
+            Err(error) => {
+                stop(&mut fresh);
+                // Put back the config the connector runs, for the next time it restarts.
+                let _ = node::render(&self.home, &self.app, &addresses(&self.apps));
+                return Err(untouched(error));
+            }
+        };
         self.stop_connector();
         {
             let mut live = self.shared.live();
@@ -567,8 +614,12 @@ impl Supervisor {
         self.apps = kept;
         self.apps.extend(fresh);
         *self.shared.apps() = statuses(&self.apps);
-        self.files = node::render(&self.home, app, &addresses(&self.apps))?;
-        let started = spawn(&self.files)?;
+        self.app = app.clone();
+        self.files = files;
+        let started = spawn(&self.files).map_err(|error| Unreloaded {
+            error,
+            stopped: true,
+        })?;
         let mut live = self.shared.live();
         live.pid = Some(started.child.id());
         live.address = Some(started.address.clone());
