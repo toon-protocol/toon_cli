@@ -64,6 +64,7 @@ pub enum ErrorCode {
     SendFailed,
     SystemdFailed,
     UnknownName,
+    ConfirmationRequired,
 }
 
 impl ErrorCode {
@@ -87,6 +88,7 @@ impl ErrorCode {
             ErrorCode::SendFailed => "send_failed",
             ErrorCode::SystemdFailed => "systemd_failed",
             ErrorCode::UnknownName => "unknown_name",
+            ErrorCode::ConfirmationRequired => "confirmation_required",
         }
     }
 
@@ -108,7 +110,8 @@ impl ErrorCode {
             | ErrorCode::NotRunning
             | ErrorCode::SendFailed
             | ErrorCode::SystemdFailed
-            | ErrorCode::UnknownName => Exit::Failure,
+            | ErrorCode::UnknownName
+            | ErrorCode::ConfirmationRequired => Exit::Failure,
         }
     }
 }
