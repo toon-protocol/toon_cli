@@ -1,0 +1,43 @@
+//! The command surface.
+
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
+
+use crate::outcome::Exit;
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "toon",
+    version,
+    about = "Runs and manages an agent node",
+    // `--help` is the one way to ask for help, so that `help` is not a command that
+    // would have to accept `--json` like every other.
+    disable_help_subcommand = true
+)]
+pub struct Cli {
+    /// Print one JSON document instead of text
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Show the agent node on this machine
+    Status,
+}
+
+impl Cli {
+    /// Parse this process's command line. `--help` ends with the exit codes.
+    pub fn from_command_line() -> Result<Self, clap::Error> {
+        let exit_codes: String = Exit::ALL
+            .iter()
+            .map(|exit| format!("\n  {}  {}", *exit as u8, exit.meaning()))
+            .collect();
+        let matches = Self::command()
+            .after_help(format!("Exit codes:{exit_codes}"))
+            .try_get_matches()?;
+        Self::from_arg_matches(&matches)
+    }
+}

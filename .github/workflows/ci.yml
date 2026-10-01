@@ -1,0 +1,58 @@
+# CI, and the AFK factory's gate.
+#
+# The factory does not have a gate of its own: it runs the `run:` steps of the `gate`
+# job below, in order, inside its sandbox image, reading this file as it is on `main`
+# (`gateFromCi` in .sandcastle/run-gate.ts). So keep every check a plain `run:` step
+# with no `if:` and no `${{ }}` expression, or the factory skips it. `uses:` steps are
+# setup for GitHub's runner and are not part of the gate.
+#
+# The toolchain is `stable` with clippy and rustfmt, as in the shared sandbox image
+# (connector's .sandcastle/Dockerfile). Neither pins a version.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  # Every base branch, so a PR stacked on another PR's branch is still checked.
+  pull_request:
+    branches:
+      - '**'
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: gate-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            gate-${{ runner.os }}-
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy, warnings as errors
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked
