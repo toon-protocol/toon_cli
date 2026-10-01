@@ -83,6 +83,8 @@ A failed command with `--json` prints:
 | `draft_refused` | 1 | `toon nip new` or `toon nip publish` would not write or publish a draft: the file exists already, does not name a draft or begin with its title, is not UTF-8, or the relay holds the identifier under another title and `--title-changed` was not given; the message says which |
 | `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
 | `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap, so a hidden service was not created or started; nothing falls back to clearnet |
+| `relay_not_payable` | 1 | `toon event publish --relay` could not read the relay's information document, or it names no paid write edge (`toon`: `ilp_address`, `connector_url`, `price`); nothing was paid |
+| `peering_needed` | 1 | `toon event publish --relay` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. Run `toon peer add` and `toon route add` first |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
 | `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
 
@@ -133,6 +135,16 @@ and sends the event to the agent node's own relay as an operator write: it exits
 answers with a status that is not 2xx, and `"outcome": "wrong_fulfilment"` when the packet is
 fulfilled but not by this connector. `toon event query` is a plain NIP-01 `REQ` and needs no
 passphrase; it reads from `ws://` relays only.
+
+`toon event publish --relay <ws-url>` publishes to a relay this agent node does not run. It
+reads the relay's NIP-11 information document (`GET` of the relay's URL as `http://`, with
+`Accept: application/nostr+json`) for its `toon` object: `ilp_address`, `connector_url` and
+`price`. It shows the price and publishes only with `--yes`, under the spending limit, paying
+from this agent node's own connector over a peering. If no peering of the agent node reaches
+the relay's `ilp_address` it fails with `peering_needed` and creates nothing. The report has
+the same outcomes as a publish to the own relay, plus `relay` and `paid`: the price, or `0`
+when the packet was rejected and nothing moved. `--amount` is refused with `--relay`, and
+`--yes` without it.
 
 `toon nip publish` signs a draft (`nips/proposals-as-events.md`) the same way and writes it
 to the agent node's own relay as `toon event publish` does, with the same outcomes. It first
