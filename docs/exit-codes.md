@@ -73,6 +73,9 @@ A failed command with `--json` prints:
 | `send_failed` | 1 | The packet could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
 | `unknown_name` | 1 | `toon logs` was given a name that is neither a TOON app nor an app of this agent node |
+| `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
+| `peer_not_peerable` | 1 | `peer add` named a connector that is not peerable: the refusal is on the other side, and only its operator can lift it |
+| `route_failed` | 1 | The connector's operator surface refused a route write or could not be reached; the message carries the reason |
 
 ## The wallet passphrase
 

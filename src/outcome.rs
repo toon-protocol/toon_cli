@@ -64,6 +64,9 @@ pub enum ErrorCode {
     SendFailed,
     SystemdFailed,
     UnknownName,
+    PeerFailed,
+    PeerNotPeerable,
+    RouteFailed,
 }
 
 impl ErrorCode {
@@ -87,6 +90,9 @@ impl ErrorCode {
             ErrorCode::SendFailed => "send_failed",
             ErrorCode::SystemdFailed => "systemd_failed",
             ErrorCode::UnknownName => "unknown_name",
+            ErrorCode::PeerFailed => "peer_failed",
+            ErrorCode::PeerNotPeerable => "peer_not_peerable",
+            ErrorCode::RouteFailed => "route_failed",
         }
     }
 
@@ -108,7 +114,10 @@ impl ErrorCode {
             | ErrorCode::NotRunning
             | ErrorCode::SendFailed
             | ErrorCode::SystemdFailed
-            | ErrorCode::UnknownName => Exit::Failure,
+            | ErrorCode::UnknownName
+            | ErrorCode::PeerFailed
+            | ErrorCode::PeerNotPeerable
+            | ErrorCode::RouteFailed => Exit::Failure,
         }
     }
 }

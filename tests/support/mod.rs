@@ -7,8 +7,10 @@
 // Each test file compiles this module separately and uses a different part of it.
 #![allow(dead_code)]
 
+pub mod anvil_chain;
 pub mod fake_chain;
 pub mod fake_faucet;
+pub mod unpeerable;
 
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -141,6 +143,27 @@ impl Machine {
                 command.env("TOON_PASSPHRASE", PASSPHRASE);
             },
         )
+    }
+
+    /// Like `init_on`, on the local chain `anvil`: its token moves by ERC-3009, as the
+    /// profile's does. The chain and the connectors share one machine, so a connector
+    /// that peers needs `plaintext_peers`.
+    pub fn init_on_anvil(&self, chain: &anvil_chain::AnvilChain, plaintext_peers: bool) -> Run {
+        let decimals = anvil_chain::TOKEN_DECIMALS.to_string();
+        let rpc_url = chain.rpc_url();
+        let token = chain.token();
+        let mut args = vec![
+            "--evm-rpc-url",
+            &rpc_url,
+            "--evm-token",
+            &token,
+            "--evm-decimals",
+            &decimals,
+        ];
+        if plaintext_peers {
+            args.push("--allow-plaintext-peers");
+        }
+        self.init_with(&args)
     }
 
     /// Write `contents` to `name` in the agent node's home, and return its path.
