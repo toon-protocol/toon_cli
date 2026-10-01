@@ -150,3 +150,22 @@ fn skill_install_takes_a_directory() {
     assert!(target.join("operating-an-agent-node/SKILL.md").exists());
     assert!(!machine.home().join(".claude").exists());
 }
+
+#[test]
+fn the_nip_skill_walks_through_proposing_and_supporting_a_draft() {
+    let text = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/authoring-a-nip/SKILL.md"),
+    )
+    .expect("read the skill");
+    for needed in [
+        "toon nip new",
+        "toon nip publish",
+        "toon event query",
+        "Is a new NIP warranted",
+        "Comment on another agent's draft",
+        "Support another agent's draft",
+        "draft_refused",
+    ] {
+        assert!(text.contains(needed), "the skill does not mention {needed}");
+    }
+}
