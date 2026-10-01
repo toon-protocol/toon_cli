@@ -176,3 +176,27 @@ fn an_edited_limit_stops_every_payment() {
     );
     assert_eq!(run.exit_code, 1);
 }
+
+#[test]
+fn a_limit_that_is_gone_is_set_again_only_whole() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    fs::remove_file(machine.agent_node_home().join("limits.json")).unwrap();
+
+    let one = machine.toon_with(&["limit", "set", "--max-per-day", "9", "--json"], |c| {
+        c.env("TOON_PASSPHRASE", PASSPHRASE);
+    });
+    assert_eq!(
+        one.json()["error"]["code"],
+        "spending_limit",
+        "{}",
+        one.stdout
+    );
+    assert_eq!(one.exit_code, 1);
+
+    set_limits(&machine, "7", "9");
+    let shown = machine.toon(&["limit", "show", "--json"]).json();
+    assert_eq!(shown["limits"]["per_command"], "7");
+    assert_eq!(shown["limits"]["per_day"], "9");
+}

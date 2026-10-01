@@ -102,7 +102,10 @@ Every command that moves money (`toon send`, `toon peer add`) states its amount 
 `--yes`. The amount is checked against the spending limit before the command runs: at most
 `--max-per-command` for one command, and `--max-per-day` for the commands of one UTC day
 together, both in the token's base units, set at `toon init` (defaults 10000000 and
-100000000). A payment that was rejected, or failed, is not counted. `toon limit show`
-prints the limits and what is left today. `toon limit set` changes them and reads the
-wallet passphrase, so an agent without it cannot raise them: the limits are signed with a key
-the wallet derives, and an unsigned or edited `limits.json` stops every payment.
+100000000). A payment that was rejected is not counted, nor one that failed before it
+reached the connector or that the other side refused; any other failure may have paid, and
+stays counted. `toon limit show` prints the limits and what is left today. `toon limit set`
+changes them and reads the wallet passphrase, so an agent without it cannot raise them: the
+limits are signed with a key the wallet derives, and an unsigned or edited `limits.json`
+stops every payment. When `limits.json` is missing or was edited, `toon limit set` needs
+both `--max-per-command` and `--max-per-day`.

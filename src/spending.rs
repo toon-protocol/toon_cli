@@ -3,7 +3,7 @@
 //! A command that pays calls [`spend`] with its amount. `spend` refuses it without `--yes`,
 //! and past the per-command limit or what is left of the day's, and otherwise records the
 //! amount against the day before the command runs. The command hands back whether money
-//! actually moved; if it did not, the record is undone.
+//! actually moved; if it certainly did not, the record is undone.
 //!
 //! The limits are in `limits.json`, signed with a key derived from the wallet's mnemonic
 //! (`derive::limits_secret`). Reading them needs no passphrase, only the public key the file
@@ -18,7 +18,7 @@
 //! cannot both spend the same remainder.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -270,20 +270,11 @@ fn read_ledger(home: &Path) -> Result<Ledger, Error> {
 
 fn write_ledger(home: &Path, ledger: Ledger) -> Result<(), Error> {
     let document = json!({ "day": ledger.day, "spent": ledger.spent.to_string() });
-    let file = ledger_path(home);
-    let staged = home.join(format!("spent.json.{}.tmp", std::process::id()));
-    OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&staged)
-        .and_then(|mut opened| {
-            writeln!(opened, "{document}")?;
-            opened.sync_all()
-        })
-        .and_then(|()| fs::rename(&staged, &file))
-        .map_err(|source| io(&file, source))
+    node::write(
+        &ledger_path(home),
+        format!("{document}\n").as_bytes(),
+        0o600,
+    )
 }
 
 /// Run `change` on the ledger while holding the lock that serialises spenders.
@@ -303,13 +294,13 @@ fn locked<T>(home: &Path, change: impl FnOnce() -> Result<T, Error>) -> Result<T
 }
 
 /// What a money-moving command did: its report, and whether money actually moved. A
-/// payment that was rejected or never made moved none, and is not counted.
+/// payment that was rejected moved none, and is not counted.
 pub type Spent<T> = Result<(T, bool), Error>;
 
 /// The one gate for a command that moves `amount` base units: it needs `--yes`, it must
 /// fit the per-command limit and what is left of the day's, and it is counted before
-/// `act` runs so that a second command cannot spend the same remainder. If `act` fails
-/// or says no money moved, the count is taken back.
+/// `act` runs so that a second command cannot spend the same remainder. If `act` says no
+/// money moved, or fails before it could have paid, the count is taken back.
 pub fn spend<T>(
     home: &Path,
     amount: u128,
@@ -335,17 +326,30 @@ pub fn spend<T>(
             .map_err(|refusal| limit_error(refusal.message(amount)))?;
         write_ledger(home, charged)
     })?;
-    match act() {
-        Ok((report, true)) => Ok(report),
-        outcome => {
-            // Nothing moved; the amount is free again. A failure to take it back
-            // leaves it counted, which errs on the side of the limit.
-            let _ = locked(home, || {
-                write_ledger(home, read_ledger(home)?.refund(day, amount))
-            });
-            outcome.map(|(report, _)| report)
-        }
+    let outcome = act();
+    let moved_nothing = match &outcome {
+        Ok((_, moved)) => !moved,
+        Err(error) => failed_before_paying(error),
+    };
+    if moved_nothing {
+        // The amount is free again. A failure to take it back leaves it counted, which
+        // errs on the side of the limit.
+        let _ = locked(home, || {
+            write_ledger(home, read_ledger(home)?.refund(day, amount))
+        });
     }
+    outcome.map(|(report, _)| report)
+}
+
+/// Whether a command that failed with `error` certainly paid nothing: it never reached the
+/// connector, or the other side refused the peering before a channel was opened. Any other
+/// failure, a timeout or an answer not understood, may come after the money moved, so it
+/// stays counted.
+fn failed_before_paying(error: &Error) -> bool {
+    matches!(
+        error.code,
+        ErrorCode::NoAgentNode | ErrorCode::NotRunning | ErrorCode::PeerNotPeerable
+    )
 }
 
 /// `toon limit show`: the limits, and what is left of today's.
@@ -383,12 +387,26 @@ pub fn set(home: &Path, per_command: Option<u128>, per_day: Option<u128>) -> Res
                 code: ErrorCode::KeystoreCorrupt,
                 message: "The keystore does not hold a valid mnemonic.".into(),
             })?;
-    // What the file holds now, or the defaults when it is missing or was altered: setting
-    // one limit then restores a wallet whose file is gone.
-    let current = read_limits(home).unwrap_or_default();
-    let limits = Limits {
-        per_command: per_command.unwrap_or(current.per_command),
-        per_day: per_day.unwrap_or(current.per_day),
+    // A limit not given keeps what the file holds. A file that is missing or was altered
+    // holds nothing to keep, so then both are needed: a default could loosen a limit.
+    let limits = match (per_command, per_day) {
+        (Some(per_command), Some(per_day)) => Limits {
+            per_command,
+            per_day,
+        },
+        _ => {
+            let current = read_limits(home).map_err(|error| match error.code {
+                ErrorCode::SpendingLimit => limit_error(format!(
+                    "{} Give both `--max-per-command` and `--max-per-day`.",
+                    error.message
+                )),
+                _ => error,
+            })?;
+            Limits {
+                per_command: per_command.unwrap_or(current.per_command),
+                per_day: per_day.unwrap_or(current.per_day),
+            }
+        }
     };
     write_limits(home, &*derive::seed(&mnemonic), &limits)?;
     Ok(Report {
@@ -483,5 +501,17 @@ mod tests {
         };
         assert!(Ledger::default().charge(&none, 1, 1).is_err());
         assert!(Ledger::default().charge(&none, 1, 0).is_ok());
+    }
+
+    #[test]
+    fn only_a_failure_before_paying_frees_the_amount() {
+        let failure = |code| Error {
+            code,
+            message: String::new(),
+        };
+        assert!(failed_before_paying(&failure(ErrorCode::NotRunning)));
+        assert!(failed_before_paying(&failure(ErrorCode::PeerNotPeerable)));
+        assert!(!failed_before_paying(&failure(ErrorCode::SendFailed)));
+        assert!(!failed_before_paying(&failure(ErrorCode::PeerFailed)));
     }
 }
