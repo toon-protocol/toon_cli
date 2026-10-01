@@ -70,6 +70,7 @@ pub enum ErrorCode {
     ChainFailed,
     ChannelFailed,
     QueryFailed,
+    ConfirmationRequired,
 }
 
 impl ErrorCode {
@@ -99,6 +100,7 @@ impl ErrorCode {
             ErrorCode::ChainFailed => "chain_failed",
             ErrorCode::ChannelFailed => "channel_failed",
             ErrorCode::QueryFailed => "query_failed",
+            ErrorCode::ConfirmationRequired => "confirmation_required",
         }
     }
 
@@ -123,10 +125,11 @@ impl ErrorCode {
             | ErrorCode::UnknownName
             | ErrorCode::PeerFailed
             | ErrorCode::PeerNotPeerable
-            | ErrorCode::RouteFailed => Exit::Failure,
-            ErrorCode::ChainFailed | ErrorCode::ChannelFailed | ErrorCode::QueryFailed => {
-                Exit::Failure
-            }
+            | ErrorCode::RouteFailed
+            | ErrorCode::ChainFailed
+            | ErrorCode::ChannelFailed
+            | ErrorCode::QueryFailed
+            | ErrorCode::ConfirmationRequired => Exit::Failure,
         }
     }
 }

@@ -17,6 +17,7 @@ mod node;
 mod operator;
 mod outcome;
 mod profile;
+mod relay;
 mod runner;
 mod service;
 mod status;
@@ -32,7 +33,10 @@ use std::process::ExitCode;
 use clap::error::ErrorKind;
 use serde_json::json;
 
-use cli::{ChannelCommand, Cli, Command, EventCommand, PeerCommand, RouteCommand, WalletCommand};
+use cli::{
+    ChannelCommand, Cli, Command, EventCommand, PeerCommand, RelayCommand, RouteCommand,
+    WalletCommand,
+};
 use outcome::{Error, ErrorCode, Exit, Report};
 use up::Stopped;
 
@@ -145,6 +149,20 @@ fn main() -> ExitCode {
         Command::Event {
             command: EventCommand::Query { relay, filter },
         } => render(event::query(&relay, &filter), json).into(),
+        Command::Relay {
+            command: RelayCommand::Config(args),
+        } => render(
+            home::resolve().and_then(|home| relay::config(&home, &args.change(), args.yes)),
+            json,
+        )
+        .into(),
+        Command::Relay {
+            command: RelayCommand::Price { amount, yes },
+        } => render(
+            home::resolve().and_then(|home| relay::price(&home, amount, yes)),
+            json,
+        )
+        .into(),
         Command::Up { foreground: true } => up(json).into(),
         Command::Up { foreground: false } => {
             render(home::resolve().and_then(|home| install(&home)), json).into()

@@ -79,6 +79,7 @@ A failed command with `--json` prints:
 | `chain_failed` | 1 | A chain's JSON-RPC endpoint could not be reached or did not answer a read as expected; the message carries the reason |
 | `channel_failed` | 1 | A channel write was refused by the connector or could not be sent, the channel id is not one, or the terms file was unreadable; the message carries the reason |
 | `query_failed` | 1 | `toon event query` could not read events from the relay: it did not answer, is not a websocket relay this build dials, or closed the subscription with a reason the message carries |
+| `confirmation_required` | 1 | `toon relay config` or `toon relay price` would restart a running relay and its connector and was not given `--yes`; nothing was changed |
 
 ## The wallet passphrase
 

@@ -24,6 +24,8 @@ pub const RELAY: &str = "relay";
 /// The connector's route to the relay's paid write endpoint, and its price per write.
 pub const RELAY_WRITE_PREFIX: &str = "g.toon.relay";
 pub const RELAY_WRITE_PRICE: u64 = 1;
+/// The price of the relay's free ephemeral write.
+pub const RELAY_EPHEMERAL_PRICE: u64 = 0;
 /// The route to the relay's free ephemeral write endpoint.
 pub const RELAY_EPHEMERAL_PREFIX: &str = "g.toon.relay.ephemeral";
 
@@ -62,6 +64,105 @@ pub struct Solana {
     pub decimals: u8,
 }
 
+/// What the relay does with an event that carries an expiration (NIP-40).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Expiry {
+    /// Drop it once it has expired.
+    #[default]
+    Honour,
+    /// Keep it for ever.
+    Ignore,
+}
+
+impl Expiry {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Expiry::Honour => "honour",
+            Expiry::Ignore => "ignore",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "honour" => Some(Expiry::Honour),
+            "ignore" => Some(Expiry::Ignore),
+            _ => None,
+        }
+    }
+}
+
+/// What the operator set for the relay. The relay reads the first four when it starts;
+/// the price is the connector's, on the relay's write route.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RelaySettings {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub expiry: Expiry,
+    /// Nostr public keys, in hex, whose events the relay refuses.
+    pub blocklist: Vec<String>,
+    /// The price of a write, on the connector's route.
+    pub price: u64,
+}
+
+impl Default for RelaySettings {
+    fn default() -> Self {
+        Self {
+            name: None,
+            description: None,
+            expiry: Expiry::default(),
+            blocklist: Vec::new(),
+            price: RELAY_WRITE_PRICE,
+        }
+    }
+}
+
+impl RelaySettings {
+    /// The environment the relay is started with, besides its identity key. A setting
+    /// the operator never made is not passed, so the relay keeps its own default.
+    pub fn env(&self) -> Vec<(String, String)> {
+        let mut env = Vec::new();
+        if let Some(name) = &self.name {
+            env.push(("TOON_RELAY_NAME".into(), name.clone()));
+        }
+        if let Some(description) = &self.description {
+            env.push(("TOON_RELAY_DESCRIPTION".into(), description.clone()));
+        }
+        env.push(("TOON_RELAY_EXPIRY".into(), self.expiry.as_str().into()));
+        if !self.blocklist.is_empty() {
+            env.push(("TOON_RELAY_BLOCKLIST".into(), self.blocklist.join(",")));
+        }
+        env
+    }
+
+    fn json(&self) -> Value {
+        json!({
+            "name": self.name,
+            "description": self.description,
+            "expiry": self.expiry.as_str(),
+            "blocklist": self.blocklist,
+            "price": self.price,
+        })
+    }
+
+    fn from_json(value: &Value) -> Option<Self> {
+        let optional = |key: &str| match &value[key] {
+            Value::Null => Some(None),
+            text => text.as_str().map(|text| Some(text.to_owned())),
+        };
+        Some(Self {
+            name: optional("name")?,
+            description: optional("description")?,
+            expiry: Expiry::from_name(value["expiry"].as_str()?)?,
+            blocklist: value["blocklist"]
+                .as_array()?
+                .iter()
+                .map(|key| key.as_str().map(str::to_owned))
+                .collect::<Option<_>>()?,
+            price: value["price"].as_u64()?,
+        })
+    }
+}
+
 /// One TOON app as the operator asked for it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToonApp {
@@ -75,6 +176,8 @@ pub struct ToonApp {
     pub plaintext_peers: bool,
     /// The apps behind the connector.
     pub apps: Vec<String>,
+    /// How the relay behind it is set, if it has one.
+    pub relay: RelaySettings,
 }
 
 /// The agent node's state: every TOON app.
@@ -212,6 +315,7 @@ impl State {
                 solana: options.solana.clone(),
                 plaintext_peers: options.plaintext_peers,
                 apps: vec![RELAY.into()],
+                relay: RelaySettings::default(),
             }],
         }
     }
@@ -229,6 +333,7 @@ impl State {
                     "solana": app.solana.as_ref().map(Solana::json),
                     "plaintext_peers": app.plaintext_peers,
                     "apps": app.apps,
+                    "relay": app.relay.json(),
                 })
             })
             .collect();
@@ -267,6 +372,11 @@ impl State {
                         .iter()
                         .map(|name| name.as_str().map(str::to_owned))
                         .collect::<Option<_>>()?,
+                    // A state written before the relay had settings has none.
+                    relay: match &app["relay"] {
+                        Value::Null => RelaySettings::default(),
+                        relay => RelaySettings::from_json(relay)?,
+                    },
                 })
             })
             .collect::<Option<Vec<_>>>()?;
@@ -398,10 +508,11 @@ pub fn render(
     if let Some(relay) = relay.filter(|_| app.apps.iter().any(|name| name == RELAY)) {
         // The relay is paid to write to, and takes a free ephemeral write beside it.
         config.push_str(&format!(
-            "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = {RELAY_WRITE_PRICE}\n\n\
-             [[routes]]\nprefix = {}\nhandler_url = {}\nprice = 0\n",
+            "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = {}\n\n\
+             [[routes]]\nprefix = {}\nhandler_url = {}\nprice = {RELAY_EPHEMERAL_PRICE}\n",
             string(RELAY_WRITE_PREFIX),
             string(&format!("http://{relay}/write")),
+            app.relay.price,
             string(RELAY_EPHEMERAL_PREFIX),
             string(&format!("http://{relay}/write-ephemeral")),
         ));
