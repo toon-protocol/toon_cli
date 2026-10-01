@@ -14,6 +14,7 @@ path = "src/main.rs"
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 aes-gcm = "0.10"
+base64 = "0.21"
 bip39 = "2"
 bs58 = "0.5"
 ed25519-dalek = "2"
@@ -28,6 +29,12 @@ zeroize = "1"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 connector-cli = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
 connector-operator = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+# What `operator::dispatch_with_headers` forms and opens a packet with (and what the tests
+# send a packet with): the connector's
+# `send` cannot carry a header, which a subscribe request needs (NIP-98).
+connector-domain = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+connector-signer = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+chrono = "0.4"
 # The version `connector-operator` signs with: its `sign_request` takes this one's keypair.
 ed25519-dalek-v1 = { package = "ed25519-dalek", version = "1" }
 axum = "0.6"
@@ -41,10 +48,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tempfile = "3"
 # The connector's own fake chain RPC, and the channel-id arithmetic the fake answers with.
 connector-chain-rpc = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705", features = ["test-support"] }
-connector-signer = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
-# The packet a client sends, to test that the connector delivers it to the relay.
-connector-domain = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
-chrono = "0.4"
 # The connector's fixtures for a real local chain: x402's contracts and a USDC on an
 # `anvil`, which tests that move money run on (the spike's finding, on #2).
 connector-settlement-evm = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705", features = ["test-util"] }

@@ -21,6 +21,10 @@
 //!   the wallet's backup, which holds the keys, brings an address back.
 //! - spending-limit signing key: `m/10473'/5'/0'`, once per wallet; an Ed25519 key like the
 //!   operator write key, whose signature on `limits.json` is what the limit rests on.
+//! - subscriber key: `m/10473'/6'/0'`, once per wallet: the Nostr key a subscription at
+//!   another relay belongs to, signed with on every payment. It is made for this and is
+//!   not the agent identity, so a relay that learns who pays for a subscription learns
+//!   nothing about whose posts they are.
 //!
 //! Each of those is a secp256k1 key whose public half is a Nostr x-only key, except
 //! the operator write key: the connector verifies operator writes with Ed25519, so its
@@ -163,7 +167,7 @@ pub fn evm_address(secret: &[u8; 32]) -> String {
 }
 
 /// The Nostr public key (x-only, hex) of a secp256k1 secret.
-fn nostr_public_key(secret: &[u8; 32]) -> String {
+pub fn nostr_public_key(secret: &[u8; 32]) -> String {
     hex::encode(&public_key(secret)[1..])
 }
 
@@ -246,6 +250,11 @@ pub fn operator_write_secret(seed: &[u8]) -> Result<Zeroizing<[u8; 32]>, DeriveE
 /// Ed25519 secret, like the operator write key's.
 pub fn limits_secret(seed: &[u8]) -> Result<Zeroizing<[u8; 32]>, DeriveError> {
     secp256k1_path(seed, &[TOON_PURPOSE | HARDENED, 5 | HARDENED, HARDENED])
+}
+
+/// The subscriber key: `m/10473'/6'/0'`.
+pub fn subscriber_secret(seed: &[u8]) -> Result<Zeroizing<[u8; 32]>, DeriveError> {
+    secp256k1_path(seed, &[TOON_PURPOSE | HARDENED, 6 | HARDENED, HARDENED])
 }
 
 pub fn agent_identity_secret(seed: &[u8]) -> Result<Zeroizing<[u8; 32]>, DeriveError> {
@@ -348,6 +357,20 @@ mod tests {
     const PINNED_RELAY_0: &str = "77b8b3fa9ef388310f7950866ebaaabf7750191c611598bc4ad2972e719d7731";
 
     #[test]
+    fn the_subscriber_key_is_pinned_and_is_not_the_agent_identity() {
+        let seed = anvil_seed();
+        let subscriber = nostr_public_key(&subscriber_secret(&*seed).unwrap());
+        assert_eq!(PINNED_SUBSCRIBER, subscriber);
+        assert_ne!(
+            subscriber,
+            nostr_public_key(&agent_identity_secret(&*seed).unwrap())
+        );
+    }
+
+    const PINNED_SUBSCRIBER: &str =
+        "a13fe220fa18f3962088c939fff4cd30c05d930a02192b8ec6bef9f8d9675326";
+
+    #[test]
     fn the_onion_key_is_per_connector_and_is_no_other_key() {
         let seed = anvil_seed();
         let onion = |index| onion_secret(&*seed, index).unwrap();
@@ -379,6 +402,8 @@ mod tests {
         let mut secrets = vec![
             agent_identity_secret(&*seed).unwrap(),
             operator_write_secret(&*seed).unwrap(),
+            subscriber_secret(&*seed).unwrap(),
+            limits_secret(&*seed).unwrap(),
         ];
         for index in 0..4 {
             secrets.push(identity_secret(&*seed, index).unwrap());

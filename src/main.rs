@@ -27,6 +27,7 @@ mod runner;
 mod service;
 mod spending;
 mod status;
+mod subscribe;
 mod up;
 mod wallet;
 
