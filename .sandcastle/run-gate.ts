@@ -139,7 +139,8 @@ export async function runGate(sandbox: Sandbox, steps: readonly GateStep[]): Pro
   for (const step of steps) {
     console.log(`  [gate] ${step.name}: ${step.command}`);
     const lines: string[] = [];
-    const result = await sandbox.exec(`set -eo pipefail\n${step.command}`, {
+    // The sandbox shell may be dash, which has no pipefail: enable it only where it exists.
+    const result = await sandbox.exec(`set -e\n(set -o pipefail) 2>/dev/null && set -o pipefail\n${step.command}`, {
       onLine: (line) => {
         lines.push(line);
         // Stream sparingly: full build output would bury the runner log.
