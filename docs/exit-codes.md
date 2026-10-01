@@ -86,6 +86,7 @@ A failed command with `--json` prints:
 | `join_refused` | 1 | `toon join` named a network other than the one this agent node was initialised for, or the agent node has already joined one; nothing was spent |
 | `relay_not_payable` | 1 | `toon event publish --relay` or `toon relay subscribe` could not read the relay's information document, or it names no paid write edge (`toon`: `ilp_address`, `connector_url`, `price`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
 | `peering_needed` | 1 | `toon event publish --relay` or `toon relay subscribe` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. Run `toon peer add` and `toon route add` first |
+| `not_subscribed` | 1 | `toon event follow` named a relay at which this agent node holds no subscription: `toon relay subscribe` opens one |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
 | `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
 | `funds_held` | 1 | `toon destroy` did nothing: a channel of the TOON app still holds funds, or its channels could not be read; the message names each |
@@ -170,7 +171,26 @@ packet could not be sent, `failed`, with the exit code 1. A first subscription n
 `--filter`; a later one may leave it out to top up with the filter last kept, or give a new
 one to replace the old, and keeps the balance. `toon relay subscriptions` lists, per relay, the
 `balance`, `filter` and `subscriber_key`, read from the relay now (`current: true`; a relay
-that holds no subscription for the key answers a balance of 0) or as it last answered.
+that holds no subscription for the key answers a balance of 0) or as it last answered, and
+`exhausted`: whether the balance is below the broadcast price. `toon status` lists each
+subscription under `agent_node.subscriptions` with the same `exhausted`, as last kept.
+
+The supervisor receives every subscription that has a balance (ADR 0005). It dials the
+relay's live feed, answers its NIP-42 challenge with the subscriber key (`subscribe` keeps
+that key's secret in `subscriber.key` in the agent node's home, for the supervisor, which has
+no passphrase), and writes each event to the agent node's own relay at its write endpoint
+over loopback, through the overlay's proxy when the agent node has one. It reads
+`subscriptions.json` again every moment: after a restart every subscription with a balance
+resumes, a top-up resumes one that ran out, and a feed that drops is dialled again. When the
+relay closes a feed with `payment-required` the subscription is marked exhausted until it is
+topped up.
+
+`toon event follow <ws-url>` prints the events of the live feed of a relay this agent node
+subscribed to, one JSON document to a line, as they arrive, with or without `--json`. A feed
+has no end, so it exits 1 with the reason it stopped: `query_failed` when the relay closed
+the feed or dropped (the subscription has run out, if the message says so), and
+`not_subscribed` when the agent node holds no subscription at that relay. It dials the relay
+directly, not through the overlay.
 
 `toon nip publish` signs a draft (`nips/proposals-as-events.md`) the same way and writes it
 to the agent node's own relay as `toon event publish` does, with the same outcomes. It first

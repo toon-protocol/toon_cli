@@ -4,8 +4,13 @@
 //! It serves, on one loopback port, the information document (with `toon_subscription`),
 //! the subscribe route (a `POST` of `{filter?}` that its connector delivered, authorized
 //! by NIP-98) and the read of a balance (a `GET` that accepts
-//! `application/toon-subscription+json`). It keeps one balance per subscriber key. It
-//! serves no websocket: the live feed is the receiving side, which is not built yet.
+//! `application/toon-subscription+json`). It keeps one balance per subscriber key.
+//!
+//! On the same port it serves the live feed as the draft says: an `AUTH` challenge when a
+//! websocket opens, the stored events that match a `REQ` and `EOSE`, and then each event the
+//! test hands to `broadcast`, debited at the broadcast price from the subscription of the
+//! key the connection authenticated with. When a balance is below the price the `REQ` is
+//! closed with `payment-required`.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -33,6 +38,12 @@ struct State {
     credited: Vec<String>,
     /// Every `POST` the subscribe route was delivered, accepted or not.
     posts: usize,
+    /// Every event the relay accepted, in order: stored, and broadcast to the feeds.
+    events: Vec<Value>,
+    /// How many `REQ`s are open on a connection that holds a subscription.
+    open_feeds: usize,
+    /// How many `REQ`s were opened and closed with `payment-required`.
+    refused_feeds: usize,
 }
 
 pub struct FakeRemoteRelay {
@@ -113,6 +124,21 @@ impl FakeRemoteRelay {
         self.state.lock().unwrap().posts
     }
 
+    /// Accept `event`: store it, and send it on every open `REQ` it is owed to.
+    pub fn broadcast(&self, event: Value) {
+        self.state.lock().unwrap().events.push(event);
+    }
+
+    /// How many `REQ`s are open on a connection holding a subscription that has a balance.
+    pub fn open_feeds(&self) -> usize {
+        self.state.lock().unwrap().open_feeds
+    }
+
+    /// How many `REQ`s were closed with `payment-required`.
+    pub fn refused_feeds(&self) -> usize {
+        self.state.lock().unwrap().refused_feeds
+    }
+
     fn document(&self) -> Value {
         json!({
             "name": "far",
@@ -131,6 +157,14 @@ impl FakeRemoteRelay {
     }
 
     fn serve(&self, stream: TcpStream) {
+        let mut start = [0u8; 1024];
+        let peeked = stream.peek(&mut start).unwrap_or(0);
+        if String::from_utf8_lossy(&start[..peeked])
+            .to_ascii_lowercase()
+            .contains("upgrade: websocket")
+        {
+            return self.feed(stream);
+        }
         let mut reader = BufReader::new(stream);
         let mut request = String::new();
         if reader.read_line(&mut request).is_err() {
@@ -179,32 +213,14 @@ impl FakeRemoteRelay {
         );
     }
 
-    /// The subscriber key a NIP-98 authorization names, if the authorization holds.
-    fn authorized(
-        &self,
-        headers: &HashMap<String, String>,
-        method: &str,
-        body: Option<&[u8]>,
-    ) -> Option<String> {
-        let encoded = headers.get("authorization")?.strip_prefix("Nostr ")?;
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .ok()?;
-        let event: Value = serde_json::from_slice(&bytes).ok()?;
-        let tag = |name: &str| {
-            event["tags"]
-                .as_array()?
-                .iter()
-                .find_map(|tag| (tag[0] == name).then(|| tag[1].as_str().map(str::to_owned))?)
-        };
+    /// The public key of `event`, if its id and signature hold.
+    fn verified(event: &Value) -> Option<String> {
         let pubkey = event["pubkey"].as_str()?;
-        let created_at = event["created_at"].as_u64()?;
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         let id = Sha256::digest(
             json!([
                 0,
                 pubkey,
-                created_at,
+                event["created_at"],
                 event["kind"],
                 event["tags"],
                 event["content"]
@@ -218,19 +234,42 @@ impl FakeRemoteRelay {
                 &Signature::try_from(hex::decode(event["sig"].as_str()?).ok()?.as_slice()).ok()?,
             )
             .is_ok();
+        (verifies && hex::encode(id) == event["id"].as_str()?).then(|| pubkey.to_owned())
+    }
+
+    fn tag(event: &Value, name: &str) -> Option<String> {
+        event["tags"]
+            .as_array()?
+            .iter()
+            .find_map(|tag| (tag[0] == name).then(|| tag[1].as_str().map(str::to_owned))?)
+    }
+
+    /// The subscriber key a NIP-98 authorization names, if the authorization holds.
+    fn authorized(
+        &self,
+        headers: &HashMap<String, String>,
+        method: &str,
+        body: Option<&[u8]>,
+    ) -> Option<String> {
+        let encoded = headers.get("authorization")?.strip_prefix("Nostr ")?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .ok()?;
+        let event: Value = serde_json::from_slice(&bytes).ok()?;
+        let pubkey = Self::verified(&event)?;
+        let created_at = event["created_at"].as_u64()?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         let payload = body.map(|body| hex::encode(Sha256::digest(body)));
         let this_relay = [
             format!("http://{}", self.address),
             format!("http://{}/", self.address),
         ];
-        (verifies
-            && hex::encode(id) == event["id"].as_str()?
-            && event["kind"] == 27235
-            && tag("method").as_deref() == Some(method)
-            && tag("u").is_some_and(|u| this_relay.contains(&u))
-            && tag("payload") == payload
+        (event["kind"] == 27235
+            && Self::tag(&event, "method").as_deref() == Some(method)
+            && Self::tag(&event, "u").is_some_and(|u| this_relay.contains(&u))
+            && Self::tag(&event, "payload") == payload
             && created_at.abs_diff(now) <= 60)
-            .then(|| pubkey.to_owned())
+            .then_some(pubkey)
     }
 
     fn refusal(status: u16, code: &str, message: &str) -> (u16, Value) {
@@ -297,6 +336,173 @@ impl FakeRemoteRelay {
                 }),
             ),
             None => Self::refusal(404, "not_subscribed", "the key has no subscription"),
+        }
+    }
+}
+
+/// Whether `event` is among what `filter` asks for: `ids`, `authors`, `kinds` and `since`.
+fn matches(filter: &Value, event: &Value) -> bool {
+    let listed = |wanted: &str, field: &str| {
+        filter[wanted]
+            .as_array()
+            .is_none_or(|allowed| allowed.contains(&event[field]))
+    };
+    listed("ids", "id")
+        && listed("authors", "pubkey")
+        && listed("kinds", "kind")
+        && filter["since"]
+            .as_u64()
+            .is_none_or(|since| event["created_at"].as_u64().unwrap_or(0) >= since)
+}
+
+impl FakeRemoteRelay {
+    /// One websocket: the live feed.
+    fn feed(&self, stream: TcpStream) {
+        let Ok(mut socket) = tungstenite::accept(stream) else {
+            return;
+        };
+        let _ = socket
+            .get_ref()
+            .set_read_timeout(Some(std::time::Duration::from_millis(20)));
+        let challenge = hex::encode(Sha256::digest(format!("{:?}", SystemTime::now())));
+        let say = |socket: &mut tungstenite::WebSocket<TcpStream>, frame: Value| {
+            let _ = socket.send(tungstenite::Message::text(frame.to_string()));
+        };
+        say(&mut socket, json!(["AUTH", challenge]));
+
+        let mut key: Option<String> = None;
+        // The `REQ` that is open, and how many events the relay had accepted when it
+        // sent `EOSE`: the live feed is what comes after.
+        let mut open: Option<(Value, Vec<Value>, usize)> = None;
+        let mut counted = false;
+        loop {
+            match socket.read() {
+                Ok(tungstenite::Message::Text(text)) => {
+                    let Ok(Value::Array(frame)) = serde_json::from_str::<Value>(&text) else {
+                        continue;
+                    };
+                    match frame.first().and_then(Value::as_str) {
+                        Some("AUTH") => {
+                            let event = frame.get(1).cloned().unwrap_or_default();
+                            let proves = Self::verified(&event).filter(|_| {
+                                event["kind"] == 22242
+                                    && Self::tag(&event, "challenge").as_deref()
+                                        == Some(challenge.as_str())
+                            });
+                            let accepted = proves.is_some();
+                            if proves.is_some() {
+                                key = proves;
+                            }
+                            say(
+                                &mut socket,
+                                json!([
+                                    "OK",
+                                    event["id"],
+                                    accepted,
+                                    if accepted { "" } else { "invalid: auth" }
+                                ]),
+                            );
+                        }
+                        Some("REQ") if frame.len() >= 3 => {
+                            let id = frame[1].clone();
+                            let filters = frame[2..].to_vec();
+                            let stored: Vec<Value> = self.state.lock().unwrap().events.clone();
+                            for event in stored
+                                .iter()
+                                .filter(|event| filters.iter().any(|f| matches(f, event)))
+                            {
+                                say(&mut socket, json!(["EVENT", id, event]));
+                            }
+                            say(&mut socket, json!(["EOSE", id]));
+                            let held = key.as_ref().and_then(|key| self.subscription(key));
+                            match (&key, held) {
+                                (None, _) => say(
+                                    &mut socket,
+                                    json!([
+                                        "CLOSED",
+                                        id,
+                                        "auth-required: the live feed is for subscribers"
+                                    ]),
+                                ),
+                                (Some(_), Some(held)) if held.balance >= self.broadcast_price => {
+                                    open = Some((id, filters, stored.len()));
+                                    if !counted {
+                                        counted = true;
+                                        self.state.lock().unwrap().open_feeds += 1;
+                                    }
+                                }
+                                (Some(_), _) => {
+                                    self.state.lock().unwrap().refused_feeds += 1;
+                                    say(
+                                        &mut socket,
+                                        json!(["CLOSED", id, "payment-required: the subscription's balance has run out"]),
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(tungstenite::Message::Close(_)) => break,
+                Ok(_) => {}
+                Err(tungstenite::Error::Io(error))
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(_) => break,
+            }
+            // Events accepted since the last look, owed to the open `REQ`.
+            if let (Some((id, filters, next)), Some(key)) = (open.as_mut(), key.as_ref()) {
+                let accepted: Vec<Value> = self.state.lock().unwrap().events.clone();
+                while *next < accepted.len() {
+                    let event = &accepted[*next];
+                    *next += 1;
+                    let mut state = self.state.lock().unwrap();
+                    let Some(subscription) = state.subscriptions.get_mut(key) else {
+                        continue;
+                    };
+                    let owed = subscription.balance >= self.broadcast_price
+                        && matches(&subscription.filter, event)
+                        && filters.iter().any(|filter| matches(filter, event));
+                    if !owed {
+                        continue;
+                    }
+                    subscription.balance -= self.broadcast_price;
+                    let ran_out = subscription.balance < self.broadcast_price;
+                    if ran_out {
+                        state.refused_feeds += 1;
+                    }
+                    drop(state);
+                    say(&mut socket, json!(["EVENT", id, event]));
+                    if ran_out {
+                        say(
+                            &mut socket,
+                            json!([
+                                "CLOSED",
+                                id,
+                                "payment-required: the subscription's balance has run out"
+                            ]),
+                        );
+                        break;
+                    }
+                }
+                if self
+                    .subscription(key)
+                    .is_none_or(|held| held.balance < self.broadcast_price)
+                {
+                    open = None;
+                }
+            }
+            if open.is_none() && counted {
+                counted = false;
+                let mut state = self.state.lock().unwrap();
+                state.open_feeds = state.open_feeds.saturating_sub(1);
+            }
+        }
+        if counted {
+            let mut state = self.state.lock().unwrap();
+            state.open_feeds = state.open_feeds.saturating_sub(1);
         }
     }
 }

@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::derive;
 use crate::event;
+use crate::feed;
 use crate::node;
 use crate::operator::{self, Answer};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
@@ -73,6 +74,22 @@ fn terms(relay: &str) -> Result<Terms, Error> {
     }
 }
 
+/// Where the subscriber key's secret is kept for the supervisor, which has no passphrase
+/// to open the wallet with, as it keeps the relay's identity key (ADR 0004).
+fn key_path(home: &Path) -> PathBuf {
+    home.join("subscriber.key")
+}
+
+/// The subscriber key's secret as `subscribe` kept it, if it has.
+fn kept_secret(home: &Path) -> Option<[u8; 32]> {
+    std::fs::read(key_path(home)).ok()?.try_into().ok()
+}
+
+/// What the supervisor reads a feed with: the kept secret, and nothing without one.
+pub fn receiving_secret(home: &Path) -> Option<[u8; 32]> {
+    kept_secret(home)
+}
+
 /// The subscriber key's secret, opened with the passphrase.
 fn subscriber_secret(home: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
     derive::subscriber_secret(&*event::wallet_seed(home)?).map_err(|source| Error {
@@ -102,15 +119,20 @@ fn authorization(
 
 /// What the operator holds at one relay, as that relay last said.
 #[derive(Clone, Debug, PartialEq)]
-struct Kept {
-    relay: String,
-    subscriber_key: String,
-    filter: Value,
-    balance: u64,
-    broadcast_price: u64,
+pub struct Kept {
+    pub relay: String,
+    pub subscriber_key: String,
+    pub filter: Value,
+    pub balance: u64,
+    pub broadcast_price: u64,
 }
 
 impl Kept {
+    /// Whether the balance no longer buys an event: the relay stops the feed.
+    pub fn exhausted(&self) -> bool {
+        self.balance < self.broadcast_price
+    }
+
     fn json(&self) -> Value {
         json!({
             "relay": self.relay,
@@ -151,7 +173,7 @@ fn kept_path(home: &Path) -> PathBuf {
     home.join("subscriptions.json")
 }
 
-fn load(home: &Path) -> Result<Vec<Kept>, Error> {
+pub fn load(home: &Path) -> Result<Vec<Kept>, Error> {
     let text = match std::fs::read_to_string(kept_path(home)) {
         Ok(text) => text,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -255,6 +277,7 @@ pub fn subscribe(
     }
 
     let secret = subscriber_secret(home)?;
+    node::write(&key_path(home), &*secret, 0o600)?;
     let url = format!("{}/", event::http_url(relay)?);
     let subscriber_key = derive::nostr_public_key(&secret);
     let body = json!({ "filter": filter }).to_string().into_bytes();
@@ -447,14 +470,20 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
         }
         let mut item = entry.json();
         item["current"] = json!(current);
+        item["exhausted"] = json!(entry.exhausted());
         shown.push(item);
         lines.push(format!(
-            "{}: balance {}, {} per event, filter {}{}",
+            "{}: balance {}, {} per event, filter {}{}{}",
             entry.relay,
             entry.balance,
             entry.broadcast_price,
             entry.filter,
-            if current { "" } else { " (as last answered)" }
+            if current { "" } else { " (as last answered)" },
+            if entry.exhausted() {
+                " (exhausted: `toon relay subscribe` tops it up)"
+            } else {
+                ""
+            }
         ));
     }
     save(home, &kept)?;
@@ -467,5 +496,66 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
         exit: Exit::Success,
         json: json!({ "subscriptions": shown }),
         text,
+    })
+}
+
+/// Note that `relay` closed the feed with `payment-required`: its balance is below the
+/// broadcast price, whatever was last kept. What is left is not known here, and
+/// `toon relay subscriptions` asks the relay.
+pub fn mark_exhausted(home: &Path, relay: &str) -> Result<(), Error> {
+    let mut kept = load(home)?;
+    match kept.iter_mut().find(|kept| kept.relay == relay) {
+        Some(entry) if !entry.exhausted() => {
+            entry.balance = 0;
+            save(home, &kept)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `toon event follow`: print the events of the live feed of `relay` as they arrive, one
+/// JSON document to a line, for as long as the relay sends them. A feed has no end of its
+/// own, so this returns only with the reason it stopped.
+pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
+    if node::State::load(home)?.is_none() {
+        return Err(node::no_agent_node(home));
+    }
+    let Some(kept) = load(home)?.into_iter().find(|kept| kept.relay == relay) else {
+        return Err(Error {
+            code: ErrorCode::NotSubscribed,
+            message: format!(
+                "This agent node holds no subscription at {relay}: `toon relay subscribe` opens one."
+            ),
+        });
+    };
+    let secret = match kept_secret(home) {
+        Some(secret) => secret,
+        None => *subscriber_secret(home)?,
+    };
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let mut stdout = std::io::stdout().lock();
+    let mut unwritten = false;
+    let ended = feed::read(relay, &secret, &kept.filter, None, &stop, |event| {
+        use std::io::Write;
+        unwritten = writeln!(stdout, "{event}")
+            .and_then(|()| stdout.flush())
+            .is_err();
+        !unwritten
+    });
+    let failed = |message: String| Error {
+        code: ErrorCode::QueryFailed,
+        message,
+    };
+    Err(match ended {
+        _ if unwritten => failed("The events could not be written.".into()),
+        feed::Ended::Exhausted(reason) => {
+            let _ = mark_exhausted(home, relay);
+            failed(format!(
+                "The subscription at {relay} has run out: {reason}. `toon relay subscribe` tops it up."
+            ))
+        }
+        feed::Ended::Closed(reason) => failed(format!("{relay} closed the feed: {reason}")),
+        feed::Ended::Dropped(message) => failed(message),
+        feed::Ended::Stopped => failed(format!("The feed of {relay} stopped.")),
     })
 }

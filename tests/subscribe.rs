@@ -15,7 +15,7 @@ const SUBSCRIBE: &str = "g.toon.subscribe";
 
 struct Node {
     machine: Machine,
-    _up: Foreground,
+    up: Option<Foreground>,
 }
 
 impl Node {
@@ -41,6 +41,78 @@ impl Node {
     }
 }
 
+impl Node {
+    /// Stop the agent node and start it again, as a restart of the machine would.
+    fn restart(&mut self) {
+        let down = self.machine.toon(&["down", "--json"]);
+        assert_eq!(down.exit_code, 0, "{}{}", down.stdout, down.stderr);
+        self.up = None;
+        let up = self.machine.start(&["up", "--foreground", "--json"]);
+        up.report();
+        self.up = Some(up);
+    }
+
+    /// The websocket URL of this agent node's own relay: the fake serves it on its write port.
+    fn own_relay(&self) -> String {
+        let status = self.machine.toon(&["status", "--json"]).json();
+        let address = status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the relay has no address: {status}"));
+        format!("ws://{address}")
+    }
+
+    /// The ids of the kind 1 events that can be read from this agent node's own relay.
+    fn stored(&self) -> Vec<String> {
+        let query = self.machine.toon(&[
+            "event",
+            "query",
+            &self.own_relay(),
+            "--filter",
+            r#"{"kinds":[1]}"#,
+            "--json",
+        ]);
+        query.json()["events"]
+            .as_array()
+            .map(|events| {
+                events
+                    .iter()
+                    .filter_map(|event| event["id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Wait until the own relay holds the event `id`.
+    fn wait_for_stored(&self, id: &str) {
+        eventually(|| self.stored().iter().any(|stored| stored == id));
+    }
+}
+
+/// Wait for `condition` to hold, for as long as a slow machine may need.
+fn eventually(mut condition: impl FnMut() -> bool) {
+    for _ in 0..300 {
+        if condition() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("what was waited for did not happen");
+}
+
+/// An event of `kind`, as a relay broadcasts it. Nothing here checks a signature: the
+/// fake relays do not.
+fn event(number: u64, kind: u64) -> serde_json::Value {
+    json!({
+        "id": format!("{number:064x}"),
+        "pubkey": "ab".repeat(32),
+        "created_at": 1_790_000_000 + number,
+        "kind": kind,
+        "tags": [],
+        "content": format!("event {number}"),
+        "sig": "00".repeat(64),
+    })
+}
+
 fn node_on(chain: &AnvilChain) -> Node {
     let machine = Machine::new();
     let init = machine.init_on_anvil(chain, true);
@@ -56,14 +128,22 @@ fn node_on(chain: &AnvilChain) -> Node {
     let up = machine.start(&["up", "--foreground", "--json"]);
     // The report says the supervisor is listening: a command before it finds no agent node.
     up.report();
-    Node { machine, _up: up }
+    Node {
+        machine,
+        up: Some(up),
+    }
 }
 
 /// A relay that sells its feed, behind a node of its own: the node's connector delivers
 /// the subscribe route to the fake.
 fn remote(chain: &AnvilChain) -> (Node, FakeRemoteRelay) {
+    remote_debiting(chain, BROADCAST_PRICE)
+}
+
+/// Like `remote`, for a relay that debits `broadcast_price` for an event.
+fn remote_debiting(chain: &AnvilChain, broadcast_price: u64) -> (Node, FakeRemoteRelay) {
     let far = node_on(chain);
-    let relay = FakeRemoteRelay::start(SUBSCRIBE, PRICE, BROADCAST_PRICE);
+    let relay = FakeRemoteRelay::start(SUBSCRIBE, PRICE, broadcast_price);
     let status = far.machine.toon(&["status", "--json"]).json();
     let toon_app = status["agent_node"]["toon_apps"][0]["name"]
         .as_str()
@@ -254,6 +334,7 @@ fn subscriptions_lists_the_balance_and_filter_at_each_relay() {
             "balance": 2000,
             "broadcast_price": BROADCAST_PRICE,
             "current": true,
+            "exhausted": false,
         }])
     );
 }
@@ -347,4 +428,133 @@ fn a_first_subscription_needs_a_filter_and_an_amount_must_buy_a_packet() {
         assert_eq!(run.exit_code, 2);
     }
     assert_eq!(relay.posts(), 0);
+}
+
+fn subscribed(near: &Node, relay: &FakeRemoteRelay, amount: &str) -> serde_json::Value {
+    let run = subscribe(
+        near,
+        relay,
+        &["--filter", FILTER, "--amount", amount, "--yes"],
+    );
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    run.json()
+}
+
+#[test]
+fn an_event_of_the_feed_is_handed_to_the_own_relay_and_read_from_it() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    let paid = subscribed(&near, &relay, "1000");
+    let key = paid["subscriber_key"].as_str().unwrap();
+    eventually(|| relay.open_feeds() == 1);
+
+    relay.broadcast(event(1, 7));
+    relay.broadcast(event(2, 1));
+
+    // Only what the subscription's filter asks for is sent, and only that is paid for.
+    near.wait_for_stored(event(2, 1)["id"].as_str().unwrap());
+    assert_eq!(near.stored(), vec![event(2, 1)["id"].as_str().unwrap()]);
+    assert_eq!(
+        relay.subscription(key).unwrap().balance,
+        1000 - BROADCAST_PRICE
+    );
+}
+
+#[test]
+fn every_subscription_resumes_after_the_agent_node_restarts() {
+    let chain = AnvilChain::start();
+    let mut near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    subscribed(&near, &relay, "1000");
+    eventually(|| relay.open_feeds() == 1);
+
+    near.restart();
+    eventually(|| relay.open_feeds() == 1);
+    relay.broadcast(event(3, 1));
+
+    near.wait_for_stored(event(3, 1)["id"].as_str().unwrap());
+}
+
+#[test]
+fn a_subscription_that_runs_out_is_said_so_and_resumes_when_it_is_topped_up() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    // 1000 buys one event at 600, and 400 is left, which buys none.
+    let (far, relay) = remote_debiting(&chain, 600);
+    peer_and_route(&near, &far);
+    subscribed(&near, &relay, "1000");
+    eventually(|| relay.open_feeds() == 1);
+
+    relay.broadcast(event(4, 1));
+    relay.broadcast(event(5, 1));
+
+    near.wait_for_stored(event(4, 1)["id"].as_str().unwrap());
+    // The supervisor notes that the relay closed the feed.
+    eventually(|| {
+        let status = near.machine.toon(&["status", "--json"]).json();
+        status["agent_node"]["subscriptions"][0]["exhausted"] == true
+    });
+    let status = near.machine.toon(&["status"]);
+    assert!(
+        status
+            .stdout
+            .contains(&format!("Subscription at {}: exhausted", relay.url())),
+        "{}",
+        status.stdout
+    );
+    let listed = near.toon(&["relay", "subscriptions", "--json"]);
+    assert_eq!(listed.json()["subscriptions"][0]["exhausted"], true);
+    assert_eq!(listed.json()["subscriptions"][0]["balance"], 400);
+    let text = near.toon(&["relay", "subscriptions"]);
+    assert!(text.stdout.contains("exhausted"), "{}", text.stdout);
+    assert_eq!(near.stored(), vec![event(4, 1)["id"].as_str().unwrap()]);
+
+    // 1400 buys two more events: the feed is dialled again.
+    subscribed(&near, &relay, "1000");
+    eventually(|| relay.open_feeds() == 1);
+    relay.broadcast(event(6, 1));
+    near.wait_for_stored(event(6, 1)["id"].as_str().unwrap());
+}
+
+#[test]
+fn follow_prints_each_event_as_it_arrives_one_json_document_to_a_line() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    subscribed(&near, &relay, "1000");
+    // The supervisor's feed is one; the one `follow` opens is the other.
+    eventually(|| relay.open_feeds() == 1);
+    let url = relay.url();
+    let follow = near.machine.start(&["event", "follow", &url, "--json"]);
+    eventually(|| relay.open_feeds() == 2);
+
+    relay.broadcast(event(7, 1));
+    relay.broadcast(event(8, 1));
+
+    let first: serde_json::Value = serde_json::from_str(&follow.line()).expect("one document");
+    let second: serde_json::Value = serde_json::from_str(&follow.line()).expect("one document");
+    assert_eq!((first, second), (event(7, 1), event(8, 1)));
+}
+
+#[test]
+fn follow_needs_a_subscription() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (_far, relay) = remote(&chain);
+
+    let run = near
+        .machine
+        .toon(&["event", "follow", &relay.url(), "--json"]);
+
+    assert_eq!(
+        run.json()["error"]["code"],
+        "not_subscribed",
+        "{}",
+        run.stdout
+    );
+    assert_eq!(run.exit_code, 1);
 }

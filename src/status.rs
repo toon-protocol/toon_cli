@@ -133,6 +133,29 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             },
         }));
     }
+    // What `subscribe` and the supervisor last kept, not what each relay says now: asking
+    // them is `toon relay subscriptions`.
+    let mut subscriptions = Vec::new();
+    for kept in crate::subscribe::load(home)? {
+        let exhausted = kept.exhausted();
+        lines.push(if exhausted {
+            format!(
+                "Subscription at {}: exhausted. `toon relay subscribe` tops it up.",
+                kept.relay
+            )
+        } else {
+            format!(
+                "Subscription at {}: balance {}, received.",
+                kept.relay, kept.balance
+            )
+        });
+        subscriptions.push(json!({
+            "relay": kept.relay,
+            "balance": kept.balance,
+            "broadcast_price": kept.broadcast_price,
+            "exhausted": exhausted,
+        }));
+    }
     Ok(Report {
         exit: if all_running {
             Exit::Success
@@ -146,6 +169,7 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                 "joined": state.joined,
                 "reads": state.reads,
                 "toon_apps": toon_apps,
+                "subscriptions": subscriptions,
             },
         }),
         text: lines.join("\n"),
