@@ -215,3 +215,14 @@ fn up_after_a_supervisor_was_killed_replaces_its_stale_socket() {
     second.report();
     assert_eq!(machine.toon(&["status", "--json"]).exit_code, 0);
 }
+
+#[test]
+fn up_refuses_a_state_with_no_toon_app() {
+    let machine = Machine::new();
+    machine.write_agent_node_file("state.json", r#"{"version": 1, "toon_apps": []}"#);
+
+    let run = machine.toon(&["up", "--json"]);
+
+    assert_eq!(run.json()["error"]["code"], "io");
+    assert_eq!(run.exit_code, 1);
+}

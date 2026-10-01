@@ -54,8 +54,10 @@ fn up_starts_a_connector_that_answers_its_identity_endpoint_on_loopback() {
     });
     let expected = shown.json()["wallet"]["connector_identities"][0]["public_key"].clone();
     let served = identity["publicKey"].as_str().expect("a public key");
-    assert!(
-        served.starts_with("0x04") && served.contains(expected.as_str().expect("an identity")),
+    // Served uncompressed, `0x04` then x then y; the wallet lists x alone.
+    assert_eq!(
+        served.get(..68).and_then(|x| x.strip_prefix("0x04")),
+        expected.as_str(),
         "{served} does not carry {expected}"
     );
     assert_eq!(up.stderr(), "");

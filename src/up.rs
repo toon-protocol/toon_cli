@@ -30,7 +30,7 @@ const GRACE: Duration = Duration::from_secs(10);
 struct Shared {
     pid: u32,
     address: String,
-    app: String,
+    toon_app: String,
     stop: AtomicBool,
     running: AtomicBool,
 }
@@ -65,10 +65,7 @@ fn failed(message: String) -> Error {
 /// Start the connector of the agent node at `home`, and return once it is listening.
 pub fn start(home: &Path) -> Result<Supervisor, Error> {
     let Some(state) = State::load(home)? else {
-        return Err(Error {
-            code: ErrorCode::NoAgentNode,
-            message: format!("No agent node at {}. Run `toon init`.", home.display()),
-        });
+        return Err(node::no_agent_node(home));
     };
     // One connector per supervisor until a command creates a second TOON app.
     let app = &state.toon_apps[0];
@@ -132,7 +129,7 @@ fn launch(
             let shared = Arc::new(Shared {
                 pid: child.id(),
                 address,
-                app: app.name.clone(),
+                toon_app: app.name.clone(),
                 stop: AtomicBool::new(false),
                 running: AtomicBool::new(true),
             });
@@ -163,7 +160,7 @@ impl Shared {
         match request {
             "status" => json!({
                 "toon_apps": [{
-                    "name": self.app,
+                    "name": self.toon_app,
                     "connector": {
                         "address": self.address,
                         "pid": self.pid,

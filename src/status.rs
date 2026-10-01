@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use crate::control;
-use crate::node::State;
+use crate::node::{self, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 
 /// How long `down` waits for the supervisor to finish stopping.
@@ -89,22 +89,20 @@ pub fn status(home: &Path) -> Result<Report, Error> {
 /// is not running is already down.
 pub fn down(home: &Path) -> Result<Report, Error> {
     if State::load(home)?.is_none() {
-        return Err(Error {
-            code: ErrorCode::NoAgentNode,
-            message: format!("No agent node at {}. Run `toon init`.", home.display()),
-        });
+        return Err(node::no_agent_node(home));
     }
     let stopped = |was_running: bool, text: &str| Report {
         exit: Exit::Success,
-        json: json!({ "stopped": was_running, "was_running": was_running }),
+        json: json!({ "stopped": was_running }),
         text: text.into(),
     };
     if control::ask(home, "down").is_none() {
         return Ok(stopped(false, "The agent node was not running."));
     }
-    // The supervisor removes its socket last, when the connector has exited.
+    // The supervisor removes its socket last, when the connector has exited. One that
+    // dies on the way leaves its socket behind, but nothing answers on it.
     let deadline = Instant::now() + STOPPING;
-    while control::path(home).exists() {
+    while control::running(home) {
         if Instant::now() >= deadline {
             return Err(Error {
                 code: ErrorCode::ConnectorFailed,

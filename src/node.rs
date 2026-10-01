@@ -62,6 +62,14 @@ fn io(path: &Path, source: std::io::Error) -> Error {
     }
 }
 
+/// What a command that needs an agent node says when `home` has none.
+pub fn no_agent_node(home: &Path) -> Error {
+    Error {
+        code: ErrorCode::NoAgentNode,
+        message: format!("No agent node at {}. Run `toon init`.", home.display()),
+    }
+}
+
 pub fn state_path(home: &Path) -> PathBuf {
     home.join("state.json")
 }
@@ -167,7 +175,11 @@ impl State {
                         .collect::<Option<_>>()?,
                 })
             })
-            .collect::<Option<_>>()?;
+            .collect::<Option<Vec<_>>>()?;
+        // An agent node starts as one TOON app, so a state with none is not one.
+        if toon_apps.is_empty() {
+            return None;
+        }
         Some(Self { toon_apps })
     }
 

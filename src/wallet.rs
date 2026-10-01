@@ -104,17 +104,16 @@ pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
     let wallet = describe(&addresses(&phrase)?);
     // The TOON app is made and checked before the wallet is kept, so that a command line
     // the connector would refuse does not leave a wallet whose mnemonic nobody saw.
-    let state = match create_toon_app(home, &mnemonic, options) {
-        Ok(state) => state,
-        Err(error) => {
-            let _ = std::fs::remove_dir_all(home.join("connectors"));
-            return Err(error);
-        }
-    };
+    let state = create_toon_app(home, &mnemonic, options)?;
     if !keystore::create(home, &passphrase, &phrase)? {
         return existing(home, options);
     }
-    state.save(home)?;
+    if let Err(error) = state.save(home) {
+        // The mnemonic has not been shown, so the wallet goes with the TOON app.
+        let _ = std::fs::remove_file(keystore::path(home));
+        let _ = std::fs::remove_dir_all(home.join("connectors"));
+        return Err(error);
+    }
     let text = format!(
         "Wallet created at {}.\n\nYour mnemonic. It is shown this once and no command shows it again; write it down now:\n\n  {}\n\n{}\n\n{}",
         keystore::path(home).display(),
@@ -135,7 +134,20 @@ pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
 }
 
 /// Write the keys of the first TOON app's connector, and render and check its config.
+/// What it wrote is removed again if it fails.
 fn create_toon_app(
+    home: &Path,
+    mnemonic: &bip39::Mnemonic,
+    options: &node::Options,
+) -> Result<node::State, Error> {
+    let created = write_toon_app(home, mnemonic, options);
+    if created.is_err() {
+        let _ = std::fs::remove_dir_all(home.join("connectors"));
+    }
+    created
+}
+
+fn write_toon_app(
     home: &Path,
     mnemonic: &bip39::Mnemonic,
     options: &node::Options,
@@ -172,7 +184,10 @@ fn existing(home: &Path, options: &node::Options) -> Result<Report, Error> {
                         message: "The keystore does not hold a valid mnemonic.".into(),
                     })?;
             let state = create_toon_app(home, &mnemonic, options)?;
-            state.save(home)?;
+            if let Err(error) = state.save(home) {
+                let _ = std::fs::remove_dir_all(home.join("connectors"));
+                return Err(error);
+            }
             (state, true)
         }
     };
