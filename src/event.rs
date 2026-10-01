@@ -13,7 +13,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tungstenite::{stream::MaybeTlsStream, Message};
 
+use crate::cli::EventCommand;
 use crate::derive;
+use crate::home;
 use crate::keystore;
 use crate::node;
 use crate::operator::{self, Answer};
@@ -237,6 +239,19 @@ pub fn query(relay: &str, filter: &str) -> Result<Report, Error> {
 fn set_timeouts(stream: &TcpStream) -> std::io::Result<()> {
     stream.set_read_timeout(Some(PATIENCE))?;
     stream.set_write_timeout(Some(PATIENCE))
+}
+
+/// `toon event`.
+pub fn run(command: EventCommand) -> Result<Report, Error> {
+    match command {
+        EventCommand::Publish {
+            kind,
+            content,
+            tags,
+            amount,
+        } => publish(&home::resolve()?, kind, &content, &tags, amount),
+        EventCommand::Query { relay, filter } => query(&relay, &filter),
+    }
 }
 
 #[cfg(test)]
