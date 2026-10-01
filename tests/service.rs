@@ -71,6 +71,8 @@ fn up_writes_a_unit_that_runs_the_supervisor_in_the_foreground() {
              Description=TOON agent node\n\
              After=network-online.target\n\
              Wants=network-online.target\n\
+             StartLimitIntervalSec=120\n\
+             StartLimitBurst=5\n\
              \n\
              [Service]\n\
              Type=simple\n\
@@ -98,7 +100,14 @@ fn up_without_systemctl_leaves_the_unit_and_says_why() {
     let machine = Machine::new();
     machine.init_on(&chain);
 
-    let up = machine.toon(&["up", "--json"]);
+    // An empty `PATH`, so that the real `systemctl` of the machine running the tests is
+    // never found.
+    let empty = machine.home().join("empty-bin");
+    fs::create_dir_all(&empty).unwrap();
+
+    let up = machine.toon_with(&["up", "--json"], |command| {
+        command.env("PATH", &empty);
+    });
 
     assert_eq!(up.json()["error"]["code"], "systemd_failed");
     assert_eq!(up.exit_code, 1);
@@ -139,6 +148,26 @@ fn down_stops_the_unit() {
         fs::read_to_string(calls).unwrap(),
         "systemctl --user disable --now toon-agent-node.service\n"
     );
+}
+
+#[test]
+fn down_says_so_when_systemctl_would_not_stop_the_unit() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let (bin, _) = fake_systemd(&machine);
+    machine.toon_with(&["up", "--json"], |command| {
+        command.env("PATH", &bin);
+    });
+    let refusing = bin.join("systemctl");
+    fs::write(&refusing, "#!/bin/sh\necho 'Access denied' >&2\nexit 1\n").unwrap();
+
+    let down = machine.toon_with(&["down", "--json"], |command| {
+        command.env("PATH", &bin);
+    });
+
+    assert_eq!(down.json()["error"]["code"], "systemd_failed");
+    assert_eq!(down.exit_code, 1);
 }
 
 #[test]

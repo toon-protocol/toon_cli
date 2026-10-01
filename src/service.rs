@@ -15,13 +15,14 @@ use crate::outcome::{Error, ErrorCode};
 /// The unit's name. One supervisor runs per machine, so there is one unit.
 pub const UNIT: &str = "toon-agent-node.service";
 
-/// Where the unit is written.
+/// Where the unit is written: where `systemd --user` looks for the user's own units,
+/// `$XDG_CONFIG_HOME/systemd/user`, which is `~/.config/systemd/user` by default.
 pub fn unit_path(user_home: &Path) -> PathBuf {
-    user_home
-        .join(".config")
-        .join("systemd")
-        .join("user")
-        .join(UNIT)
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|config| config.is_absolute())
+        .unwrap_or_else(|| user_home.join(".config"));
+    config.join("systemd").join("user").join(UNIT)
 }
 
 /// A word of an `ExecStart=` line, quoted the way systemd reads it.
@@ -42,6 +43,8 @@ pub fn unit(toon: &Path) -> String {
          Description=TOON agent node\n\
          After=network-online.target\n\
          Wants=network-online.target\n\
+         StartLimitIntervalSec=120\n\
+         StartLimitBurst=5\n\
          \n\
          [Service]\n\
          Type=simple\n\
@@ -111,11 +114,11 @@ pub fn install() -> Result<Installed, Error> {
 }
 
 /// Stop the unit and keep it from starting again at boot, if `up` ever installed it.
-/// Failing to is no reason for `down` to fail: it is also how a node that never had a
-/// unit goes down.
-pub fn remove() {
-    let Ok(user_home) = home::user() else { return };
-    if unit_path(&user_home).exists() {
-        let _ = systemctl(&["disable", "--now", UNIT]);
+/// A node that never had a unit has nothing to stop here; a unit that `systemctl` would
+/// not stop is an error, because it would bring the agent node back.
+pub fn remove() -> Result<(), Error> {
+    if unit_path(&home::user()?).exists() {
+        systemctl(&["disable", "--now", UNIT])?;
     }
+    Ok(())
 }

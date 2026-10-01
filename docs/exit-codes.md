@@ -15,8 +15,8 @@ is missing here. Add a new code to the test and to this file together.
   goes to standard error as `error: <message>`.
 - No command reads standard input or prompts.
 - A command that stays in the foreground, such as `toon up --foreground`, prints its one JSON
-  document once what it runs is up, and then keeps running. If it stops later, its exit
-  code says so and it prints no second document.
+  document once what it runs is up, and then keeps running. It stops when `toon down`
+  asks it to, exits 0 and prints no second document.
 - `toon connector` is not an operator's command and keeps none of these rules. It is
   hidden, `toon up` starts it as a child process, and it reports to its supervisor.
 - `help` is not a command. Ask for help with `--help`.
@@ -37,7 +37,7 @@ supervisor, and `toon status` reports how many times.
 
 `toon status` exits with the code that describes the agent node, and still prints its
 report. It exits 1 when the supervisor or a connector is not running, and `toon down` exits 0
-whether or not anything was running. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
+whether or not anything was running, unless `systemctl` would not stop the unit. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
 and exits 3.
 
 ## Errors
@@ -61,9 +61,9 @@ A failed command with `--json` prints:
 | `keystore_corrupt` | 1 | The keystore file is not one this version reads |
 | `io` | 1 | A file or the system's randomness could not be used |
 | `no_agent_node` | 3 | The command needs an agent node and this machine has none |
-| `connector_failed` | 1 | A connector did not start, or stopped; the message carries the connector's own reason |
+| `connector_failed` | 1 | A connector did not start, or the supervisor did not stop when `toon down` asked; the message carries the connector's own reason |
 | `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
-| `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it; the message carries `systemctl`'s own reason |
+| `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
 | `unknown_name` | 1 | `toon logs` was given a name that is neither a TOON app nor an app of this agent node |
 
 ## The wallet passphrase

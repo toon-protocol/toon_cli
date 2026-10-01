@@ -124,7 +124,7 @@ pub fn down(home: &Path) -> Result<Report, Error> {
             thread::sleep(Duration::from_millis(20));
         }
     }
-    service::remove();
+    service::remove()?;
     Ok(if was_running {
         stopped(true, "The agent node stopped.")
     } else {

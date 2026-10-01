@@ -279,6 +279,7 @@ impl Supervisor {
             let mut live = self.shared.live();
             live.running = false;
             live.pid = None;
+            live.address = None;
             live.last_exit = Some(why);
             drop(live);
             drop(started.alive);
