@@ -53,6 +53,13 @@ and `toon down` stops the supervisor and the unit. `toon up --foreground` runs t
 supervisor in this process instead, and prints the connector's address once it is
 listening.
 
+The supervisor starts the relay from the pinned image as a container with `docker`, its
+write port published on loopback only, then starts the connector from the config it
+renders, with the relay's write route and its free ephemeral route. If the relay stops,
+the supervisor stops with it and exits 1. `TOON_APP_COMMAND=<program>` runs every app as
+a local process of that program instead of a container; the tests use it with
+`examples/fake_relay.rs`.
+
 Every command is non-interactive and accepts `--json`, which prints exactly one JSON
 document. Exit codes and error codes are stable and listed in
 [`docs/exit-codes.md`](docs/exit-codes.md).

@@ -16,6 +16,7 @@ mod node;
 mod operator;
 mod outcome;
 mod profile;
+mod runner;
 mod service;
 mod status;
 mod up;
@@ -32,6 +33,7 @@ use serde_json::json;
 
 use cli::{Cli, Command, RouteCommand, WalletCommand};
 use outcome::{Error, ErrorCode, Exit, Report};
+use up::Stopped;
 
 fn main() -> ExitCode {
     let json = wants_json(env::args_os().skip(1));
@@ -94,7 +96,7 @@ fn main() -> ExitCode {
 }
 
 /// `toon up --foreground` reports once its connector is listening and then stays in the foreground,
-/// so it renders once, and its exit code says that `toon down` stopped it.
+/// so it renders once, and its exit code says whether `toon down` stopped it or an app did.
 fn up(json: bool) -> Exit {
     let supervisor = match home::resolve().and_then(|home| up::start(&home)) {
         Ok(supervisor) => supervisor,
@@ -104,8 +106,12 @@ fn up(json: bool) -> Exit {
         Exit::Success => {}
         unwritten => return unwritten,
     }
-    supervisor.wait();
-    Exit::Success
+    match supervisor.wait() {
+        Stopped::Down => Exit::Success,
+        // The one JSON document has been printed; the exit code is all that is left.
+        Stopped::Failed(error) if json => error.code.exit(),
+        Stopped::Failed(error) => render(Err(error), json),
+    }
 }
 
 /// `toon up` without `--foreground`: install the unit that runs the supervisor, and

@@ -16,7 +16,8 @@ is missing here. Add a new code to the test and to this file together.
 - No command reads standard input or prompts.
 - A command that stays in the foreground, such as `toon up --foreground`, prints its one JSON
   document once what it runs is up, and then keeps running. It stops when `toon down`
-  asks it to, exits 0 and prints no second document.
+  asks it to, exits 0 and prints no second document. If an app behind its connector
+  stops, it stops too and exits 1, also with no second document.
 - `toon connector` is not an operator's command and keeps none of these rules. It is
   hidden, `toon up` starts it as a child process, and it reports to its supervisor.
 - `help` is not a command. Ask for help with `--help`.
@@ -65,6 +66,7 @@ A failed command with `--json` prints:
 | `no_agent_node` | 3 | The command needs an agent node and this machine has none |
 | `connector_failed` | 1 | A connector did not start, or the supervisor did not stop when `toon down` asked; the message carries the connector's own reason |
 | `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
+| `app_failed` | 1 | An app behind a connector did not start, or stopped; the message carries the reason |
 | `unfunded` | 1 | A settlement key does not hold what the connector needs, so `toon up` did not start it; the message names each address and the amount |
 | `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |

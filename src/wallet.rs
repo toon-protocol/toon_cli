@@ -1,5 +1,6 @@
 //! `toon init` and `toon wallet show`.
 
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 use serde_json::{json, Value};
@@ -9,10 +10,14 @@ use crate::funding;
 use crate::keystore;
 use crate::node;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::runner;
 
 /// How many connectors a wallet lists. An agent node starts as one TOON app, so one
 /// connector; later commands that create TOON apps raise this.
 const CONNECTORS: u32 = 1;
+
+/// Which relay's identity key the first TOON app's relay gets.
+const RELAY_INDEX: u32 = 0;
 
 fn addresses(mnemonic: &str) -> Result<Addresses, Error> {
     let mnemonic: bip39::Mnemonic = mnemonic.parse().map_err(|_| Error {
@@ -141,6 +146,7 @@ pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
 /// Remove what writing a TOON app's keys left.
 fn discard_toon_apps(home: &Path) {
     let _ = std::fs::remove_dir_all(home.join("connectors"));
+    let _ = std::fs::remove_dir_all(home.join("apps"));
     let _ = std::fs::remove_file(node::operator_key(home));
 }
 
@@ -185,7 +191,20 @@ fn write_toon_app(
                 derive::solana_settlement_secret(&*seed, app.connector).map_err(corrupt)?;
             node::write(&files.solana_settlement_key, &*solana, 0o600)?;
         }
-        node::render(home, app)?;
+        if app.apps.iter().any(|name| name == node::RELAY) {
+            // The relay's identity key is the wallet's, handed over as a file that only
+            // this user reads. `up` reads it and gives it to the relay.
+            let relay = derive::relay_identity_secret(&*seed, RELAY_INDEX).map_err(corrupt)?;
+            node::write(
+                &node::AppFiles::of(home, node::RELAY).identity_key,
+                &*relay,
+                0o600,
+            )?;
+        }
+        // Nothing runs yet, so the route is checked against the address the relay's
+        // container serves on.
+        let placeholder = SocketAddr::from((Ipv4Addr::LOCALHOST, runner::WRITE_PORT));
+        node::render(home, app, Some(placeholder))?;
     }
     Ok(state)
 }

@@ -37,6 +37,9 @@ tempfile = "3"
 # The connector's own fake chain RPC, and the channel-id arithmetic the fake answers with.
 connector-chain-rpc = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705", features = ["test-support"] }
 connector-signer = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+# The packet a client sends, to test that the connector delivers it to the relay.
+connector-domain = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+chrono = "0.4"
 
 # The relay image `toon` runs as a container (ADR 0001), pinned by digest. `build.rs`
 # hands it to `toon --version`.

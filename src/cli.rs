@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
-use crate::node::{self, Options};
+use crate::node::Options;
 use crate::outcome::Exit;
 use crate::profile::Profile;
 
@@ -96,9 +96,6 @@ pub struct InitArgs {
     /// The token the connector is paid in on that chain, instead of the profile's
     #[arg(long)]
     pub evm_token: Option<String>,
-    /// Where the relay app is served, which the connector delivers the relay's route to
-    #[arg(long, default_value = node::DEFAULT_RELAY_URL)]
-    pub relay_url: String,
     /// The token's decimals, at most 18
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..=18))]
     pub evm_decimals: Option<u8>,
@@ -136,7 +133,6 @@ impl InitArgs {
         }
         Options {
             listen: self.listen.clone(),
-            relay_url: self.relay_url.clone(),
             network: self.network,
             evm: Some(evm),
             solana: self.solana.then(|| self.network.solana()),

@@ -111,7 +111,17 @@ fn the_connector_config_is_rendered_from_the_state_on_every_up() {
     let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
 
-    assert_eq!(fs::read_to_string(&config).unwrap(), rendered);
+    // What changes is where the relay was found: `init` could only point at where its
+    // container will serve, and `up` knows where the relay is.
+    let status = machine.toon(&["status", "--json"]).json();
+    let relay = status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        fs::read_to_string(&config).unwrap(),
+        rendered.replace("127.0.0.1:3100", &relay)
+    );
 }
 
 #[test]
