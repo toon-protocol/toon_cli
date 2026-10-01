@@ -24,6 +24,9 @@ use tempfile::TempDir;
 /// its chain before it listens, so this is generous.
 const TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The wallet passphrase the tests use.
+pub const PASSPHRASE: &str = "correct horse battery staple";
+
 /// One operator's machine: an empty home directory that is deleted on drop.
 pub struct Machine {
     home: TempDir,
@@ -87,6 +90,32 @@ impl Machine {
             .current_dir(self.home())
             .stdin(Stdio::null());
         command
+    }
+
+    /// Run `toon init` for an agent node that settles on `chain`, with the passphrase
+    /// every test uses.
+    pub fn init_on(&self, chain: &fake_chain::FakeChain) -> Run {
+        self.toon_with(
+            &[
+                "init",
+                "--json",
+                "--evm-rpc-url",
+                &chain.rpc_url(),
+                "--evm-token",
+                fake_chain::TOKEN,
+                "--evm-decimals",
+                &fake_chain::TOKEN_DECIMALS.to_string(),
+                "--evm-asset-name",
+                "USDC",
+                "--evm-asset-version",
+                "2",
+                "--evm-transfer-method",
+                "permit2",
+            ],
+            |command| {
+                command.env("TOON_PASSPHRASE", PASSPHRASE);
+            },
+        )
     }
 
     /// Write `contents` to `name` in the agent node's home, and return its path.

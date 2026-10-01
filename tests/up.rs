@@ -7,50 +7,14 @@ use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use connector_signer::{LocalSigner, Signer};
 use serde_json::Value;
 use support::fake_chain::{self, FakeChain};
 use support::Machine;
 
-/// The connector's identity key in these tests, as the 32 raw bytes of its key file.
-const IDENTITY_KEY: [u8; 32] = [7; 32];
-const SETTLEMENT_KEY: [u8; 32] = [9; 32];
-
-/// Give `machine` the connector config `toon up` starts from: one connector on
-/// loopback, on a port the system picks, settling on `chain`. A connector that settles
-/// keeps its journals in a state directory, so it has one.
+/// Give `machine` an agent node whose connector settles on `chain`, through `toon init`.
 fn configure_a_connector(machine: &Machine, chain: &FakeChain) {
-    let identity_key = machine.write_agent_node_file("identity.key", IDENTITY_KEY);
-    let settlement_key = machine.write_agent_node_file("settlement.key", SETTLEMENT_KEY);
-    machine.write_agent_node_file(
-        "connector.toml",
-        format!(
-            r#"
-client_edge_addr = "127.0.0.1:0"
-state_dir = "{state_dir}"
-
-[signer]
-key_file = "{identity_key}"
-
-[settlement.evm]
-rpc_url = "{rpc_url}"
-token_address = "{token}"
-decimals = {decimals}
-asset_eip712_name = "USDC"
-asset_eip712_version = "2"
-asset_transfer_method = "permit2"
-
-[settlement.evm.key]
-key_file = "{settlement_key}"
-"#,
-            state_dir = machine.agent_node_home().join("state").display(),
-            identity_key = identity_key.display(),
-            settlement_key = settlement_key.display(),
-            rpc_url = chain.rpc_url(),
-            token = fake_chain::TOKEN,
-            decimals = fake_chain::TOKEN_DECIMALS,
-        ),
-    );
+    let init = machine.init_on(chain);
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
 }
 
 /// Where the connector in `report` listens.
@@ -82,13 +46,19 @@ fn up_starts_a_connector_that_answers_its_identity_endpoint_on_loopback() {
         address.ip().is_loopback(),
         "the connector listens on loopback: {report}"
     );
+    // The key the connector serves is the wallet's identity key for connector 0, the
+    // one `toon wallet show` lists.
     let identity = get(address, "/ilp/identity");
-    let key = LocalSigner::from_secret_bytes("expected", IDENTITY_KEY)
-        .and_then(|signer| signer.public_key())
-        .expect("the public half of the identity key");
+    let shown = machine.toon_with(&["wallet", "show", "--json"], |command| {
+        command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+    });
+    let expected = shown.json()["wallet"]["connector_identities"][0]["public_key"].clone();
+    let served = identity["publicKey"].as_str().expect("a public key");
+    // Served uncompressed, `0x04` then x then y; the wallet lists x alone.
     assert_eq!(
-        identity["publicKey"],
-        format!("0x{}", fake_chain::hex(key.as_ref()))
+        served.get(..68).and_then(|x| x.strip_prefix("0x04")),
+        expected.as_str(),
+        "{served} does not carry {expected}"
     );
     assert_eq!(up.stderr(), "");
 }
@@ -221,17 +191,11 @@ fn up_on_a_machine_with_no_agent_node_says_so() {
 }
 
 #[test]
-fn up_fails_with_the_connectors_reason_when_it_refuses_its_config() {
+fn up_fails_with_the_connectors_reason_when_the_chain_is_not_there() {
+    let chain = FakeChain::start();
     let machine = Machine::new();
-    machine.write_agent_node_file(
-        "connector.toml",
-        r#"
-client_edge_addr = "127.0.0.1:0"
-
-[signer]
-key_file = "/nonexistent/identity.key"
-"#,
-    );
+    configure_a_connector(&machine, &chain);
+    drop(chain);
 
     let run = machine.toon(&["up", "--json"]);
 
@@ -240,7 +204,7 @@ key_file = "/nonexistent/identity.key"
     assert!(
         error["message"]
             .as_str()
-            .is_some_and(|message| message.contains("/nonexistent/identity.key")),
+            .is_some_and(|message| message.contains("refused to start")),
         "the message carries the connector's own refusal: {error}"
     );
     assert_eq!(run.exit_code, 1);
