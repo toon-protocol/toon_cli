@@ -107,29 +107,35 @@ impl Machine {
     }
 
     /// Like `init_on_serving`, on the local chain `anvil`: its token moves by ERC-3009.
-    pub fn init_on_anvil(&self, chain: &anvil_chain::AnvilChain, relay_url: &str) -> Run {
+    /// The chain and the connectors share one machine, so a connector that peers needs
+    /// `plaintext_peers`.
+    pub fn init_on_anvil(
+        &self,
+        chain: &anvil_chain::AnvilChain,
+        relay_url: &str,
+        plaintext_peers: bool,
+    ) -> Run {
         let decimals = anvil_chain::TOKEN_DECIMALS.to_string();
         let rpc_url = chain.rpc_url();
         let token = chain.token();
-        self.toon_with(
-            &[
-                "init",
-                "--json",
-                "--evm-rpc-url",
-                &rpc_url,
-                "--evm-token",
-                &token,
-                "--evm-decimals",
-                &decimals,
-                "--relay-url",
-                relay_url,
-                // The chain and the connectors share one machine.
-                "--allow-plaintext-peers",
-            ],
-            |command| {
-                command.env("TOON_PASSPHRASE", PASSPHRASE);
-            },
-        )
+        let mut args = vec![
+            "init",
+            "--json",
+            "--evm-rpc-url",
+            &rpc_url,
+            "--evm-token",
+            &token,
+            "--evm-decimals",
+            &decimals,
+            "--relay-url",
+            relay_url,
+        ];
+        if plaintext_peers {
+            args.push("--allow-plaintext-peers");
+        }
+        self.toon_with(&args, |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        })
     }
 
     fn init_on_with(&self, chain: &fake_chain::FakeChain, more: &[&str]) -> Run {

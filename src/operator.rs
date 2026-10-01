@@ -22,6 +22,8 @@ struct Surface {
     url: String,
     bearer_token: PathBuf,
     write_key: PathBuf,
+    /// Whether the connector may peer toward a plain `http://` address.
+    plaintext_peers: bool,
 }
 
 fn failed(code: ErrorCode, message: String) -> Error {
@@ -52,6 +54,7 @@ fn surface(home: &Path) -> Result<Surface, Error> {
         url: format!("http://{address}"),
         bearer_token: ConnectorFiles::of(home, app.connector).bearer_token,
         write_key: node::operator_key(home),
+        plaintext_peers: app.plaintext_peers,
     })
 }
 
@@ -202,8 +205,7 @@ fn refusal(status: u16, text: &str) -> String {
     format!("The connector answered {status}: {}", text.trim())
 }
 
-/// `toon peer add`: create a peering toward the connector at `address`, opening and
-/// funding the channel it pays on with `deposit`.
+/// What `toon peer add` was asked for.
 pub struct PeerAdd<'a> {
     pub address: &'a str,
     pub deposit: u128,
@@ -212,9 +214,12 @@ pub struct PeerAdd<'a> {
     pub max_packet_amount: u64,
 }
 
+/// `toon peer add`: create a peering toward the connector at `address`, opening and
+/// funding the channel it pays on with `deposit`.
 pub fn peer_add(home: &Path, add: &PeerAdd) -> Result<Report, Error> {
     let surface = surface(home)?;
     let id = add.id.map_or_else(|| label(add.address), str::to_owned);
+    segment(ErrorCode::PeerFailed, "The peering's label", &id)?;
     let body = json!({
         "id": id,
         "url": add.address,
@@ -225,11 +230,24 @@ pub fn peer_add(home: &Path, add: &PeerAdd) -> Result<Report, Error> {
     let (status, text) = write(&surface, reqwest::Method::POST, "/peers", Some(&body))?;
     if status != 200 {
         // The connector reads the other side's self-description first, and a connector
-        // that is not peerable publishes none a peer can use.
-        let not_peerable = status == 502
-            && (text.contains("publishes no endpoint")
-                || text.contains("publishes no httpEndpoint"));
-        return Err(if not_peerable {
+        // that is not peerable publishes none a peer can use. A connector that does not
+        // peer over plain `http://` refuses such an address, and finds no endpoint it
+        // can dial in a description that publishes only those: then the refusal is
+        // this side's.
+        let no_endpoint = status == 502 && text.contains("publishes no endpoint");
+        let no_client_edge = status == 502 && text.contains("publishes no httpEndpoint");
+        let plaintext = status == 502 && text.contains("peer_allow_plaintext_endpoints");
+        if !surface.plaintext_peers && (no_endpoint || plaintext) {
+            return Err(failed(
+                ErrorCode::PeerFailed,
+                format!(
+                    "This connector does not peer over plain `http://`. To peer on one \
+                     machine, run `toon init` with `--allow-plaintext-peers`. {}",
+                    refusal(status, &text)
+                ),
+            ));
+        }
+        return Err(if no_endpoint || no_client_edge {
             failed(
                 ErrorCode::PeerNotPeerable,
                 format!(
@@ -249,12 +267,12 @@ pub fn peer_add(home: &Path, add: &PeerAdd) -> Result<Report, Error> {
         )
     })?;
     let channel = peering["channel"]["id"].as_str().unwrap_or_default();
-    let branch = peering["channel"]["status"].as_str().unwrap_or_default();
+    let channel_status = peering["channel"]["status"].as_str().unwrap_or_default();
     Ok(Report {
         exit: Exit::Success,
         json: json!({ "peering": peering }),
         text: format!(
-            "Peered with {} as {id}, paying on channel {channel} ({branch}), deposit {}.\n\
+            "Peered with {} as {id}, paying on channel {channel} ({channel_status}), deposit {}.\n\
              Packets forwarded to it are served by that connector. It forwards back to you \
              only if its operator creates a peering toward you in return.",
             add.address, add.deposit
@@ -287,8 +305,25 @@ pub fn peer_list(home: &Path) -> Result<Report, Error> {
     })
 }
 
+/// `segment`, checked to be one path segment the connector reads as written: a peering's
+/// label or an ILP address prefix, which hold nothing a URL would escape.
+fn segment(code: ErrorCode, what: &str, segment: &str) -> Result<(), Error> {
+    if !segment.is_empty()
+        && segment
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '~'))
+    {
+        return Ok(());
+    }
+    Err(failed(
+        code,
+        format!("{what} {segment:?} holds a character other than letters, digits, `.`, `-`, `_` and `~`."),
+    ))
+}
+
 /// `toon peer remove`: remove the peering called `id`.
 pub fn peer_remove(home: &Path, id: &str) -> Result<Report, Error> {
+    segment(ErrorCode::PeerFailed, "The peering's label", id)?;
     let surface = surface(home)?;
     let (status, text) = write(
         &surface,
@@ -319,7 +354,12 @@ pub fn route_add(home: &Path, prefix: &str, peer: &str, price: u64) -> Result<Re
     if status != 200 {
         return Err(failed(ErrorCode::RouteFailed, refusal(status, &text)));
     }
-    let route: Value = serde_json::from_str(&text).unwrap_or(body);
+    let route: Value = serde_json::from_str(&text).map_err(|error| {
+        failed(
+            ErrorCode::RouteFailed,
+            format!("The connector's answer was not understood ({error}): {text}"),
+        )
+    })?;
     Ok(Report {
         exit: Exit::Success,
         json: json!({ "route": route }),
@@ -329,6 +369,7 @@ pub fn route_add(home: &Path, prefix: &str, peer: &str, price: u64) -> Result<Re
 
 /// `toon route remove`: stop forwarding `prefix`.
 pub fn route_remove(home: &Path, prefix: &str) -> Result<Report, Error> {
+    segment(ErrorCode::RouteFailed, "The prefix", prefix)?;
     let surface = surface(home)?;
     let (status, text) = write(
         &surface,

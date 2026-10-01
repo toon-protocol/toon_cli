@@ -14,6 +14,8 @@ struct Node {
     _up: Foreground,
     /// Where its connector listens, as `up` reports it.
     address: String,
+    /// Its wallet's EVM address, which a peering's deposit is paid from.
+    evm: String,
 }
 
 impl Node {
@@ -29,8 +31,13 @@ impl Node {
 
 /// An agent node whose relay is `relay_url` and whose wallet holds `DEPOSIT * 10`.
 fn node_on(chain: &AnvilChain, relay_url: &str) -> Node {
+    node_with(chain, relay_url, true)
+}
+
+/// Like `node_on`, saying whether its connector may peer toward a plain `http://` address.
+fn node_with(chain: &AnvilChain, relay_url: &str, plaintext_peers: bool) -> Node {
     let machine = Machine::new();
-    let init = machine.init_on_anvil(chain, relay_url);
+    let init = machine.init_on_anvil(chain, relay_url, plaintext_peers);
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
     let shown = machine.toon_with(&["wallet", "show", "--json"], |command| {
         command.env("TOON_PASSPHRASE", support::PASSPHRASE);
@@ -49,6 +56,7 @@ fn node_on(chain: &AnvilChain, relay_url: &str) -> Node {
         machine,
         _up: up,
         address,
+        evm,
     }
 }
 
@@ -73,6 +81,11 @@ fn one_operator_peers_alone_and_a_packet_crosses_and_is_fulfilled() {
     let peering = peered.json()["peering"].clone();
     assert_eq!(peering["id"], "far");
     assert_eq!(peering["channel"]["status"], "created");
+    assert_eq!(
+        chain.balance(&near.evm),
+        DEPOSIT * 9,
+        "the deposit is on chain"
+    );
 
     let routed = near.toon(&[
         "route",
@@ -232,13 +245,64 @@ fn peer_commands_need_the_agent_node_to_be_running() {
     assert_eq!(machine.init_on(&chain).exit_code, 0);
 
     for args in [
-        &["peer", "list", "--json"][..],
+        &[
+            "peer",
+            "add",
+            "http://127.0.0.1:1/ilp",
+            "--deposit",
+            "1",
+            "--json",
+        ][..],
+        &["peer", "list", "--json"],
         &["peer", "remove", "far", "--json"],
         &["route", "add", "g.far", "--peer", "far", "--json"],
         &["route", "remove", "g.far", "--json"],
     ] {
         let run = machine.toon(args);
         assert_eq!(run.json()["error"]["code"], "not_running", "{args:?}");
+        assert_eq!(run.exit_code, 1);
+    }
+}
+
+#[test]
+fn a_connector_that_dials_no_plaintext_says_the_refusal_is_on_this_side() {
+    let chain = AnvilChain::start();
+    let near = node_with(&chain, StubApp::start().url(), false);
+    let far = node_on(&chain, StubApp::start().url());
+
+    let peered = near.toon(&[
+        "peer",
+        "add",
+        &far.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--json",
+    ]);
+
+    assert_eq!(peered.exit_code, 1, "{}", peered.stdout);
+    let error = peered.json()["error"].clone();
+    assert_eq!(error["code"], "peer_failed", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("--allow-plaintext-peers"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_label_or_prefix_that_is_not_one_path_segment_is_refused() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+
+    for (args, code) in [
+        (&["peer", "remove", "far/../x", "--json"][..], "peer_failed"),
+        (&["route", "remove", "g.far?x", "--json"], "route_failed"),
+    ] {
+        let run = machine.toon(args);
+        assert_eq!(run.json()["error"]["code"], code, "{args:?}");
         assert_eq!(run.exit_code, 1);
     }
 }
