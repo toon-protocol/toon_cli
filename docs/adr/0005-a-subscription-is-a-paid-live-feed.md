@@ -11,3 +11,4 @@ The connector tells an app only what a route charged, never an amount the payer 
 - A client can poll free reads instead of paying, so free reads need a rate limit for the feed to be worth buying.
 - An agent node pays through its own connector, so subscribing to a relay it has no path to means peering first.
 - Balances are not refundable.
+- The payer the connector states is a channel, and it states one only for a claim it admitted itself. So a subscriber pays the relay's connector directly, as a client: a packet that arrives through another connector, or on the peer wire, states no payer or another party's. The draft NIP (`nips/paid-subscription.md`) says so and leaves open whether to key the balance by the subscriber key instead.

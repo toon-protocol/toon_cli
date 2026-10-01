@@ -21,6 +21,13 @@ the files it leaves, and what a connector it started answers over loopback. Exit
 in `docs/exit-codes.md`. `tests/exit_codes.rs` keeps its own copy of both lists and
 checks it against that file and `toon --help`, so add a new code to all of them together.
 
+## Draft NIPs
+
+`nips/` holds the draft NIPs that ship with the CLI, each written from `nips/TEMPLATE.md`
+and listed in `nips/README.md`; `tests/nips.rs` checks both. A draft is the single source
+for what implements it: `nips/paid-subscription.md` for the subscribe commands, the fake
+remote relay and the Rust relay. Change the draft before the code that follows it.
+
 ## The embedded connector
 
 `toon` depends on the connector's crates at one git revision (ADR 0001). The `rev` is

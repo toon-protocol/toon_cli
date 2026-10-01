@@ -73,6 +73,10 @@ _Avoid_: Top up (as a separate action)
 What a relay debits from a subscription for each event it broadcasts. Set by that relay's operator.
 _Avoid_: Read price, subscription fee
 
+**Subscriber key**:
+The Nostr key a subscriber names when it subscribes, and proves it holds when it reads that subscription's live feed or its balance.
+_Avoid_: Token, credential, payer (the payer is the channel that paid)
+
 ### How it is reached
 
 **Hidden service**:
