@@ -34,7 +34,8 @@ is missing here. Add a new code to the test and to this file together.
 `toon status` exits with the code that describes the agent node, and still prints its
 report. It exits 1 when the supervisor or a connector is not running, and `toon down` exits 0
 whether or not anything was running. `toon send` exits 1 when the packet was rejected, and still prints its report: the
-reject code is in `reject.code`. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
+reject code is in `reject.code`. It exits 1 too, with `"outcome": "wrong_fulfilment"`, when
+the packet was fulfilled with a fulfilment that does not match it. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
 and exits 3.
 
 ## Errors

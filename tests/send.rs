@@ -11,7 +11,7 @@ struct Running {
     machine: Machine,
     _up: Foreground,
     _chain: FakeChain,
-    _app: StubApp,
+    app: StubApp,
 }
 
 fn running() -> Running {
@@ -26,7 +26,7 @@ fn running() -> Running {
         machine,
         _up: up,
         _chain: chain,
-        _app: app,
+        app,
     }
 }
 
@@ -139,10 +139,32 @@ fn the_connector_lists_the_wallets_operator_write_key() {
             .join("connectors/0/operator-write-keys"),
     )
     .expect("the connector's allowlist");
+    let shown = machine.toon_with(&["wallet", "show", "--json"], |command| {
+        command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+    });
 
     assert_eq!(key.len(), 32);
-    assert_eq!(allowed.trim().len(), 64, "{allowed}");
-    assert!(allowed.trim().bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_eq!(
+        allowed.trim(),
+        shown.json()["wallet"]["operator_write_key"],
+        "the connector lists the key the wallet shows"
+    );
+}
+
+#[test]
+fn an_agent_node_from_before_the_operator_write_key_still_comes_up() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    let home = machine.agent_node_home();
+    fs::remove_file(home.join("operator.key")).expect("forget the write key");
+    fs::remove_file(home.join("connectors/0/operator-write-keys")).expect("and its allowlist");
+    fs::remove_file(home.join("connectors/0/operator-bearer-token")).expect("and the token");
+
+    let up = machine.start(&["up", "--json"]);
+
+    let report = up.report();
+    assert!(report.get("error").is_none(), "{report}");
 }
 
 #[test]
@@ -154,7 +176,7 @@ fn route_list_shows_the_routing_table() {
     let routes = run.json()["routes"].clone();
     assert_eq!(routes.as_array().map(Vec::len), Some(1), "{routes}");
     assert_eq!(routes[0]["prefix"], "g.toon.relay");
-    assert_eq!(routes[0]["handler_url"], node._app.url());
+    assert_eq!(routes[0]["handler_url"], node.app.url());
     assert_eq!(run.exit_code, 0);
     assert_eq!(run.stderr, "");
 }

@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use crate::keystore;
 use crate::outcome::{Error, ErrorCode};
+use crate::{derive, keystore};
 
 /// The name of the first TOON app, the one whose connector fronts the relay.
 pub const RELAY: &str = "relay";
@@ -307,7 +307,7 @@ fn string(text: &str) -> String {
 /// error can be read against it; a caller that gets `Err` starts nothing.
 pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
     let files = ConnectorFiles::of(home, app.connector);
-    write_operator_files(home, &files)?;
+    let operator = write_operator_files(home, &files)?;
     let mut config = format!(
         "# Rendered by `toon` from state.json. Edits here are overwritten.\n\
          client_edge_addr = {}\nstate_dir = {}\n\n[signer]\nkey_file = {}\n",
@@ -323,11 +323,13 @@ pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
             route.price,
         ));
     }
-    config.push_str(&format!(
-        "\n[operator]\nbearer_token_file = {}\nwrite_keys_file = {}\n",
-        string(&files.bearer_token.to_string_lossy()),
-        string(&files.write_keys.to_string_lossy()),
-    ));
+    if operator {
+        config.push_str(&format!(
+            "\n[operator]\nbearer_token_file = {}\nwrite_keys_file = {}\n",
+            string(&files.bearer_token.to_string_lossy()),
+            string(&files.write_keys.to_string_lossy()),
+        ));
+    }
     if let Some(evm) = &app.evm {
         config.push_str(&format!(
             "\n[settlement.evm]\nrpc_url = {}\ntoken_address = {}\ndecimals = {}\n\
@@ -355,24 +357,28 @@ pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
 
 /// The files the connector's operator surface reads: a bearer token, made once and kept,
 /// and the allowlist of write keys, which is the public half of the wallet's operator
-/// write key and is written again every time.
-fn write_operator_files(home: &Path, files: &ConnectorFiles) -> Result<(), Error> {
+/// write key and is written again every time. An agent node made before `init` wrote the
+/// operator write key has none, and its connector runs without an operator surface, as it
+/// did then: `false`.
+fn write_operator_files(home: &Path, files: &ConnectorFiles) -> Result<bool, Error> {
+    let key = operator_key(home);
+    if !key.exists() {
+        return Ok(false);
+    }
     if !files.bearer_token.exists() {
         let token = hex::encode(keystore::random::<32>()?);
         write(&files.bearer_token, token.as_bytes(), 0o600)?;
     }
-    let key = operator_key(home);
-    let secret: [u8; 32] = fs::read(&key)
-        .map_err(|source| io(&key, source))?
-        .try_into()
-        .map_err(|_| Error {
+    let bytes = zeroize::Zeroizing::new(fs::read(&key).map_err(|source| io(&key, source))?);
+    let secret: zeroize::Zeroizing<[u8; 32]> =
+        zeroize::Zeroizing::new(bytes.as_slice().try_into().map_err(|_| Error {
             code: ErrorCode::Io,
             message: format!("{} is not a 32-byte key.", key.display()),
-        })?;
-    let public = ed25519_dalek::SigningKey::from_bytes(&secret).verifying_key();
+        })?);
     write(
         &files.write_keys,
-        format!("{}\n", hex::encode(public.as_bytes())).as_bytes(),
+        format!("{}\n", derive::operator_write_public_key(&secret)).as_bytes(),
         0o600,
-    )
+    )?;
+    Ok(true)
 }
