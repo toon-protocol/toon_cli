@@ -96,6 +96,7 @@ fails with `faucet_unavailable`, and on mainnet the operator funds the addresses
 
 `toon event publish` signs with the agent identity, which is why it needs the passphrase,
 and sends the event to the agent node's own relay as an operator write: it exits 1 with
-`"outcome": "rejected"` when the packet is rejected and `"outcome": "refused"` when the relay
-answers with a status that is not 2xx. `toon event query` is a plain NIP-01 `REQ` and needs no
+`"outcome": "rejected"` when the packet is rejected, `"outcome": "refused"` when the relay
+answers with a status that is not 2xx, and `"outcome": "wrong_fulfilment"` when the packet is
+fulfilled but not by this connector. `toon event query` is a plain NIP-01 `REQ` and needs no
 passphrase; it reads from `ws://` relays only.

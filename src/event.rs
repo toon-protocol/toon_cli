@@ -119,7 +119,10 @@ pub fn publish(
         .map_or(0, |elapsed| elapsed.as_secs());
     let event = sign(&secret, created_at, kind, tags, content)?;
 
-    let body = home.join("event.json");
+    let body = home.join(format!(
+        "event.{}.json",
+        hex::encode(keystore::random::<8>()?)
+    ));
     node::write(&body, event.to_string().as_bytes(), 0o600)?;
     let answer = operator::dispatch(home, node::RELAY_WRITE_PREFIX, amount, Some(&body));
     let _ = std::fs::remove_file(&body);
@@ -179,8 +182,7 @@ pub fn query(relay: &str, filter: &str) -> Result<Report, Error> {
     let (mut socket, _) = tungstenite::connect(relay)
         .map_err(|error| failed(format!("{relay} did not accept a connection: {error}.")))?;
     if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
-        let timeouts: Result<(), std::io::Error> = set_timeouts(stream);
-        timeouts.map_err(|error| failed(format!("{relay}: {error}.")))?;
+        set_timeouts(stream).map_err(|error| failed(format!("{relay}: {error}.")))?;
     }
     socket
         .send(Message::text(

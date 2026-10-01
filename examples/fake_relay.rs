@@ -143,13 +143,25 @@ fn websocket(stream: TcpStream, data: &Path) {
         }
         let subscription = frame[1].clone();
         let stored = fs::read_to_string(data.join("events.log")).unwrap_or_default();
-        let mut found: Vec<serde_json::Value> = stored
+        let events: Vec<serde_json::Value> = stored
             .lines()
             .filter_map(|line| serde_json::from_str(line).ok())
-            .filter(|event| frame[2..].iter().any(|filter| matches(filter, event)))
             .collect();
-        if let Some(limit) = frame[2]["limit"].as_u64() {
-            found.truncate(limit as usize);
+        let mut found: Vec<&serde_json::Value> = Vec::new();
+        for filter in &frame[2..] {
+            // A filter's `limit` keeps its newest matches: the log holds them oldest first.
+            let matched: Vec<_> = events
+                .iter()
+                .filter(|event| matches(filter, event))
+                .collect();
+            let limit = filter["limit"]
+                .as_u64()
+                .map_or(matched.len(), |limit| limit as usize);
+            for event in &matched[matched.len().saturating_sub(limit)..] {
+                if !found.contains(event) {
+                    found.push(event);
+                }
+            }
         }
         for event in found {
             let _ = socket.send(tungstenite::Message::text(

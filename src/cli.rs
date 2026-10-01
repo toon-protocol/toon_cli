@@ -171,8 +171,7 @@ pub enum EventCommand {
         /// The event's tags, as a JSON array of arrays of strings
         #[arg(long, default_value = "[]")]
         tags: String,
-        /// What the write is paid, in the token's base units; the operator's own relay
-        /// charges its operator nothing
+        /// What the write is paid, in the token's base units
         #[arg(long, default_value_t = 0)]
         amount: u64,
     },
