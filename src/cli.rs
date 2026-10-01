@@ -60,6 +60,11 @@ pub enum Command {
         #[command(subcommand)]
         command: RouteCommand,
     },
+    /// Manage the channels the connector pays and is paid on
+    Channel {
+        #[command(subcommand)]
+        command: ChannelCommand,
+    },
     /// Start the agent node as a `systemd --user` unit that outlives this session
     Up {
         /// Run the supervisor in this process instead of installing the unit
@@ -225,6 +230,45 @@ pub enum WalletCommand {
     Show,
     /// Fund the wallet's addresses from the devnet faucet
     Fund,
+    /// Show the balance of every address by TOON app and chain
+    Balances,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ChannelCommand {
+    /// List the channels in both directions, with collateral and status
+    List,
+    /// Open an outbound channel toward a counterparty and deposit into it
+    Open {
+        /// A file holding the counterparty's `batchSettlements` entry for one chain, as its
+        /// self-description publishes it
+        #[arg(long)]
+        terms: PathBuf,
+        /// The opening deposit, in the token's base units
+        #[arg(long)]
+        deposit: u128,
+        /// The counterparty's URL, which a Solana sponsor endpoint published as a path resolves against
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Deposit more into an outbound channel
+    Fund {
+        /// The channel's id, as `channel list` shows it
+        id: String,
+        /// The amount to add, in the token's base units
+        #[arg(long)]
+        amount: u128,
+    },
+    /// Start or finish withdrawing an outbound channel's collateral; the chain decides which
+    Withdraw {
+        /// The channel's id, as `channel list` shows it
+        id: String,
+    },
+    /// Land the latest voucher held on an inbound channel now
+    Land {
+        /// The channel's id, as `channel list` shows it
+        id: String,
+    },
 }
 
 impl Cli {

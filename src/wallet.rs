@@ -296,3 +296,129 @@ pub fn show(home: &Path) -> Result<Report, Error> {
         json: json!({ "wallet": wallet }),
     })
 }
+
+/// How long a read of a chain's JSON-RPC endpoint waits for it.
+const CHAIN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The ERC-20 `balanceOf(address)` selector.
+const BALANCE_OF: &str = "70a08231";
+
+/// One JSON-RPC call to `rpc_url`, whose `result` is a hex quantity.
+fn quantity(rpc_url: &str, method: &str, params: Value) -> Result<u128, Error> {
+    let chain_failed = |message: String| Error {
+        code: ErrorCode::ChainFailed,
+        message: format!("{method} to {rpc_url}: {message}."),
+    };
+    let reply: Value = reqwest::blocking::Client::builder()
+        .timeout(CHAIN_PATIENCE)
+        .build()
+        .and_then(|client| {
+            client
+                .post(rpc_url)
+                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
+                .send()
+        })
+        .and_then(|response| response.error_for_status())
+        .and_then(|response| response.json())
+        .map_err(|error| chain_failed(error.to_string()))?;
+    if let Some(error) = reply.get("error") {
+        return Err(chain_failed(format!("the chain refused: {error}")));
+    }
+    let result = reply["result"]
+        .as_str()
+        .ok_or_else(|| chain_failed("the answer has no result".into()))?;
+    // A 32-byte word. A balance that does not fit its low 16 bytes is refused, not cut.
+    let digits = result.trim_start_matches("0x").trim_start_matches('0');
+    if digits.is_empty() {
+        return Ok(0);
+    }
+    u128::from_str_radix(digits, 16)
+        .map_err(|_| chain_failed(format!("'{result}' is not a balance this can show")))
+}
+
+/// `toon wallet balances`: the balance of every address, by TOON app and chain. An address
+/// on a chain the TOON app has no endpoint for has no balance to read, and says so.
+pub fn balances(home: &Path) -> Result<Report, Error> {
+    if !keystore::exists(home) {
+        return Err(keystore::no_wallet(home));
+    }
+    let Some(state) = node::State::load(home)? else {
+        return Err(node::no_agent_node(home));
+    };
+    let passphrase = keystore::passphrase()?;
+    let mnemonic = keystore::open(home, &passphrase)?;
+    let addresses = addresses(&mnemonic)?;
+    let mut entries = Vec::new();
+    let mut lines = Vec::new();
+    for app in &state.toon_apps {
+        let keys = addresses
+            .connectors
+            .iter()
+            .find(|keys| keys.index == app.connector)
+            .ok_or_else(|| Error {
+                code: ErrorCode::KeystoreCorrupt,
+                message: format!("The wallet has no keys for connector {}.", app.connector),
+            })?;
+        let evm = match &app.evm {
+            Some(evm) => {
+                let native = quantity(&evm.rpc_url, "eth_getBalance", json!([keys.evm, "latest"]))?;
+                let token = quantity(
+                    &evm.rpc_url,
+                    "eth_call",
+                    json!([{
+                        "to": evm.token,
+                        "data": format!(
+                            "0x{BALANCE_OF}{:0>64}",
+                            keys.evm.trim_start_matches("0x").to_lowercase()
+                        ),
+                    }, "latest"]),
+                )?;
+                lines.push(format!(
+                    "{} evm {}: {native} native, {token} of token {} ({} decimals)",
+                    app.name, keys.evm, evm.token, evm.decimals
+                ));
+                json!({
+                    "toon_app": app.name,
+                    "chain": "evm",
+                    "address": keys.evm,
+                    "native": native.to_string(),
+                    "token": {
+                        "address": evm.token,
+                        "decimals": evm.decimals,
+                        "balance": token.to_string(),
+                    },
+                })
+            }
+            None => {
+                lines.push(format!(
+                    "{} evm {}: no chain configured",
+                    app.name, keys.evm
+                ));
+                json!({
+                    "toon_app": app.name,
+                    "chain": "evm",
+                    "address": keys.evm,
+                    "native": null,
+                    "token": null,
+                })
+            }
+        };
+        entries.push(evm);
+        lines.push(format!(
+            "{} solana {}: no chain configured",
+            app.name, keys.solana
+        ));
+        entries.push(json!({
+            "toon_app": app.name,
+            "chain": "solana",
+            "address": keys.solana,
+            "native": null,
+            "token": null,
+        }));
+    }
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "balances": entries }),
+        text: lines.join("\n"),
+    })
+}

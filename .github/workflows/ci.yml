@@ -44,6 +44,8 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      # `anvil`, for the tests that move money on a local chain. The factory's sandbox
+      # image already carries it. Under CI a test that needs it fails rather than skips.
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 

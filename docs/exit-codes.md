@@ -76,10 +76,12 @@ A failed command with `--json` prints:
 | `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
 | `peer_not_peerable` | 1 | `peer add` named a connector that is not peerable: the refusal is on the other side, and only its operator can lift it |
 | `route_failed` | 1 | The connector's operator surface refused a route write or could not be reached; the message carries the reason |
+| `chain_failed` | 1 | A chain's JSON-RPC endpoint could not be reached or did not answer a read as expected; the message carries the reason |
+| `channel_failed` | 1 | A channel write was refused by the connector or could not be sent, the channel id is not one, or the terms file was unreadable; the message carries the reason |
 
 ## The wallet passphrase
 
-`toon init` and `toon wallet show` read the passphrase from the file named by
+`toon init`, `toon wallet show` and `toon wallet balances` read the passphrase from the file named by
 `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`. It is never a flag. One trailing
 newline in the file is not part of the passphrase.
 

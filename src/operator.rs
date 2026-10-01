@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use zeroize::Zeroizing;
 
 use crate::control;
 use crate::node::{self, ConnectorFiles, State};
@@ -181,6 +182,43 @@ pub fn route_list(home: &Path) -> Result<Report, Error> {
     Ok(Report {
         exit: Exit::Success,
         json: json!({ "routes": routes, "forwarding_routes": forwarding }),
+        text: lines.join("\n"),
+    })
+}
+
+/// A channel's amount as the connector reports it, which is absent while it is opening or
+/// when the chain could not be read.
+fn amount(value: &Value) -> String {
+    match value {
+        Value::Null => "unknown".into(),
+        other => other.to_string(),
+    }
+}
+
+fn describe_channel(channel: &Value) -> String {
+    format!(
+        "{} {} {} {} (counterparty {}, collateral {}, landed {}, watermark {})",
+        channel["id"].as_str().unwrap_or_default(),
+        channel["chain"].as_str().unwrap_or_default(),
+        channel["direction"].as_str().unwrap_or_default(),
+        channel["status"].as_str().unwrap_or_default(),
+        channel["counterparty"].as_str().unwrap_or_default(),
+        amount(&channel["collateral"]),
+        amount(&channel["landed"]),
+        amount(&channel["watermark"]),
+    )
+}
+
+/// `toon channel list`: every channel the connector holds, inbound and outbound.
+pub fn channel_list(home: &Path) -> Result<Report, Error> {
+    let channels = read(&surface(home)?, "/channels")?;
+    let mut lines: Vec<String> = channels.iter().map(describe_channel).collect();
+    if lines.is_empty() {
+        lines.push("The connector has no channels.".into());
+    }
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "channels": channels }),
         text: lines.join("\n"),
     })
 }
@@ -385,6 +423,148 @@ pub fn route_remove(home: &Path, prefix: &str) -> Result<Report, Error> {
         json: json!({ "removed": prefix }),
         text: format!("Stopped forwarding {prefix}."),
     })
+}
+
+/// The wallet's operator write key, the 32 bytes `init` wrote, as the keypair the
+/// connector's request signing takes.
+fn write_keypair(path: &Path) -> Result<ed25519_dalek_v1::Keypair, Error> {
+    let unusable = |reason: String| failed(ErrorCode::Io, format!("{}: {reason}.", path.display()));
+    let raw = Zeroizing::new(std::fs::read(path).map_err(|source| unusable(source.to_string()))?);
+    let secret = ed25519_dalek_v1::SecretKey::from_bytes(&raw)
+        .map_err(|_| unusable("the operator write key is not 32 bytes".into()))?;
+    let public = ed25519_dalek_v1::PublicKey::from(&secret);
+    Ok(ed25519_dalek_v1::Keypair { secret, public })
+}
+
+/// A channel write: `POST path` with `body`, JSON or empty, signed with the wallet's
+/// operator write key. The connector's answer is the channel after the write.
+///
+/// The body is JSON text rather than a `Value`, because an amount is a `u128` and a
+/// `Value` holds no number above `u64::MAX`.
+fn channel_write(home: &Path, path: &str, body: String) -> Result<Value, Error> {
+    let surface = surface(home)?;
+    let channel_failed = |message: String| failed(ErrorCode::ChannelFailed, message);
+    let keypair = write_keypair(&surface.write_key)?;
+    let bytes = body.into_bytes();
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs());
+    let (signature_input, signature, content_digest) = connector_operator::signing::sign_request(
+        &keypair,
+        "POST",
+        path,
+        &bytes,
+        created,
+        Some(created + SIGNATURE_TTL),
+    );
+    let url = format!("{}{path}", surface.url);
+    let mut request = reqwest::blocking::Client::builder()
+        .timeout(PATIENCE)
+        .build()
+        .map_err(|error| channel_failed(format!("POST {url}: {error}.")))?
+        .post(&url)
+        .header("content-digest", content_digest)
+        .header("signature-input", signature_input)
+        .header("signature", signature);
+    if !bytes.is_empty() {
+        request = request.header("content-type", "application/json");
+    }
+    let response = request
+        .body(bytes)
+        .send()
+        .map_err(|error| channel_failed(format!("POST {url}: {error}.")))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|error| channel_failed(format!("POST {url}: {error}.")))?;
+    if !status.is_success() {
+        return Err(channel_failed(format!(
+            "POST {url} answered {status}: {}",
+            text.trim()
+        )));
+    }
+    serde_json::from_str(&text).map_err(|error| {
+        channel_failed(format!(
+            "POST {url}: the answer was not understood ({error}): {text}"
+        ))
+    })
+}
+
+/// A channel id goes into the path the write is signed for, so it is only ever hex or base58.
+fn channel_path(id: &str, action: &str) -> Result<String, Error> {
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return Err(failed(
+            ErrorCode::ChannelFailed,
+            format!("'{id}' is not a channel id."),
+        ));
+    }
+    Ok(format!("/channels/{id}/{action}"))
+}
+
+fn channel_report(channel: Value, headline: &str) -> Report {
+    Report {
+        exit: Exit::Success,
+        text: format!("{headline}: {}", describe_channel(&channel)),
+        json: json!({ "channel": channel }),
+    }
+}
+
+/// `toon channel open`: open an outbound channel toward the counterparty whose terms
+/// `terms` holds, with `deposit` in it.
+pub fn channel_open(
+    home: &Path,
+    terms: &Path,
+    deposit: u128,
+    url: Option<&str>,
+) -> Result<Report, Error> {
+    let contents = std::fs::read_to_string(terms).map_err(|source| {
+        failed(
+            ErrorCode::ChannelFailed,
+            format!("{}: {source}.", terms.display()),
+        )
+    })?;
+    let terms: Value = serde_json::from_str(&contents).map_err(|source| {
+        failed(
+            ErrorCode::ChannelFailed,
+            format!("{}: the terms are not JSON ({source}).", terms.display()),
+        )
+    })?;
+    let url = url.map_or(String::new(), |url| format!(r#","url":{}"#, json!(url)));
+    let channel = channel_write(
+        home,
+        "/channels",
+        format!(r#"{{"terms":{terms},"deposit":{deposit}{url}}}"#),
+    )?;
+    let headline = if channel["resumed"] == true {
+        "Resumed an open"
+    } else {
+        "Opened"
+    };
+    Ok(channel_report(channel, headline))
+}
+
+/// `toon channel fund`: add `amount` to an outbound channel.
+pub fn channel_fund(home: &Path, id: &str, amount: u128) -> Result<Report, Error> {
+    let channel = channel_write(
+        home,
+        &channel_path(id, "fund")?,
+        format!(r#"{{"amount":{amount}}}"#),
+    )?;
+    Ok(channel_report(channel, &format!("Funded with {amount}")))
+}
+
+/// `toon channel withdraw`: the connector starts the withdrawal, or finishes it once it
+/// is due, and says which.
+pub fn channel_withdraw(home: &Path, id: &str) -> Result<Report, Error> {
+    let channel = channel_write(home, &channel_path(id, "withdraw")?, String::new())?;
+    let step = channel["step"].as_str().unwrap_or("withdraw").to_owned();
+    Ok(channel_report(channel, &format!("Withdrawal step {step}")))
+}
+
+/// `toon channel land`: land the latest voucher held on an inbound channel.
+pub fn channel_land(home: &Path, id: &str) -> Result<Report, Error> {
+    let channel = channel_write(home, &channel_path(id, "land")?, String::new())?;
+    Ok(channel_report(channel, "Landed"))
 }
 
 /// What a packet came to.

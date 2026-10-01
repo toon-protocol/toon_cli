@@ -10,6 +10,7 @@
 pub mod anvil_chain;
 pub mod fake_chain;
 pub mod fake_faucet;
+pub mod local_chain;
 pub mod unpeerable;
 
 use std::fs::{self, File};
@@ -164,6 +165,21 @@ impl Machine {
             args.push("--allow-plaintext-peers");
         }
         self.init_with(&args)
+    }
+
+    /// Run `toon init` for an agent node that settles in USDC on a local chain, paying
+    /// into a channel with ERC-3009 as on Base.
+    pub fn init_on_local(&self, chain: &local_chain::LocalChain) -> Run {
+        let decimals = local_chain::TOKEN_DECIMALS.to_string();
+        let token = chain.token();
+        self.init_with(&[
+            "--evm-rpc-url",
+            chain.rpc_url(),
+            "--evm-token",
+            &token,
+            "--evm-decimals",
+            &decimals,
+        ])
     }
 
     /// Write `contents` to `name` in the agent node's home, and return its path.
