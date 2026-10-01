@@ -250,10 +250,11 @@ pub enum NipCommand {
     Publish {
         /// The draft's file, named after its identifier: `<identifier>.md`
         draft: PathBuf,
-        /// The agent node's relay, `ws://host:port`: asked for the draft's current revision
+        /// The agent node's own relay, `ws://host:port`, which the draft is written to: asked
+        /// first for the draft's current revision
         #[arg(long)]
         relay: String,
-        /// A topic of the draft; may be repeated
+        /// A topic of the draft, in lower case; may be repeated
         #[arg(long = "topic")]
         topics: Vec<String>,
         /// Publish although the relay holds a draft of this identifier under another title

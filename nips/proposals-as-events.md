@@ -124,7 +124,8 @@ same draft:
   `This draft`. The number is the row's first cell without its backticks, and the name
   is its second cell. A draft whose table has no such row gets no `k` tag.
 - **`summary`** is the first paragraph after the line that says `draft`, with each line
-  break replaced by a space.
+  break replaced by a space. If that paragraph is an HTML comment, as the template's
+  is, the draft gets no `summary` tag.
 - **`t`** is not in the file. Whoever runs the publisher gives the topics, and none is
   required.
 - **`created_at`**: before it signs, the publisher MUST ask the relay it publishes to

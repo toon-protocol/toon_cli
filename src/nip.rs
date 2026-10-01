@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::event;
 use crate::node;
-use crate::outcome::{Error, ErrorCode, Report};
+use crate::outcome::{Error, ErrorCode, Exit, Report};
 
 /// The kind of a draft: NostrHub's "custom NIP".
 const DRAFT_KIND: u64 = 30817;
@@ -21,6 +21,14 @@ const TEMPLATE: &str = include_str!("../nips/TEMPLATE.md");
 fn usage(message: impl Into<String>) -> Error {
     Error {
         code: ErrorCode::Usage,
+        message: message.into(),
+    }
+}
+
+/// A draft the proposals draft says not to write or publish.
+fn refused(message: impl Into<String>) -> Error {
+    Error {
+        code: ErrorCode::DraftRefused,
         message: message.into(),
     }
 }
@@ -61,7 +69,7 @@ pub fn new(directory: &Path, title: &str) -> Result<Report, Error> {
     }
     let path = directory.join(format!("{identifier}.md"));
     if path.exists() {
-        return Err(usage(format!(
+        return Err(refused(format!(
             "{} exists already; `nip new` does not overwrite a draft.",
             path.display()
         )));
@@ -71,7 +79,7 @@ pub fn new(directory: &Path, title: &str) -> Result<Report, Error> {
         .expect("the template begins with its title");
     node::write(&path, format!("# {title}\n{body}").as_bytes(), 0o644)?;
     Ok(Report {
-        exit: crate::outcome::Exit::Success,
+        exit: Exit::Success,
         json: json!({ "outcome": "created", "path": path, "identifier": identifier }),
         text: format!("Wrote {}.", path.display()),
     })
@@ -98,7 +106,7 @@ fn cells(row: &str) -> Vec<&str> {
 fn parse(file_name: &str, document: &str) -> Result<Draft, Error> {
     let identifier = file_name.strip_suffix(".md").unwrap_or(file_name);
     if !valid_identifier(identifier) {
-        return Err(usage(format!(
+        return Err(refused(format!(
             "{file_name} does not name a draft: the file's name without .md must be 1 to 64 \
              lower-case letters, digits or hyphens."
         )));
@@ -110,7 +118,7 @@ fn parse(file_name: &str, document: &str) -> Result<Draft, Error> {
         .map(str::trim)
         .filter(|title| !title.is_empty())
         .ok_or_else(|| {
-            usage(format!(
+            refused(format!(
                 "{file_name} does not begin with a `# ` title line."
             ))
         })?;
@@ -216,10 +224,15 @@ pub fn publish(
         message: format!("{} could not be read: {error}.", path.display()),
     })?;
     let document = String::from_utf8(document)
-        .map_err(|_| usage(format!("{} is not UTF-8 text.", path.display())))?;
+        .map_err(|_| refused(format!("{} is not UTF-8 text.", path.display())))?;
     let draft = parse(file_name, &document)?;
-    if let Some(topic) = topics.iter().find(|topic| topic.is_empty()) {
-        return Err(usage(format!("{topic:?} is not a topic.")));
+    if let Some(topic) = topics
+        .iter()
+        .find(|topic| topic.is_empty() || topic.to_lowercase() != **topic)
+    {
+        return Err(usage(format!(
+            "{topic:?} is not a topic: one in lower case."
+        )));
     }
 
     if node::State::load(home)?.is_none() {
@@ -236,7 +249,7 @@ pub fn publish(
     if let Some(revision) = current_revision(&found, &author, &draft.identifier) {
         let earlier = tag(revision, "title").unwrap_or_default();
         if earlier != draft.title && !title_changed {
-            return Err(usage(format!(
+            return Err(refused(format!(
                 "{relay} holds a draft {} by this identity under another title, {earlier:?}. \
                  That is a sign the identifier belongs to another draft; rename the file, or \
                  pass --title-changed if the title has changed.",

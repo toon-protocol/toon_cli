@@ -70,7 +70,7 @@ A failed command with `--json` prints:
 | `unfunded` | 1 | A settlement key does not hold what the connector needs, so `toon up` did not start it; the message names each address and the amount |
 | `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
-| `send_failed` | 1 | The packet (or, for `toon event publish`, the event) could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
+| `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event) could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
 | `unknown_name` | 1 | `toon logs` was given a name that is neither a TOON app nor an app of this agent node |
 | `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
@@ -78,7 +78,8 @@ A failed command with `--json` prints:
 | `route_failed` | 1 | The connector's operator surface refused a route write or could not be reached; the message carries the reason |
 | `chain_failed` | 1 | A chain's JSON-RPC endpoint could not be reached or did not answer a read as expected; the message carries the reason |
 | `channel_failed` | 1 | A channel write was refused by the connector or could not be sent, the channel id is not one, or the terms file was unreadable; the message carries the reason |
-| `query_failed` | 1 | `toon event query` could not read events from the relay: it did not answer, is not a websocket relay this build dials, or closed the subscription with a reason the message carries |
+| `query_failed` | 1 | `toon event query`, or `toon nip publish` asking for a draft's current revision, could not read events from the relay: it did not answer, is not a websocket relay this build dials, or closed the subscription with a reason the message carries |
+| `draft_refused` | 1 | `toon nip new` or `toon nip publish` would not write or publish a draft: the file exists already, does not name a draft or begin with its title, is not UTF-8, or the relay holds the identifier under another title and `--title-changed` was not given; the message says which |
 
 ## The wallet passphrase
 
@@ -105,3 +106,10 @@ and sends the event to the agent node's own relay as an operator write: it exits
 answers with a status that is not 2xx, and `"outcome": "wrong_fulfilment"` when the packet is
 fulfilled but not by this connector. `toon event query` is a plain NIP-01 `REQ` and needs no
 passphrase; it reads from `ws://` relays only.
+
+`toon nip publish` signs a draft (`nips/proposals-as-events.md`) the same way and writes it
+to the agent node's own relay as `toon event publish` does, with the same outcomes. It first
+asks `--relay` for the draft's current revision, so `--relay` must be the agent node's own
+relay's `ws://` URL. It exits 1 with `draft_refused` when the file is not a draft it can
+publish, or the relay holds that identifier under another title and `--title-changed` was
+not given.

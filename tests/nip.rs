@@ -116,8 +116,8 @@ fn new_does_not_overwrite_a_draft() {
 
     let run = new_draft(&machine, directory.path(), "Ping");
 
-    assert_eq!(run.json()["error"]["code"], "usage");
-    assert_eq!(run.exit_code, 2);
+    assert_eq!(run.json()["error"]["code"], "draft_refused");
+    assert_eq!(run.exit_code, 1);
     assert_eq!(
         fs::read_to_string(directory.path().join("ping.md")).unwrap(),
         "# Mine\n"
@@ -197,8 +197,8 @@ fn a_draft_whose_title_changed_is_refused_unless_told() {
 
     let refused = node.publish(directory.path(), "ping.md", &[]);
 
-    assert_eq!(refused.json()["error"]["code"], "usage");
-    assert_eq!(refused.exit_code, 2);
+    assert_eq!(refused.json()["error"]["code"], "draft_refused");
+    assert_eq!(refused.exit_code, 1);
     assert_eq!(tag(&node.drafts("ping")[0], "title").unwrap(), "Ping");
 
     let told = node.publish(directory.path(), "ping.md", &["--title-changed"]);
@@ -230,7 +230,7 @@ fn a_file_that_does_not_name_a_draft_is_refused() {
                 command.current_dir(directory.path());
             },
         );
-        assert_eq!(run.json()["error"]["code"], "usage", "{file}");
-        assert_eq!(run.exit_code, 2);
+        assert_eq!(run.json()["error"]["code"], "draft_refused", "{file}");
+        assert_eq!(run.exit_code, 1);
     }
 }

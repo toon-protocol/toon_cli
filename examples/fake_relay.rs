@@ -7,8 +7,9 @@
 //! exits when its standard input closes, as a supervisor's apps do.
 //!
 //! A body that is a JSON event is also stored in `events.log`, one per line, and a websocket
-//! client on the same port reads them back with a NIP-01 `REQ` (`ids`, `authors`, `kinds`
-//! and `limit` are honoured) and gets `EOSE` after the stored events.
+//! client on the same port reads them back with a NIP-01 `REQ` (`ids`, `authors`, `kinds`,
+//! `#<letter>` tags and `limit` are honoured) and gets `EOSE` after the stored events. An
+//! addressable event replaces the earlier one at its address.
 
 use std::env;
 use std::fs::{self, OpenOptions};
