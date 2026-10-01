@@ -15,7 +15,7 @@ fn with_passphrase(machine: &Machine, args: &[&str]) -> Run {
 }
 
 fn init(machine: &Machine) -> Value {
-    let run = with_passphrase(machine, &["init", "--json"]);
+    let run = with_passphrase(machine, &["init", "--json", "--accept-anyone-terms"]);
     assert_eq!(run.exit_code, 0, "{}", run.stdout);
     run.json()
 }
@@ -58,7 +58,7 @@ fn init_creates_an_encrypted_keystore_and_prints_the_mnemonic_once() {
 fn init_in_text_shows_the_mnemonic_and_no_later_command_does() {
     let machine = Machine::new();
 
-    let run = with_passphrase(&machine, &["init"]);
+    let run = with_passphrase(&machine, &["init", "--accept-anyone-terms"]);
     assert_eq!(run.exit_code, 0);
     let mnemonic = run
         .stdout
@@ -69,8 +69,8 @@ fn init_in_text_shows_the_mnemonic_and_no_later_command_does() {
         .to_owned();
 
     for args in [
-        &["init", "--json"][..],
-        &["init"],
+        &["init", "--json", "--accept-anyone-terms"][..],
+        &["init", "--accept-anyone-terms"],
         &["wallet", "show", "--json"],
         &["wallet", "show"],
         &["status", "--json"],
@@ -90,7 +90,7 @@ fn the_passphrase_can_come_from_a_file() {
     let file = machine.home().join("passphrase");
     fs::write(&file, format!("{PASSPHRASE}\n")).unwrap();
 
-    let run = machine.toon_with(&["init", "--json"], |command| {
+    let run = machine.toon_with(&["init", "--json", "--accept-anyone-terms"], |command| {
         command.env("TOON_PASSPHRASE_FILE", &file);
     });
     assert_eq!(run.exit_code, 0, "{}", run.stdout);
@@ -105,7 +105,7 @@ fn the_passphrase_is_not_accepted_from_a_flag() {
     let machine = Machine::new();
 
     for flag in ["--passphrase", "--password"] {
-        let run = machine.toon(&["init", flag, PASSPHRASE, "--json"]);
+        let run = machine.toon(&["init", "--accept-anyone-terms", flag, PASSPHRASE, "--json"]);
         assert_eq!(run.exit_code, 2);
         assert_eq!(run.json()["error"]["code"], "usage");
     }
@@ -116,7 +116,7 @@ fn the_passphrase_is_not_accepted_from_a_flag() {
 fn init_without_a_passphrase_fails_and_creates_nothing() {
     let machine = Machine::new();
 
-    let run = machine.toon(&["init", "--json"]);
+    let run = machine.toon(&["init", "--json", "--accept-anyone-terms"]);
 
     assert_eq!(run.exit_code, 1);
     assert_eq!(run.json()["error"]["code"], "passphrase_missing");
@@ -128,7 +128,7 @@ fn init_without_a_passphrase_fails_and_creates_nothing() {
 fn an_empty_passphrase_is_refused() {
     let machine = Machine::new();
 
-    let run = machine.toon_with(&["init", "--json"], |command| {
+    let run = machine.toon_with(&["init", "--json", "--accept-anyone-terms"], |command| {
         command.env("TOON_PASSPHRASE", "");
     });
 
@@ -140,7 +140,7 @@ fn an_empty_passphrase_is_refused() {
 fn a_passphrase_file_that_is_not_there_is_named() {
     let machine = Machine::new();
 
-    let run = machine.toon_with(&["init", "--json"], |command| {
+    let run = machine.toon_with(&["init", "--json", "--accept-anyone-terms"], |command| {
         command.env("TOON_PASSPHRASE_FILE", "/nonexistent/passphrase");
     });
 
@@ -156,10 +156,10 @@ fn init_again_does_not_create_a_second_wallet() {
     let before = fs::read(&keystore).unwrap();
 
     // Even with a different passphrase, and even with none.
-    let again = machine.toon_with(&["init", "--json"], |command| {
+    let again = machine.toon_with(&["init", "--json", "--accept-anyone-terms"], |command| {
         command.env("TOON_PASSPHRASE", "another passphrase");
     });
-    let bare = machine.toon(&["init", "--json"]);
+    let bare = machine.toon(&["init", "--json", "--accept-anyone-terms"]);
 
     for run in [&again, &bare] {
         assert_eq!(run.exit_code, 0, "{}", run.stdout);

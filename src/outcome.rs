@@ -71,6 +71,7 @@ pub enum ErrorCode {
     ChannelFailed,
     QueryFailed,
     ConfirmationRequired,
+    OverlayUnavailable,
 }
 
 impl ErrorCode {
@@ -101,6 +102,7 @@ impl ErrorCode {
             ErrorCode::ChannelFailed => "channel_failed",
             ErrorCode::QueryFailed => "query_failed",
             ErrorCode::ConfirmationRequired => "confirmation_required",
+            ErrorCode::OverlayUnavailable => "overlay_unavailable",
         }
     }
 
@@ -129,7 +131,8 @@ impl ErrorCode {
             | ErrorCode::ChainFailed
             | ErrorCode::ChannelFailed
             | ErrorCode::QueryFailed
-            | ErrorCode::ConfirmationRequired => Exit::Failure,
+            | ErrorCode::ConfirmationRequired
+            | ErrorCode::OverlayUnavailable => Exit::Failure,
         }
     }
 }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 
-use crate::node::{Expiry, Options};
+use crate::node::{Expiry, Options, Reach};
 use crate::outcome::Exit;
 use crate::profile::Profile;
 use crate::relay;
@@ -99,6 +99,12 @@ pub enum Command {
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
+    /// Agree to the Anyone Protocol's terms, which a hidden service needs
+    #[arg(long)]
+    pub accept_anyone_terms: bool,
+    /// Make the TOON app reachable at this public hostname instead of as a hidden service
+    #[arg(long, value_name = "HOSTNAME")]
+    pub clearnet: Option<String>,
     /// Where the connector listens; the system picks a port when it is 0
     #[arg(long, default_value = "127.0.0.1:0")]
     pub listen: String,
@@ -156,6 +162,13 @@ impl InitArgs {
             evm.transfer_method = method.clone();
         }
         Options {
+            reach: match &self.clearnet {
+                Some(hostname) => Reach::Clearnet {
+                    hostname: hostname.clone(),
+                },
+                None => Reach::Hidden,
+            },
+            accept_anyone_terms: self.accept_anyone_terms,
             listen: self.listen.clone(),
             network: self.network,
             evm: Some(evm),
