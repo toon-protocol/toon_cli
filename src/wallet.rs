@@ -1,5 +1,6 @@
 //! `toon init` and `toon wallet show`.
 
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 use serde_json::{json, Value};
@@ -8,10 +9,14 @@ use crate::derive::{self, Addresses};
 use crate::keystore;
 use crate::node;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::runner;
 
 /// How many connectors a wallet lists. An agent node starts as one TOON app, so one
 /// connector; later commands that create TOON apps raise this.
 const CONNECTORS: u32 = 1;
+
+/// Which relay's identity key the first TOON app's relay gets.
+const RELAY_INDEX: u32 = 0;
 
 fn addresses(mnemonic: &str) -> Result<Addresses, Error> {
     let mnemonic: bip39::Mnemonic = mnemonic.parse().map_err(|_| Error {
@@ -111,7 +116,7 @@ pub fn init(home: &Path, options: &node::Options) -> Result<Report, Error> {
     if let Err(error) = state.save(home) {
         // The mnemonic has not been shown, so the wallet goes with the TOON app.
         let _ = std::fs::remove_file(keystore::path(home));
-        let _ = std::fs::remove_dir_all(home.join("connectors"));
+        remove_toon_app(home);
         return Err(error);
     }
     let text = format!(
@@ -142,9 +147,14 @@ fn create_toon_app(
 ) -> Result<node::State, Error> {
     let created = write_toon_app(home, mnemonic, options);
     if created.is_err() {
-        let _ = std::fs::remove_dir_all(home.join("connectors"));
+        remove_toon_app(home);
     }
     created
+}
+
+fn remove_toon_app(home: &Path) {
+    let _ = std::fs::remove_dir_all(home.join("connectors"));
+    let _ = std::fs::remove_dir_all(home.join("apps"));
 }
 
 fn write_toon_app(
@@ -164,7 +174,20 @@ fn write_toon_app(
         let settlement = derive::evm_settlement_secret(&*seed, app.connector).map_err(corrupt)?;
         node::write(&files.identity_key, &*identity, 0o600)?;
         node::write(&files.settlement_key, &*settlement, 0o600)?;
-        node::render(home, app)?;
+        if app.apps.iter().any(|name| name == node::RELAY) {
+            // The relay's identity key is the wallet's, handed over as a file that only
+            // this user reads. `up` reads it and gives it to the relay.
+            let relay = derive::relay_identity_secret(&*seed, RELAY_INDEX).map_err(corrupt)?;
+            node::write(
+                &node::AppFiles::of(home, node::RELAY).identity_key,
+                &*relay,
+                0o600,
+            )?;
+        }
+        // Nothing runs yet, so the route is checked against the address the relay's
+        // container serves on.
+        let placeholder = SocketAddr::from((Ipv4Addr::LOCALHOST, runner::WRITE_PORT));
+        node::render(home, app, Some(placeholder))?;
     }
     Ok(state)
 }
@@ -185,7 +208,7 @@ fn existing(home: &Path, options: &node::Options) -> Result<Report, Error> {
                     })?;
             let state = create_toon_app(home, &mnemonic, options)?;
             if let Err(error) = state.save(home) {
-                let _ = std::fs::remove_dir_all(home.join("connectors"));
+                remove_toon_app(home);
                 return Err(error);
             }
             (state, true)

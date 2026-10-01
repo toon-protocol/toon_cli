@@ -59,6 +59,7 @@ A failed command with `--json` prints:
 | `no_agent_node` | 3 | The command needs an agent node and this machine has none |
 | `connector_failed` | 1 | A connector did not start, or stopped; the message carries the connector's own reason |
 | `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
+| `app_failed` | 1 | An app behind a connector did not start, or stopped; the message carries the reason |
 
 ## The wallet passphrase
 

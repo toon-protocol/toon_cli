@@ -58,9 +58,31 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                 .map(|address| format!(" on {address}"))
                 .unwrap_or_default()
         ));
+        let apps: Vec<Value> = app
+            .apps
+            .iter()
+            .map(|name| {
+                let reported = reported
+                    .and_then(|reported| reported["apps"].as_array())
+                    .and_then(|apps| apps.iter().find(|app| app["name"] == name.as_str()));
+                let field = |field: &str| reported.map_or(Value::Null, |app| app[field].clone());
+                let running = field("running") == true;
+                all_running &= running;
+                lines.push(format!(
+                    "App {name} of {}: {}{}.",
+                    app.name,
+                    if running { "running" } else { "not running" },
+                    field("address")
+                        .as_str()
+                        .map(|address| format!(" on {address}"))
+                        .unwrap_or_default()
+                ));
+                json!({ "name": name, "address": field("address"), "running": running })
+            })
+            .collect();
         toon_apps.push(json!({
             "name": app.name,
-            "apps": app.apps,
+            "apps": apps,
             "connector": {
                 "address": field("address"),
                 "pid": field("pid"),

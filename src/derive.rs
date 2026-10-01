@@ -14,6 +14,7 @@
 //! - agent identity: `m/10473'/0'/0'`, once per wallet.
 //! - operator write key: `m/10473'/1'/0'`, once per wallet.
 //! - connector identity key: `m/10473'/2'/{connector}'`, per connector.
+//! - relay identity key: `m/10473'/3'/{relay}'`, per relay (ADR 0004).
 //!
 //! Each of those is a secp256k1 key whose public half is a Nostr x-only key.
 
@@ -212,6 +213,15 @@ pub fn identity_secret(seed: &[u8], connector: u32) -> Result<Zeroizing<[u8; 32]
     )
 }
 
+/// The identity key of the relay numbered `relay`, which the wallet hands to that relay.
+pub fn relay_identity_secret(seed: &[u8], relay: u32) -> Result<Zeroizing<[u8; 32]>, DeriveError> {
+    check_connector(relay)?;
+    secp256k1_path(
+        seed,
+        &[TOON_PURPOSE | HARDENED, 3 | HARDENED, relay | HARDENED],
+    )
+}
+
 pub fn operator_write_secret(seed: &[u8]) -> Result<Zeroizing<[u8; 32]>, DeriveError> {
     secp256k1_path(seed, &[TOON_PURPOSE | HARDENED, 1 | HARDENED, HARDENED])
 }
@@ -294,6 +304,16 @@ mod tests {
         "6392fc73029ed0fdbf6db7029e9a84d35d8adee6490f940009702d17a827a9ad";
 
     #[test]
+    fn the_relay_identity_is_pinned() {
+        let seed = anvil_seed();
+        let relay = |index| nostr_public_key(&relay_identity_secret(&*seed, index).unwrap());
+        assert_eq!(PINNED_RELAY_0, relay(0));
+        assert_ne!(relay(0), relay(1));
+    }
+
+    const PINNED_RELAY_0: &str = "77b8b3fa9ef388310f7950866ebaaabf7750191c611598bc4ad2972e719d7731";
+
+    #[test]
     fn the_agent_identity_differs_from_every_settlement_key() {
         let seed = anvil_seed();
         let identity = nostr_public_key(&agent_identity_secret(&*seed).unwrap());
@@ -318,6 +338,7 @@ mod tests {
         ];
         for index in 0..4 {
             secrets.push(identity_secret(&*seed, index).unwrap());
+            secrets.push(relay_identity_secret(&*seed, index).unwrap());
             secrets.push(evm_settlement_secret(&*seed, index).unwrap());
             secrets.push(solana_settlement_secret(&*seed, index).unwrap());
         }

@@ -44,9 +44,12 @@ child process of the same binary:
 ./target/debug/toon up --json
 ```
 
-`toon up` stays in the foreground. It starts the connector from
-`~/.toon/agent-node/connector.toml`, which no command writes yet, and prints the
-connector's address once it is listening.
+`toon up` stays in the foreground. It starts the relay from the pinned image as a
+container with `docker`, its write port published on loopback only, then starts the
+connector from the config it renders, with the relay's write route and its free
+ephemeral route, and prints the connector's address once it is listening.
+`TOON_APP_COMMAND=<program>` runs every app as a local process of that program instead
+of a container; the tests use it with `examples/fake_relay.rs`.
 
 Every command is non-interactive and accepts `--json`, which prints exactly one JSON
 document. Exit codes and error codes are stable and listed in

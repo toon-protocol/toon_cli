@@ -13,6 +13,7 @@ mod home;
 mod keystore;
 mod node;
 mod outcome;
+mod runner;
 mod status;
 mod up;
 mod wallet;

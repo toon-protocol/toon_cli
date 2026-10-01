@@ -27,6 +27,19 @@ const TIMEOUT: Duration = Duration::from_secs(60);
 /// The wallet passphrase the tests use.
 pub const PASSPHRASE: &str = "correct horse battery staple";
 
+/// The fake relay of `examples/fake_relay.rs`, which cargo builds for the tests.
+pub fn fake_relay() -> PathBuf {
+    let tests = std::env::current_exe().expect("the test binary's path");
+    let program = tests
+        .parent()
+        .and_then(Path::parent)
+        .expect("target/<profile>/deps/<test>")
+        .join("examples")
+        .join("fake_relay");
+    assert!(program.exists(), "{} is not built", program.display());
+    program
+}
+
 /// One operator's machine: an empty home directory that is deleted on drop.
 pub struct Machine {
     home: TempDir,
@@ -87,6 +100,8 @@ impl Machine {
             .args(args)
             .env_clear()
             .env("HOME", self.home())
+            // Apps run as local processes of the fake relay, never as containers.
+            .env("TOON_APP_COMMAND", fake_relay())
             .current_dir(self.home())
             .stdin(Stdio::null());
         command

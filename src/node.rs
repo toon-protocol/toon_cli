@@ -7,6 +7,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
+use std::net::SocketAddr;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
@@ -17,6 +18,12 @@ use crate::outcome::{Error, ErrorCode};
 
 /// The name of the first TOON app, the one whose connector fronts the relay.
 pub const RELAY: &str = "relay";
+
+/// The connector's route to the relay's paid write endpoint, and its price per write.
+pub const RELAY_WRITE_PREFIX: &str = "g.toon.relay";
+pub const RELAY_WRITE_PRICE: u64 = 1;
+/// The route to the relay's free ephemeral write endpoint.
+pub const RELAY_EPHEMERAL_PREFIX: &str = "g.toon.relay.ephemeral";
 
 /// What `init` was asked for, for the first TOON app.
 #[derive(Clone, Debug)]
@@ -92,6 +99,23 @@ impl ConnectorFiles {
             config: dir.join("connector.toml"),
             state_dir: dir.join("state"),
             log: dir.join("connector.log"),
+        }
+    }
+}
+
+/// The files of one app behind a connector: the identity key the wallet hands it, and
+/// the directory it keeps its data in.
+pub struct AppFiles {
+    pub identity_key: PathBuf,
+    pub data_dir: PathBuf,
+}
+
+impl AppFiles {
+    pub fn of(home: &Path, app: &str) -> Self {
+        let dir = home.join("apps").join(app);
+        Self {
+            identity_key: dir.join("identity.key"),
+            data_dir: dir.join("data"),
         }
     }
 }
@@ -244,9 +268,13 @@ fn string(text: &str) -> String {
 }
 
 /// Render the connector config of `app` into `home` and check it with the connector's
-/// own validation. The config is written whether or not it validates, so that the
+/// own validation. `relay` is where the relay's write port is reached, if `app` fronts one. The config is written whether or not it validates, so that the
 /// error can be read against it; a caller that gets `Err` starts nothing.
-pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
+pub fn render(
+    home: &Path,
+    app: &ToonApp,
+    relay: Option<SocketAddr>,
+) -> Result<ConnectorFiles, Error> {
     let files = ConnectorFiles::of(home, app.connector);
     let mut config = format!(
         "# Rendered by `toon` from state.json. Edits here are overwritten.\n\
@@ -255,6 +283,17 @@ pub fn render(home: &Path, app: &ToonApp) -> Result<ConnectorFiles, Error> {
         string(&files.state_dir.to_string_lossy()),
         string(&files.identity_key.to_string_lossy()),
     );
+    if let Some(relay) = relay.filter(|_| app.apps.iter().any(|name| name == RELAY)) {
+        // The relay is paid to write to, and takes a free ephemeral write beside it.
+        config.push_str(&format!(
+            "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = {RELAY_WRITE_PRICE}\n\n\
+             [[routes]]\nprefix = {}\nhandler_url = {}\nprice = 0\n",
+            string(RELAY_WRITE_PREFIX),
+            string(&format!("http://{relay}/write")),
+            string(RELAY_EPHEMERAL_PREFIX),
+            string(&format!("http://{relay}/write-ephemeral")),
+        ));
+    }
     if let Some(evm) = &app.evm {
         config.push_str(&format!(
             "\n[settlement.evm]\nrpc_url = {}\ntoken_address = {}\ndecimals = {}\n\
