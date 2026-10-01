@@ -35,8 +35,10 @@ one fits and name it.
 ## Kinds
 
 <!--
-A table of every kind the draft uses: the number, what the event is, its NIP-01 class,
-who signs it, and whether the draft defines it or another NIP does. A new number
+A table of every kind the draft uses, with these columns in this order: the number in
+backticks, what the event is, its NIP-01 class, who signs it, and what defines it. The
+last cell names the NIP that defines the kind, or reads `This draft` for a kind the
+draft defines: `proposals-as-events.md` publishes those rows as `k` tags. A new number
 follows TOON Network's rule (its ADR 0012 and spec §3.1): one contiguous block per
 NIP-01 class, the lowest free number of the block for that class, and the allocation
 recorded in that spec's table. Say "None new." when the draft defines no kind.
