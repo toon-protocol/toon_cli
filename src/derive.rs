@@ -273,7 +273,8 @@ mod tests {
     }
 
     // The wallet's own keys have no `toon-client` to agree with, so these pin what this
-    // release derived, as an independent BIP-32 implementation computed it. Changing one moves every operator's identity and write key.
+    // release derived, as an independent BIP-32 implementation computed it. Changing one
+    // moves every operator's identity and write key.
     #[test]
     fn the_wallets_own_keys_are_pinned() {
         let derived = addresses(&*anvil_seed(), 2).unwrap();
