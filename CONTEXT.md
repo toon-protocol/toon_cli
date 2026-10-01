@@ -25,6 +25,10 @@ _Avoid_: Backend, service
 **Relay**:
 The Nostr relay app: paid to write to through its connector.
 
+**Supervisor**:
+The one process per machine that runs an agent node: it starts each connector as a child process of the same binary and keeps it running.
+_Avoid_: Daemon, manager, orchestrator
+
 **Operator**:
 Whoever runs an agent node: a human, or an agent acting through the CLI.
 _Avoid_: Admin, user

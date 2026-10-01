@@ -14,6 +14,11 @@ is missing here. Add a new code to the test and to this file together.
 - Without `--json`, a command prints readable text on standard output, and an error
   goes to standard error as `error: <message>`.
 - No command reads standard input or prompts.
+- A command that stays in the foreground, such as `toon up`, prints its one JSON
+  document once what it runs is up, and then keeps running. If it stops later, its exit
+  code says so and it prints no second document.
+- `toon connector` is not an operator's command and keeps none of these rules. It is
+  hidden, `toon up` starts it as a child process, and it reports to its supervisor.
 - `help` is not a command. Ask for help with `--help`.
 - If the output cannot be written, the command exits 1 whatever it found.
 
@@ -44,3 +49,5 @@ A failed command with `--json` prints:
 | --- | --- | --- |
 | `usage` | 2 | The command line was not understood: an unknown command or flag, or a missing argument |
 | `home_unresolved` | 1 | `HOME` is not set or is empty, so there is nowhere to look for an agent node |
+| `no_agent_node` | 3 | The command needs an agent node and this machine has none |
+| `connector_failed` | 1 | A connector did not start, or stopped; the message carries the connector's own reason |

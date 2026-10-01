@@ -6,9 +6,11 @@
 //! in `docs/exit-codes.md`.
 
 mod cli;
+mod connector;
 mod home;
 mod outcome;
 mod status;
+mod up;
 
 use std::env;
 use std::ffi::OsString;
@@ -23,9 +25,11 @@ use outcome::{Error, ErrorCode, Exit, Report};
 
 fn main() -> ExitCode {
     let json = wants_json(env::args_os().skip(1));
-    let outcome = match Cli::from_command_line() {
-        Ok(cli) => run(&cli.command),
-        Err(error) if json && error.kind() != ErrorKind::DisplayHelp => unparsed(error),
+    let command = match Cli::from_command_line() {
+        Ok(cli) => cli.command,
+        Err(error) if json && error.kind() != ErrorKind::DisplayHelp => {
+            return render(unparsed(error), json).into()
+        }
         // `--help`, or a command line that did not ask for JSON: the text is clap's own.
         Err(error) => {
             let exit = if error.use_stderr() {
@@ -36,13 +40,32 @@ fn main() -> ExitCode {
             return written(error.print(), exit).into();
         }
     };
-    render(outcome, json).into()
+    match command {
+        Command::Status => render(home::resolve().map(|home| status::status(&home)), json).into(),
+        Command::Up => up(json).into(),
+        // The connector this binary embeds, as the supervisor's child: it reports to
+        // the supervisor and not to an operator.
+        Command::Connector { config } => connector::serve(&config),
+    }
 }
 
-fn run(command: &Command) -> Result<Report, Error> {
-    match command {
-        Command::Status => Ok(status::status(&home::resolve()?)),
+/// `toon up` reports once its connector is listening and then stays in the foreground,
+/// so it renders twice: the report, and why it stopped.
+fn up(json: bool) -> Exit {
+    let supervisor = match home::resolve().and_then(|home| up::start(&home)) {
+        Ok(supervisor) => supervisor,
+        Err(error) => return render(Err(error), json),
+    };
+    match render(Ok(supervisor.report()), json) {
+        Exit::Success => {}
+        unwritten => return unwritten,
     }
+    let stopped = supervisor.wait();
+    if json {
+        // The one JSON document has been printed; the exit code is all that is left.
+        return stopped.code.exit();
+    }
+    render(Err(stopped), json)
 }
 
 /// Whether the arguments ask for JSON. Asked of the raw arguments because a command
@@ -58,7 +81,10 @@ fn unparsed(error: clap::Error) -> Result<Report, Error> {
     if error.kind() == ErrorKind::DisplayVersion {
         return Ok(Report {
             exit: Exit::Success,
-            json: json!({ "version": env!("CARGO_PKG_VERSION") }),
+            json: json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "connector_revision": connector::REVISION,
+            }),
             text: String::new(),
         });
     }
