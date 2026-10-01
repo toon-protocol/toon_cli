@@ -36,7 +36,10 @@ embedded connector on the dependency versions the connector was tested with.
 (`src/connector.rs`). Tests that start a connector use `tests/support/fake_chain.rs`,
 the connector's `FakeRpc` answering as an EVM chain with x402 deployed. It holds no
 channels and accepts no transaction: enough for a connector to start, not for a test
-that moves money.
+that moves money. A test that moves money uses `tests/support/local_chain.rs`: a
+disposable `anvil` with x402's contracts and a USDC on it, from the connector's
+`test-util` fixtures. It skips where `anvil` is missing, except under CI, where it fails,
+so CI installs Foundry in a `uses:` step.
 
 ## The AFK factory
 

@@ -292,10 +292,13 @@ fn quantity(rpc_url: &str, method: &str, params: Value) -> Result<u128, Error> {
     let result = reply["result"]
         .as_str()
         .ok_or_else(|| chain_failed("the answer has no result".into()))?;
-    let digits = result.trim_start_matches("0x");
-    // A 32-byte word whose high half is zero, which no balance outgrows.
-    u128::from_str_radix(digits.trim_start_matches('0').max("0"), 16)
-        .map_err(|_| chain_failed(format!("'{result}' is not a balance")))
+    // A 32-byte word. A balance that does not fit its low 16 bytes is refused, not cut.
+    let digits = result.trim_start_matches("0x").trim_start_matches('0');
+    if digits.is_empty() {
+        return Ok(0);
+    }
+    u128::from_str_radix(digits, 16)
+        .map_err(|_| chain_failed(format!("'{result}' is not a balance this can show")))
 }
 
 /// `toon wallet balances`: the balance of every address, by TOON app and chain. An address

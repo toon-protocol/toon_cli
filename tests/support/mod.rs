@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 pub mod fake_chain;
+pub mod local_chain;
 pub mod stub_app;
 
 use std::fs::{self, File};
@@ -108,20 +109,44 @@ impl Machine {
         let decimals = fake_chain::TOKEN_DECIMALS.to_string();
         let rpc_url = chain.rpc_url();
         let mut args = vec![
-            "init",
-            "--json",
             "--evm-rpc-url",
             &rpc_url,
             "--evm-token",
             fake_chain::TOKEN,
             "--evm-decimals",
             &decimals,
+            "--evm-transfer-method",
+            "permit2",
+        ];
+        args.extend_from_slice(more);
+        self.init_evm(&args)
+    }
+
+    /// Run `toon init` for an agent node that settles in USDC on a local chain, paying
+    /// into a channel with ERC-3009 as on Base.
+    pub fn init_on_local(&self, chain: &local_chain::LocalChain) -> Run {
+        let decimals = local_chain::TOKEN_DECIMALS.to_string();
+        let token = chain.token();
+        self.init_evm(&[
+            "--evm-rpc-url",
+            chain.rpc_url(),
+            "--evm-token",
+            &token,
+            "--evm-decimals",
+            &decimals,
+            "--evm-transfer-method",
+            "eip3009",
+        ])
+    }
+
+    fn init_evm(&self, more: &[&str]) -> Run {
+        let mut args = vec![
+            "init",
+            "--json",
             "--evm-asset-name",
             "USDC",
             "--evm-asset-version",
             "2",
-            "--evm-transfer-method",
-            "permit2",
         ];
         args.extend_from_slice(more);
         self.toon_with(&args, |command| {

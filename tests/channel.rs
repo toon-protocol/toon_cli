@@ -1,6 +1,7 @@
 mod support;
 
 use support::fake_chain::{FakeChain, NATIVE_BALANCE, TOKEN, TOKEN_BALANCE};
+use support::local_chain::LocalChain;
 use support::stub_app::StubApp;
 use support::{Foreground, Machine, Run, PASSPHRASE};
 
@@ -269,4 +270,191 @@ fn fund_needs_an_amount() {
 
     assert_eq!(run.json()["error"]["code"], "usage");
     assert_eq!(run.exit_code, 2);
+}
+
+/// An agent node on a local chain, running, whose settlement account holds `FUNDED`.
+struct OnChain {
+    machine: Machine,
+    _up: Foreground,
+    /// Where its connector listens.
+    connector: String,
+    /// Its settlement account.
+    address: String,
+}
+
+/// What each agent node's settlement account holds of the USDC to start with.
+const FUNDED: u128 = 1_000_000;
+
+fn on_chain(chain: &LocalChain) -> OnChain {
+    let machine = Machine::new();
+    let init = machine.init_on_local(chain);
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let shown = with_passphrase(&machine, &["wallet", "show", "--json"]).json();
+    let address = shown["wallet"]["chains"]["evm"][0]["address"]
+        .as_str()
+        .expect("an EVM address")
+        .to_owned();
+    chain.fund(&address, FUNDED);
+    let up = machine.start(&["up", "--json"]);
+    let connector = up.report()["connector"]["address"]
+        .as_str()
+        .expect("the connector's address")
+        .to_owned();
+    OnChain {
+        machine,
+        _up: up,
+        connector,
+        address,
+    }
+}
+
+impl OnChain {
+    /// The `batchSettlements` entry this agent node's connector publishes, as a file the
+    /// other machine can name.
+    fn terms_for(&self, other: &Machine) -> std::path::PathBuf {
+        let described: serde_json::Value =
+            reqwest::blocking::get(format!("http://{}/ilp", self.connector))
+                .and_then(|response| response.json())
+                .expect("the connector's self-description");
+        let terms = described["batchSettlements"][0].clone();
+        assert!(terms.is_object(), "{described}");
+        other.write_agent_node_file("terms.json", terms.to_string())
+    }
+}
+
+#[test]
+fn an_outbound_channel_is_opened_funded_listed_and_withdrawn() {
+    if !LocalChain::available() {
+        return;
+    }
+    let chain = LocalChain::start();
+    let payee = on_chain(&chain);
+    let payer = on_chain(&chain);
+    let terms = payee.terms_for(&payer.machine);
+    let withdraw_delay: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&terms).unwrap()).unwrap();
+    let withdraw_delay = withdraw_delay["withdrawDelay"].as_u64().expect("a delay");
+
+    let opened = payer.machine.toon(&[
+        "channel",
+        "open",
+        "--terms",
+        terms.to_str().unwrap(),
+        "--deposit",
+        "1000",
+        "--json",
+    ]);
+
+    let channel = &opened.json()["channel"];
+    assert_eq!(channel["direction"], "outbound", "{channel}");
+    assert_eq!(channel["status"], "open");
+    assert_eq!(channel["collateral"], 1000);
+    assert_eq!(channel["resumed"], false);
+    assert_eq!(opened.exit_code, 0);
+    let id = channel["id"].as_str().expect("an id").to_owned();
+    assert_eq!(chain.balance(&payer.address), FUNDED - 1000);
+
+    let funded = payer
+        .machine
+        .toon(&["channel", "fund", &id, "--amount", "500"]);
+
+    assert!(
+        funded
+            .stdout
+            .starts_with(&format!("Funded with 500: {id} evm outbound open")),
+        "{}",
+        funded.stdout
+    );
+    assert!(
+        funded.stdout.contains("collateral 1500"),
+        "{}",
+        funded.stdout
+    );
+    assert_eq!(funded.exit_code, 0);
+    assert_eq!(chain.balance(&payer.address), FUNDED - 1500);
+
+    let listed = payer.machine.toon(&["channel", "list", "--json"]);
+
+    let channels = listed.json()["channels"].clone();
+    assert_eq!(channels.as_array().map(Vec::len), Some(1), "{channels}");
+    assert_eq!(channels[0]["id"], id.as_str());
+    assert_eq!(channels[0]["direction"], "outbound");
+    assert_eq!(channels[0]["collateral"], 1500);
+    assert_eq!(channels[0]["status"], "open");
+
+    let started = payer.machine.toon(&["channel", "withdraw", &id, "--json"]);
+
+    let channel = &started.json()["channel"];
+    assert_eq!(channel["step"], "started", "{channel}");
+    assert_eq!(channel["status"], "withdrawing");
+    assert_eq!(started.exit_code, 0);
+
+    chain.advance_time(withdraw_delay + 1);
+    // A write signed in the same second as an identical one is the same signature, which
+    // the connector refuses as replayed.
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let finished = payer.machine.toon(&["channel", "withdraw", &id]);
+
+    assert!(
+        finished.stdout.starts_with("Withdrawal step finished: "),
+        "{}{}",
+        finished.stdout,
+        finished.stderr
+    );
+    assert_eq!(finished.exit_code, 0);
+    assert_eq!(chain.balance(&payer.address), FUNDED);
+    let balances = with_passphrase(&payer.machine, &["wallet", "balances", "--json"]).json();
+    assert_eq!(
+        balances["balances"][0]["token"]["balance"],
+        FUNDED.to_string()
+    );
+}
+
+#[test]
+fn land_is_refused_on_a_channel_this_node_pays() {
+    if !LocalChain::available() {
+        return;
+    }
+    let chain = LocalChain::start();
+    let payee = on_chain(&chain);
+    let payer = on_chain(&chain);
+    let terms = payee.terms_for(&payer.machine);
+    let opened = payer.machine.toon(&[
+        "channel",
+        "open",
+        "--terms",
+        terms.to_str().unwrap(),
+        "--deposit",
+        "1000",
+        "--json",
+    ]);
+    let id = opened.json()["channel"]["id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+
+    let run = payer.machine.toon(&["channel", "land", &id, "--json"]);
+
+    let report = run.json();
+    assert_eq!(report["error"]["code"], "channel_failed", "{report}");
+    assert_eq!(run.exit_code, 1);
+}
+
+#[test]
+fn an_amount_above_u64_reaches_the_connector() {
+    let node = running();
+    let unknown = format!("0x{}", "ab".repeat(32));
+    let amount = (u128::from(u64::MAX) + 1).to_string();
+
+    let run = node
+        .machine
+        .toon(&["channel", "fund", &unknown, "--amount", &amount, "--json"]);
+
+    assert_eq!(
+        run.json()["error"]["code"],
+        "channel_failed",
+        "{}",
+        run.stderr
+    );
+    assert_eq!(run.exit_code, 1);
 }
