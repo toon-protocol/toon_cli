@@ -685,6 +685,18 @@ pub fn dispatch(
     let socks_proxy = Egress::of(home)?
         .proxy_for(&seal_to)?
         .map(|proxy| format!("socks5h://{proxy}"));
+    // The connector's `send` takes its proxy only to an onion endpoint and dials any other
+    // host directly, so a request that must go through the overlay to another host is
+    // formed here, with the same envelope the connector's `send` makes.
+    if socks_proxy.is_some() && !is_onion_endpoint(&seal_to) {
+        let body = match &body {
+            Some(path) => std::fs::read(path)
+                .map_err(|error| send_failed(format!("{path} could not be read: {error}.")))?,
+            None => Vec::new(),
+        };
+        let headers = vec![("content-type".to_owned(), "application/json".to_owned())];
+        return dispatch_with_headers(home, destination, amount, &seal_to, headers, body);
+    }
     let mut arguments = vec![
         "toon send",
         "send",
@@ -718,6 +730,17 @@ pub fn dispatch(
         send_failed(format!(
             "The connector's answer was not understood: {summary}"
         ))
+    })
+}
+
+/// Whether `url` names an onion endpoint, which the connector's `send` dials through its
+/// `--socks-proxy`.
+fn is_onion_endpoint(url: &str) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|url| {
+        url.host_str().is_some_and(|host| {
+            let host = host.to_ascii_lowercase();
+            host.ends_with(&format!(".{}", crate::overlay::TLD)) || host.ends_with(".onion")
+        })
     })
 }
 

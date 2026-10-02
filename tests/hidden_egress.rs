@@ -347,6 +347,34 @@ fn a_request_to_a_host_that_is_neither_local_nor_published_gets_the_proxys_refus
 }
 
 #[test]
+fn a_seal_to_on_a_clearnet_name_goes_through_the_proxy_too() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+
+    // The connector's own `send` would dial a clearnet name directly and resolve it here.
+    let sent = machine.toon(&[
+        "send",
+        "g.toon.relay",
+        "--amount",
+        "0",
+        "--yes",
+        "--seal-to",
+        "http://nowhere.invalid:7100/ilp",
+        "--json",
+    ]);
+
+    let error = error_of(&sent);
+    assert_eq!(error["code"], "send_failed", "{error}");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("nowhere.invalid"), "{message}");
+    assert!(!message.contains("dns error"), "{message}");
+    assert!(!message.contains("lookup"), "{message}");
+}
+
+#[test]
 fn without_an_overlay_a_hidden_agent_node_dials_nothing() {
     let chain = FakeChain::start();
     let machine = Machine::new();

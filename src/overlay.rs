@@ -212,10 +212,11 @@ fn answers(proxy: SocketAddr) -> bool {
         && answer == [5, 0]
 }
 
-/// The `.anyone` names the environment says stand for loopback addresses.
-fn declared_names() -> HashMap<(String, u16), SocketAddr> {
+/// The `.anyone` names `list`, the value of `TOON_OVERLAY_NAMES`, says stand for loopback
+/// addresses.
+fn declared_names(list: &str) -> HashMap<(String, u16), SocketAddr> {
     let mut names = HashMap::new();
-    for entry in env::var(NAMES_VARIABLE).unwrap_or_default().split(',') {
+    for entry in list.split(',') {
         let parsed = entry.split_once('=').and_then(|(from, to)| {
             let (host, port) = from.trim().rsplit_once(':')?;
             let to: SocketAddr = to.trim().parse().ok()?;
@@ -232,6 +233,11 @@ impl Loopback {
     /// The stand-in of the agent node at `home`: the one this process started, or one that
     /// another process left and that still answers, or a new one.
     pub fn start(home: &Path) -> io::Result<Self> {
+        Self::start_naming(home, &env::var(NAMES_VARIABLE).unwrap_or_default())
+    }
+
+    /// [`Loopback::start`], with the names a new proxy is told in `names`.
+    fn start_naming(home: &Path, names: &str) -> io::Result<Self> {
         let dir = home.join("overlay");
         let file = dir.join("loopback");
         let mut started = STARTED.lock().unwrap_or_else(|e| e.into_inner());
@@ -262,7 +268,7 @@ impl Loopback {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let proxy = listener.local_addr()?;
-        let published = Arc::new(Mutex::new(declared_names()));
+        let published = Arc::new(Mutex::new(declared_names(names)));
         let stopped = Arc::new(AtomicBool::new(false));
         let (table, stop) = (Arc::clone(&published), Arc::clone(&stopped));
         thread::spawn(move || {
@@ -549,7 +555,10 @@ pub(crate) mod tests {
             .unwrap();
 
         // Another process does not share this one's memory: it reads the file the first left.
-        STARTED.lock().unwrap().clear();
+        STARTED
+            .lock()
+            .unwrap()
+            .retain(|(dir, _)| !dir.starts_with(home.path()));
         let second = Loopback::start(home.path()).unwrap();
 
         assert_eq!(first.proxy(), second.proxy());
@@ -580,15 +589,11 @@ pub(crate) mod tests {
         let home = tempfile::tempdir().unwrap();
         let server = serve("declared");
         let other = serve("elsewhere");
-        env::set_var(
-            NAMES_VARIABLE,
-            format!(
-                "relay.anyone:7100={server}, bad.anyone:1=8.8.8.8:80,{}:81={other}",
-                "Mixed.anyone"
-            ),
+        let names = format!(
+            "relay.anyone:7100={server}, bad.anyone:1=8.8.8.8:80,{}:81={other}",
+            "Mixed.anyone"
         );
-        let edge = Loopback::start(home.path()).unwrap();
-        env::remove_var(NAMES_VARIABLE);
+        let edge = Loopback::start_naming(home.path(), &names).unwrap();
         let patience = Duration::from_secs(5);
 
         assert_eq!(
