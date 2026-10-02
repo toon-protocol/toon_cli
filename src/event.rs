@@ -437,7 +437,8 @@ fn publish_to(
     }
     let secret = agent_secret(home)?;
     let event = sign(&secret, now(), kind, tags, content)?;
-    spending::spend(home, edge.price.into(), yes, || {
+    let price: u128 = edge.price.into();
+    spending::spend_packets(home, price, yes, |packets| {
         let mut report = write_to(
             home,
             event,
@@ -445,12 +446,20 @@ fn publish_to(
             edge.price,
             Some(&edge.seal_key),
         )?;
-        // A fulfilled packet moved money, whatever the relay or its fulfilment said.
-        let paid = report.json["outcome"] != "rejected";
+        // A fulfilled packet moved money, whatever the relay or its fulfilment said. A
+        // rejected one moved what its channels moved by.
+        let rejected = report.json["outcome"] == "rejected";
+        let paid = if rejected {
+            packets.moved(price)
+        } else {
+            price
+        };
         report.json["relay"] = json!(relay);
-        report.json["paid"] = json!(if paid { edge.price } else { 0 });
-        if paid {
+        report.json["paid"] = json!(paid);
+        if !rejected {
             report.text = format!("{} Paid {} base units to {relay}.", report.text, edge.price);
+        } else if paid > 0 {
+            report.text = format!("{} It cost {paid} base units.", report.text);
         }
         Ok((report, paid))
     })

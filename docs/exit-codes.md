@@ -39,7 +39,7 @@ supervisor, and `toon status` reports how many times.
 `toon status` exits with the code that describes the agent node, and still prints its
 report. It exits 1 when the supervisor or a connector is not running, and `toon down` exits 0
 whether or not anything was running, unless `systemctl` would not stop the unit. `toon send` exits 1 when the packet was rejected, and still prints its report: the
-reject code is in `reject.code`. It exits 1 too, with `"outcome": "wrong_fulfilment"`, when
+reject code is in `reject.code`, and `paid` is what the packet cost (see Spending limit). It exits 1 too, with `"outcome": "wrong_fulfilment"`, when
 the packet was fulfilled with a fulfilment that does not match it. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
 and exits 3.
 
@@ -191,8 +191,8 @@ request to `connector_url`, which only appears in the `peering_needed` message. 
 price and publishes only with `--yes`, under the spending limit, paying from this agent
 node's own connector over a peering. If no peering of the agent node reaches
 the relay's `ilp_address` it fails with `peering_needed` and creates nothing. The report has
-the same outcomes as a publish to the own relay, plus `relay` and `paid`: the price, or `0`
-when the packet was rejected and nothing moved. `--amount` is refused with `--relay`, and
+the same outcomes as a publish to the own relay, plus `relay` and `paid`: the price, or, when the packet was rejected, what the
+agent node's outbound channels moved by across it (`0` when none did). `--amount` is refused with `--relay`, and
 `--yes` without it.
 
 `toon relay subscribe <relay-url> --filter <filter> --amount <amount>` subscribes to another
@@ -203,7 +203,7 @@ events the amount buys. It pays only with `--yes`, under the spending limit, ove
 whole packets at the subscribe price, each authorized by NIP-98 with the subscriber key
 (`m/10473'/6'/0'`, not the agent identity), and the report gives `packets`, `paid`,
 `credited`, `balance`, `broadcast_price` and `filter`; a packet the relay refuses still cost
-its price, and `outcome` says `refused`, `rejected`, `wrong_fulfilment` or, when a later
+its price, and `paid` adds what a rejected packet moved the outbound channels by, and `outcome` says `refused`, `rejected`, `wrong_fulfilment` or, when a later
 packet could not be sent, `failed`, with the exit code 1. A first subscription needs
 `--filter`; a later one may leave it out to top up with the filter last kept, or give a new
 one to replace the old, and keeps the balance. `toon relay subscriptions` lists, per relay, the
@@ -280,7 +280,14 @@ Every command that moves money (`toon send`, `toon peer add`, `toon join`) state
 `--yes`. The amount is checked against the spending limit before the command runs: at most
 `--max-per-command` for one command, and `--max-per-day` for the commands of one UTC day
 together, both in the token's base units, set at `toon init` (defaults 10000000 and
-100000000). A payment that was rejected is not counted, nor one that failed before it
+100000000). A packet that was rejected is counted by what the watermarks of the agent node's outbound
+channels moved by across it, read before the packet is sent and after it is answered, under a
+lock shared by the packet-sending commands: `paid` in the JSON report of `toon send`,
+`toon event publish --relay` and `toon relay subscribe` carries that amount, which is `0` and
+not counted when the agent node's own connector rejected the packet before signing anything,
+and possibly the packet's whole amount when a connector farther on rejected it (the outbound
+watermark in `toon channel list` shows the same). If the watermarks cannot be read, the packet's
+full amount stays counted. Nor is a payment counted that failed before it
 reached the connector or that the other side refused. A packet that was never sent is not
 counted either: the operator key could not be read, the identity of the connector to seal to
 could not be fetched or has no usable public key, the packet could not be sealed, or the

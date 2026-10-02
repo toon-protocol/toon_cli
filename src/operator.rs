@@ -270,6 +270,20 @@ pub fn channels_on(surface: &Surface) -> Result<Vec<Value>, Error> {
     read(surface, "/channels")
 }
 
+/// What the watermarks of the outbound channels of the connector add up to. An outbound
+/// channel whose watermark the connector does not report counts as 0.
+pub fn outbound_watermark(home: &Path) -> Result<u128, Error> {
+    Ok(channels_on(&surface(home)?)?
+        .iter()
+        .filter(|channel| channel["direction"] == "outbound")
+        .filter_map(|channel| match &channel["watermark"] {
+            Value::Number(number) => number.as_u64().map(u128::from),
+            Value::String(text) => text.parse().ok(),
+            _ => None,
+        })
+        .sum())
+}
+
 /// `toon channel list`: every channel the connector holds, inbound and outbound.
 pub fn channel_list(home: &Path) -> Result<Report, Error> {
     let channels = channels_on(&surface(home)?)?;
