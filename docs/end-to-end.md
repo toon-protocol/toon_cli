@@ -10,12 +10,26 @@ controls.
 Record every run as a comment on the spec (#2): the date, `toon --version`, and for each
 step below whether it did what the step says. Open a ticket for every step that did not.
 
+## Steps known to fail
+
+The run of 2026-10-01 is recorded on #2. Take a row out when its ticket closes, and the
+flags or the note beside it out of the step.
+
+| Step | What happens today | Ticket |
+| --- | --- | --- |
+| 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
+| 2, a home with a long path | `up` fails with `io`, naming `SUN_LEN` | #75 |
+| 2, anything naming `$HUB` but `init` | The command line cannot reach a `.anyone` host, hence `localhost` in `--seal-to` | #69 |
+| 2, hold a subscription | No relay serves the subscribe route | relay #215 |
+| 3, the connector and the relay | The devnet profile's two hosts do not exist: both answer 000 | #66 |
+| 3, `up` and `join` | The faucet sends no ETH and `up` requires it | #68 |
+
 ## What it needs
 
 - Docker, `jq`, `curl`, and Foundry's `cast`.
 - The `infra` checkout beside this one, set up once with `make setup` in `infra/sandbox`.
-- A home directory with a short path. The supervisor's socket is
-  `$HOME/.toon/agent-node/supervisor.sock`, and a socket path is at most 107 bytes.
+- A home directory with a short path: the supervisor's socket is under it, and a socket
+  path is at most 107 bytes.
 
 The run never touches your own agent node: every command below runs with `HOME` set to a
 directory made for the run.
@@ -173,9 +187,9 @@ $E/toon relay subscribe ws://localhost:7100 --filter '{"kinds":[1]}' --amount 10
 $E/toon relay subscriptions --json
 ```
 
-**Expect**, once a relay serves the subscribe route (relay #215), a balance at that relay
-and its events arriving in the agent node's own relay. Until then no real relay sells a
-feed, the command fails with `relay_not_payable`, and this step is recorded as not run.
+**Expect** a balance at that relay, and its events arriving in the agent node's own
+relay. While no relay sells a feed the command fails with `relay_not_payable`, and the
+step is recorded as not run.
 
 ### Stop
 
@@ -225,8 +239,15 @@ kill $ANON
 ```
 
 **Expect** `settlement rpc via socks_proxy` and `connector listening`: the connector read
-the chain through the overlay. With Base Sepolia ETH on the settlement address, the same
-is shown by `toon up --foreground` and `toon join devnet --deposit <n> --yes`.
+the chain through the overlay. Then the agent node as an operator runs it:
+
+```sh
+$E/toon up --foreground --json        # in a second terminal
+$E/toon join devnet --deposit 1000000 --yes --json
+$E/toon down --json
+```
+
+**Expect** a peering `devnet` with an open channel.
 
 ## Afterwards
 
