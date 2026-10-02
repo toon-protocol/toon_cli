@@ -79,6 +79,14 @@ _Avoid_: Token, credential, payer (the payer is the channel that paid, and a sub
 
 ### How it is reached
 
+**ILP address**:
+Where a packet is sent: `g.toon`, then the address segment of a TOON app, then the app behind its connector. It says which app a packet is for, not where the connector is dialled, which is the onion endpoint or the clearnet hostname.
+_Avoid_: Address on its own, where it could mean the onion endpoint or a wallet's address
+
+**Address segment**:
+The part of a TOON app's ILP addresses that no other TOON app has: taken from its connector's identity key, never chosen by the operator. Every ILP address the connector answers to sits under `g.toon.<address segment>`.
+_Avoid_: Node name, node id, namespace
+
 **Hidden service**:
 The mode in which a connector is reachable only at an address inside the Anyone overlay, which public DNS cannot resolve. It is the default for a new TOON app.
 _Avoid_: Onion service, Tor service, dark node
