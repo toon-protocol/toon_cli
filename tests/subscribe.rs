@@ -444,6 +444,34 @@ fn with_no_peering_the_command_says_one_is_needed_with_its_deposit_and_creates_n
 }
 
 #[test]
+fn with_no_peering_the_deposit_named_is_what_would_be_paid_not_what_is_credited() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (_far, relay) = remote(&chain);
+
+    let run = subscribe(
+        &near,
+        &relay,
+        &[
+            "--filter",
+            FILTER,
+            "--amount",
+            "2500",
+            "--packet-amount",
+            "1100",
+            "--yes",
+        ],
+    );
+
+    let error = run.json()["error"].clone();
+    assert_eq!(error["code"], "peering_needed", "{error}");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("deposit of at least 2200"), "{message}");
+    assert!(message.contains("--deposit 2200 --yes`"), "{message}");
+    assert_eq!(relay.posts(), 0);
+}
+
+#[test]
 fn a_first_subscription_needs_a_filter_and_an_amount_must_buy_a_packet() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);
@@ -814,6 +842,9 @@ fn a_packet_amount_under_the_price_or_over_the_amount_is_usage_and_a_total_over_
         let run = subscribe(&near, &relay, &args);
         assert_eq!(run.json()["error"]["code"], "usage", "{}", run.stdout);
         assert_eq!(run.exit_code, 2);
+        // Both messages name the packet amount the command was given.
+        let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
+        assert!(message.contains(extra[1]), "{message}");
     }
     let limit = near.toon(&[
         "limit",

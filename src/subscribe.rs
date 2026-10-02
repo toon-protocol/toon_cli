@@ -419,8 +419,9 @@ pub fn subscribe(
             (_, Some((outcome, detail, text))) => {
                 let hint = if outcome == "rejected" && detail["code"] == "F03" {
                     format!(
-                        " A connector on the path to {relay} refused {packet_amount} base units \
-                         a packet: state the path's exact cost with `--packet-amount`."
+                        " A connector on the path to {relay} refused a packet of \
+                         {packet_amount} base units: state the path's exact cost with \
+                         `--packet-amount`."
                     )
                 } else {
                     String::new()
