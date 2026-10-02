@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 
 use crate::cli::{ChannelCommand, JoinArgs, PeerCommand, RouteCommand};
 use crate::control;
+use crate::egress::Egress;
 use crate::node::{self, ConnectorFiles, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::spending;
@@ -681,6 +682,9 @@ pub fn dispatch(
     let seal_to = seal_to.map_or_else(|| format!("{}/ilp", surface.url), str::to_owned);
     let write_key = surface.write_key.to_string_lossy();
     let body = body.map(|path| path.to_string_lossy().into_owned());
+    let socks_proxy = Egress::of(home)?
+        .proxy_for(&seal_to)?
+        .map(|proxy| format!("socks5h://{proxy}"));
     let mut arguments = vec![
         "toon send",
         "send",
@@ -697,6 +701,9 @@ pub fn dispatch(
     ];
     if let Some(body) = &body {
         arguments.extend(["--body", body]);
+    }
+    if let Some(proxy) = &socks_proxy {
+        arguments.extend(["--socks-proxy", proxy]);
     }
     let summary = runtime
         .block_on(connector_cli::run(&arguments))
@@ -738,7 +745,8 @@ pub fn dispatch_with_headers(
         .map_err(|error| send_failed(error.to_string()))?;
 
     let identity_url = format!("{}/identity", seal_to.trim_end_matches('/'));
-    let identity: Value = client
+    let identity: Value = Egress::of(home)?
+        .client(&identity_url, PATIENCE)?
         .get(&identity_url)
         .send()
         .and_then(|response| response.json())

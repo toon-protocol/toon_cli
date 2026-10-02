@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::derive;
+use crate::egress::Egress;
 use crate::event;
 use crate::feed;
 use crate::node;
@@ -47,8 +48,8 @@ struct Terms {
     broadcast_price: u64,
 }
 
-fn terms(relay: &str) -> Result<Terms, Error> {
-    let document = event::information_document(relay)?;
+fn terms(egress: &Egress, relay: &str) -> Result<Terms, Error> {
+    let document = event::information_document(egress, relay)?;
     let subscription = &document["toon_subscription"];
     fn text(value: &Value) -> Option<&str> {
         value.as_str().filter(|text| !text.is_empty())
@@ -226,7 +227,7 @@ pub fn subscribe(
     if node::State::load(home)?.is_none() {
         return Err(node::no_agent_node(home));
     }
-    let terms = terms(relay)?;
+    let terms = terms(&Egress::of(home)?, relay)?;
     // A top-up sends the filter last kept again: the relay may have forgotten an exhausted
     // subscription, and the draft says to send `filter` when that may be so.
     let filter = match filter {
@@ -411,36 +412,43 @@ enum Read {
 }
 
 /// A relay's answer to a read of the balance of the subscriber key `secret`.
-fn read_balance(relay: &str, secret: &[u8; 32]) -> Read {
-    let Some(response) = balance_response(relay, secret) else {
-        return Read::Unanswered;
+/// An overlay that is not there is an error, and not a relay that did not answer: nothing
+/// is dialled in its place.
+fn read_balance(egress: &Egress, relay: &str, secret: &[u8; 32]) -> Result<Read, Error> {
+    let Some(response) = balance_response(egress, relay, secret)? else {
+        return Ok(Read::Unanswered);
     };
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Read::NotSubscribed;
+        return Ok(Read::NotSubscribed);
     }
-    response
+    Ok(response
         .error_for_status()
         .ok()
         .and_then(|response| response.text().ok())
         .and_then(|text| Kept::from_answer(relay, &text))
         .filter(|kept| kept.subscriber_key == derive::nostr_public_key(secret))
-        .map_or(Read::Unanswered, Read::Held)
+        .map_or(Read::Unanswered, Read::Held))
 }
 
-fn balance_response(relay: &str, secret: &[u8; 32]) -> Option<reqwest::blocking::Response> {
-    let url = format!("{}/", event::http_url(relay).ok()?);
-    reqwest::blocking::Client::builder()
-        .timeout(PATIENCE)
-        .build()
-        .ok()?
+fn balance_response(
+    egress: &Egress,
+    relay: &str,
+    secret: &[u8; 32],
+) -> Result<Option<reqwest::blocking::Response>, Error> {
+    let Ok(base) = event::http_url(relay) else {
+        return Ok(None);
+    };
+    let url = format!("{base}/");
+    let client = egress.client(&url, PATIENCE)?;
+    let Ok(authorization) = authorization(secret, "GET", &url, None) else {
+        return Ok(None);
+    };
+    Ok(client
         .get(&url)
         .header("accept", "application/toon-subscription+json")
-        .header(
-            "authorization",
-            authorization(secret, "GET", &url, None).ok()?,
-        )
+        .header("authorization", authorization)
         .send()
-        .ok()
+        .ok())
 }
 
 /// `toon relay subscriptions`: the balance and filter at each relay the operator
@@ -449,6 +457,7 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
     if node::State::load(home)?.is_none() {
         return Err(node::no_agent_node(home));
     }
+    let egress = Egress::of(home)?;
     let mut kept = load(home)?;
     let secret = if kept.is_empty() {
         None
@@ -458,9 +467,10 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
     let mut shown = Vec::new();
     let mut lines = Vec::new();
     for entry in &mut kept {
-        let read = secret.as_deref().map_or(Read::Unanswered, |secret| {
-            read_balance(&entry.relay, secret)
-        });
+        let read = match secret.as_deref() {
+            Some(secret) => read_balance(&egress, &entry.relay, secret)?,
+            None => Read::Unanswered,
+        };
         let current = !matches!(read, Read::Unanswered);
         match read {
             Read::Held(fresh) => *entry = fresh,
@@ -533,10 +543,11 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
         Some(secret) => secret,
         None => *subscriber_secret(home)?,
     };
+    let proxy = Egress::of(home)?.proxy_for(relay)?;
     let stop = std::sync::atomic::AtomicBool::new(false);
     let mut stdout = std::io::stdout().lock();
     let mut unwritten = false;
-    let ended = feed::read(relay, &secret, &kept.filter, None, &stop, |event| {
+    let ended = feed::read(relay, &secret, &kept.filter, proxy, &stop, |event| {
         use std::io::Write;
         unwritten = writeln!(stdout, "{event}")
             .and_then(|()| stdout.flush())

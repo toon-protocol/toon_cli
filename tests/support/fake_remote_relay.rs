@@ -52,6 +52,8 @@ pub struct FakeRemoteRelay {
     broadcast_price: u64,
     ilp_address: String,
     state: Arc<Mutex<State>>,
+    /// The other authorities the relay is reached at, as a client names it in a NIP-98 `u`.
+    aliases: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeRemoteRelay {
@@ -65,6 +67,7 @@ impl FakeRemoteRelay {
             broadcast_price,
             ilp_address: ilp_address.to_owned(),
             state: Arc::default(),
+            aliases: Arc::default(),
         };
         let served = relay.shared();
         thread::spawn(move || {
@@ -83,6 +86,7 @@ impl FakeRemoteRelay {
             broadcast_price: self.broadcast_price,
             ilp_address: self.ilp_address.clone(),
             state: self.state.clone(),
+            aliases: self.aliases.clone(),
         }
     }
 
@@ -94,6 +98,12 @@ impl FakeRemoteRelay {
     /// The URL of the relay's subscribe route, for `toon add --url`.
     pub fn app_url(&self) -> String {
         format!("http://{}", self.address)
+    }
+
+    /// Say that the relay is also reached at `authority`, a `host:port` a client names its
+    /// requests with: the overlay's proxy takes a client there.
+    pub fn also_at(&self, authority: &str) {
+        self.aliases.lock().unwrap().push(authority.to_owned());
     }
 
     /// Name the connector that terminates the relay's routes.
@@ -260,10 +270,14 @@ impl FakeRemoteRelay {
         let created_at = event["created_at"].as_u64()?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         let payload = body.map(|body| hex::encode(Sha256::digest(body)));
-        let this_relay = [
+        let mut this_relay = vec![
             format!("http://{}", self.address),
             format!("http://{}/", self.address),
         ];
+        for alias in self.aliases.lock().unwrap().iter() {
+            this_relay.push(format!("http://{alias}"));
+            this_relay.push(format!("http://{alias}/"));
+        }
         (event["kind"] == 27235
             && Self::tag(&event, "method").as_deref() == Some(method)
             && Self::tag(&event, "u").is_some_and(|u| this_relay.contains(&u))

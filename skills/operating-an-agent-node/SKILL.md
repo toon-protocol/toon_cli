@@ -72,7 +72,11 @@ connector is running, or fail with `confirmation_required` and change nothing.
    operator keeps secrets. `--network` is `devnet` (default), `sandbox` or `mainnet`.
    `--clearnet <hostname>` asks for clearnet instead and needs no terms flag; the certificate and
    reverse proxy are yours to provide. If the overlay will not bootstrap, `init` fails with
-   `overlay_unavailable` and never falls back to clearnet. `--max-per-command` and `--max-per-day`
+   `overlay_unavailable` and never falls back to clearnet. On a hidden agent node the requests
+   the commands make themselves (`wallet fund`, `wallet balances`, `event publish --relay`,
+   `event query`, `event follow`, `relay subscribe`, `relay subscriptions`, `send --seal-to`) go
+   through the overlay too, except to a plain `http://` or `ws://` endpoint on this machine, and
+   fail with `overlay_unavailable` when it is not there. `--max-per-command` and `--max-per-day`
    set the spending limit.
 2. Fund the wallet (next section).
 3. `toon up` starts the supervisor as a `systemd --user` unit. `toon up --foreground` runs it in

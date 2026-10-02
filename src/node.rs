@@ -606,15 +606,7 @@ pub fn write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Error> {
 /// answers, so a plain-http endpoint on this machine, which has nothing to hide from a
 /// relay, is the one RPC that is dialed directly.
 fn via_proxy(overlay: Option<&Overlay>, rpc_url: &str) -> &'static str {
-    let local_http = rpc_url
-        .strip_prefix("http://")
-        .and_then(|rest| rest.split('/').next())
-        .map(|authority| match authority.find(']') {
-            Some(end) => &authority[..=end],
-            None => authority.split(':').next().unwrap_or(authority),
-        })
-        .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "[::1]"));
-    if overlay.is_some() && !local_http {
+    if overlay.is_some() && !overlay::is_local_plain(rpc_url) {
         "rpc_via_socks_proxy = true\n"
     } else {
         ""

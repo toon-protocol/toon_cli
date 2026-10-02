@@ -12,6 +12,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::apps::{self, Origin};
+use crate::egress::Egress;
 use crate::node::{self, App, Reach, Source, State, ToonApp};
 use crate::operator::{self, PeerAdd, Surface};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
@@ -273,7 +274,10 @@ fn made(home: &Path, state: &State, new: &ToonApp, seed: &[u8]) -> Result<bool, 
     apps::check(home, &changed, &new.name).map_err(undo)?;
     // A connector whose key holds nothing would fail later and not say why. A chain that
     // cannot be asked is not a verdict, as it is not for `toon up`.
-    if let Ok(lacking) = funding::shortfalls(funding::needs(home, new).map_err(undo)?) {
+    if let Ok(lacking) = funding::shortfalls(
+        &Egress::of_state(home, &changed),
+        funding::needs(home, new).map_err(undo)?,
+    ) {
         if !lacking.is_empty() {
             let list: Vec<String> = lacking.iter().map(funding::Need::text).collect();
             return Err(undo(failed(

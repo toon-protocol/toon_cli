@@ -9,6 +9,7 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use crate::cli::NipCommand;
+use crate::egress::Egress;
 use crate::event;
 use crate::home;
 use crate::node;
@@ -271,6 +272,7 @@ pub fn publish(
     let author = event::public_key(&secret)?;
 
     let found = event::fetch(
+        &Egress::of(home)?,
         relay,
         &json!({ "kinds": [DRAFT_KIND], "authors": [author], "#d": [draft.identifier] }),
     )?;

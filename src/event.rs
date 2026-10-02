@@ -4,17 +4,18 @@
 //! It is published as an operator write to the agent node's own relay through the
 //! relay's write route, and read back with a plain NIP-01 `REQ`, which is free.
 
-use std::net::TcpStream;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use k256::schnorr::SigningKey;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use tungstenite::{stream::MaybeTlsStream, Message};
+use tungstenite::Message;
 
 use crate::cli::EventCommand;
 use crate::derive;
+use crate::egress::Egress;
+use crate::feed;
 use crate::home;
 use crate::keystore;
 use crate::node;
@@ -212,7 +213,7 @@ pub fn query(relay: &str, filter: &str) -> Result<Report, Error> {
         .ok()
         .filter(Value::is_object)
         .ok_or_else(|| usage("--filter must be one JSON object, like {\"kinds\":[1]}."))?;
-    let events = fetch(relay, &filter)?;
+    let events = fetch(&Egress::open()?, relay, &filter)?;
     let text = if events.is_empty() {
         "No stored event matches.".to_owned()
     } else {
@@ -230,7 +231,7 @@ pub fn query(relay: &str, filter: &str) -> Result<Report, Error> {
 }
 
 /// The stored events of `relay` that match `filter`, read with a NIP-01 `REQ`.
-pub fn fetch(relay: &str, filter: &Value) -> Result<Vec<Value>, Error> {
+pub fn fetch(egress: &Egress, relay: &str, filter: &Value) -> Result<Vec<Value>, Error> {
     let failed = |message: String| Error {
         code: ErrorCode::QueryFailed,
         message,
@@ -240,11 +241,13 @@ pub fn fetch(relay: &str, filter: &Value) -> Result<Vec<Value>, Error> {
             "{relay} is not a ws:// URL; this build dials plain websocket relays only."
         )));
     }
-    let (mut socket, _) = tungstenite::connect(relay)
-        .map_err(|error| failed(format!("{relay} did not accept a connection: {error}.")))?;
-    if let MaybeTlsStream::Plain(stream) = socket.get_ref() {
-        set_timeouts(stream).map_err(|error| failed(format!("{relay}: {error}.")))?;
-    }
+    let proxy = egress.proxy_for(relay)?;
+    let mut socket = feed::dial(relay, proxy).map_err(failed)?;
+    let stream = socket.get_ref();
+    stream
+        .set_read_timeout(Some(PATIENCE))
+        .and_then(|()| stream.set_write_timeout(Some(PATIENCE)))
+        .map_err(|error| failed(format!("{relay}: {error}.")))?;
     socket
         .send(Message::text(
             json!(["REQ", SUBSCRIPTION, filter]).to_string(),
@@ -282,11 +285,6 @@ pub fn fetch(relay: &str, filter: &Value) -> Result<Vec<Value>, Error> {
     Ok(events)
 }
 
-fn set_timeouts(stream: &TcpStream) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(PATIENCE))?;
-    stream.set_write_timeout(Some(PATIENCE))
-}
-
 /// Where another relay is paid for a write, from its information document.
 struct Edge {
     ilp_address: String,
@@ -314,17 +312,13 @@ pub fn http_url(relay: &str) -> Result<String, Error> {
 }
 
 /// The NIP-11 information document of `relay`, served at its own URL as `http://`.
-pub fn information_document(relay: &str) -> Result<Value, Error> {
+pub fn information_document(egress: &Egress, relay: &str) -> Result<Value, Error> {
     let url = http_url(relay)?;
-    reqwest::blocking::Client::builder()
-        .timeout(PATIENCE)
-        .build()
-        .and_then(|client| {
-            client
-                .get(&url)
-                .header("accept", "application/nostr+json")
-                .send()
-        })
+    egress
+        .client(&url, PATIENCE)?
+        .get(&url)
+        .header("accept", "application/nostr+json")
+        .send()
         .and_then(|response| response.error_for_status())
         .and_then(|response| response.json())
         .map_err(|error| {
@@ -336,8 +330,8 @@ pub fn information_document(relay: &str) -> Result<Value, Error> {
 
 /// The paid write edge `relay` publishes in its NIP-11 information document, the `toon`
 /// object.
-fn edge(relay: &str) -> Result<Edge, Error> {
-    let document = information_document(relay)?;
+fn edge(egress: &Egress, relay: &str) -> Result<Edge, Error> {
+    let document = information_document(egress, relay)?;
     let toon = &document["toon"];
     let text = |field: &str| toon[field].as_str().filter(|text| !text.is_empty());
     match (
@@ -372,7 +366,7 @@ fn publish_to(
     if node::State::load(home)?.is_none() {
         return Err(node::no_agent_node(home));
     }
-    let edge = edge(relay)?;
+    let edge = edge(&Egress::of(home)?, relay)?;
     if !operator::forwards(home, &edge.ilp_address)? {
         return Err(Error {
             code: ErrorCode::PeeringNeeded,

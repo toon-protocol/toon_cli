@@ -10,6 +10,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::derive;
+use crate::egress::Egress;
 use crate::node::{self, ConnectorFiles, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::profile::Profile;
@@ -135,15 +136,10 @@ pub fn needs(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
     Ok(needs)
 }
 
-fn client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .timeout(TIMEOUT)
-        .build()
-        .expect("an HTTP client with a timeout")
-}
-
-fn rpc(url: &str, method: &str, params: Value) -> Result<Value, String> {
-    let reply: Value = client()
+fn rpc(egress: &Egress, url: &str, method: &str, params: Value) -> Result<Value, String> {
+    let reply: Value = egress
+        .client(url, TIMEOUT)
+        .map_err(|error| error.message)?
         .post(url)
         .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
         .send()
@@ -167,11 +163,12 @@ fn hex_amount(text: &str) -> Option<u128> {
     u128::from_str_radix(digits, 16).ok()
 }
 
-fn balance(need: &Need) -> Result<u128, String> {
+fn balance(egress: &Egress, need: &Need) -> Result<u128, String> {
     let bad = |what: &str| format!("{}: {what}", need.rpc_url);
     match (need.chain, need.gas) {
         ("evm", true) => {
             let result = rpc(
+                egress,
                 &need.rpc_url,
                 "eth_getBalance",
                 json!([need.address, "latest"]),
@@ -182,6 +179,7 @@ fn balance(need: &Need) -> Result<u128, String> {
             let owner = need.address.trim_start_matches("0x").to_lowercase();
             let data = format!("0x70a08231{owner:0>64}");
             let result = rpc(
+                egress,
                 &need.rpc_url,
                 "eth_call",
                 json!([{ "to": need.token, "data": data }, "latest"]),
@@ -189,7 +187,7 @@ fn balance(need: &Need) -> Result<u128, String> {
             hex_amount(result.as_str().unwrap_or_default()).ok_or_else(|| bad("no balance"))
         }
         (_, true) => {
-            let result = rpc(&need.rpc_url, "getBalance", json!([need.address]))?;
+            let result = rpc(egress, &need.rpc_url, "getBalance", json!([need.address]))?;
             result["value"]
                 .as_u64()
                 .map(u128::from)
@@ -197,6 +195,7 @@ fn balance(need: &Need) -> Result<u128, String> {
         }
         (_, false) => {
             let result = rpc(
+                egress,
                 &need.rpc_url,
                 "getTokenAccountsByOwner",
                 json!([need.address, { "mint": need.token }, { "encoding": "jsonParsed" }]),
@@ -217,10 +216,10 @@ fn balance(need: &Need) -> Result<u128, String> {
 }
 
 /// Which of `needs` the chains say is not yet held, or why a balance could not be read.
-pub fn shortfalls(needs: Vec<Need>) -> Result<Vec<Need>, String> {
+pub fn shortfalls(egress: &Egress, needs: Vec<Need>) -> Result<Vec<Need>, String> {
     let mut lacking = Vec::new();
     for need in needs {
-        if balance(&need)? < need.amount {
+        if balance(egress, &need)? < need.amount {
             lacking.push(need);
         }
     }
@@ -278,9 +277,10 @@ fn faucet_error(message: String) -> Error {
     }
 }
 
-fn ask(faucet: &str, path: &str, address: &str) -> Result<Value, Error> {
+fn ask(egress: &Egress, faucet: &str, path: &str, address: &str) -> Result<Value, Error> {
     let url = format!("{}{path}", faucet.trim_end_matches('/'));
-    let response = client()
+    let response = egress
+        .client(&url, TIMEOUT)?
         .post(&url)
         .json(&json!({ "address": address }))
         .send()
@@ -320,19 +320,21 @@ pub fn fund(home: &Path) -> Result<Report, Error> {
             )))
         }
     };
+    let egress = Egress::of_state(home, &state);
     let mut funded = Vec::new();
     for app in &state.toon_apps {
         let files = ConnectorFiles::of(home, app.connector);
         if app.evm.is_some() {
             let address = derive::evm_address(&secret(&files.settlement_key)?);
-            let reply = ask(faucet, "/api/base-sepolia/request", &address)?;
+            let reply = ask(&egress, faucet, "/api/base-sepolia/request", &address)?;
             funded.push(json!({ "chain": "evm", "address": address, "faucet": reply }));
         }
         if let Some(solana) = &app.solana {
             let address = derive::solana_address(&secret(&files.solana_settlement_key)?);
-            let reply = ask(faucet, "/api/solana/usdc-request", &address)?;
+            let reply = ask(&egress, faucet, "/api/solana/usdc-request", &address)?;
             // The faucet mints the token; the chain's own airdrop pays for fees.
             let airdrop = rpc(
+                &egress,
                 &solana.rpc_url,
                 "requestAirdrop",
                 json!([address, SOLANA_AIRDROP]),
@@ -350,7 +352,7 @@ pub fn fund(home: &Path) -> Result<Report, Error> {
     }
     // The faucet has been asked either way: a balance that cannot be read is said, not
     // a failure of the command.
-    let lacking = shortfalls(all);
+    let lacking = shortfalls(&egress, all);
     let mut text = String::from("Asked the devnet faucet for:\n");
     for entry in &funded {
         text.push_str(&format!(
