@@ -23,7 +23,7 @@ A payment-oblivious HTTP service that a connector delivers to at the end of a ro
 _Avoid_: Backend, service
 
 **Relay**:
-The Nostr relay app: paid to write to through its connector.
+The Nostr relay app: paid to write to through its connector. An agent node has one, the one `toon init` creates; `toon create` and `toon add` refuse the relay's image.
 
 **Supervisor**:
 The one process per machine that runs an agent node: it starts each connector as a child process of the same binary and keeps it running.

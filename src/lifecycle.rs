@@ -150,6 +150,7 @@ fn peer(
 
 /// `toon create`.
 pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
+    create.origin.refuse_relay_image()?;
     let Some(state) = State::load(home)? else {
         return Err(node::no_agent_node(home));
     };
