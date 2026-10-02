@@ -14,8 +14,8 @@ step below whether it did what the step says. Open a ticket for every step that 
 
 ## Steps known to fail
 
-Every run is recorded on #2. Take a row out when its ticket closes, and the flags or the
-note beside it out of the step.
+Take a row out when its ticket closes, and the flags or the note beside it out of the
+step.
 
 | Step | What happens today | Ticket |
 | --- | --- | --- |
@@ -176,9 +176,9 @@ command line read the hub's information document and the event through the agent
 daemon, and sealed the write to the key the document pins. The watermark is then 103.
 The second is `published` with `paid: 101` and read back from `relay2`: its price is 1,
 the hub keeps 100 to forward the write, and `--amount` states the two together. The
-watermark is then 204. Without `--amount` the write is sent for the relay's price, the hub
-rejects it with `F03`, and the report says `paid: 1`, which the watermark and the day's
-spending moved by.
+watermark is then 204. Without `--amount` the write is sent for the relay's price and the
+hub rejects it with `F03`; the report says `paid: 1`, and the watermark and the day's
+spending have each moved by that 1.
 
 ### Create a second TOON app
 
@@ -274,11 +274,12 @@ $E/toon relay subscriptions --json
 ```
 
 **Expect** a balance at each relay, the hub's and `relay2`'s, and their events arriving
-in the agent node's own relay. A packet to `relay2` is forwarded by the hub, which keeps
-100 of it, so `--packet-amount` is `relay2`'s subscribe price and 100 more: 101 at a
-subscribe price of 1, and ten packets of it credit 10. While no relay sells a feed each
-command fails with `relay_not_payable`, having read the relay's information document, the
-hub's through the overlay, and the step is recorded as not run.
+in the agent node's own relay. A packet to `relay2` is forwarded by the hub, so
+`--packet-amount` is the hub's price for that route, 101, as `--amount` was for the
+write: the hub keeps 100 of each packet, and ten packets credit ten times `relay2`'s
+subscribe price. While no relay sells a feed each command fails with `relay_not_payable`,
+having read the relay's information document, the hub's through the overlay, and the step
+is recorded as not run.
 
 ### Stop
 
