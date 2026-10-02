@@ -199,11 +199,13 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
         relay: node::RelaySettings::default(),
     };
     let from = source.name.clone();
-    let make = || made(home, &state, &new, &*seed);
+    let make = || made(home, &state, &new, &*seed, create.deposit.is_some());
     let Some(deposit) = create.deposit else {
         let restarted = make()?;
         return Ok(created(home, &new, &from, restarted, Vec::new()));
     };
+    // Each key sends a deposit, so each needs gas. The new key is checked in `made`.
+    funding::ensure_gas(home, state.network, source)?;
     // The two channels are two payments out of the wallet.
     spending::spend(home, deposit.saturating_mul(2), create.yes, || {
         let restarted = match make() {
@@ -252,7 +254,13 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
 
 /// Write the new TOON app's keys, record it, and start its connector if the agent node
 /// runs. Everything is put back if it fails. Returns whether a connector was started.
-fn made(home: &Path, state: &State, new: &ToonApp, seed: &[u8]) -> Result<bool, Error> {
+fn made(
+    home: &Path,
+    state: &State,
+    new: &ToonApp,
+    seed: &[u8],
+    deposit: bool,
+) -> Result<bool, Error> {
     let undo = |error: Error| {
         let _ = state.save(home);
         remove_files(home, new);
@@ -272,17 +280,18 @@ fn made(home: &Path, state: &State, new: &ToonApp, seed: &[u8]) -> Result<bool, 
     wallet::write_onion_key(home, seed, new).map_err(undo)?;
     apps::check(home, &changed, &new.name).map_err(undo)?;
     // A connector whose key holds nothing would fail later and not say why. A chain that
-    // cannot be asked is not a verdict, as it is not for `toon up`.
-    if let Ok(lacking) = funding::shortfalls(funding::needs(home, new).map_err(undo)?) {
+    // cannot be asked is not a verdict, as it is not for `toon up`. The key sends a
+    // deposit only if one was asked for, and that needs gas.
+    let mut wanted = funding::start_needs(home, new).map_err(undo)?;
+    if deposit {
+        wanted = funding::needs(home, new).map_err(undo)?;
+    }
+    if let Ok(lacking) = funding::shortfalls(wanted) {
         if !lacking.is_empty() {
-            let list: Vec<String> = lacking.iter().map(funding::Need::text).collect();
-            return Err(undo(failed(
-                ErrorCode::Unfunded,
-                format!(
-                    "The settlement key of the new TOON app is not funded, so nothing was \
-                     created. It needs: {}. Fund it, and run `toon create` again.",
-                    list.join("; ")
-                ),
+            return Err(undo(funding::unfunded(
+                state.network,
+                "The settlement key of the new TOON app is not funded, so nothing was created.",
+                &lacking,
             )));
         }
     }

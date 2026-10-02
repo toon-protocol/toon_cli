@@ -219,12 +219,12 @@ pub fn start(home: &Path) -> Result<Supervisor, Error> {
     // A settlement key that cannot be read is.
     let mut lacking = Vec::new();
     for app in &state.toon_apps {
-        if let Ok(short) = funding::shortfalls(funding::needs(home, app)?) {
+        if let Ok(short) = funding::shortfalls(funding::start_needs(home, app)?) {
             lacking.extend(short);
         }
     }
     if !lacking.is_empty() {
-        return Err(funding::unfunded(state.network, &lacking));
+        return Err(funding::unfunded_to_start(state.network, &lacking));
     }
     let Some(listener) = control::bind(home).map_err(|error| Error {
         code: ErrorCode::Io,
