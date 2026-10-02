@@ -399,14 +399,15 @@ fn edge(egress: &Egress, relay: &str) -> Result<Edge, Error> {
 }
 
 /// `toon event publish --relay`: publish to a relay this agent node does not run, paying
-/// its price through this agent node's own connector over a peering. It never creates the
-/// peering.
+/// its price, or the `amount` the operator states for the whole path, through this agent
+/// node's own connector over a peering. It never creates the peering.
 fn publish_to(
     home: &Path,
     relay: &str,
     kind: u64,
     content: &str,
     tags: &str,
+    amount: Option<u64>,
     yes: bool,
 ) -> Result<Report, Error> {
     let tags = parse_tags(tags)?;
@@ -414,6 +415,14 @@ fn publish_to(
         return Err(node::no_agent_node(home));
     }
     let edge = edge(&Egress::of(home)?, relay)?;
+    let price = edge.price;
+    let amount = amount.unwrap_or(price);
+    if amount < price {
+        return Err(usage(format!(
+            "--amount {amount} is below the {price} base units {relay} charges for a write, \
+             and the relay's connector would reject it."
+        )));
+    }
     if !operator::forwards(home, &edge.ilp_address)? {
         return Err(Error {
             nothing_sent: false,
@@ -430,27 +439,39 @@ fn publish_to(
             nothing_sent: false,
             code: ErrorCode::NotConfirmed,
             message: format!(
-                "A write to {relay} costs {} base units. Add `--yes` to say that you mean it.",
-                edge.price
+                "A write to {relay} would send {amount} base units{}. Add `--yes` to say that \
+                 you mean it.",
+                if amount == price {
+                    String::new()
+                } else {
+                    format!(" (the relay's price is {price})")
+                }
             ),
         });
     }
     let secret = agent_secret(home)?;
     let event = sign(&secret, now(), kind, tags, content)?;
-    spending::spend(home, edge.price.into(), yes, || {
-        let mut report = write_to(
-            home,
-            event,
-            &edge.ilp_address,
-            edge.price,
-            Some(&edge.seal_key),
-        )?;
+    spending::spend(home, amount.into(), yes, || {
+        let mut report = write_to(home, event, &edge.ilp_address, amount, Some(&edge.seal_key))?;
         // A fulfilled packet moved money, whatever the relay or its fulfilment said.
         let paid = report.json["outcome"] != "rejected";
         report.json["relay"] = json!(relay);
-        report.json["paid"] = json!(if paid { edge.price } else { 0 });
-        if paid {
-            report.text = format!("{} Paid {} base units to {relay}.", report.text, edge.price);
+        report.json["paid"] = json!(if paid { amount } else { 0 });
+        if paid && amount == price {
+            report.text = format!("{} Paid {amount} base units to {relay}.", report.text);
+        } else if paid {
+            report.text = format!(
+                "{} Sent {amount} base units for {relay}, whose price is {price}; the \
+                 connectors in between keep the rest.",
+                report.text
+            );
+        }
+        if report.json["reject"]["code"] == "F03" {
+            report.text = format!(
+                "{} The path to {relay} charges more than the relay's price of {price}: state \
+                 the path's cost with `--amount`.",
+                report.text
+            );
         }
         Ok((report, paid))
     })
@@ -463,10 +484,18 @@ pub fn run(command: EventCommand) -> Result<Report, Error> {
             kind,
             content,
             tags,
-            amount: _,
+            amount,
             relay: Some(relay),
             yes,
-        } => publish_to(&home::resolve()?, &relay, kind, &content, &tags, yes),
+        } => publish_to(
+            &home::resolve()?,
+            &relay,
+            kind,
+            &content,
+            &tags,
+            amount,
+            yes,
+        ),
         EventCommand::Publish {
             kind,
             content,
@@ -474,7 +503,13 @@ pub fn run(command: EventCommand) -> Result<Report, Error> {
             amount,
             relay: None,
             yes: _,
-        } => publish(&home::resolve()?, kind, &content, &tags, amount),
+        } => publish(
+            &home::resolve()?,
+            kind,
+            &content,
+            &tags,
+            amount.unwrap_or(0),
+        ),
         EventCommand::Query { relay, filter } => query(&relay, &filter),
         EventCommand::Follow { relay } => crate::subscribe::follow(&home::resolve()?, &relay),
     }
