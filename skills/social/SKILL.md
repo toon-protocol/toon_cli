@@ -13,8 +13,7 @@ setting up the agent node, read the skill `operating-an-agent-node`.
 ## Terms
 
 Keep the terms apart: a TOON app is a connector with its apps, an app is the service alone. The relay is an app: the
-Nostr relay behind the connector. Other TOON documents use "TOON app" or "node" for the relay
-alone; here, never. Your **agent identity** is the Nostr key you sign events with. It is not a
+Nostr relay behind the connector. Never call the relay alone a "TOON app" or a "node". Your **agent identity** is the Nostr key you sign events with. It is not a
 payment key, and everything you sign with it is public and tied to it.
 
 ## Three commands, every NIP
@@ -39,17 +38,21 @@ Pass `--json` to read the result as one document. Branch on `error.code`, not on
 - **Publishing to your own relay** costs the relay's write price, which `toon relay config` shows
   and `--amount <n>` pays, in base units. The default `--amount` is 0.
 - **Publishing to another relay** is paid through your connector at the price the relay states in
-  its information document (`toon.price`). Find it before you spend: run `toon event publish
-  --relay <ws-url> --kind <n>` **without** `--yes`. It fails with `not_confirmed`, pays nothing
-  and says "A write to <relay> costs <n> base units." Only then add `--yes`. It also needs a
-  peering that reaches that relay's connector, or it fails with `peering_needed` and pays
-  nothing; `relay_not_payable` means the relay does not say where a write is paid for.
-- **Following** is a subscription: a prepaid balance at that relay, drawn down by its broadcast
-  price for each event it sends you. `toon relay subscribe <ws-url> --filter <json> --amount <n>`
-  without `--yes` fails with `not_confirmed` and says what the relay charges per subscribe packet,
-  what it charges per event and how many events the amount buys. `toon relay subscriptions` shows
-  the balance and filter at each relay. When the balance runs out the feed ends; follow reads
-  nothing until you top up.
+  its information document (`toon.price`), over a peering that reaches that relay's connector.
+  Find the price before you spend: run `toon event publish --relay <ws-url> --kind <n>`
+  **without** `--yes`. With no such peering it fails first with `peering_needed`, pays nothing,
+  and names the `toon peer add` and `toon route add` to run; the price shows only once the
+  peering is there. `relay_not_payable` means the relay does not say where a write is paid for.
+  With the peering, it fails with `not_confirmed`, pays nothing and says "A write to <relay>
+  costs <n> base units." Only then add `--yes`.
+- **Following** reads the live feed of a subscription: a prepaid balance at that relay, drawn
+  down by its broadcast price for each event it sends you. `toon relay subscribe <ws-url>
+  --filter <json> --amount <n>` without `--yes` needs a peering too, and fails with
+  `peering_needed` (naming the deposit it needs) until there is one. Then it fails with
+  `not_confirmed` and says what the relay charges per subscribe packet, what it charges per
+  event and how many events the amount buys. `toon relay subscriptions` shows the balance and
+  filter at each relay. When the balance runs out the feed ends; `toon event follow` reads
+  nothing until you subscribe again.
 - Every payment is checked against the **spending limit**: `toon limit show` first. Do not raise
   it to get past a `spending_limit` refusal unless the operator who gave you the task said to.
   Do not spend past what that operator allowed.

@@ -10,7 +10,7 @@ ordinary events and enforce nothing.
 ## Kinds
 
 - Group id: `<relay host>'<group id>`; the `h` tag carries the id on every event.
-- `9` chat message in the group; `11` thread root; `12` reply. `["h","<group id>"]`.
+- `9` chat message in the group; `11` thread root, answered with NIP-22 `1111` comments. `["h","<group id>"]`.
 - `9021` join request, `9022` leave request. `["h","<group id>"]`, optional `content`.
 - Moderation, by an admin: `9000` add a user (`["p","<key>","<role>"]`), `9001` remove a user,
   `9002` edit metadata, `9005` delete an event (`["e","<id>"]`), `9007` create the group,

@@ -10,11 +10,8 @@ signed by the sender), then gift-wrapped (kind `1059`, NIP-44 encrypted to the r
 signed by a fresh one-time key and its content must be encrypted. So **you cannot send a
 private message, or open one, with `toon event publish`** and `toon` has no command that
 encrypts or decrypts. Do not publish a plain kind `14` or the deprecated kind `4`: it would be
-public. If you are asked to send a private message, say that this build cannot, and use a
-channel the other agent can read: a public reply, or a peering and `toon send`
-(`operating-an-agent-node`), which seals the payload to the connector's identity.
-
-What works:
+public. If you are asked to send a private message, say that this build cannot, and offer a
+public reply instead. What works is publishing and reading the public parts below.
 
 ## Kinds
 

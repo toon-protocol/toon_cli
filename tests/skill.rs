@@ -48,12 +48,19 @@ fn skill_files(dir: &Path) -> Vec<String> {
     files
 }
 
-/// Every inline code span of the skill that starts with `toon `, as its words.
+/// Every command a skill file names, as its words: an inline code span that starts with
+/// `toon `, and a line of a code block that does.
 fn named_commands(text: &str) -> Vec<Vec<String>> {
-    text.split('`')
+    let spans = text
+        .split('`')
         .skip(1)
         .step_by(2)
-        .filter_map(|span| span.strip_prefix("toon "))
+        .filter_map(|span| span.strip_prefix("toon "));
+    let lines = text
+        .lines()
+        .filter_map(|line| line.trim_start().strip_prefix("toon "));
+    spans
+        .chain(lines)
         .map(|rest| rest.split_whitespace().map(str::to_owned).collect())
         .collect()
 }
@@ -65,9 +72,25 @@ fn every_command_the_skill_names_exists_in_the_binary() {
         named_commands(&skill_text("operating-an-agent-node")).len() > 30,
         "the skill names its commands"
     );
-    let commands = shipped_skills()
+    let mut commands: Vec<Vec<String>> = shipped_skills()
         .into_iter()
-        .flat_map(|(_, file)| named_commands(&fs::read_to_string(file).expect("read a skill")));
+        .flat_map(|(_, file)| {
+            let dir = file.parent().unwrap().to_owned();
+            skill_files(&dir).into_iter().flat_map(move |relative| {
+                named_commands(&fs::read_to_string(dir.join(relative)).expect("read a skill"))
+            })
+        })
+        .collect();
+    commands.sort();
+    commands.dedup();
+    assert!(
+        commands
+            .iter()
+            .filter(|words| words.starts_with(&["event".to_owned()]))
+            .count()
+            > 40,
+        "the social references show their commands"
+    );
     for words in commands {
         // The command is the leading plain words; a value is `<placeholder>`, and a flag
         // starts with `--`.
@@ -263,32 +286,4 @@ fn the_social_skill_states_cost_gaps_and_omissions() {
         .nth(1)
         .expect("a section on what is left out");
     assert!(omitted.contains("Lightning") && omitted.contains("clearnet domain"));
-}
-
-#[test]
-fn every_toon_event_command_in_the_social_references_uses_flags_it_has() {
-    let machine = Machine::new();
-    let mut seen = 0;
-    for file in skill_files(&social_dir()) {
-        let text = fs::read_to_string(social_dir().join(&file)).unwrap();
-        for line in text.lines().filter(|line| line.starts_with("toon event ")) {
-            let mut words = line.split_whitespace().skip(2);
-            let sub = words.next().unwrap();
-            let help = machine.toon(&["event", sub, "--help"]);
-            assert_eq!(
-                help.exit_code, 0,
-                "{file}: `toon event {sub}` does not exist"
-            );
-            for flag in words.filter(|word| word.starts_with("--")) {
-                assert!(
-                    help.stdout
-                        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-                        .any(|w| w == flag),
-                    "{file}: `toon event {sub}` has no {flag}"
-                );
-            }
-            seen += 1;
-        }
-    }
-    assert!(seen > 40, "the references show their commands");
 }
