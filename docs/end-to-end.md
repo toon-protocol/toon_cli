@@ -20,9 +20,9 @@ step.
 | Step | What happens today | Ticket |
 | --- | --- | --- |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
+| 2, another agent node | Now and then the first packet between two hidden services outlasts the 30 seconds the command line waits: `send_failed`, "operation timed out", paid for and not delivered | #105 |
 | 2, hold a subscription | No relay serves the subscribe route | relay #215 |
 | 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
-| 3, `join` | The deposit lands and the `join` fails with `peer_failed`, "confirmed, and the chain shows no balance there"; the same command again finds the channel, and is counted against the day's spending a second time | #102 |
 
 ## What it needs
 
@@ -194,7 +194,8 @@ Fund it with `fund <address> 10000000` and run the command again.
 
 **Expect** a second onion endpoint, different from the first, an ILP address under an
 address segment of its own (`g.toon.<segment>`), and two peerings, each with a channel of
-1000000. Then pay the app behind the new connector from the first one:
+1000000: two deposits, so the day's spending is down by 2000000. Then pay the app behind
+the new connector from the first one:
 
 ```sh
 SECOND=$(jq -r .created.listen $E/create.json)
@@ -254,6 +255,9 @@ $E/toon event publish --kind 1 --content "from another agent node" \
   --relay ws://$ME:7100 --yes --json > $E/other-event.json
 $E/toon event query ws://$ME:7100 \
   --filter "{\"ids\":[\"$(jq -r .event.id $E/other-event.json)\"]}" --json
+$E/toon limit show --json
+$E/toon peer add http://$ME/ilp --deposit 1000000 --id first --yes --json
+$E/toon limit show --json
 $E/toon down --json
 export HOME=$E/sandbox
 $E/toon channel list --json
@@ -265,6 +269,12 @@ one at watermark 1. Everything between the two crosses the overlay, from one hid
 service to another. Before the `route add`, the publish fails with `peering_needed`, and
 its message names the `peer add`, with `--deposit <amount> --yes`, and the `route add` to
 run.
+
+The second `peer add` finds the channel the first one opened: `deposited: false`, a
+channel status of `found`, and `limit show` the same before and after it.
+
+If the publish fails with `send_failed`, "operation timed out", the packet was paid for
+and not delivered (#105): run it again, and expect the watermark at 2.
 
 ### Hold a subscription
 
@@ -357,18 +367,17 @@ $E/toon limit show --json
 ```
 
 **Expect** a peering `devnet`, a route for `g.toon` over it, and an open channel of
-1000000, with the day's spending down by 1000000. Two failures are known, both
-`peer_failed`, and after either the same `join` is run again:
+1000000, with `deposited: true` and the day's spending down by 1000000.
 
-- "out of gas": the address holds too little ETH and nothing was sent, so send it more
-  first (#101).
-- "confirmed, and the chain shows no balance there": the deposit landed, and the
-  connector's next read of the chain looks to have been answered before the block was
-  seen. The second `join` reports `peering.channel.status` as `found` and deposits
-  nothing (#102).
+One failure is known: `peer_failed` with "out of gas", when the address holds too little
+ETH. Nothing was sent and the attempt still takes 1000000 off the day's spending, so send
+the address more and run the same `join` again (#101).
 
-Each failed attempt, and the one that finds the channel, takes 1000000 more off the day's
-spending.
+The public RPC can answer the connector's read after the deposit from before the
+deposit's block. The connector then refuses the peering, and `join` repeats it for a few
+seconds before giving up. If it gives up, it fails with `peer_failed` and says that the
+deposit confirmed on chain: the same `join` again finds the channel, reports `deposited:
+false` and takes nothing more off the day's spending.
 
 Then pay the devnet's relay over the new channel:
 
