@@ -220,8 +220,14 @@ impl App {
 
     fn json(&self) -> Value {
         match &self.source {
-            Source::Relay if self.price == RELAY_WRITE_PRICE => json!(self.name),
-            Source::Relay => json!({ "name": self.name, "price": self.price }),
+            Source::Relay
+                if self.price == RELAY_WRITE_PRICE && self.prefix == RELAY_WRITE_PREFIX =>
+            {
+                json!(self.name)
+            }
+            Source::Relay => {
+                json!({ "name": self.name, "price": self.price, "prefix": self.prefix })
+            }
             Source::Image(image) => json!({
                 "name": self.name, "image": image, "prefix": self.prefix, "price": self.price,
             }),
@@ -260,6 +266,10 @@ impl App {
         Some(Self {
             name,
             price,
+            prefix: value["prefix"]
+                .as_str()
+                .unwrap_or(RELAY_WRITE_PREFIX)
+                .to_owned(),
             ..Self::relay()
         })
     }

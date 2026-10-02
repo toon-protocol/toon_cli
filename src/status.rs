@@ -116,7 +116,8 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                     _ => Value::Null,
                 };
                 json!({
-                    "name": name, "address": field("address"), "running": running,
+                    "name": name, "address": field("address"),
+                    "read_address": field("read_address"), "running": running,
                     "image": image, "prefix": behind.prefix, "price": behind.price,
                 })
             })
