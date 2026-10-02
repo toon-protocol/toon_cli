@@ -749,6 +749,8 @@ fn a_publish_the_connector_does_not_answer_reports_its_cost_and_its_event() {
     assert!(message.contains(id), "{message}");
     let moved = outbound_watermark(&near) - watermark;
     assert_eq!(report["paid"], moved as u64, "{report}");
+    // The cost sentence is there when the packet cost something, and only then.
+    assert_eq!(message.contains("It cost"), moved > 0, "{message}");
     assert_eq!(remaining - remaining_today(&near), moved, "{report}");
 
     let text = near.machine.toon_with(
@@ -763,4 +765,9 @@ fn a_publish_the_connector_does_not_answer_reports_its_cost_and_its_event() {
     );
     assert_eq!(text.exit_code, 1, "{}", text.stderr);
     assert!(text.stderr.contains("has expired"), "{}", text.stderr);
+    assert!(
+        text.stderr.contains("`toon event query`"),
+        "{}",
+        text.stderr
+    );
 }

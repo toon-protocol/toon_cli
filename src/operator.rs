@@ -745,30 +745,25 @@ pub enum Answer {
 }
 
 /// How long a packet sent with [`dispatch_with_headers`] lives before a connector must
-/// reject it. The hidden `TOON_PACKET_EXPIRY_MS` shortens it for tests; it is not
-/// documented and an operator is not told of it.
-fn packet_expiry() -> Duration {
-    std::env::var("TOON_PACKET_EXPIRY_MS")
-        .ok()
-        .and_then(|millis| millis.parse().ok())
-        .map_or(Duration::from_secs(30), Duration::from_millis)
-}
+/// reject it.
+const PACKET_EXPIRY: Duration = Duration::from_secs(30);
 
 /// How long the command line waits for its connector's answer to a packet: the packet's
 /// expiry and a few seconds more, so that a packet that outlasts its expiry is answered
 /// with the connector's own reject rather than given up on. The hidden
-/// `TOON_PACKET_WAIT_MS` replaces it, for a test of a wait that runs out.
+/// `TOON_PACKET_WAIT_MS` shortens it for a test of a wait that runs out; it is not
+/// documented and an operator is not told of it.
 fn packet_wait() -> Duration {
     std::env::var("TOON_PACKET_WAIT_MS")
         .ok()
         .and_then(|millis| millis.parse().ok())
-        .map_or_else(
-            || packet_expiry() + Duration::from_secs(5),
+        .map_or(
+            PACKET_EXPIRY + Duration::from_secs(5),
             Duration::from_millis,
         )
 }
 
-fn seconds(wait: Duration) -> String {
+fn spoken(wait: Duration) -> String {
     if wait.subsec_millis() != 0 {
         return format!("{} milliseconds", wait.as_millis());
     }
@@ -776,6 +771,15 @@ fn seconds(wait: Duration) -> String {
         1 => "1 second".to_owned(),
         seconds => format!("{seconds} seconds"),
     }
+}
+
+/// What a packet nobody answered within the wait came to, for the operator.
+pub fn unanswered_message() -> String {
+    format!(
+        "The connector did not answer within {}. The packet has expired by now and will not \
+         be delivered; the command can be run again.",
+        spoken(packet_wait())
+    )
 }
 
 /// `error`, if it is for a packet that went unanswered, with the cost the caller read from
@@ -788,7 +792,7 @@ pub fn repriced(error: Error, paid: u128) -> Error {
 }
 
 /// The error for a packet that went unanswered, with what it cost and, if it carried one,
-/// the event. `event_id` is the id the text names so that the relay can be asked for it.
+/// the event, whose id the text names so that the relay can be asked for it.
 pub fn unanswered_cost(paid: u128, event: Option<Value>) -> Error {
     let sentence = if paid > 0 {
         format!(" It cost {paid} base units.")
@@ -800,11 +804,7 @@ pub fn unanswered_cost(paid: u128, event: Option<Value>) -> Error {
         .and_then(|event| event["id"].as_str())
         .map(|id| format!(" Event {id} may be asked of the relay with `toon event query`."))
         .unwrap_or_default();
-    let message = format!(
-        "The connector did not answer within {}. The packet has expired by now and will not \
-         be delivered; the command can be run again.{sentence}{id}",
-        seconds(packet_wait())
-    );
+    let message = format!("{}{sentence}{id}", unanswered_message());
     Error {
         unanswered: Some(crate::outcome::Unanswered { paid, event }),
         ..failed(ErrorCode::SendFailed, message)
@@ -879,7 +879,6 @@ pub fn dispatch(
         .proxy_for(&seal_to)
         .map_err(|error| Error {
             nothing_sent: true,
-            unanswered: None,
             ..error
         })?
         .map(|proxy| format!("socks5h://{proxy}"));
@@ -890,7 +889,6 @@ pub fn dispatch(
         let body = match &body {
             Some(path) => std::fs::read(path).map_err(|error| Error {
                 nothing_sent: true,
-                unanswered: None,
                 ..send_failed(format!("{path} could not be read: {error}."))
             })?,
             None => Vec::new(),
@@ -955,7 +953,6 @@ fn is_onion_endpoint(url: &str) -> bool {
 fn identity(egress: &Egress, seal_to: &str) -> Result<[u8; 65], Error> {
     let not_sent = |message: String| Error {
         nothing_sent: true,
-        unanswered: None,
         ..failed(ErrorCode::SendFailed, message)
     };
     let identity_url = format!("{}/identity", seal_to.trim_end_matches('/'));
@@ -963,7 +960,6 @@ fn identity(egress: &Egress, seal_to: &str) -> Result<[u8; 65], Error> {
         .client(&identity_url, PATIENCE)
         .map_err(|error| Error {
             nothing_sent: true,
-            unanswered: None,
             ..error
         })?
         .get(&identity_url)
@@ -1001,12 +997,10 @@ pub fn dispatch_with_headers(
     let send_failed = |message: String| failed(ErrorCode::SendFailed, message);
     let not_sent = |message: String| Error {
         nothing_sent: true,
-        unanswered: None,
         ..send_failed(message)
     };
     let keypair = write_keypair(&surface.write_key).map_err(|error| Error {
         nothing_sent: true,
-        unanswered: None,
         ..error
     })?;
     let client = reqwest::blocking::Client::builder()
@@ -1026,7 +1020,7 @@ pub fn dispatch_with_headers(
     let prepare = Prepare {
         amount,
         expires_at: chrono::Utc::now()
-            + chrono::Duration::from_std(packet_expiry()).unwrap_or_default(),
+            + chrono::Duration::from_std(PACKET_EXPIRY).unwrap_or_default(),
         greeting: false,
         destination: destination.to_owned(),
         data,
@@ -1296,7 +1290,9 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{before_sending, peer_add_on, PeerAdd, Surface, STALE_READ};
+    use super::{
+        before_sending, packet_wait, peer_add_on, PeerAdd, Surface, PACKET_EXPIRY, STALE_READ,
+    };
     use crate::outcome::ErrorCode;
     use std::io::{Read, Write};
 
@@ -1490,14 +1486,9 @@ mod tests {
             String::new()
         )));
     }
-}
-
-#[cfg(test)]
-mod wait_tests {
-    use super::*;
 
     #[test]
     fn the_wait_for_a_packet_outlasts_its_expiry() {
-        assert!(packet_wait() > packet_expiry());
+        assert!(packet_wait() > PACKET_EXPIRY);
     }
 }

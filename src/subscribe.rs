@@ -358,11 +358,7 @@ pub fn subscribe(
                     // The packets that were answered were paid for; this one cost what
                     // the channels moved by beyond them.
                     unanswered = true;
-                    stopped = Some((
-                        "unanswered",
-                        Value::Null,
-                        operator::unanswered_cost(0, None).message,
-                    ));
+                    stopped = Some(("unanswered", Value::Null, operator::unanswered_message()));
                     break;
                 }
                 Ok(answer) => answer,

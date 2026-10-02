@@ -70,7 +70,7 @@ A failed command with `--json` prints:
 | `unfunded` | 1 | A settlement key does not hold what is needed, so `toon up` did not start the connector (the token; on Solana also SOL), or a command that has a connector send a transaction did not (EVM gas: `toon join`, `toon peer add` with a deposit, `toon create` with a deposit, `toon channel open`, `fund`, `withdraw`, `land`); the message names each address and the amount |
 | `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
-| `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event) could not be sent: the connector's operator surface refused the write, could not be reached, or did not answer within the wait (the packet's 30-second expiry and five seconds more); the message carries the reason. A packet that went unanswered has expired and will not be delivered, so the command can be run again; the failure's JSON carries `paid` and, for the event commands, the `event` with its id (see Spending limit) |
+| `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event) could not be sent: the connector's operator surface refused the write, could not be reached, or did not answer within the wait (the packet's 30-second expiry and five seconds more); the message carries the reason. A packet that went unanswered has expired and will not be delivered, so the command can be run again; the failure's JSON carries `paid` and, for `toon event publish --relay`, the `event` with its id (see Spending limit) |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
 | `unknown_name` | 1 | `--app`, `toon create --app`, `toon destroy`, `toon logs`, `toon add` or `toon remove` was given a name that is not a TOON app or an app of this agent node, as that command needs |
 | `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
@@ -218,9 +218,11 @@ then tells the operator to state the path's cost with `--packet-amount`. The rep
 answered, less than `paid` through such a connector), `price` (the subscribe price),
 `packet_amount`, `balance`, `broadcast_price` and `filter`. A packet the relay refuses still cost
 its amount; a rejected or wrongly fulfilled packet adds to `paid` what it moved the outbound
-channels by. `outcome` says `refused`, `rejected`, `wrong_fulfilment` or, when a later packet
-could not be sent, `failed`, with the exit code 1; a packet that failed after it may have left
-stays counted against the limit at its amount. A first subscription needs
+channels by. `outcome` says `refused`, `rejected`, `wrong_fulfilment`, `unanswered` when the connector did
+not answer a later packet within the wait (it has expired by then, and adds to `paid` what it
+moved the outbound channels by) or, when a later packet could not be sent, `failed`, with the
+exit code 1; a packet that failed after it may have left stays counted against the limit at
+its amount. A first subscription needs
 `--filter`; a later one may leave it out to top up with the filter last kept, or give a new
 one to replace the old, and keeps the balance. `toon relay subscriptions` lists, per relay, the
 `balance`, `filter` and `subscriber_key`, read from the relay now (`current: true`; a relay
