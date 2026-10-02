@@ -762,11 +762,10 @@ pub fn dispatch_with_headers(
         nothing_sent: true,
         ..send_failed(message)
     };
-    let mut keypair = write_keypair(&surface.write_key);
-    if let Err(error) = &mut keypair {
-        error.nothing_sent = true;
-    }
-    let keypair = keypair?;
+    let keypair = write_keypair(&surface.write_key).map_err(|error| Error {
+        nothing_sent: true,
+        ..error
+    })?;
     let client = reqwest::blocking::Client::builder()
         .timeout(PATIENCE)
         .build()
@@ -1024,4 +1023,55 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
             true,
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::before_sending;
+
+    /// The connector's `send`, run as `dispatch` runs it, with `operator_key` and `seal_to`.
+    fn sent(operator_key: &str, seal_to: &str) -> connector_cli::CliError {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let arguments = [
+            "toon send",
+            "send",
+            "--operator",
+            "http://127.0.0.1:1",
+            "--operator-key",
+            operator_key,
+            "--to",
+            "g.toon.relay",
+            "--seal-to",
+            seal_to,
+            "--amount",
+            "1",
+        ];
+        match runtime.block_on(connector_cli::run(&arguments)) {
+            Err(error) => error,
+            Ok(_) => panic!("the send did not fail"),
+        }
+    }
+
+    /// `before_sending` reads the connector's private `SendError` from its `Debug`, so a
+    /// pin move that renames a variant fails here instead of counting these failures again.
+    #[test]
+    fn a_failure_before_the_write_is_told_from_the_connectors_error() {
+        let home = tempfile::tempdir().expect("a directory");
+        let missing = home.path().join("missing").to_string_lossy().into_owned();
+        assert!(before_sending(&sent(&missing, "http://127.0.0.1:1/ilp")));
+
+        let key = home.path().join("operator.key");
+        std::fs::write(&key, [7u8; 32]).expect("the key");
+        assert!(before_sending(&sent(
+            &key.to_string_lossy(),
+            "http://127.0.0.1:1/ilp"
+        )));
+
+        assert!(before_sending(&connector_cli::CliError::Usage(
+            String::new()
+        )));
+    }
 }

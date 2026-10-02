@@ -572,7 +572,7 @@ fn answer_all(waiting: Vec<Reload>, result: &Result<(), Unreloaded>) {
             Ok(()) => Ok(()),
             Err(unreloaded) => Err(Unreloaded {
                 error: Error {
-                    nothing_sent: false,
+                    nothing_sent: unreloaded.error.nothing_sent,
                     code: unreloaded.error.code,
                     message: unreloaded.error.message.clone(),
                 },

@@ -529,7 +529,7 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
     }
     let Some(kept) = load(home)?.into_iter().find(|kept| kept.relay == relay) else {
         return Err(Error {
-        nothing_sent: false,
+            nothing_sent: false,
             code: ErrorCode::NotSubscribed,
             message: format!(
                 "This agent node holds no subscription at {relay}: `toon relay subscribe` opens one."

@@ -248,8 +248,8 @@ counted either: the operator key could not be read, the identity of the connecto
 could not be fetched or has no usable public key, the packet could not be sealed, or the
 connector's `send` refused its arguments. These still fail with `send_failed`. Any other
 failure may have paid, and stays counted, including a refusal from the operator surface and
-an answer that was not understood. `toon limit show` prints the limits and what is left today. `toon limit set`
-changes them and reads the wallet passphrase, so an agent without it cannot raise them: the
-limits are signed with a key the wallet derives, and an unsigned or edited `limits.json`
-stops every payment. When `limits.json` is missing or was edited, `toon limit set` needs
-both `--max-per-command` and `--max-per-day`.
+an answer that was not understood. `toon limit show` prints the limits and what is left
+today. `toon limit set` changes them and reads the wallet passphrase, so an agent without it
+cannot raise them: the limits are signed with a key the wallet derives, and an unsigned or
+edited `limits.json` stops every payment. When `limits.json` is missing or was edited,
+`toon limit set` needs both `--max-per-command` and `--max-per-day`.

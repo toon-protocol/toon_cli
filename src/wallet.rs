@@ -596,7 +596,7 @@ pub fn check_reach(reach: &Reach, accept_anyone_terms: bool, listen: &str) -> Re
         .is_ok_and(|listen| !listen.ip().is_loopback())
     {
         return Err(Error {
-        nothing_sent: false,
+            nothing_sent: false,
             code: ErrorCode::Usage,
             message: format!(
                 "A hidden service listens on loopback only, and {listen} is not: its onion endpoint \
