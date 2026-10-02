@@ -188,12 +188,16 @@ reads the relay's NIP-11 information document (`GET` of the relay's URL as `http
 `Accept: application/nostr+json`) for its `toon` object: `ilp_address`, `connector_url`,
 `connector_seal_key` and `price`. It seals the packet to `connector_seal_key` and makes no
 request to `connector_url`, which only appears in the `peering_needed` message. It shows the
-price and publishes only with `--yes`, under the spending limit, paying from this agent
+amount and publishes only with `--yes`, under the spending limit, paying from this agent
 node's own connector over a peering. If no peering of the agent node reaches
 the relay's `ilp_address` it fails with `peering_needed` and creates nothing. The report has
-the same outcomes as a publish to the own relay, plus `relay` and `paid`: the price, or `0`
-when the packet was rejected and nothing moved. `--amount` is refused with `--relay`, and
-`--yes` without it.
+the same outcomes as a publish to the own relay, plus `relay` and `paid`: the amount sent, or
+`0` when the packet was rejected. The amount is the relay's price unless `--amount <n>` states
+another: `toon` sends exactly `n`, never probes for the path's cost, and refuses an `--amount`
+below the relay's price with `usage` before anything is signed. A connector between this agent
+node and the relay may charge to forward the write and rejects any other amount than its
+route's price (`F03`); the text report then tells the operator to state the path's cost with
+`--amount`. `--yes` is refused without `--relay`.
 
 `toon relay subscribe <relay-url> --filter <filter> --amount <amount>` subscribes to another
 relay's paid live feed (`nips/paid-subscription.md`). It reads `toon_subscription` from the

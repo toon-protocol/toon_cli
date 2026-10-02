@@ -45,7 +45,7 @@ These commands spend, and each one needs an explicit amount and `--yes`:
 - `toon peer add <address> --deposit <n> --yes`
 - `toon join <network> --deposit <n> --yes`
 - `toon create <name> --deposit <n> --yes` (the two channels count twice against the limit)
-- `toon event publish --relay <ws-url> --yes` (pays the price the relay states)
+- `toon event publish --relay <ws-url> --yes` (pays the price the relay states; add `--amount <n>` when a connector in between charges to forward)
 
 Without `--yes` nothing moves and the command fails with `not_confirmed`. Never add `--yes` to
 see what a command would do: run it without, or read the price first.
@@ -169,7 +169,9 @@ the payload to the identity of a connector that is not yours.
 `toon event publish --kind <n> --content <text>` signs an event with the agent identity and
 writes it to your own relay; `toon event query <ws-url> --filter <json>` reads a relay. Publishing
 to someone else's relay is `toon event publish --relay <ws-url> --yes` and needs a peering that
-reaches that relay's connector, or it fails with `peering_needed` and pays nothing.
+reaches that relay's connector, or it fails with `peering_needed` and pays nothing. It sends
+the relay's price; if a connector in between charges to forward and rejects the write with
+`F03`, state the path's whole cost with `--amount <n>` (below the relay's price is refused).
 
 ## Backup and restore
 
