@@ -109,7 +109,7 @@ with `unfunded` without it, before anything is charged or sent.
 `toon add <app> --to <toon-app> --image <image>` puts a new app behind the connector of a TOON
 app that exists already; `--url <url>` names an app you already serve and runs nothing. `--price`
 is what a client pays the connector for a packet to the app, `--address` the ILP prefix
-(`g.toon.<app>` by default). It restarts that connector, so it needs `--yes`. `toon remove <app>`
+(`g.toon.<segment>.<app>` by default). It restarts that connector, so it needs `--yes`. `toon remove <app>`
 takes an app and its route away. An agent node has one relay, the one `toon init` made: `add`
 refuses the relay's image (any tag or digest) with `one_relay`.
 

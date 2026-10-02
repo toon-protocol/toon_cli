@@ -358,7 +358,12 @@ fn write_toon_app(
         listen: node::concrete(&options.listen)?,
         ..options.clone()
     };
-    let state = node::State::first(&options);
+    let segment = derive::address_segment(&*seed, 0).map_err(|source| Error {
+        nothing_sent: false,
+        code: ErrorCode::KeystoreCorrupt,
+        message: source.0,
+    })?;
+    let state = node::State::first(&options, &segment);
     let operator = derive::operator_write_secret(&*seed).map_err(|source| Error {
         nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
