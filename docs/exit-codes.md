@@ -204,10 +204,19 @@ relay's paid live feed (`nips/paid-subscription.md`). It reads `toon_subscriptio
 relay's information document and shows the subscribe price, the broadcast price and the
 events the amount buys. It pays only with `--yes`, under the spending limit, over a peering
 (`peering_needed` names the deposit it would take and creates nothing). The amount is paid as
-whole packets at the subscribe price, each authorized by NIP-98 with the subscriber key
-(`m/10473'/6'/0'`, not the agent identity), and the report gives `packets`, `paid`,
-`credited`, `balance`, `broadcast_price` and `filter`; a packet the relay refuses still cost
-its price, and `outcome` says `refused`, `rejected`, `wrong_fulfilment` or, when a later
+whole packets of the packet amount, each authorized by NIP-98 with the subscriber key
+(`m/10473'/6'/0'`, not the agent identity). A packet is sent for the subscribe price unless
+`--packet-amount <n>` states another: every packet is sent for exactly `n`, `toon` never
+probes for the path's cost, and a `--packet-amount` below the subscribe price is `usage`. The
+number of packets is `--amount` divided by the packet amount, rounded down, and an `--amount`
+that buys none is `usage`. The spending limit is checked against packets times packet amount,
+and the day's count rises by `paid`. A connector between this agent node and the relay may
+charge to forward and rejects any other amount than its route's price (`F03`); the text report
+then tells the operator to state the path's cost with `--packet-amount`. The report gives
+`packets`, `paid` (the packet amount times the packets fulfilled), `credited` (what the relay
+answered, less than `paid` through such a connector), `price` (the subscribe price),
+`packet_amount`, `balance`, `broadcast_price` and `filter`; a packet the relay refuses still cost
+its amount, and `outcome` says `refused`, `rejected`, `wrong_fulfilment` or, when a later
 packet could not be sent, `failed`, with the exit code 1. A first subscription needs
 `--filter`; a later one may leave it out to top up with the filter last kept, or give a new
 one to replace the old, and keeps the balance. `toon relay subscriptions` lists, per relay, the

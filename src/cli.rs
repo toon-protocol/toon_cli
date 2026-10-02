@@ -519,10 +519,15 @@ pub enum RelayCommand {
         /// a later one replaces the old filter
         #[arg(long)]
         filter: Option<String>,
-        /// What to pay, in the token's base units: paid as whole packets at the relay's
-        /// subscribe price
+        /// The most to pay, in the token's base units: paid as whole packets of the packet
+        /// amount, so it buys its quotient rounded down
         #[arg(long)]
         amount: u64,
+        /// What each packet is sent for, when a connector in between charges to forward it
+        /// and rejects any other amount (`F03`); the relay's subscribe price when absent, and
+        /// not below it. A packet credits the subscribe price, not this
+        #[arg(long)]
+        packet_amount: Option<u64>,
         /// Confirm that this command moves money: without it nothing is paid
         #[arg(long)]
         yes: bool,

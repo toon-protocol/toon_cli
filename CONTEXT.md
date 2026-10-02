@@ -69,6 +69,13 @@ _Avoid_: Mirror, sync, follow
 Pay a relay's subscribe route. The first payment opens a subscription; every later one tops it up.
 _Avoid_: Top up (as a separate action)
 
+**Packet amount**:
+What one packet of a subscribe is sent for. It is the subscribe price unless the operator states more, because a connector between the subscriber and the relay may charge to forward. A packet credits the subscribe price, whatever it was sent for.
+_Avoid_: Fee
+
+**Subscribe price**:
+What a relay's subscribe route charges for one packet, and so what the packet credits. Set by that relay's operator.
+
 **Broadcast price**:
 What a relay debits from a subscription for each event it broadcasts. Set by that relay's operator.
 _Avoid_: Read price, subscription fee

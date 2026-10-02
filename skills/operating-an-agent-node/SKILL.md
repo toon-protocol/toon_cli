@@ -172,6 +172,9 @@ to someone else's relay is `toon event publish --relay <ws-url> --yes` and needs
 reaches that relay's connector, or it fails with `peering_needed` and pays nothing. It sends
 the relay's price; if a connector in between charges to forward and rejects the write with
 `F03`, state the path's whole cost with `--amount <n>` (below the relay's price is refused).
+`toon relay subscribe` is the same: if a connector in between rejects its packets with `F03`,
+state what one packet costs along the path with `--packet-amount <n>`; `--amount` stays the total,
+paid as whole packets of that amount, and each packet still credits only the subscribe price.
 
 ## Backup and restore
 

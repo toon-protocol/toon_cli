@@ -310,6 +310,21 @@ pub fn spend<T>(
     yes: bool,
     act: impl FnOnce() -> Spent<T>,
 ) -> Result<T, Error> {
+    spend_counting(home, amount, yes, || {
+        let (report, moved) = act()?;
+        Ok((report, if moved { amount } else { 0 }))
+    })
+}
+
+/// Like `spend`, for a command that pays in several parts: `amount` is what it would pay
+/// at most, checked against the limits first, and `act` says how much it did pay. The
+/// day's count ends at that, and a command that paid nothing counts nothing.
+pub fn spend_counting<T>(
+    home: &Path,
+    amount: u128,
+    yes: bool,
+    act: impl FnOnce() -> Result<(T, u128), Error>,
+) -> Result<T, Error> {
     if !yes {
         return Err(Error {
             nothing_sent: false,
@@ -331,15 +346,16 @@ pub fn spend<T>(
         write_ledger(home, charged)
     })?;
     let outcome = act();
-    let moved_nothing = match &outcome {
-        Ok((_, moved)) => !moved,
-        Err(error) => failed_before_paying(error),
+    let untouched = match &outcome {
+        Ok((_, paid)) => amount.saturating_sub(*paid),
+        Err(error) if failed_before_paying(error) => amount,
+        Err(_) => 0,
     };
-    if moved_nothing {
-        // The amount is free again. A failure to take it back leaves it counted, which
-        // errs on the side of the limit.
+    if untouched > 0 {
+        // What was not paid is free again. A failure to take it back leaves it counted,
+        // which errs on the side of the limit.
         let _ = locked(home, || {
-            write_ledger(home, read_ledger(home)?.refund(day, amount))
+            write_ledger(home, read_ledger(home)?.refund(day, untouched))
         });
     }
     outcome.map(|(report, _)| report)
