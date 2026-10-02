@@ -14,21 +14,21 @@ step below whether it did what the step says. Open a ticket for every step that 
 
 ## Steps known to fail
 
-The runs of 2026-10-01 and 2026-10-02 are recorded on #2. Take a row out when its ticket
-closes, and the flags or the note beside it out of the step.
+Take a row out when its ticket closes, and the flags or the note beside it out of the
+step.
 
 | Step | What happens today | Ticket |
 | --- | --- | --- |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
-| 2, publish to `relay2` through the hub | The write pays the relay's price of 1, the hub's is 101, and the hub rejects it with `F03` | #92 |
-| 2, any rejected packet | The channel's watermark moves by the packet's amount, and `toon` reports nothing paid | #93 |
 | 2, hold a subscription | No relay serves the subscribe route | relay #215 |
+| 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
+| 3, `join` | The deposit lands and the `join` fails with `peer_failed`, "confirmed, and the chain shows no balance there"; the same command again finds the channel, and is counted against the day's spending a second time | #102 |
 
 ## What it needs
 
 - Docker, `jq`, `curl`, and Foundry's `cast`.
 - The `infra` checkout beside this one, set up once with `make setup` in `infra/sandbox`.
-- For the last step of part 3, about 0.0001 Base Sepolia ETH from a public faucet.
+- For the last step of part 3, about 0.001 Base Sepolia ETH from a public faucet.
 
 The run never touches your own agent node: every command below runs with `HOME` set to a
 directory made for the run.
@@ -166,15 +166,21 @@ $E/toon event publish --kind 1 --content "to the hub's relay" \
   --relay ws://$HUB:7100 --yes --json > $E/hub-event.json
 $E/toon event query ws://$HUB:7100 \
   --filter "{\"ids\":[\"$(jq -r .event.id $E/hub-event.json)\"]}" --json
-$E/toon event publish --kind 1 --content "to relay2" --relay ws://localhost:7110 --yes --json
+$E/toon event publish --kind 1 --content "to relay2" \
+  --relay ws://localhost:7110 --amount 101 --yes --json > $E/relay2-event.json
+$E/toon event query ws://localhost:7110 \
+  --filter "{\"ids\":[\"$(jq -r .event.id $E/relay2-event.json)\"]}" --json
 $E/toon channel list --json
 ```
 
 **Expect** the first `published` with `paid: 1` and the query returning the event: the
 command line read the hub's information document and the event through the agent node's
 daemon, and sealed the write to the key the document pins. The watermark is then 103.
-The second is expected to be `published` too; today the hub rejects it with `F03` (#92),
-and the watermark moves to 104 all the same (#93).
+The second is `published` with `paid: 101` and read back from `relay2`: its price is 1,
+the hub keeps 100 to forward the write, and `--amount` states the two together. The
+watermark is then 204. Without `--amount` the write is sent for the relay's price and the
+hub rejects it with `F03`; the report says `paid: 1`, and the watermark and the day's
+spending have each moved by that 1.
 
 ### Create a second TOON app
 
@@ -214,9 +220,9 @@ $E/toon add archive --to second --image $RELAY_IMAGE --yes --json
 
 **Expect** `restarted: true` in `add.json`, the packet `fulfilled` over the route `create`
 made (a first packet sent while the restarted connector is still coming back is rejected
-with `T01`, which is expected: send it again, and see #93 for what the rejected one
-cost), and status showing `second` with two apps, both running. The
-last command is refused with `one_relay`: an agent node runs one relay.
+with `T01`, which is expected: its report says `paid: 2`, what the rejected packet cost,
+so send it again), and status showing `second` with two apps, both running. The last
+command is refused with `one_relay`: an agent node runs one relay.
 
 ### Another agent node publishes to this one's relay
 
@@ -256,21 +262,26 @@ $E/toon channel list --json
 **Expect** `published` with `paid: 1`, the event read back from the first agent node's
 relay at its onion endpoint, and the first agent node's inbound channel from the other
 one at watermark 1. Everything between the two crosses the overlay, from one hidden
-service to another. Before the `route add`, the publish fails with `peering_needed`; the
-`peer add` its message names lacks `--deposit` and `--yes` (#94).
+service to another. Before the `route add`, the publish fails with `peering_needed`, and
+its message names the `peer add`, with `--deposit <amount> --yes`, and the `route add` to
+run.
 
 ### Hold a subscription
 
 ```sh
 $E/toon relay subscribe ws://$HUB:7100 --filter '{"kinds":[1]}' --amount 10 --yes --json
-$E/toon relay subscribe ws://localhost:7110 --filter '{"kinds":[1]}' --amount 10 --yes --json
+$E/toon relay subscribe ws://localhost:7110 --filter '{"kinds":[1]}' \
+  --amount 1010 --packet-amount 101 --yes --json
 $E/toon relay subscriptions --json
 ```
 
 **Expect** a balance at each relay, the hub's and `relay2`'s, and their events arriving
-in the agent node's own relay. While no relay sells a feed each command fails with
-`relay_not_payable`, having read the relay's information document, the hub's through the
-overlay, and the step is recorded as not run.
+in the agent node's own relay. A packet to `relay2` is forwarded by the hub, so
+`--packet-amount` is the hub's price for that route, 101, as `--amount` was for the
+write: the hub keeps 100 of each packet, and ten packets credit ten times `relay2`'s
+subscribe price. While no relay sells a feed each command fails with `relay_not_payable`,
+having read the relay's information document, the hub's through the overlay, and the step
+is recorded as not run.
 
 ### Stop
 
@@ -334,16 +345,44 @@ the chain through the overlay. The query returns events from the devnet's relay,
 over `wss://` through the overlay. The `join` is refused with `unfunded`, naming the
 settlement address and the ETH it needs for gas, and the day's spending is unchanged.
 
-The devnet faucet sends no ETH, and a connector pays the gas of its own deposit. Send about 0.0001 Base
-Sepolia ETH to that address from a public faucet, and join:
+The devnet faucet sends no ETH, and a connector pays the gas of its own deposit. Send
+about 0.001 Base Sepolia ETH to that address from a public faucet (the 0.0001 the message
+names is too little, #101), and join:
 
 ```sh
 $E/toon join devnet --deposit 1000000 --yes --json
 $E/toon channel list --json
+$E/toon peer list --json
+$E/toon limit show --json
+```
+
+**Expect** a peering `devnet`, a route for `g.toon` over it, and an open channel of
+1000000, with the day's spending down by 1000000. Two failures are known, both
+`peer_failed`, and after either the same `join` is run again:
+
+- "out of gas": the address holds too little ETH and nothing was sent, so send it more
+  first (#101).
+- "confirmed, and the chain shows no balance there": the deposit landed, and the
+  connector's next read of the chain looks to have been answered before the block was
+  seen. The second `join` reports `peering.channel.status` as `found` and deposits
+  nothing (#102).
+
+Each failed attempt, and the one that finds the channel, takes 1000000 more off the day's
+spending.
+
+Then pay the devnet's relay over the new channel:
+
+```sh
+RELAY=$(jq -r .relay_url $HOME/.toon/agent-node/state.json)
+$E/toon event publish --kind 1 --content "end-to-end run" --relay "$RELAY" --yes --json \
+  > $E/devnet-event.json
+$E/toon event query "$RELAY" \
+  --filter "{\"ids\":[\"$(jq -r .event.id $E/devnet-event.json)\"]}" --json
 $E/toon down --json
 ```
 
-**Expect** a peering `devnet` with an open channel of 1000000.
+**Expect** `published` with `paid: 1` and the event read back from the devnet's relay: a
+hidden agent node paid a network on clearnet.
 
 ## Afterwards
 
