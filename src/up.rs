@@ -25,6 +25,7 @@ use sha2::Digest;
 
 use crate::connector::{self, Startup};
 use crate::control;
+use crate::egress::Egress;
 use crate::funding;
 use crate::node::{self, App, AppFiles, ConnectorFiles, Reach, Source, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
@@ -222,7 +223,10 @@ pub fn start(home: &Path) -> Result<Supervisor, Error> {
     // A settlement key that cannot be read is.
     let mut lacking = Vec::new();
     for app in &state.toon_apps {
-        if let Ok(short) = funding::shortfalls(funding::start_needs(home, app)?) {
+        if let Ok(short) = funding::shortfalls(
+            &Egress::of_state(home, &state),
+            funding::start_needs(home, app)?,
+        ) {
             lacking.extend(short);
         }
     }

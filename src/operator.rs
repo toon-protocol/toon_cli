@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 
 use crate::cli::{ChannelCommand, JoinArgs, PeerCommand, RouteCommand};
 use crate::control;
+use crate::egress::Egress;
 use crate::node::{self, ConnectorFiles, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::spending;
@@ -718,6 +719,30 @@ pub fn dispatch(
     let seal_to = seal_to.map_or_else(|| format!("{}/ilp", surface.url), str::to_owned);
     let write_key = surface.write_key.to_string_lossy();
     let body = body.map(|path| path.to_string_lossy().into_owned());
+    let egress = Egress::of(home)?;
+    // An overlay that cannot be had is found out before anything is sent.
+    let socks_proxy = egress
+        .proxy_for(&seal_to)
+        .map_err(|error| Error {
+            nothing_sent: true,
+            ..error
+        })?
+        .map(|proxy| format!("socks5h://{proxy}"));
+    // The connector's `send` takes its proxy only to an onion endpoint and dials any other
+    // host directly, so a request that must go through the overlay to another host is
+    // formed here, with the same envelope the connector's `send` makes.
+    if socks_proxy.is_some() && !is_onion_endpoint(&seal_to) {
+        let body = match &body {
+            Some(path) => std::fs::read(path).map_err(|error| Error {
+                nothing_sent: true,
+                ..send_failed(format!("{path} could not be read: {error}."))
+            })?,
+            None => Vec::new(),
+        };
+        let headers = vec![("content-type".to_owned(), "application/json".to_owned())];
+        let public = identity(&egress, &seal_to)?;
+        return dispatch_with_headers(home, destination, amount, &public, headers, body);
+    }
     let mut arguments = vec![
         "toon send",
         "send",
@@ -734,6 +759,9 @@ pub fn dispatch(
     ];
     if let Some(body) = &body {
         arguments.extend(["--body", body]);
+    }
+    if let Some(proxy) = &socks_proxy {
+        arguments.extend(["--socks-proxy", proxy]);
     }
     let summary = runtime
         .block_on(connector_cli::run(&arguments))
@@ -753,6 +781,46 @@ pub fn dispatch(
             "The connector's answer was not understood: {summary}"
         ))
     })
+}
+
+/// Whether `url` names an onion endpoint, which the connector's `send` dials through its
+/// `--socks-proxy`.
+fn is_onion_endpoint(url: &str) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|url| {
+        url.host_str().is_some_and(|host| {
+            let host = host.to_ascii_lowercase();
+            host.ends_with(&format!(".{}", crate::overlay::TLD)) || host.ends_with(".onion")
+        })
+    })
+}
+
+/// The sealing key the connector at `seal_to` gives as its identity, asked for the way
+/// `egress` says a request leaves this machine. Nothing has been sent when it fails.
+fn identity(egress: &Egress, seal_to: &str) -> Result<[u8; 65], Error> {
+    let not_sent = |message: String| Error {
+        nothing_sent: true,
+        ..failed(ErrorCode::SendFailed, message)
+    };
+    let identity_url = format!("{}/identity", seal_to.trim_end_matches('/'));
+    let identity: Value = egress
+        .client(&identity_url, PATIENCE)
+        .map_err(|error| Error {
+            nothing_sent: true,
+            ..error
+        })?
+        .get(&identity_url)
+        .send()
+        .and_then(|response| response.json())
+        .map_err(|error| {
+            not_sent(format!(
+                "{identity_url} did not give its identity: {error}."
+            ))
+        })?;
+    identity["publicKey"]
+        .as_str()
+        .and_then(|key| hex::decode(key.trim_start_matches("0x")).ok())
+        .and_then(|key| key.try_into().ok())
+        .ok_or_else(|| not_sent(format!("{identity_url} has no 65-byte `publicKey`.")))
 }
 
 /// Send one packet like [`dispatch`] does, but sealed to the key `public` itself, which

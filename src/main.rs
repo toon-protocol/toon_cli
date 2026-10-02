@@ -11,6 +11,7 @@ mod cli;
 mod connector;
 mod control;
 mod derive;
+mod egress;
 mod event;
 mod feed;
 mod funding;
@@ -48,6 +49,12 @@ use outcome::{Error, ErrorCode, Exit, Report};
 use up::Stopped;
 
 fn main() -> ExitCode {
+    let code = run();
+    egress::release();
+    code
+}
+
+fn run() -> ExitCode {
     let json = wants_json(env::args_os().skip(1));
     let command = match Cli::from_command_line() {
         Ok(cli) => {

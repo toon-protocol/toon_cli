@@ -12,6 +12,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::apps::{self, Origin};
+use crate::egress::Egress;
 use crate::node::{self, App, Reach, Source, State, ToonApp};
 use crate::operator::{self, PeerAdd, Surface};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
@@ -293,7 +294,7 @@ fn made(
         funding::start_needs(home, new)
     }
     .map_err(undo)?;
-    if let Ok(lacking) = funding::shortfalls(wanted) {
+    if let Ok(lacking) = funding::shortfalls(&Egress::of_state(home, &changed), wanted) {
         if !lacking.is_empty() {
             return Err(undo(funding::unfunded(
                 state.network,

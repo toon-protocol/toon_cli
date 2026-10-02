@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use crate::cli::WalletCommand;
 use crate::derive::{self, Addresses};
+use crate::egress::Egress;
 use crate::funding;
 use crate::keystore;
 use crate::node::{self, Reach};
@@ -646,21 +647,17 @@ const CHAIN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 const BALANCE_OF: &str = "70a08231";
 
 /// One JSON-RPC call to `rpc_url`, whose `result` is a hex quantity.
-fn quantity(rpc_url: &str, method: &str, params: Value) -> Result<u128, Error> {
+fn quantity(egress: &Egress, rpc_url: &str, method: &str, params: Value) -> Result<u128, Error> {
     let chain_failed = |message: String| Error {
         nothing_sent: false,
         code: ErrorCode::ChainFailed,
         message: format!("{method} to {rpc_url}: {message}."),
     };
-    let reply: Value = reqwest::blocking::Client::builder()
-        .timeout(CHAIN_PATIENCE)
-        .build()
-        .and_then(|client| {
-            client
-                .post(rpc_url)
-                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
-                .send()
-        })
+    let reply: Value = egress
+        .client(rpc_url, CHAIN_PATIENCE)?
+        .post(rpc_url)
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
+        .send()
         .and_then(|response| response.error_for_status())
         .and_then(|response| response.json())
         .map_err(|error| chain_failed(error.to_string()))?;
@@ -691,6 +688,7 @@ pub fn balances(home: &Path) -> Result<Report, Error> {
     let passphrase = keystore::passphrase()?;
     let mnemonic = keystore::open(home, &passphrase)?;
     let addresses = addresses(&mnemonic, connectors(home)?)?;
+    let egress = Egress::of_state(home, &state);
     let mut entries = Vec::new();
     let mut lines = Vec::new();
     for app in &state.toon_apps {
@@ -705,8 +703,14 @@ pub fn balances(home: &Path) -> Result<Report, Error> {
             })?;
         let evm = match &app.evm {
             Some(evm) => {
-                let native = quantity(&evm.rpc_url, "eth_getBalance", json!([keys.evm, "latest"]))?;
+                let native = quantity(
+                    &egress,
+                    &evm.rpc_url,
+                    "eth_getBalance",
+                    json!([keys.evm, "latest"]),
+                )?;
                 let token = quantity(
+                    &egress,
                     &evm.rpc_url,
                     "eth_call",
                     json!([{

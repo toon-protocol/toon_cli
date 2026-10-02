@@ -82,7 +82,7 @@ A failed command with `--json` prints:
 | `query_failed` | 1 | `toon event query`, or `toon nip publish` asking for a draft's current revision, could not read events from the relay: it did not answer, is not a websocket relay this build dials, or closed the subscription with a reason the message carries |
 | `draft_refused` | 1 | `toon nip new` or `toon nip publish` would not write or publish a draft: the file exists already, does not name a draft or begin with its title, is not UTF-8, or the relay holds the identifier under another title and `--title-changed` was not given; the message says which |
 | `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
-| `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap (its `anon` release could not be downloaded or did not match its pinned checksum, its terms were not agreed to, or the daemon did not come up), so a hidden service was not created or started; nothing falls back to clearnet |
+| `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap (its `anon` release could not be downloaded or did not match its pinned checksum, its terms were not agreed to, or the daemon did not come up), so a hidden service was not created or started, or a command on a hidden agent node that makes a request of its own (a faucet, a chain, a relay, a connector) had no overlay to send it through; nothing falls back to clearnet |
 | `join_refused` | 1 | `toon join` named a network other than the one this agent node was initialised for, the agent node has already joined one, or it records no connector for the network (`mainnet` has none unless `init` was given `--connector-url`); nothing was spent |
 | `relay_not_payable` | 1 | `toon event publish --relay` or `toon relay subscribe` could not read the relay's information document, or it names no write edge (`toon`: `ilp_address`, `connector_url`, `connector_seal_key`, `price`; the key is 65 bytes of hex beginning `04`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
 | `peering_needed` | 1 | `toon event publish --relay` or `toon relay subscribe` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. Run `toon peer add` and `toon route add` first |
@@ -136,6 +136,16 @@ the wallet derives, so it is the same after a restart, and a wallet backup resto
 operator agrees to the Anyone Protocol's terms; without it `init` fails with `usage` and
 creates nothing. If the overlay cannot bootstrap, `init` fails with `overlay_unavailable`,
 creates nothing and leaves nothing listening: it never falls back to clearnet.
+
+On a hidden agent node, one with at least one hidden TOON app, the requests a command makes
+itself also go through the overlay's SOCKS5 proxy, naming the host: the faucet and chain RPC of
+`wallet fund` and `wallet balances`, a relay's information document and balance read
+(`event publish --relay`, `relay subscribe`, `relay subscriptions`), a relay's websocket
+(`event query`, `event follow`), and the `/identity` and packet of `send --seal-to`. A plain
+`http://` or `ws://` endpoint on this machine (`localhost`, `127.0.0.1`, `[::1]`) is dialled
+directly, as the connector's own RPC is. If the overlay cannot be had, each of these commands
+fails with `overlay_unavailable` and dials nothing directly; a relay the proxy refuses fails as
+that command does for a relay that did not answer. Elsewhere, requests are dialled directly.
 
 `toon init --clearnet <hostname>` asks for clearnet instead. The connector binds the
 `--listen` address (`127.0.0.1:0` unless given), and the certificate and the reverse proxy

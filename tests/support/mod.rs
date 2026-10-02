@@ -259,9 +259,15 @@ impl Machine {
     /// Start `toon` with `args` and leave it running, for a command that stays in the
     /// foreground. It is killed when the returned value is dropped.
     pub fn start(&self, args: &[&str]) -> Foreground {
+        self.start_with(args, |_| {})
+    }
+
+    /// Like `start`, after `configure` has adjusted the command.
+    pub fn start_with(&self, args: &[&str], configure: impl FnOnce(&mut Command)) -> Foreground {
         let stderr = self.home().join("toon.stderr");
-        let mut child = self
-            .command(args)
+        let mut command = self.command(args);
+        configure(&mut command);
+        let mut child = command
             .stdout(Stdio::piped())
             .stderr(File::create(&stderr).expect("create a file for stderr"))
             .spawn()
