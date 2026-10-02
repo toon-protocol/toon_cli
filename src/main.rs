@@ -105,8 +105,9 @@ fn run() -> ExitCode {
                 spending::spend_packets(&home, amount, args.yes, |packets| {
                     let mut report =
                         operator::send(&home, &args.address, args.amount, args.seal_to.as_deref())?;
-                    // A packet that was rejected moved what its channels moved by, which
-                    // is nothing when the agent node's own connector refused it.
+                    // A packet that was rejected, or fulfilled wrongly, moved what its
+                    // channels moved by, which is nothing when the agent node's own
+                    // connector refused it.
                     let paid = if report.exit == Exit::Success {
                         amount
                     } else {

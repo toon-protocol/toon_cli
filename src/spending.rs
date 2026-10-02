@@ -352,15 +352,6 @@ pub fn spend<T, M: Into<Moved> + Copy>(
     yes: bool,
     act: impl FnOnce() -> Spent<T, M>,
 ) -> Result<T, Error> {
-    spend_with(home, amount, yes, act)
-}
-
-fn spend_with<T, M: Into<Moved> + Copy>(
-    home: &Path,
-    amount: u128,
-    yes: bool,
-    act: impl FnOnce() -> Spent<T, M>,
-) -> Result<T, Error> {
     if !yes {
         return Err(Error {
             nothing_sent: false,
@@ -406,11 +397,14 @@ pub struct Packets<'a> {
 
 impl Packets<'_> {
     /// What the packets sent since moved the watermarks by, at most `cap`; `cap` when the
-    /// watermarks cannot be read, which errs on the side of the limit.
+    /// watermarks cannot be read or went down (a channel closed), which errs on the side of
+    /// the limit.
     pub fn moved(&self, cap: u128) -> u128 {
-        let after = operator::outbound_watermark(self.home).ok();
+        let after = operator::outbound_watermark(self.home).ok().flatten();
         match (self.before, after) {
-            (Some(before), Some(after)) => after.saturating_sub(before).min(cap),
+            (Some(before), Some(after)) => after
+                .checked_sub(before)
+                .map_or(cap, |moved| moved.min(cap)),
             _ => cap,
         }
     }
@@ -425,11 +419,11 @@ pub fn spend_packets<T, M: Into<Moved> + Copy>(
     yes: bool,
     act: impl FnOnce(&Packets) -> Spent<T, M>,
 ) -> Result<T, Error> {
-    spend_with(home, amount, yes, || {
+    spend(home, amount, yes, || {
         locked_by(&home.join("packets.lock"), || {
             act(&Packets {
                 home,
-                before: operator::outbound_watermark(home).ok(),
+                before: operator::outbound_watermark(home).ok().flatten(),
             })
         })
     })
@@ -440,7 +434,7 @@ pub fn spend_packets<T, M: Into<Moved> + Copy>(
 /// other side refused the peering before a channel was opened, or it failed before it sent
 /// a packet (`nothing_sent`). Any other failure, a timeout or an answer not understood, may
 /// come after the money moved, so it stays counted.
-fn failed_before_paying(error: &Error) -> bool {
+pub fn failed_before_paying(error: &Error) -> bool {
     error.nothing_sent
         || matches!(
             error.code,

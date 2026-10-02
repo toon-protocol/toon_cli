@@ -55,11 +55,12 @@ over either is refused with `spending_limit` before anything is sent, and the me
 which limit and how much of the day remains. `toon limit show` prints the limits and what is
 left today. `toon limit set --max-per-command <n> --max-per-day <n>` changes them and needs the
 passphrase. Do not raise the limit to get past a refusal unless the operator who gave you this
-task said to; report the refusal instead. A packet that was rejected costs what your connector's outbound
-channels moved by across it: possibly its whole amount, shown as `paid` in the report, counted
-against the limit, and visible as the outbound `watermark` in `toon channel list`. A packet your
-own connector rejected before signing costs nothing. A payment whose packet was never sent is not counted either (the key could not be read, the identity to seal
-to could not be fetched, the packet could not be sealed, or the connector's `send` refused its
+task said to; report the refusal instead. A packet that was rejected costs what your
+connector's outbound channels moved by across it: possibly its whole amount, shown as `paid` in
+the report, counted against the limit, and visible as the outbound `watermark` in
+`toon channel list`. A packet your own connector rejected before signing costs nothing. A
+payment whose packet was never sent is not counted either (the key could not be read, the
+identity to seal to could not be fetched, the packet could not be sealed, or the connector's `send` refused its
 arguments); any other failure stays counted, because the packet may have left.
 
 `toon channel open` and `toon channel fund` also put collateral in a channel; they take no

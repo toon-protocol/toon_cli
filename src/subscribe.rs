@@ -300,7 +300,10 @@ pub fn subscribe(
 
     spending::spend_packets(home, paid.into(), yes, |meter| {
         let mut paid_so_far = 0;
-        let mut rejected = false;
+        // Whether the last packet sent was rejected or wrongly fulfilled, which the
+        // watermarks tell the cost of, or failed in a way that may have paid.
+        let mut metered = false;
+        let mut may_have_paid = false;
         let mut credited = 0;
         let mut now: Option<Kept> = None;
         let mut stopped: Option<(&str, Value, String)> = None;
@@ -323,6 +326,7 @@ pub fn subscribe(
                 Ok(answer) => answer,
                 Err(error) if paid_so_far == 0 => return Err(error),
                 Err(error) => {
+                    may_have_paid = !spending::failed_before_paying(&error);
                     stopped = Some(("failed", json!({ "message": error.message }), error.message));
                     break;
                 }
@@ -354,7 +358,7 @@ pub fn subscribe(
                     }
                 }
                 Answer::Rejected { code, message } => {
-                    rejected = true;
+                    metered = true;
                     let text = format!("A subscribe packet was rejected with {code}. {message}");
                     stopped = Some((
                         "rejected",
@@ -364,6 +368,7 @@ pub fn subscribe(
                     break;
                 }
                 Answer::WrongFulfilment => {
+                    metered = true;
                     stopped = Some((
                         "wrong_fulfilment",
                         Value::Null,
@@ -374,8 +379,8 @@ pub fn subscribe(
                 }
             }
         }
-        if rejected {
-            // The rejected packet moved what the channels moved by beyond the fulfilled
+        if metered {
+            // The last packet moved what the channels moved by beyond the fulfilled
             // packets' price, which is nothing when the agent node's own connector
             // refused it.
             let price = u128::from(terms.price);
@@ -426,7 +431,14 @@ pub fn subscribe(
             json["broadcast_price"] = json!(kept.broadcast_price);
             json["filter"] = kept.filter.clone();
         }
-        Ok((Report { exit, json, text }, u128::from(paid_so_far)))
+        // A packet that failed after it may have left stays counted at its price.
+        let counted = u128::from(paid_so_far)
+            + if may_have_paid {
+                u128::from(terms.price)
+            } else {
+                0
+            };
+        Ok((Report { exit, json, text }, counted))
     })
 }
 
