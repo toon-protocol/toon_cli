@@ -156,6 +156,11 @@ pub fn public_key(secret: &[u8; 32]) -> Result<String, Error> {
         })
 }
 
+/// The body of a write to a relay: the relay reads the event from the `event` field.
+pub fn write_body(event: &Value) -> String {
+    json!({ "event": event }).to_string()
+}
+
 /// Write a signed event to the agent node's own relay through the relay's write route.
 pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
     // The relay of the TOON app that fronts the agent node's connector. With none, the
@@ -188,7 +193,7 @@ fn write_to(
                 amount,
                 key,
                 headers,
-                event.to_string().into_bytes(),
+                write_body(&event).into_bytes(),
             )
         }
         None => {
@@ -196,7 +201,7 @@ fn write_to(
                 "event.{}.json",
                 hex::encode(keystore::random::<8>()?)
             ));
-            node::write(&body, event.to_string().as_bytes(), 0o600)?;
+            node::write(&body, write_body(&event).as_bytes(), 0o600)?;
             let answer = operator::dispatch(home, destination, amount, None, Some(&body));
             let _ = std::fs::remove_file(&body);
             answer
@@ -453,15 +458,22 @@ fn publish_to(
     }
     let secret = agent_secret(home)?;
     let event = sign(&secret, now(), kind, tags, content)?;
-    spending::spend(home, amount.into(), yes, || {
+    let sent: u128 = amount.into();
+    spending::spend_packets(home, sent, yes, |packets| {
         let mut report = write_to(home, event, &edge.ilp_address, amount, Some(&edge.seal_key))?;
-        // A fulfilled packet moved money, whatever the relay or its fulfilment said.
-        let paid = report.json["outcome"] != "rejected";
+        // A fulfilled packet moved money, whatever the relay or its fulfilment said. A
+        // rejected one moved what its channels moved by.
+        let rejected = report.json["outcome"] == "rejected";
+        let paid = if rejected { packets.moved(sent) } else { sent };
         report.json["relay"] = json!(relay);
-        report.json["paid"] = json!(if paid { amount } else { 0 });
-        if paid && amount == price {
+        report.json["paid"] = json!(paid);
+        if rejected {
+            if paid > 0 {
+                report.text = format!("{} It cost {paid} base units.", report.text);
+            }
+        } else if amount == price {
             report.text = format!("{} Paid {amount} base units to {relay}.", report.text);
-        } else if paid {
+        } else {
             report.text = format!(
                 "{} Sent {amount} base units for {relay}, whose price is {price}; the \
                  connectors in between keep the rest.",

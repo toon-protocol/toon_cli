@@ -724,7 +724,7 @@ fn a_connector_that_charges_to_forward_rejects_the_price_and_the_text_names_the_
     let before = remaining(&near);
 
     // The text report: a rejected packet's claim leaves value behind that a second run
-    // would use (#93), so each way of looking at the rejection has an arrangement of its own.
+    // would use, so each way of looking at the rejection has an arrangement of its own.
     let url = relay.url();
     let run = near.toon(&[
         "relay",
@@ -740,7 +740,8 @@ fn a_connector_that_charges_to_forward_rejects_the_price_and_the_text_names_the_
     let text = format!("{}{}", run.stdout, run.stderr);
     assert!(text.contains("F03"), "{text}");
     assert!(text.contains("--packet-amount"), "{text}");
-    assert_eq!(remaining(&near), before);
+    // The rejected packet moved the channel by its amount, and the limit counts it.
+    assert_eq!(remaining(&near), before - u128::from(PRICE));
 }
 
 #[test]
@@ -758,7 +759,8 @@ fn the_reject_of_a_charging_connector_is_in_the_json_report_unchanged() {
     let report = rejected.json();
     assert_eq!(report["outcome"], "rejected", "{report}");
     assert_eq!(report["response"]["code"], "F03", "{report}");
-    assert_eq!(report["paid"], 0);
+    assert_eq!(report["paid"], PRICE);
+    assert_eq!(report["credited"], 0);
     assert_eq!(report["packet_amount"], PRICE);
 }
 
@@ -893,11 +895,11 @@ fn a_direct_subscription_reports_the_packet_amount_as_the_price() {
 }
 
 #[test]
-fn a_later_packet_that_fails_counts_only_the_packets_fulfilled() {
+fn a_later_packet_that_is_rejected_is_counted_beside_the_packets_fulfilled() {
     let chain = AnvilChain::start();
     let (near, _mid, _far, relay) = through_a_charging_connector(&chain);
     // A rejected packet's claim leaves value behind, enough for the next run's first
-    // packet to get through at the price and not for its second (#93).
+    // packet to get through at the price and not for its second.
     let first = subscribe(
         &near,
         &relay,
@@ -916,6 +918,56 @@ fn a_later_packet_that_fails_counts_only_the_packets_fulfilled() {
     let report = run.json();
     assert_eq!(report["outcome"], "rejected", "{report}");
     assert_eq!(report["packets"], 2);
-    assert_eq!(report["paid"], 1000);
-    assert_eq!(remaining(&near), before - 1000);
+    // One packet fulfilled and credited, one rejected that still moved the channel.
+    assert_eq!(report["credited"], 1000);
+    assert_eq!(report["paid"], 2000);
+    assert_eq!(remaining(&near), before - 2000);
+}
+
+#[test]
+fn a_rejected_subscribe_packet_is_in_paid_and_in_the_limit_by_what_the_watermark_moved() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    // The far connector has no route for the subscribe address: it rejects the packet.
+    let far = node_on(&chain);
+    let relay = FakeRemoteRelay::start(SUBSCRIBE, PRICE, BROADCAST_PRICE);
+    relay.set_connector(&far.url());
+    peer_and_route(&near, &far);
+    let watermark = || {
+        let list = near.toon(&["channel", "list", "--json"]).json();
+        list["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|channel| channel["direction"] == "outbound")
+            .map(|channel| {
+                channel["watermark"]
+                    .to_string()
+                    .trim_matches('"')
+                    .parse::<u64>()
+                    .unwrap()
+            })
+            .sum::<u64>()
+    };
+    let remaining = || -> u64 {
+        near.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let (watermark_before, remaining_before) = (watermark(), remaining());
+
+    let run = subscribe(
+        &near,
+        &relay,
+        &["--filter", FILTER, "--amount", "2000", "--yes"],
+    );
+
+    assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
+    let report = run.json();
+    assert_eq!(report["outcome"], "rejected", "{report}");
+    let moved = watermark() - watermark_before;
+    assert_eq!(report["paid"], moved, "{report}");
+    assert_eq!(remaining_before - remaining(), moved);
 }

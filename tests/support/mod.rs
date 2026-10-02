@@ -51,6 +51,11 @@ pub const UNSEALABLE_KEY: &str =
     "04abababababababababababababababababababababababababababababababab\
                                   abababababababababababababababababababababababababababababababab";
 
+/// What the fake relay, like the relay's image, answers a packet whose body is no JSON:
+/// a `send` carries no event, so a test that sends one to a relay sees this when the
+/// packet arrived.
+pub const NOT_A_WRITE: &str = r#"{"error":"Invalid request body"}"#;
+
 /// The wallet passphrase the tests use.
 pub const PASSPHRASE: &str = "correct horse battery staple";
 

@@ -39,8 +39,8 @@ supervisor, and `toon status` reports how many times.
 `toon status` exits with the code that describes the agent node, and still prints its
 report. It exits 1 when the supervisor or a connector is not running, and `toon down` exits 0
 whether or not anything was running, unless `systemctl` would not stop the unit. `toon send` exits 1 when the packet was rejected, and still prints its report: the
-reject code is in `reject.code`. It exits 1 too, with `"outcome": "wrong_fulfilment"`, when
-the packet was fulfilled with a fulfilment that does not match it. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
+reject code is in `reject.code`, and `paid` is what the packet cost (see Spending limit). It
+exits 1 too, with `"outcome": "wrong_fulfilment"`, when the packet was fulfilled with a fulfilment that does not match it. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
 and exits 3.
 
 ## Errors
@@ -191,8 +191,9 @@ request to `connector_url`, which only appears in the `peering_needed` message. 
 amount and publishes only with `--yes`, under the spending limit, paying from this agent
 node's own connector over a peering. If no peering of the agent node reaches
 the relay's `ilp_address` it fails with `peering_needed` and creates nothing. The report has
-the same outcomes as a publish to the own relay, plus `relay` and `paid`: the amount sent, or
-`0` when the packet was rejected. The amount is the relay's price unless `--amount <n>` states
+the same outcomes as a publish to the own relay, plus `relay` and `paid`: the amount sent, or,
+when the packet was rejected, what the agent node's outbound channels moved by across it (`0`
+when none did). The amount is the relay's price unless `--amount <n>` states
 another: `toon` sends exactly `n`, never probes for the path's cost, and refuses an `--amount`
 below the relay's price with `usage` before anything is signed. A connector between this agent
 node and the relay may charge to forward the write and rejects any other amount than its
@@ -215,9 +216,11 @@ charge to forward and rejects any other amount than its route's price (`F03`); t
 then tells the operator to state the path's cost with `--packet-amount`. The report gives
 `packets`, `paid` (the packet amount times the packets fulfilled), `credited` (what the relay
 answered, less than `paid` through such a connector), `price` (the subscribe price),
-`packet_amount`, `balance`, `broadcast_price` and `filter`; a packet the relay refuses still cost
-its amount, and `outcome` says `refused`, `rejected`, `wrong_fulfilment` or, when a later
-packet could not be sent, `failed`, with the exit code 1. A first subscription needs
+`packet_amount`, `balance`, `broadcast_price` and `filter`. A packet the relay refuses still cost
+its amount; a rejected or wrongly fulfilled packet adds to `paid` what it moved the outbound
+channels by. `outcome` says `refused`, `rejected`, `wrong_fulfilment` or, when a later packet
+could not be sent, `failed`, with the exit code 1; a packet that failed after it may have left
+stays counted against the limit at its amount. A first subscription needs
 `--filter`; a later one may leave it out to top up with the filter last kept, or give a new
 one to replace the old, and keeps the balance. `toon relay subscriptions` lists, per relay, the
 `balance`, `filter` and `subscriber_key`, read from the relay now (`current: true`; a relay
@@ -293,9 +296,16 @@ Every command that moves money (`toon send`, `toon peer add`, `toon join`) state
 `--yes`. The amount is checked against the spending limit before the command runs: at most
 `--max-per-command` for one command, and `--max-per-day` for the commands of one UTC day
 together, both in the token's base units, set at `toon init` (defaults 10000000 and
-100000000). A payment that was rejected is not counted, nor one that failed before it
-reached the connector or that the other side refused. A packet that was never sent is not
-counted either: the operator key could not be read, the identity of the connector to seal to
+100000000). A packet that was rejected is counted by what the watermarks of the agent node's
+outbound channels moved by across it, read before the packet is sent and after it is
+answered, under a lock shared by the packet-sending commands. `paid` in the JSON report of
+`toon send`, `toon event publish --relay` and `toon relay subscribe` carries that amount: `0`,
+and not counted, when the agent node's own connector rejected the packet before signing
+anything, and possibly the packet's whole amount when a connector farther on rejected it (the
+outbound watermark in `toon channel list` shows the same). If the watermarks cannot be read,
+the packet's full amount stays counted. Nor is a payment counted that failed before it reached
+the connector or that the other side refused. A packet that was never sent is not counted
+either: the operator key could not be read, the identity of the connector to seal to
 could not be fetched or has no usable public key, the packet could not be sealed, or the
 connector's `send` refused its arguments. These still fail with `send_failed`. Any other
 failure may have paid, and stays counted, including a refusal from the operator surface and
