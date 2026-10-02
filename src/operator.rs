@@ -375,24 +375,28 @@ pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Peered, Error> {
     let (mut status, mut text) = write(surface, reqwest::Method::POST, "/peers", Some(&body))?;
     // Set once the connector has said that the deposit this command sent confirmed.
     let mut deposit_confirmed = false;
+    // However a repeat then fails, the deposit is on chain and the same command finds it.
+    let unpeered = |why: &str| {
+        failed(
+            ErrorCode::PeerFailed,
+            format!(
+                "The deposit of {} confirmed on chain, but the peering was not created. \
+                 Running the same command again finds the channel and deposits nothing \
+                 more. {why}",
+                add.deposit
+            ),
+        )
+    };
     let mut repeats = 0;
-    while status == 502 && text.contains(STALE_READ) {
+    while status == 502 && text.contains(STALE_READ) && repeats < STALE_READ_REPEATS {
         deposit_confirmed = true;
-        if repeats == STALE_READ_REPEATS {
-            return Err(failed(
-                ErrorCode::PeerFailed,
-                format!(
-                    "The deposit of {} confirmed on chain, but the peering was not created. \
-                     Running the same command again finds the channel and deposits nothing \
-                     more. {}",
-                    add.deposit,
-                    refusal(status, &text)
-                ),
-            ));
-        }
         repeats += 1;
         std::thread::sleep(STALE_READ_WAIT);
-        (status, text) = write(surface, reqwest::Method::POST, "/peers", Some(&body))?;
+        (status, text) = write(surface, reqwest::Method::POST, "/peers", Some(&body))
+            .map_err(|error| unpeered(&error.message))?;
+    }
+    if deposit_confirmed && status != 200 {
+        return Err(unpeered(&refusal(status, &text)));
     }
     if status != 200 {
         // The connector reads the other side's self-description first, and a connector
@@ -1308,15 +1312,37 @@ mod tests {
         assert_eq!(peered.report.json["deposited"], false);
     }
 
+    #[test]
+    fn a_repeat_refused_another_way_still_says_the_deposit_confirmed() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (url, _) = connector(vec![
+            stale(),
+            (401, "signature has already been used".to_owned()),
+        ]);
+        let Err(error) = peer_add_on(&surface(home.path(), url), &add()) else {
+            panic!("the peering was made");
+        };
+        assert_eq!(error.code, ErrorCode::PeerFailed);
+        assert!(
+            error.message.contains("confirmed on chain"),
+            "{}",
+            error.message
+        );
+        assert!(!crate::spending::failed_before_paying(&error));
+    }
+
     /// The repeat of a peering is keyed on the connector's wording, which the connector
-    /// keeps in a string literal. The connector's crates are linked into this binary, so
-    /// a pin move that rewords the refusal fails here instead of ending the repeat.
+    /// keeps in a string literal after the channel's quoted name. The connector's crates
+    /// are linked into this binary, so a pin move that rewords the refusal fails here
+    /// instead of ending the repeat. `STALE_READ` alone is in this binary whatever the
+    /// connector says, so the search is for it as the connector's literal goes on.
     #[test]
     fn the_connectors_stale_read_wording_is_pinned() {
         let binary = std::fs::read(std::env::current_exe().expect("this binary")).expect("read");
+        let wording = [b"' ".as_slice(), STALE_READ.as_bytes()].concat();
         let found = binary
-            .windows(STALE_READ.len())
-            .any(|window| window == STALE_READ.as_bytes());
+            .windows(wording.len())
+            .any(|window| window == wording.as_slice());
         assert!(
             found,
             "the embedded connector no longer says {STALE_READ:?}"

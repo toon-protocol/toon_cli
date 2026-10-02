@@ -358,11 +358,13 @@ fn a_peering_that_finds_its_channel_open_deposits_nothing_and_is_not_counted() {
     assert_eq!(second.exit_code, 0, "{}", second.stdout);
     assert_eq!(second.json()["peering"]["channel"]["status"], "found");
     assert_eq!(second.json()["deposited"], false);
-    assert!(
-        !second.stdout.contains("deposit 1000000"),
-        "{}",
-        second.stdout
-    );
     assert_eq!(chain.balance(&near.evm), balance, "nothing was deposited");
     assert_eq!(remaining_today(&near), remaining, "and nothing is counted");
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let text = near.toon(&add[..add.len() - 1]);
+    assert_eq!(text.exit_code, 0, "{}", text.stdout);
+    assert!(text.stdout.contains("nothing deposited"), "{}", text.stdout);
+    assert!(!text.stdout.contains("deposit 1000000"), "{}", text.stdout);
+    assert_eq!(remaining_today(&near), remaining, "nor the third");
 }
