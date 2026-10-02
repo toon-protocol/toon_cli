@@ -57,6 +57,7 @@ impl Need {
 
 fn io(path: &Path, source: std::io::Error) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::Io,
         message: format!("{}: {source}.", path.display()),
     }
@@ -65,6 +66,7 @@ fn io(path: &Path, source: std::io::Error) -> Error {
 fn secret(path: &Path) -> Result<[u8; 32], Error> {
     let bytes = fs::read(path).map_err(|source| io(path, source))?;
     bytes.try_into().map_err(|_| Error {
+        nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
         message: format!("{} is not a 32-byte key.", path.display()),
     })
@@ -240,6 +242,7 @@ fn how_to_fund(network: Profile) -> &'static str {
 pub fn unfunded(network: Profile, lacking: &[Need]) -> Error {
     let list: Vec<String> = lacking.iter().map(Need::text).collect();
     Error {
+        nothing_sent: false,
         code: ErrorCode::Unfunded,
         message: format!(
             "A settlement key is not funded, so the connector is not started. It needs: {}. {}",
@@ -273,6 +276,7 @@ pub fn requirements(home: &Path, state: &State) -> Result<(Vec<Need>, String), E
 
 fn faucet_error(message: String) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::FaucetUnavailable,
         message,
     }

@@ -84,7 +84,7 @@ A failed command with `--json` prints:
 | `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
 | `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap (its `anon` release could not be downloaded or did not match its pinned checksum, its terms were not agreed to, or the daemon did not come up), so a hidden service was not created or started; nothing falls back to clearnet |
 | `join_refused` | 1 | `toon join` named a network other than the one this agent node was initialised for, or the agent node has already joined one; nothing was spent |
-| `relay_not_payable` | 1 | `toon event publish --relay` or `toon relay subscribe` could not read the relay's information document, or it names no paid write edge (`toon`: `ilp_address`, `connector_url`, `connector_seal_key`, `price`; the key is 65 bytes of hex beginning `04`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
+| `relay_not_payable` | 1 | `toon event publish --relay` or `toon relay subscribe` could not read the relay's information document, or it names no write edge (`toon`: `ilp_address`, `connector_url`, `connector_seal_key`, `price`; the key is 65 bytes of hex beginning `04`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
 | `peering_needed` | 1 | `toon event publish --relay` or `toon relay subscribe` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. Run `toon peer add` and `toon route add` first |
 | `not_subscribed` | 1 | `toon event follow` named a relay at which this agent node holds no subscription: `toon relay subscribe` opens one |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
@@ -246,9 +246,13 @@ Every command that moves money (`toon send`, `toon peer add`, `toon join`) state
 `--max-per-command` for one command, and `--max-per-day` for the commands of one UTC day
 together, both in the token's base units, set at `toon init` (defaults 10000000 and
 100000000). A payment that was rejected is not counted, nor one that failed before it
-reached the connector or that the other side refused; any other failure may have paid, and
-stays counted. `toon limit show` prints the limits and what is left today. `toon limit set`
-changes them and reads the wallet passphrase, so an agent without it cannot raise them: the
-limits are signed with a key the wallet derives, and an unsigned or edited `limits.json`
-stops every payment. When `limits.json` is missing or was edited, `toon limit set` needs
-both `--max-per-command` and `--max-per-day`.
+reached the connector or that the other side refused. A packet that was never sent is not
+counted either: the operator key could not be read, the identity of the connector to seal to
+could not be fetched or has no usable public key, the packet could not be sealed, or the
+connector's `send` refused its arguments. These still fail with `send_failed`. Any other
+failure may have paid, and stays counted, including a refusal from the operator surface and
+an answer that was not understood. `toon limit show` prints the limits and what is left
+today. `toon limit set` changes them and reads the wallet passphrase, so an agent without it
+cannot raise them: the limits are signed with a key the wallet derives, and an unsigned or
+edited `limits.json` stops every payment. When `limits.json` is missing or was edited,
+`toon limit set` needs both `--max-per-command` and `--max-per-day`.

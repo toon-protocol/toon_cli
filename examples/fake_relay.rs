@@ -1,11 +1,12 @@
 //! A stand-in for the relay, for the tests of the app runners and of `toon up`.
 //!
 //! It takes what the relay's image takes (`TOON_BLS_PORT`, `TOON_DATA_DIR`,
-//! `NOSTR_SECRET_KEY`, and `TOON_WS_PORT` for the read port), answers `GET /health`, and
+//! `NOSTR_SECRET_KEY`, and `TOON_RELAY_PORT` for the read port), answers `GET /health`, and
 //! answers a `POST` to `/`, `/write` or
 //! `/write-ephemeral` with 200 after appending `<path> <body in hex>` to `writes.log` in its
-//! data directory. It writes the secret key it was handed to `environment` there, and the
-//! `TOON_RELAY_*` settings it was handed, one `NAME=value` per line, to `settings`. It
+//! data directory. It writes the secret key it was handed to `environment` there, the
+//! `TOON_RELAY_*` settings it was handed but the read port, one `NAME=value` per line, to
+//! `settings`, and `TOON_CONNECTOR_URL` and `TOON_WRITE_ILP_ADDRESS` to `connector`. It
 //! exits when its standard input closes, as a supervisor's apps do.
 //!
 //! A body that is a JSON event is also stored in `events.log`, one per line, and a websocket
@@ -32,11 +33,17 @@ fn main() {
     )
     .expect("write");
     let mut settings: Vec<String> = env::vars()
-        .filter(|(name, _)| name.starts_with("TOON_RELAY_"))
+        .filter(|(name, _)| name.starts_with("TOON_RELAY_") && name != "TOON_RELAY_PORT")
         .map(|(name, value)| format!("{name}={value}\n"))
         .collect();
     settings.sort();
     fs::write(data.join("settings"), settings.concat()).expect("write");
+    // What it was told of its connector, to `connector`, in the same form.
+    let connector: String = ["TOON_CONNECTOR_URL", "TOON_WRITE_ILP_ADDRESS"]
+        .iter()
+        .filter_map(|name| env::var(name).ok().map(|value| format!("{name}={value}\n")))
+        .collect();
+    fs::write(data.join("connector"), connector).expect("write");
 
     thread::spawn(|| {
         let mut ignored = [0u8; 64];
@@ -53,7 +60,7 @@ fn main() {
 
     // The read port answers as the write port does, so a test can reach it through the
     // overlay.
-    if let Ok(read) = env::var("TOON_WS_PORT") {
+    if let Ok(read) = env::var("TOON_RELAY_PORT") {
         let reads = TcpListener::bind(format!("127.0.0.1:{read}")).expect("bind the read port");
         let data = data.clone();
         thread::spawn(move || {

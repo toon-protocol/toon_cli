@@ -41,6 +41,12 @@ pub fn seal_key(url: &str) -> String {
         .to_owned()
 }
 
+/// A `connector_seal_key` that is 65 bytes beginning `04`, so it is read as a key, and is
+/// no point on the curve, so nothing can be sealed to it.
+pub const UNSEALABLE_KEY: &str =
+    "04abababababababababababababababababababababababababababababababab\
+                                  abababababababababababababababababababababababababababababababab";
+
 /// The wallet passphrase the tests use.
 pub const PASSPHRASE: &str = "correct horse battery staple";
 
@@ -59,7 +65,8 @@ pub fn fake_relay() -> PathBuf {
 
 /// One operator's machine: an empty home directory that is deleted on drop.
 pub struct Machine {
-    home: TempDir,
+    root: TempDir,
+    home: PathBuf,
 }
 
 /// What one run of `toon` printed and how it exited.
@@ -72,14 +79,32 @@ pub struct Run {
 
 impl Machine {
     pub fn new() -> Self {
-        Self {
-            home: tempfile::tempdir().expect("create a temporary home directory"),
+        let root = tempfile::tempdir().expect("create a temporary home directory");
+        let home = root.path().to_path_buf();
+        Self { root, home }
+    }
+
+    /// A machine whose home path is long enough that the agent node's control socket,
+    /// `<home>/.toon/agent-node/supervisor.sock`, is well over the 107 bytes a Unix
+    /// socket address holds.
+    pub fn with_long_home() -> Self {
+        let root = tempfile::tempdir().expect("create a temporary home directory");
+        let mut home = root.path().to_path_buf();
+        while home
+            .join(".toon/agent-node/supervisor.sock")
+            .as_os_str()
+            .len()
+            < 200
+        {
+            home.push("a-directory-with-a-rather-long-name");
         }
+        std::fs::create_dir_all(&home).expect("create a home with a long path");
+        Self { root, home }
     }
 
     /// The operator's home directory (`$HOME`).
     pub fn home(&self) -> &Path {
-        self.home.path()
+        &self.home
     }
 
     /// Where `toon` keeps this machine's agent node.

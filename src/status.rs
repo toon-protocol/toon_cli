@@ -116,7 +116,8 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                     _ => Value::Null,
                 };
                 json!({
-                    "name": name, "address": field("address"), "running": running,
+                    "name": name, "address": field("address"),
+                    "read_address": field("read_address"), "running": running,
                     "image": image, "prefix": behind.prefix, "price": behind.price,
                 })
             })
@@ -196,6 +197,7 @@ pub fn down(home: &Path) -> Result<Report, Error> {
         while control::running(home) {
             if Instant::now() >= deadline {
                 return Err(Error {
+                    nothing_sent: false,
                     code: ErrorCode::ConnectorFailed,
                     message: "The supervisor was asked to stop and had not stopped in time.".into(),
                 });
@@ -235,6 +237,7 @@ pub fn logs(home: &Path, name: &str, lines: usize) -> Result<Report, Error> {
             .map(String::as_str)
             .collect();
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::UnknownName,
             message: format!(
                 "No TOON app or app is called {name}. This agent node has {}.",
@@ -249,6 +252,7 @@ pub fn logs(home: &Path, name: &str, lines: usize) -> Result<Report, Error> {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(source) => {
             return Err(Error {
+                nothing_sent: false,
                 code: ErrorCode::Io,
                 message: format!("{}: {source}.", log.display()),
             })

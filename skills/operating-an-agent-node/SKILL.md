@@ -55,7 +55,10 @@ over either is refused with `spending_limit` before anything is sent, and the me
 which limit and how much of the day remains. `toon limit show` prints the limits and what is
 left today. `toon limit set --max-per-command <n> --max-per-day <n>` changes them and needs the
 passphrase. Do not raise the limit to get past a refusal unless the operator who gave you this
-task said to; report the refusal instead. A payment that was rejected is not counted.
+task said to; report the refusal instead. A payment that was rejected is not counted, and
+neither is one whose packet was never sent (the key could not be read, the identity to seal
+to could not be fetched, the packet could not be sealed, or the connector's `send` refused its
+arguments); any other failure stays counted, because the packet may have left.
 
 `toon channel open` and `toon channel fund` also put collateral in a channel; they take no
 `--yes`, so state the deposit deliberately and check `toon limit show` and `toon wallet balances`

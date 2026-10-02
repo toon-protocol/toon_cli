@@ -182,6 +182,33 @@ fn the_price_is_shown_and_nothing_is_paid_without_yes() {
 }
 
 #[test]
+fn a_publish_that_fails_before_a_packet_is_sent_is_not_counted() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    // The relay pins a key that reads as one and is no point on the curve, so the packet
+    // cannot be sealed.
+    let relay = document(json!({
+        "ilp_address": "g.toon.relay.far",
+        "connector_url": far.url(),
+        "connector_seal_key": support::UNSEALABLE_KEY,
+        "price": PRICE,
+    }));
+    peer_and_route(&near, &far);
+    let remaining =
+        || near.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone();
+    let before = remaining();
+
+    let run = near.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--yes", "--json",
+    ]);
+
+    assert_eq!(run.json()["error"]["code"], "send_failed", "{}", run.stdout);
+    assert_eq!(run.exit_code, 1);
+    assert_eq!(remaining(), before);
+}
+
+#[test]
 fn a_price_over_the_spending_limit_is_refused() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);

@@ -30,6 +30,7 @@ const SUBSCRIPTION: &str = "toon";
 
 fn usage(message: impl Into<String>) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::Usage,
         message: message.into(),
     }
@@ -50,6 +51,7 @@ pub fn sign(
     content: &str,
 ) -> Result<Value, Error> {
     let key = SigningKey::from_bytes(secret).map_err(|_| Error {
+        nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
         message: "The agent identity is not a valid key.".into(),
     })?;
@@ -58,6 +60,7 @@ pub fn sign(
     let signature = key
         .sign_raw(&id, &keystore::random::<32>()?)
         .map_err(|_| Error {
+            nothing_sent: false,
             code: ErrorCode::Io,
             message: "The event could not be signed.".into(),
         })?;
@@ -123,6 +126,7 @@ pub fn wallet_seed(home: &Path) -> Result<zeroize::Zeroizing<[u8; 64]>, Error> {
         keystore::open(home, &passphrase)?
             .parse()
             .map_err(|_| Error {
+                nothing_sent: false,
                 code: ErrorCode::KeystoreCorrupt,
                 message: "The keystore does not hold a valid mnemonic.".into(),
             })?;
@@ -132,6 +136,7 @@ pub fn wallet_seed(home: &Path) -> Result<zeroize::Zeroizing<[u8; 64]>, Error> {
 /// The agent identity's secret, opened with the passphrase (ADR 0004).
 pub fn agent_secret(home: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
     derive::agent_identity_secret(&*wallet_seed(home)?).map_err(|source| Error {
+        nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
     })
@@ -142,6 +147,7 @@ pub fn public_key(secret: &[u8; 32]) -> Result<String, Error> {
     SigningKey::from_bytes(secret)
         .map(|key| hex::encode(key.verifying_key().to_bytes()))
         .map_err(|_| Error {
+            nothing_sent: false,
             code: ErrorCode::KeystoreCorrupt,
             message: "The agent identity is not a valid key.".into(),
         })
@@ -248,6 +254,7 @@ pub fn query(relay: &str, filter: &str) -> Result<Report, Error> {
 /// The stored events of `relay` that match `filter`, read with a NIP-01 `REQ`.
 pub fn fetch(relay: &str, filter: &Value) -> Result<Vec<Value>, Error> {
     let failed = |message: String| Error {
+        nothing_sent: false,
         code: ErrorCode::QueryFailed,
         message,
     };
@@ -313,7 +320,7 @@ pub struct Edge {
     pub price: u64,
 }
 
-/// The paid write edge in a `toon` object, or what the object is missing to be one: the
+/// The write edge in a `toon` object, or what the object is missing to be one: the
 /// key is 65 bytes of hex, uncompressed so it begins `04`, with or without `0x`.
 pub fn edge_fields(toon: &Value) -> Result<Edge, String> {
     let text = |field: &str| {
@@ -342,6 +349,7 @@ pub fn edge_fields(toon: &Value) -> Result<Edge, String> {
 
 pub fn unpayable(message: String) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::RelayNotPayable,
         message,
     }
@@ -380,7 +388,7 @@ pub fn information_document(relay: &str) -> Result<Value, Error> {
         })
 }
 
-/// The paid write edge `relay` publishes in its NIP-11 information document, the `toon`
+/// The write edge `relay` publishes in its NIP-11 information document, the `toon`
 /// object.
 fn edge(relay: &str) -> Result<Edge, Error> {
     let document = information_document(relay)?;
@@ -411,6 +419,7 @@ fn publish_to(
     let edge = edge(relay)?;
     if !operator::forwards(home, &edge.ilp_address)? {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::PeeringNeeded,
             message: format!(
                 "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
@@ -421,6 +430,7 @@ fn publish_to(
     }
     if !yes {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::NotConfirmed,
             message: format!(
                 "A write to {relay} costs {} base units. Add `--yes` to say that you mean it.",

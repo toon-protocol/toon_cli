@@ -125,6 +125,34 @@ fn a_payment_that_did_not_happen_is_not_counted() {
 }
 
 #[test]
+fn a_send_that_fails_before_a_packet_is_sent_is_not_counted() {
+    let node = running();
+    set_limits(&node.machine, "5", "5");
+
+    let failed = node.machine.toon(&[
+        "send",
+        "g.toon.relay",
+        "--amount",
+        "5",
+        "--seal-to",
+        "http://127.0.0.1:1/ilp",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(
+        failed.json()["error"]["code"],
+        "send_failed",
+        "{}",
+        failed.stdout
+    );
+    assert_eq!(failed.exit_code, 1);
+    assert!(failed.json()["error"].get("nothing_sent").is_none());
+
+    let shown = node.machine.toon(&["limit", "show", "--json"]).json();
+    assert_eq!(shown["limits"]["remaining_today"], "5");
+}
+
+#[test]
 fn limits_are_set_at_init_and_changed_only_with_the_passphrase() {
     let chain = FakeChain::start();
     let machine = Machine::new();
