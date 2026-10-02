@@ -36,6 +36,7 @@ fn failed(code: ErrorCode, message: String) -> Error {
         code,
         message,
         nothing_sent: false,
+        unanswered: None,
     }
 }
 
@@ -110,6 +111,42 @@ const SIGNATURE_TTL: u64 = 60;
 /// waits for the chain.
 const WRITE_PATIENCE: Duration = Duration::from_secs(300);
 
+/// What the connector says when it refuses a write for a signature it has accepted before.
+/// The repeat of a write is keyed on it; pinned by a test against the connector the build
+/// embeds.
+pub(crate) const REPLAYED: &str = "signature has already been used";
+
+/// How long a write that was refused as a replay waits before it is signed again: until the
+/// clock's second has turned, which is at most a second, and a little over for the clock's
+/// own slack.
+const REPLAY_SLACK: Duration = Duration::from_millis(20);
+
+/// Wait until the clock's second has turned, so that a write signed again is signed with
+/// another `created` and so another signature.
+fn wait_for_next_second() {
+    let into_second = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(Duration::ZERO, |elapsed| {
+            Duration::from_nanos(u64::from(elapsed.subsec_nanos()))
+        });
+    std::thread::sleep(Duration::from_secs(1) - into_second + REPLAY_SLACK);
+}
+
+/// What a write refused as a replay twice says in place of the connector's own text.
+fn replayed_twice(first: &str) -> String {
+    format!(
+        "{}. The connector had already accepted this same write in this second, and \
+         refused it again when it was signed in the next. Nothing was done. Run the command \
+         again.",
+        first.trim().trim_end_matches('.')
+    )
+}
+
+/// Whether `status` and `text` are the connector refusing a write as a replay.
+fn is_replay(status: u16, text: &str) -> bool {
+    status == 401 && text.contains(REPLAYED)
+}
+
 /// A write to the connector's operator surface, signed with the wallet's operator write
 /// key. `body` is JSON, or empty for a delete. Returns the status and the body.
 fn write(
@@ -118,63 +155,89 @@ fn write(
     path: &str,
     body: Option<&Value>,
 ) -> Result<(u16, String), Error> {
-    let raw = std::fs::read(&surface.write_key).map_err(|source| {
-        failed(
-            ErrorCode::Io,
-            format!("{}: {source}.", surface.write_key.display()),
-        )
-    })?;
-    let keypair = ed25519_dalek_v1::SecretKey::from_bytes(&raw)
-        .map(|secret| ed25519_dalek_v1::Keypair {
-            public: (&secret).into(),
-            secret,
-        })
-        .map_err(|_| {
-            failed(
-                ErrorCode::Io,
-                format!("{} is not a 32-byte key.", surface.write_key.display()),
-            )
-        })?;
-    let body = body.map(Value::to_string).unwrap_or_default();
-    let created = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
-    let (signature_input, signature, content_digest) = connector_operator::signing::sign_request(
-        &keypair,
-        method.as_str(),
+    write_text(
+        surface,
+        method,
         path,
-        body.as_bytes(),
-        created,
-        Some(created + SIGNATURE_TTL),
-    );
+        body.map(Value::to_string).unwrap_or_default(),
+        WRITE_PATIENCE,
+    )
+}
+
+/// [`write`] with the body as JSON text, which holds an amount above `u64::MAX` that a
+/// `Value` does not, waiting `patience` for the connector.
+///
+/// A signature covers the method, the path, the body, the second it was made in and the
+/// key, so the same write twice in one second has the same signature, and the connector
+/// refuses the second as a replay. That refusal is waited out once: after the second has
+/// turned the write is signed again and sent again. A connector's 401 is the first thing
+/// it checks, so a write refused that way did nothing.
+fn write_text(
+    surface: &Surface,
+    method: reqwest::Method,
+    path: &str,
+    body: String,
+    patience: Duration,
+) -> Result<(u16, String), Error> {
+    let keypair = write_keypair(&surface.write_key)?;
     let url = format!("{}{path}", surface.url);
-    let mut request = reqwest::blocking::Client::builder()
-        .timeout(WRITE_PATIENCE)
+    let client = reqwest::blocking::Client::builder()
+        .timeout(patience)
         .build()
         .map_err(|error| {
             failed(
                 ErrorCode::ConnectorFailed,
                 format!("{method} {url}: {error}."),
             )
-        })?
-        .request(method.clone(), &url)
-        .header("content-digest", content_digest)
-        .header("signature-input", signature_input)
-        .header("signature", signature);
-    if !body.is_empty() {
-        request = request
-            .header("content-type", "application/json")
-            .body(body);
+        })?;
+    let sign_and_send = || -> Result<(u16, String), Error> {
+        let created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs());
+        let (signature_input, signature, content_digest) =
+            connector_operator::signing::sign_request(
+                &keypair,
+                method.as_str(),
+                path,
+                body.as_bytes(),
+                created,
+                Some(created + SIGNATURE_TTL),
+            );
+        let mut request = client
+            .request(method.clone(), &url)
+            .header("content-digest", content_digest)
+            .header("signature-input", signature_input)
+            .header("signature", signature);
+        if !body.is_empty() {
+            request = request
+                .header("content-type", "application/json")
+                .body(body.clone());
+        }
+        let response = request.send().map_err(|error| {
+            failed(
+                ErrorCode::ConnectorFailed,
+                format!("{method} {url}: {error}."),
+            )
+        })?;
+        let status = response.status().as_u16();
+        let text = response.text().map_err(|error| {
+            failed(
+                ErrorCode::ConnectorFailed,
+                format!("{method} {url}: {error}."),
+            )
+        })?;
+        Ok((status, text))
+    };
+    let (status, text) = sign_and_send()?;
+    if !is_replay(status, &text) {
+        return Ok((status, text));
     }
-    let response = request.send().map_err(|error| {
-        failed(
-            ErrorCode::ConnectorFailed,
-            format!("{method} {url}: {error}."),
-        )
-    })?;
-    let status = response.status().as_u16();
-    let text = response.text().unwrap_or_default();
-    Ok((status, text))
+    wait_for_next_second();
+    let (status, again) = sign_and_send()?;
+    if is_replay(status, &again) {
+        return Ok((status, replayed_twice(&again)));
+    }
+    Ok((status, again))
 }
 
 /// `toon route list`: the connector's routing table, as it answers it: the routes it
@@ -320,6 +383,15 @@ fn refusal(status: u16, text: &str) -> String {
     format!("The connector answered {status}: {}", text.trim())
 }
 
+/// A write the connector refused, as an error. A 401 comes from the connector checking
+/// the write's signature before it does anything, so such a write moved nothing.
+fn refused(code: ErrorCode, status: u16, text: &str) -> Error {
+    Error {
+        nothing_sent: status == 401,
+        ..failed(code, refusal(status, text))
+    }
+}
+
 /// The `toon peer add` command a message tells the reader to run: it takes the deposit
 /// `peer add` requires and the `--yes` it needs to deposit it. `deposit` and `extra` are
 /// printed as given, so a placeholder in angle brackets may stand for either.
@@ -427,7 +499,7 @@ pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Peered, Error> {
                 ),
             )
         } else {
-            failed(ErrorCode::PeerFailed, refusal(status, &text))
+            refused(ErrorCode::PeerFailed, status, &text)
         });
     }
     let peering: Value = serde_json::from_str(&text).map_err(|error| {
@@ -513,7 +585,7 @@ pub fn peer_remove(home: &Path, id: &str) -> Result<Report, Error> {
         None,
     )?;
     if status != 204 {
-        return Err(failed(ErrorCode::PeerFailed, refusal(status, &text)));
+        return Err(refused(ErrorCode::PeerFailed, status, &text));
     }
     Ok(Report {
         exit: Exit::Success,
@@ -537,7 +609,7 @@ pub fn route_add_on(
     let body = json!({ "prefix": prefix, "peer_id": peer, "price": price });
     let (status, text) = write(surface, reqwest::Method::POST, "/routes/peers", Some(&body))?;
     if status != 200 {
-        return Err(failed(ErrorCode::RouteFailed, refusal(status, &text)));
+        return Err(refused(ErrorCode::RouteFailed, status, &text));
     }
     let route: Value = serde_json::from_str(&text).map_err(|error| {
         failed(
@@ -563,7 +635,7 @@ pub fn route_remove(home: &Path, prefix: &str) -> Result<Report, Error> {
         None,
     )?;
     if status != 204 {
-        return Err(failed(ErrorCode::RouteFailed, refusal(status, &text)));
+        return Err(refused(ErrorCode::RouteFailed, status, &text));
     }
     Ok(Report {
         exit: Exit::Success,
@@ -590,45 +662,22 @@ fn write_keypair(path: &Path) -> Result<ed25519_dalek_v1::Keypair, Error> {
 /// `Value` holds no number above `u64::MAX`.
 fn channel_write(home: &Path, path: &str, body: String) -> Result<Value, Error> {
     let surface = surface(home)?;
-    let channel_failed = |message: String| failed(ErrorCode::ChannelFailed, message);
-    let keypair = write_keypair(&surface.write_key)?;
-    let bytes = body.into_bytes();
-    let created = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
-    let (signature_input, signature, content_digest) = connector_operator::signing::sign_request(
-        &keypair,
-        "POST",
-        path,
-        &bytes,
-        created,
-        Some(created + SIGNATURE_TTL),
-    );
     let url = format!("{}{path}", surface.url);
-    let mut request = reqwest::blocking::Client::builder()
-        .timeout(PATIENCE)
-        .build()
-        .map_err(|error| channel_failed(format!("POST {url}: {error}.")))?
-        .post(&url)
-        .header("content-digest", content_digest)
-        .header("signature-input", signature_input)
-        .header("signature", signature);
-    if !bytes.is_empty() {
-        request = request.header("content-type", "application/json");
-    }
-    let response = request
-        .body(bytes)
-        .send()
-        .map_err(|error| channel_failed(format!("POST {url}: {error}.")))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .map_err(|error| channel_failed(format!("POST {url}: {error}.")))?;
-    if !status.is_success() {
-        return Err(channel_failed(format!(
-            "POST {url} answered {status}: {}",
-            text.trim()
-        )));
+    let channel_failed = |message: String| failed(ErrorCode::ChannelFailed, message);
+    let (status, text) = write_text(&surface, reqwest::Method::POST, path, body, PATIENCE)
+        .map_err(|error| Error {
+            code: match error.code {
+                ErrorCode::ConnectorFailed => ErrorCode::ChannelFailed,
+                other => other,
+            },
+            ..error
+        })?;
+    if !(200..300).contains(&status) {
+        return Err(Error {
+            // The connector authenticates a write before it does anything.
+            nothing_sent: status == 401,
+            ..channel_failed(format!("POST {url} answered {status}: {}", text.trim()))
+        });
     }
     serde_json::from_str(&text).map_err(|error| {
         channel_failed(format!(
@@ -730,9 +779,84 @@ fn ensure_gas(home: &Path) -> Result<(), Error> {
 
 /// What a packet came to.
 pub enum Answer {
-    Fulfilled { status: u64, body: String },
-    Rejected { code: String, message: String },
+    Fulfilled {
+        status: u64,
+        body: String,
+    },
+    Rejected {
+        code: String,
+        message: String,
+    },
     WrongFulfilment,
+    /// The connector did not answer within [`packet_wait`]. The packet has expired by now.
+    Unanswered,
+}
+
+/// How long a packet sent with [`dispatch_with_headers`] lives before a connector must
+/// reject it.
+const PACKET_EXPIRY: Duration = Duration::from_secs(30);
+
+/// How long the command line waits for its connector's answer to a packet: the packet's
+/// expiry and a few seconds more, so that a packet that outlasts its expiry is answered
+/// with the connector's own reject rather than given up on. The hidden
+/// `TOON_PACKET_WAIT_MS` shortens it for a test of a wait that runs out; it is not
+/// documented and an operator is not told of it.
+fn packet_wait() -> Duration {
+    std::env::var("TOON_PACKET_WAIT_MS")
+        .ok()
+        .and_then(|millis| millis.parse().ok())
+        .map_or(
+            PACKET_EXPIRY + Duration::from_secs(5),
+            Duration::from_millis,
+        )
+}
+
+fn spoken(wait: Duration) -> String {
+    if wait.subsec_millis() != 0 {
+        return format!("{} milliseconds", wait.as_millis());
+    }
+    match wait.as_secs() {
+        1 => "1 second".to_owned(),
+        seconds => format!("{seconds} seconds"),
+    }
+}
+
+/// What a packet nobody answered within the wait came to, for the operator.
+pub fn unanswered_message() -> String {
+    format!(
+        "The connector did not answer within {}. The packet has expired by now and will not \
+         be delivered; the command can be run again.",
+        spoken(packet_wait())
+    )
+}
+
+/// `error`, if it is for a packet that went unanswered, with the cost the caller read from
+/// the watermarks in place of the whole amount [`send`] and the like assume.
+pub fn repriced(error: Error, paid: u128) -> Error {
+    match error.unanswered {
+        Some(unanswered) => unanswered_cost(paid, unanswered.event),
+        None => error,
+    }
+}
+
+/// The error for a packet that went unanswered, with what it cost and, if it carried one,
+/// the event, whose id the text names so that the relay can be asked for it.
+pub fn unanswered_cost(paid: u128, event: Option<Value>) -> Error {
+    let sentence = if paid > 0 {
+        format!(" It cost {paid} base units.")
+    } else {
+        String::new()
+    };
+    let id = event
+        .as_ref()
+        .and_then(|event| event["id"].as_str())
+        .map(|id| format!(" Event {id} may be asked of the relay with `toon event query`."))
+        .unwrap_or_default();
+    let message = format!("{}{sentence}{id}", unanswered_message());
+    Error {
+        unanswered: Some(crate::outcome::Unanswered { paid, event }),
+        ..failed(ErrorCode::SendFailed, message)
+    }
 }
 
 /// Read the connector's one-line summary of a send. The connector's own `send` verb is
@@ -758,10 +882,18 @@ fn answer(summary: &str) -> Option<Answer> {
     })
 }
 
+/// Whether the `Debug` of the connector's `SendError` is its `Transport` variant for a
+/// packet write answered 401, which is worded `401 Unauthorized -- ...`. The connector
+/// authenticates the write before it forms a packet, so none was sent.
+fn refused_with_401(variant: &str) -> bool {
+    variant.starts_with("Transport") && variant.contains("reason: \"401 ")
+}
+
 /// Whether the connector's `send` failed before it wrote to the operator surface: its
 /// arguments were refused, the operator key could not be read, the identity to seal to
-/// could not be fetched, or the packet could not be sealed. A `Transport` failure may
-/// come after the packet left, and an answer not understood does, so neither is here.
+/// could not be fetched, the packet could not be sealed, or the write was refused with 401. Any
+/// other `Transport` failure may come after the packet left, and an answer not understood
+/// does, so neither is here.
 ///
 /// The connector keeps `SendError` private, so its variant is read from its `Debug`.
 fn before_sending(error: &connector_cli::CliError) -> bool {
@@ -772,6 +904,7 @@ fn before_sending(error: &connector_cli::CliError) -> bool {
             ["KeyFile", "Identity", "Seal"]
                 .iter()
                 .any(|name| variant.starts_with(name))
+                || refused_with_401(&variant)
         }
         _ => false,
     }
@@ -928,7 +1061,7 @@ pub fn dispatch_with_headers(
         ..error
     })?;
     let client = reqwest::blocking::Client::builder()
-        .timeout(PATIENCE)
+        .timeout(packet_wait())
         .build()
         .map_err(|error| not_sent(error.to_string()))?;
 
@@ -943,7 +1076,8 @@ pub fn dispatch_with_headers(
         .map_err(|error| not_sent(format!("The packet could not be sealed: {error}.")))?;
     let prepare = Prepare {
         amount,
-        expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+        expires_at: chrono::Utc::now()
+            + chrono::Duration::from_std(PACKET_EXPIRY).unwrap_or_default(),
         greeting: false,
         destination: destination.to_owned(),
         data,
@@ -958,7 +1092,9 @@ pub fn dispatch_with_headers(
         created,
         Some(created + 60),
     );
-    let response = client
+    // A wait that ran out is an answer of its own, not a failure: the packet may have been
+    // paid for.
+    let response = match client
         .post(format!("{}/packets", surface.url))
         .header("content-type", "application/octet-stream")
         .header("content-digest", content_digest)
@@ -966,16 +1102,26 @@ pub fn dispatch_with_headers(
         .header("signature", signature)
         .body(prepare)
         .send()
-        .map_err(|error| send_failed(error.to_string()))?;
+    {
+        Ok(response) => response,
+        Err(error) if error.is_timeout() => return Ok(Answer::Unanswered),
+        Err(error) => return Err(send_failed(error.to_string())),
+    };
     let status = response.status();
-    let bytes = response
-        .bytes()
-        .map_err(|error| send_failed(error.to_string()))?;
+    let bytes = match response.bytes() {
+        Ok(bytes) => bytes,
+        Err(error) if error.is_timeout() => return Ok(Answer::Unanswered),
+        Err(error) => return Err(send_failed(error.to_string())),
+    };
     if !status.is_success() {
-        return Err(send_failed(format!(
-            "The connector refused the write with {status}: {}",
-            String::from_utf8_lossy(&bytes).trim()
-        )));
+        return Err(Error {
+            // The write is refused before any packet is formed.
+            nothing_sent: status == reqwest::StatusCode::UNAUTHORIZED,
+            ..send_failed(format!(
+                "The connector refused the write with {status}: {}",
+                String::from_utf8_lossy(&bytes).trim()
+            ))
+        });
     }
     let undecodable = |reason: String| {
         send_failed(format!(
@@ -1016,6 +1162,10 @@ pub fn send(
     seal_to: Option<&str>,
 ) -> Result<Report, Error> {
     let answer = dispatch(home, destination, amount, seal_to, None)?;
+    if matches!(answer, Answer::Unanswered) {
+        // `toon send` reads the watermarks, which only its caller can.
+        return Err(unanswered_cost(u128::from(amount), None));
+    }
     let sent = format!("{amount} base units to {destination}");
     Ok(match answer {
         Answer::Fulfilled { status, body } => Report {
@@ -1038,6 +1188,7 @@ pub fn send(
             }),
             text: format!("Rejected with {code}: {sent}. {message}"),
         },
+        Answer::Unanswered => unreachable!("handled above"),
         Answer::WrongFulfilment => Report {
             exit: Exit::Failure,
             json: json!({
@@ -1200,7 +1351,10 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{before_sending, peer_add_on, PeerAdd, Surface, STALE_READ};
+    use super::{
+        before_sending, packet_wait, peer_add_on, PeerAdd, Surface, PACKET_EXPIRY, REPLAYED,
+        STALE_READ,
+    };
     use crate::outcome::ErrorCode;
     use std::io::{Read, Write};
 
@@ -1331,6 +1485,56 @@ mod tests {
         assert!(!crate::spending::failed_before_paying(&error));
     }
 
+    fn replayed() -> (u16, String) {
+        (401, super::REPLAYED.to_owned())
+    }
+
+    #[test]
+    fn a_write_refused_as_a_replay_is_signed_again_once_the_second_has_turned() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (url, seen) = connector(vec![replayed(), found()]);
+        let peered = peer_add_on(&surface(home.path(), url), &add()).expect("peered");
+        assert!(!peered.deposited, "the connector found the channel");
+        let times: Vec<_> = seen.try_iter().collect();
+        assert_eq!(times.len(), 2);
+        let wait = times[1] - times[0];
+        assert!(wait < std::time::Duration::from_millis(1_500), "{wait:?}");
+    }
+
+    #[test]
+    fn a_write_refused_as_a_replay_twice_says_nothing_was_done_and_is_not_repeated_again() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (url, seen) = connector(vec![replayed()]);
+        let Err(error) = peer_add_on(&surface(home.path(), url), &add()) else {
+            panic!("the peering was made");
+        };
+        assert_eq!(error.code, ErrorCode::PeerFailed);
+        assert!(
+            error.message.contains("Nothing was done"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("again"), "{}", error.message);
+        assert!(crate::spending::failed_before_paying(&error));
+        assert_eq!(seen.try_iter().count(), 2);
+    }
+
+    #[test]
+    fn a_write_refused_with_401_for_another_reason_is_not_repeated_and_paid_nothing() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (url, seen) = connector(vec![(401, "signature has expired".to_owned())]);
+        let Err(error) = peer_add_on(&surface(home.path(), url), &add()) else {
+            panic!("the peering was made");
+        };
+        assert_eq!(error.code, ErrorCode::PeerFailed);
+        assert_eq!(
+            error.message,
+            "The connector answered 401: signature has expired"
+        );
+        assert!(crate::spending::failed_before_paying(&error));
+        assert_eq!(seen.try_iter().count(), 1);
+    }
+
     /// The repeat of a peering is keyed on the connector's wording, which the connector
     /// keeps in a string literal after the channel's quoted name. The connector's crates
     /// are linked into this binary, so a pin move that rewords the refusal fails here
@@ -1346,6 +1550,19 @@ mod tests {
         assert!(
             found,
             "the embedded connector no longer says {STALE_READ:?}"
+        );
+    }
+
+    /// The connector keeps its wording for a replayed signature in a private type, so it is
+    /// pinned through the running connector, by
+    /// `the_connectors_replay_wording_is_pinned` in `tests/peer.rs`. This keeps that test
+    /// on the wording the repeat is keyed on.
+    #[test]
+    fn the_replay_wording_pinned_is_the_one_the_repeat_is_keyed_on() {
+        let pinned = include_str!("../tests/peer.rs");
+        assert!(
+            pinned.contains(&format!("text.contains({REPLAYED:?})")),
+            "tests/peer.rs no longer pins {REPLAYED:?}"
         );
     }
 
@@ -1393,5 +1610,10 @@ mod tests {
         assert!(before_sending(&connector_cli::CliError::Usage(
             String::new()
         )));
+    }
+
+    #[test]
+    fn the_wait_for_a_packet_outlasts_its_expiry() {
+        assert!(packet_wait() > PACKET_EXPIRY);
     }
 }

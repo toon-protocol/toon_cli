@@ -200,6 +200,7 @@ pub fn down(home: &Path) -> Result<Report, Error> {
             if Instant::now() >= deadline {
                 return Err(Error {
                     nothing_sent: false,
+                    unanswered: None,
                     code: ErrorCode::ConnectorFailed,
                     message: "The supervisor was asked to stop and had not stopped in time.".into(),
                 });
@@ -240,6 +241,7 @@ pub fn logs(home: &Path, name: &str, lines: usize) -> Result<Report, Error> {
             .collect();
         return Err(Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::UnknownName,
             message: format!(
                 "No TOON app or app is called {name}. This agent node has {}.",
@@ -255,6 +257,7 @@ pub fn logs(home: &Path, name: &str, lines: usize) -> Result<Report, Error> {
         Err(source) => {
             return Err(Error {
                 nothing_sent: false,
+                unanswered: None,
                 code: ErrorCode::Io,
                 message: format!("{}: {source}.", log.display()),
             })

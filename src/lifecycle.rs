@@ -42,6 +42,7 @@ fn failed(code: ErrorCode, message: String) -> Error {
         code,
         message,
         nothing_sent: false,
+        unanswered: None,
     }
 }
 

@@ -131,6 +131,7 @@ pub fn is_local_plain(url: &str) -> bool {
 fn unavailable(why: &str) -> Error {
     Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::OverlayUnavailable,
         message: format!(
             "The Anyone overlay did not bootstrap: {why}. A hidden service is never created \
@@ -339,11 +340,13 @@ impl Edge for Loopback {
     fn issue(&self, connector: u32, key: &Path) -> Result<String, Error> {
         let secret = zeroize::Zeroizing::new(fs::read(key).map_err(|error| Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::Io,
             message: format!("{}: {error}.", key.display()),
         })?);
         let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::Io,
             message: format!("{} is not a 32-byte key.", key.display()),
         })?;
@@ -384,6 +387,7 @@ impl Edge for Loopback {
         match fs::remove_dir_all(&service) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(Error {
                 nothing_sent: false,
+                unanswered: None,
                 code: ErrorCode::Io,
                 message: format!("{}: {error}.", service.display()),
             }),

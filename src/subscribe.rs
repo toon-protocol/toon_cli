@@ -32,6 +32,7 @@ const HTTP_AUTH: u64 = 27235;
 fn usage(message: impl Into<String>) -> Error {
     Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::Usage,
         message: message.into(),
     }
@@ -105,6 +106,7 @@ pub fn receiving_secret(home: &Path) -> Option<[u8; 32]> {
 fn subscriber_secret(home: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
     derive::subscriber_secret(&*event::wallet_seed(home)?).map_err(|source| Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
     })
@@ -192,6 +194,7 @@ pub fn load(home: &Path) -> Result<Vec<Kept>, Error> {
         Err(source) => {
             return Err(Error {
                 nothing_sent: false,
+                unanswered: None,
                 code: ErrorCode::Io,
                 message: format!("{}: {source}.", kept_path(home).display()),
             })
@@ -199,6 +202,7 @@ pub fn load(home: &Path) -> Result<Vec<Kept>, Error> {
     };
     let value: Value = serde_json::from_str(&text).map_err(|source| Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::Io,
         message: format!("{}: {source}.", kept_path(home).display()),
     })?;
@@ -279,6 +283,7 @@ pub fn subscribe(
     if !operator::forwards(home, &terms.address)? {
         return Err(Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::PeeringNeeded,
             message: format!(
                 "No peering of this agent node reaches {}, where {relay} sells its feed. A \
@@ -293,6 +298,7 @@ pub fn subscribe(
     if !yes {
         return Err(Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::NotConfirmed,
             message: format!(
                 "{relay} charges {} per subscribe packet and {} for each event it broadcasts. \
@@ -321,6 +327,7 @@ pub fn subscribe(
         // Whether the last packet sent was rejected or wrongly fulfilled, which the
         // watermarks tell the cost of, or failed in a way that may have paid.
         let mut metered = false;
+        let mut unanswered = false;
         let mut may_have_paid = false;
         let mut credited = 0;
         let mut now: Option<Kept> = None;
@@ -341,6 +348,19 @@ pub fn subscribe(
                 headers,
                 body.clone(),
             ) {
+                Ok(Answer::Unanswered) if paid_so_far == 0 => {
+                    return Err(operator::unanswered_cost(
+                        meter.moved(u128::from(packet_amount)),
+                        None,
+                    ));
+                }
+                Ok(Answer::Unanswered) => {
+                    // The packets that were answered were paid for; this one cost what
+                    // the channels moved by beyond them.
+                    unanswered = true;
+                    stopped = Some(("unanswered", Value::Null, operator::unanswered_message()));
+                    break;
+                }
                 Ok(answer) => answer,
                 Err(error) if paid_so_far == 0 => return Err(error),
                 Err(error) => {
@@ -385,6 +405,7 @@ pub fn subscribe(
                     ));
                     break;
                 }
+                Answer::Unanswered => unreachable!("handled above"),
                 Answer::WrongFulfilment => {
                     metered = true;
                     stopped = Some((
@@ -397,7 +418,7 @@ pub fn subscribe(
                 }
             }
         }
-        if metered {
+        if metered || unanswered {
             // The last packet moved what the channels moved by beyond the fulfilled
             // packets' amount, which is nothing when the agent node's own connector
             // refused it.
@@ -603,6 +624,7 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
     let Some(kept) = load(home)?.into_iter().find(|kept| kept.relay == relay) else {
         return Err(Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::NotSubscribed,
             message: format!(
                 "This agent node holds no subscription at {relay}: `toon relay subscribe` opens one."
@@ -626,6 +648,7 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
     });
     let failed = |message: String| Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::QueryFailed,
         message,
     };

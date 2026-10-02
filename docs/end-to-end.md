@@ -283,6 +283,11 @@ $E/toon channel list --json
 channel status of `found`, and `limit show` the same before and after it. The first agent
 node's inbound channel from the other one is at watermark 1.
 
+A first publish over a cold link may be rejected after 30 seconds, or fail with
+`send_failed` when the connector does not answer in time (the packet has expired by then;
+the failure's `paid` and `event` say what it cost and which event it carried). It is paid
+for, and the same command succeeds when run again.
+
 ### Hold a subscription
 
 ```sh

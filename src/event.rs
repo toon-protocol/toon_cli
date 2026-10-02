@@ -34,6 +34,7 @@ const SUBSCRIPTION: &str = "toon";
 fn usage(message: impl Into<String>) -> Error {
     Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::Usage,
         message: message.into(),
     }
@@ -55,6 +56,7 @@ pub fn sign(
 ) -> Result<Value, Error> {
     let key = SigningKey::from_bytes(secret).map_err(|_| Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::KeystoreCorrupt,
         message: "The agent identity is not a valid key.".into(),
     })?;
@@ -64,6 +66,7 @@ pub fn sign(
         .sign_raw(&id, &keystore::random::<32>()?)
         .map_err(|_| Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::Io,
             message: "The event could not be signed.".into(),
         })?;
@@ -130,6 +133,7 @@ pub fn wallet_seed(home: &Path) -> Result<zeroize::Zeroizing<[u8; 64]>, Error> {
             .parse()
             .map_err(|_| Error {
                 nothing_sent: false,
+                unanswered: None,
                 code: ErrorCode::KeystoreCorrupt,
                 message: "The keystore does not hold a valid mnemonic.".into(),
             })?;
@@ -140,6 +144,7 @@ pub fn wallet_seed(home: &Path) -> Result<zeroize::Zeroizing<[u8; 64]>, Error> {
 pub fn agent_secret(home: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
     derive::agent_identity_secret(&*wallet_seed(home)?).map_err(|source| Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
     })
@@ -151,6 +156,7 @@ pub fn public_key(secret: &[u8; 32]) -> Result<String, Error> {
         .map(|key| hex::encode(key.verifying_key().to_bytes()))
         .map_err(|_| Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::KeystoreCorrupt,
             message: "The agent identity is not a valid key.".into(),
         })
@@ -209,7 +215,12 @@ fn write_to(
     };
 
     let id = event["id"].as_str().unwrap_or_default().to_owned();
-    Ok(match answer? {
+    let answer = answer?;
+    if matches!(answer, Answer::Unanswered) {
+        return Err(operator::unanswered_cost(u128::from(amount), Some(event)));
+    }
+    Ok(match answer {
+        Answer::Unanswered => unreachable!("handled above"),
         Answer::Fulfilled { status, body } if (200..300).contains(&status) => Report {
             exit: Exit::Success,
             json: json!({
@@ -272,6 +283,7 @@ pub fn query(relay: &str, filter: &str) -> Result<Report, Error> {
 pub fn fetch(egress: &Egress, relay: &str, filter: &Value) -> Result<Vec<Value>, Error> {
     let failed = |message: String| Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::QueryFailed,
         message,
     };
@@ -357,6 +369,7 @@ pub fn edge_fields(toon: &Value) -> Result<Edge, String> {
 pub fn unpayable(message: String) -> Error {
     Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::RelayNotPayable,
         message,
     }
@@ -431,6 +444,7 @@ fn publish_to(
     if !operator::forwards(home, &edge.ilp_address)? {
         return Err(Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::PeeringNeeded,
             message: format!(
                 "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
@@ -444,6 +458,7 @@ fn publish_to(
     if !yes {
         return Err(Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::NotConfirmed,
             message: format!(
                 "A write to {relay} would send {amount} base units{}. Add `--yes` to say that \
@@ -460,7 +475,8 @@ fn publish_to(
     let event = sign(&secret, now(), kind, tags, content)?;
     let sent: u128 = amount.into();
     spending::spend_packets(home, sent, yes, |packets| {
-        let mut report = write_to(home, event, &edge.ilp_address, amount, Some(&edge.seal_key))?;
+        let mut report = write_to(home, event, &edge.ilp_address, amount, Some(&edge.seal_key))
+            .map_err(|error| operator::repriced(error, packets.moved(sent)))?;
         // A fulfilled packet moved money, whatever the relay or its fulfilment said. A
         // rejected one moved what its channels moved by.
         let rejected = report.json["outcome"] == "rejected";

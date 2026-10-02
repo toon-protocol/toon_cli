@@ -368,3 +368,166 @@ fn a_peering_that_finds_its_channel_open_deposits_nothing_and_is_not_counted() {
     assert!(!text.stdout.contains("deposit 1000000"), "{}", text.stdout);
     assert_eq!(remaining_today(&near), remaining, "nor the third");
 }
+
+/// Wait until a second has just turned, so that two commands run one after the other are
+/// signed in the same second.
+fn wait_for_a_second_to_turn() {
+    let into_second = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock")
+        .subsec_millis();
+    std::thread::sleep(std::time::Duration::from_millis(
+        u64::from(1_000 - into_second) + 20,
+    ));
+}
+
+#[test]
+fn the_same_peering_twice_in_one_second_succeeds_both_times_and_counts_nothing() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let add = [
+        "peer",
+        "add",
+        &far.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+        "--id",
+        "far",
+        "--json",
+    ];
+    let first = near.toon(&add);
+    assert_eq!(first.exit_code, 0, "{}", first.stdout);
+    let balance = chain.balance(&near.evm);
+    let remaining = remaining_today(&near);
+
+    wait_for_a_second_to_turn();
+    let pair = [near.toon(&add), near.toon(&add)];
+
+    for run in &pair {
+        assert_eq!(run.exit_code, 0, "{}", run.stdout);
+        assert_eq!(run.json()["peering"]["channel"]["status"], "found");
+    }
+    assert_eq!(chain.balance(&near.evm), balance, "nothing was deposited");
+    assert_eq!(remaining_today(&near), remaining, "and nothing is counted");
+}
+
+#[test]
+fn the_same_route_twice_in_one_second_succeeds_both_times() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let peered = near.toon(&[
+        "peer",
+        "add",
+        &far.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+        "--id",
+        "far",
+    ]);
+    assert_eq!(peered.exit_code, 0, "{}", peered.stdout);
+    let route = ["route", "add", "g.far", "--peer", "far", "--json"];
+
+    wait_for_a_second_to_turn();
+    let pair = [near.toon(&route), near.toon(&route)];
+
+    for run in &pair {
+        assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    }
+}
+
+/// Replace the agent node's operator write key with one the connector does not list.
+fn unlist_the_write_key(node: &Node) {
+    std::fs::write(
+        node.machine.agent_node_home().join("operator.key"),
+        [9u8; 32],
+    )
+    .expect("another key");
+}
+
+#[test]
+fn a_peering_the_connector_refuses_with_401_is_not_counted() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    unlist_the_write_key(&near);
+    let remaining = remaining_today(&near);
+
+    let run = near.toon(&[
+        "peer",
+        "add",
+        &far.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+        "--json",
+    ]);
+
+    assert_eq!(run.json()["error"]["code"], "peer_failed", "{}", run.stdout);
+    assert!(run.stdout.contains("401"), "{}", run.stdout);
+    assert_eq!(remaining_today(&near), remaining);
+}
+
+#[test]
+fn a_packet_the_connector_refuses_with_401_is_not_counted() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    unlist_the_write_key(&near);
+    let remaining = remaining_today(&near);
+
+    let run = near.toon(&["send", "g.toon.relay", "--amount", "5", "--yes", "--json"]);
+
+    assert_eq!(run.json()["error"]["code"], "send_failed", "{}", run.stdout);
+    assert!(run.stdout.contains("401"), "{}", run.stdout);
+    assert_eq!(remaining_today(&near), remaining);
+}
+
+/// The repeat of a write is keyed on the connector's wording for a replayed signature
+/// (`operator::REPLAYED`). This signs one write and sends it twice to the running
+/// connector, so a pin move that rewords the refusal fails here instead of ending the
+/// repeat.
+#[test]
+fn the_connectors_replay_wording_is_pinned() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let raw = std::fs::read(near.machine.agent_node_home().join("operator.key")).expect("key");
+    let secret = ed25519_dalek_v1::SecretKey::from_bytes(&raw).expect("a 32-byte key");
+    let keypair = ed25519_dalek_v1::Keypair {
+        public: (&secret).into(),
+        secret,
+    };
+    let created = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock")
+        .as_secs();
+    let (input, signature, digest) = connector_operator::signing::sign_request(
+        &keypair,
+        "DELETE",
+        "/routes/peers/g.nothing",
+        b"",
+        created,
+        Some(created + 60),
+    );
+    let send = || {
+        reqwest::blocking::Client::new()
+            .delete(format!("http://{}/routes/peers/g.nothing", near.address))
+            .header("content-digest", &digest)
+            .header("signature-input", &input)
+            .header("signature", &signature)
+            .send()
+            .expect("the connector answers")
+    };
+
+    let first = send();
+    assert_ne!(first.status().as_u16(), 401, "{}", first.text().unwrap());
+    let second = send();
+    assert_eq!(second.status().as_u16(), 401);
+    let text = second.text().expect("a body");
+    assert!(
+        text.contains("signature has already been used"),
+        "the embedded connector no longer words a replay so: {text}"
+    );
+}

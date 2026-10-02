@@ -104,7 +104,8 @@ fn run() -> ExitCode {
                 let amount: u128 = args.amount.into();
                 spending::spend_packets(&home, amount, args.yes, |packets| {
                     let mut report =
-                        operator::send(&home, &args.address, args.amount, args.seal_to.as_deref())?;
+                        operator::send(&home, &args.address, args.amount, args.seal_to.as_deref())
+                            .map_err(|error| operator::repriced(error, packets.moved(amount)))?;
                     // A packet that was rejected, or fulfilled wrongly, moved what its
                     // channels moved by, which is nothing when the agent node's own
                     // connector refused it.
@@ -260,6 +261,7 @@ fn install(home: &Path) -> Result<Report, Error> {
     if control::running(home) {
         return Err(Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::AlreadyRunning,
             message: format!(
                 "A supervisor is already running this agent node, at {}.",
@@ -320,6 +322,7 @@ fn unparsed(error: clap::Error) -> Result<Report, Error> {
         .join(" ");
     Err(Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::Usage,
         message,
     })

@@ -119,6 +119,7 @@ impl Egress {
     fn unusable(&self, error: reqwest::Error) -> Error {
         Error {
             nothing_sent: false,
+            unanswered: None,
             code: crate::outcome::ErrorCode::OverlayUnavailable,
             message: format!("The overlay's proxy could not be used: {error}."),
         }
