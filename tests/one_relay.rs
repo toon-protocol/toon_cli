@@ -5,6 +5,12 @@ use std::fs;
 use support::fake_chain::FakeChain;
 use support::Machine;
 
+/// The pid of the first TOON app's connector, as `toon status` reports it.
+fn connector_pid(machine: &Machine) -> serde_json::Value {
+    machine.toon(&["status", "--json"]).json()["agent_node"]["toon_apps"][0]["connector"]["pid"]
+        .clone()
+}
+
 /// The relay image this build pins, as `toon --version --json` reports it.
 fn relay_image(machine: &Machine) -> String {
     machine.toon(&["--version", "--json"]).json()["relay_image"]
@@ -86,14 +92,51 @@ fn create_and_add_refuse_the_relays_image_and_change_nothing() {
 }
 
 #[test]
+fn a_running_agent_node_refuses_the_relays_image_without_a_restart() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+    let pid = connector_pid(&machine);
+    assert!(pid.is_u64(), "the connector is running");
+    let files = entries(&machine);
+
+    for image in relay_images(&machine) {
+        for args in [
+            vec![
+                "create",
+                "second",
+                "--image",
+                &image,
+                "--no-peer",
+                "--yes",
+                "--json",
+            ],
+            vec![
+                "add", "second", "--to", "relay", "--image", &image, "--yes", "--json",
+            ],
+        ] {
+            let run = machine.toon(&args);
+            assert_eq!(run.exit_code, 1, "{args:?}: {}", run.stdout);
+            assert_eq!(run.json()["error"]["code"], "one_relay", "{args:?}");
+            assert_eq!(connector_pid(&machine), pid, "{args:?}");
+            assert_eq!(entries(&machine), files);
+        }
+    }
+}
+
+#[test]
 fn an_image_from_another_repository_is_not_refused() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     assert_eq!(machine.init_on(&chain).exit_code, 0);
 
+    // Past the image check, `add` asks for `--yes` as it always has.
     let run = machine.toon(&[
         "add", "second", "--to", "relay", "--image", "notes:1", "--json",
     ]);
 
-    assert_ne!(run.json()["error"]["code"], "one_relay");
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
+    assert_eq!(run.json()["error"]["code"], "confirmation_required");
 }

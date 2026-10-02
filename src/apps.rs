@@ -31,7 +31,7 @@ pub enum Origin<'a> {
 
 impl Origin<'_> {
     /// Refuses the relay's image: an agent node runs one relay, the one `toon init` created.
-    pub fn refuse_relay(&self) -> Result<(), Error> {
+    pub fn refuse_relay_image(&self) -> Result<(), Error> {
         match self {
             Origin::Image(image) if repository(image) == repository(env!("TOON_RELAY_IMAGE")) => {
                 Err(failed(
@@ -210,7 +210,7 @@ pub fn free(state: &State, name: &str) -> Result<(), Error> {
 
 /// `toon add`: put a new app behind the connector of the TOON app `to`.
 pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
-    add.origin.refuse_relay()?;
+    add.origin.refuse_relay_image()?;
     let state = loaded(home)?;
     let Some(index) = state.toon_apps.iter().position(|app| app.name == add.to) else {
         return Err(unknown(&state, add.to));
