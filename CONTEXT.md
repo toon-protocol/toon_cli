@@ -87,6 +87,10 @@ _Avoid_: Address on its own, where it could mean the onion endpoint or a wallet'
 The part of a TOON app's ILP addresses that no other TOON app has: taken from its connector's identity key, never chosen by the operator. Every ILP address the connector answers to sits under `g.toon.<address segment>`.
 _Avoid_: Node name, node id, namespace
 
+**Write edge**:
+What a relay says about where a write to it is paid: the ILP address the write is sent to, the seal key of the connector that terminates it, and the price. A relay names its own write edge in its information document. The connector URL beside it is a location hint, not something the write depends on.
+_Avoid_: Paid edge, payment endpoint
+
 **Hidden service**:
 The mode in which a connector is reachable only at an address inside the Anyone overlay, which public DNS cannot resolve. It is the default for a new TOON app.
 _Avoid_: Onion service, Tor service, dark node
