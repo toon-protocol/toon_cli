@@ -100,14 +100,11 @@ impl FakeRemoteRelay {
     /// Name the connector that terminates the relay's routes, as the relay publishes it: the
     /// real sealing key of the connector at `url`, and `url` as the location hint.
     pub fn set_connector(&self, url: &str) {
-        let identity: Value = reqwest::blocking::get(format!("{url}/identity"))
-            .and_then(|response| response.json())
-            .expect("the connector's identity");
-        let key = identity["publicKey"].as_str().expect("a publicKey");
-        self.publish_connector(url, key);
+        self.publish_connector(url, &super::seal_key(url));
     }
 
-    /// Publish `url` as the connector's location and `key` as its sealing key, as given.
+    /// Publish `url` as the connector's location and `key` as its sealing key, as given; an
+    /// empty `key` is left out of the document.
     pub fn publish_connector(&self, url: &str, key: &str) {
         let mut state = self.state.lock().unwrap();
         state.connector_url = url.to_owned();
@@ -154,13 +151,12 @@ impl FakeRemoteRelay {
 
     fn document(&self) -> Value {
         let state = self.state.lock().unwrap();
-        json!({
+        let mut document = json!({
             "name": "far",
             "supported_nips": [1, 11, 42],
             "toon": {
                 "ilp_address": "g.toon.relay",
                 "connector_url": state.connector_url,
-                "connector_seal_key": state.connector_seal_key,
                 "price": 1,
             },
             "toon_subscription": {
@@ -168,7 +164,11 @@ impl FakeRemoteRelay {
                 "price": self.price,
                 "broadcast_price": self.broadcast_price,
             },
-        })
+        });
+        if !state.connector_seal_key.is_empty() {
+            document["toon"]["connector_seal_key"] = json!(state.connector_seal_key);
+        }
+        document
     }
 
     fn serve(&self, stream: TcpStream) {

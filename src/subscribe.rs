@@ -56,14 +56,19 @@ fn terms(relay: &str) -> Result<Terms, Error> {
         value.as_str().filter(|text| !text.is_empty())
     }
     let positive = |value: &Value| value.as_u64().filter(|number| *number > 0);
-    let toon = event::edge_fields(&document["toon"]);
+    let edge = event::edge_fields(&document["toon"]).map_err(|missing| {
+        event::unpayable(format!(
+            "The information document of {relay} does not say where its feed is paid for: \
+             its `toon` object needs an `ilp_address`, a `connector_url`, a \
+             `connector_seal_key` of 65 bytes of hex and a `price`, and has {missing}."
+        ))
+    })?;
     match (
-        toon,
         text(&subscription["ilp_address"]),
         positive(&subscription["price"]),
         positive(&subscription["broadcast_price"]),
     ) {
-        (Some(edge), Some(address), Some(price), Some(broadcast_price)) => Ok(Terms {
+        (Some(address), Some(price), Some(broadcast_price)) => Ok(Terms {
             connector_url: edge.connector_url,
             seal_key: edge.seal_key,
             address: address.to_owned(),
@@ -72,9 +77,8 @@ fn terms(relay: &str) -> Result<Terms, Error> {
         }),
         _ => Err(event::unpayable(format!(
             "The information document of {relay} has no `toon_subscription` with an \
-             `ilp_address`, a `price` and a `broadcast_price` above 0 beside a `toon` with an \
-             `ilp_address`, a `connector_url`, a 65-byte hex `connector_seal_key` and a \
-             `price`, so it does not sell its feed."
+             `ilp_address`, a `price` and a `broadcast_price` above 0, so it does not sell \
+             its feed."
         ))),
     }
 }

@@ -393,7 +393,7 @@ fn the_subscriber_key_is_not_the_agent_identity() {
 fn with_no_peering_the_command_says_one_is_needed_with_its_deposit_and_creates_none() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);
-    let (_far, relay) = remote(&chain);
+    let (far, relay) = remote(&chain);
 
     let run = subscribe(
         &near,
@@ -406,6 +406,10 @@ fn with_no_peering_the_command_says_one_is_needed_with_its_deposit_and_creates_n
     assert_eq!(run.exit_code, 1);
     let message = error["message"].as_str().unwrap();
     assert!(message.contains("deposit of at least 2000"), "{message}");
+    assert!(
+        message.contains(&format!("toon peer add {} --deposit", far.url())),
+        "{message}"
+    );
     let peers = near.toon(&["peer", "list", "--json"]).json();
     assert_eq!(peers["peers"].as_array().map(Vec::len), Some(0));
     assert_eq!(relay.posts(), 0);
@@ -565,19 +569,8 @@ fn a_subscription_is_sealed_to_the_published_key_and_never_dials_the_connector_u
     let near = node_on(&chain);
     let (far, relay) = remote(&chain);
     peer_and_route(&near, &far);
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let hint = format!("http://{}/ilp", listener.local_addr().expect("address"));
-    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counted = seen.clone();
-    std::thread::spawn(move || {
-        for _ in listener.incoming().flatten() {
-            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    });
-    let identity: serde_json::Value = reqwest::blocking::get(format!("{}/identity", far.url()))
-        .and_then(|response| response.json())
-        .expect("the connector's identity");
-    relay.publish_connector(&hint, identity["publicKey"].as_str().unwrap());
+    let hint = support::spy::start();
+    relay.publish_connector(&hint.url(), &support::seal_key(&far.url()));
 
     let run = subscribe(
         &near,
@@ -587,7 +580,7 @@ fn a_subscription_is_sealed_to_the_published_key_and_never_dials_the_connector_u
 
     assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
     assert_eq!(run.json()["outcome"], "subscribed");
-    assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(hint.connections(), 0);
 }
 
 #[test]
@@ -597,7 +590,9 @@ fn a_relay_without_a_whole_seal_key_is_not_payable() {
     let (far, relay) = remote(&chain);
     peer_and_route(&near, &far);
 
-    for key in ["", "04ab", "not hex"] {
+    // An empty key is left out of the document; the last is 65 bytes but not uncompressed.
+    let compressed = format!("05{}", "ab".repeat(64));
+    for key in ["", "04ab", "not hex", &compressed] {
         relay.publish_connector(&far.url(), key);
         let run = subscribe(
             &near,
@@ -606,6 +601,13 @@ fn a_relay_without_a_whole_seal_key_is_not_payable() {
         );
         let error = run.json()["error"].clone();
         assert_eq!(error["code"], "relay_not_payable", "{key}: {error}");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("`connector_seal_key`"),
+            "{key}: {error}"
+        );
         assert_eq!(run.exit_code, 1);
     }
     assert_eq!(relay.posts(), 0);

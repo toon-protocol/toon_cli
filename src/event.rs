@@ -313,18 +313,30 @@ pub struct Edge {
     pub price: u64,
 }
 
-/// The paid write edge in a `toon` object, if it is whole: the key is 65 bytes of hex, with
-/// or without `0x`.
-pub fn edge_fields(toon: &Value) -> Option<Edge> {
-    let text = |field: &str| toon[field].as_str().filter(|text| !text.is_empty());
-    Some(Edge {
+/// The paid write edge in a `toon` object, or what the object is missing to be one: the
+/// key is 65 bytes of hex, uncompressed so it begins `04`, with or without `0x`.
+pub fn edge_fields(toon: &Value) -> Result<Edge, String> {
+    let text = |field: &str| {
+        toon[field]
+            .as_str()
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| format!("no `{field}`"))
+    };
+    let key = text("connector_seal_key")?;
+    let seal_key: [u8; 65] = hex::decode(key.strip_prefix("0x").unwrap_or(key))
+        .ok()
+        .and_then(|key| key.try_into().ok())
+        .filter(|key: &[u8; 65]| key[0] == 0x04)
+        .ok_or_else(|| {
+            format!("a `connector_seal_key` that is not 65 bytes of hex beginning `04`: {key}")
+        })?;
+    Ok(Edge {
         ilp_address: text("ilp_address")?.to_owned(),
         connector_url: text("connector_url")?.to_owned(),
-        seal_key: hex::decode(text("connector_seal_key")?.trim_start_matches("0x"))
-            .ok()?
-            .try_into()
-            .ok()?,
-        price: toon["price"].as_u64()?,
+        seal_key,
+        price: toon["price"]
+            .as_u64()
+            .ok_or_else(|| "no `price`".to_owned())?,
     })
 }
 
@@ -372,11 +384,11 @@ pub fn information_document(relay: &str) -> Result<Value, Error> {
 /// object.
 fn edge(relay: &str) -> Result<Edge, Error> {
     let document = information_document(relay)?;
-    edge_fields(&document["toon"]).ok_or_else(|| {
+    edge_fields(&document["toon"]).map_err(|missing| {
         unpayable(format!(
-            "The information document of {relay} has no `toon` object with an `ilp_address`, \
-             a `connector_url`, a `connector_seal_key` of 65 bytes of hex and a `price`, so it \
-             does not say where a write is paid for."
+            "The information document of {relay} does not say where a write is paid for: \
+             its `toon` object needs an `ilp_address`, a `connector_url`, a \
+             `connector_seal_key` of 65 bytes of hex and a `price`, and has {missing}."
         ))
     })
 }
