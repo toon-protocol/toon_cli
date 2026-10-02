@@ -14,31 +14,28 @@ step below whether it did what the step says. Open a ticket for every step that 
 
 ## Steps known to fail
 
-The run of 2026-10-01 is recorded on #2. Take a row out when its ticket closes, and the
-flags or the note beside it out of the step.
+The runs of 2026-10-01 and 2026-10-02 are recorded on #2. Take a row out when its ticket
+closes, and the flags or the note beside it out of the step.
 
 | Step | What happens today | Ticket |
 | --- | --- | --- |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
-| 2, a home with a long path | `up` fails with `io`, naming `SUN_LEN` | #75 |
-| 2, anything naming `$HUB` but `init` | The command line cannot reach a `.anyone` host, hence `localhost` in `--seal-to` | #69 |
+| 2, publish to `relay2` through the hub | The write pays the relay's price of 1, the hub's is 101, and the hub rejects it with `F03` | #92 |
+| 2, any rejected packet, the `T01` after `add` too | The channel's watermark moves by the packet's amount, and `toon` reports nothing paid | #93 |
 | 2, hold a subscription | No relay serves the subscribe route | relay #215 |
-| 3, the connector and the relay | The devnet profile's two hosts do not exist: both answer 000 | #66 |
-| 3, `up` and `join` | The faucet sends no ETH and `up` requires it | #68 |
 
 ## What it needs
 
 - Docker, `jq`, `curl`, and Foundry's `cast`.
 - The `infra` checkout beside this one, set up once with `make setup` in `infra/sandbox`.
-- A home directory with a short path: the supervisor's socket is under it, and a socket
-  path is at most 107 bytes.
+- For the last step of part 3, about 0.0001 Base Sepolia ETH from a public faucet.
 
 The run never touches your own agent node: every command below runs with `HOME` set to a
 directory made for the run.
 
 ```sh
 cargo build --locked
-export E=/tmp/toon-e2e && mkdir -p $E/sandbox $E/devnet
+export E=/tmp/toon-e2e && mkdir -p $E/sandbox $E/other $E/devnet
 cp target/debug/toon $E/toon          # a rebuild must not replace a running supervisor
 printf 'a passphrase for this run\n' > $E/pass && chmod 600 $E/pass
 export TOON_PASSPHRASE_FILE=$E/pass
@@ -51,14 +48,21 @@ docker build -t toon-e2e-app docs/end-to-end/app
 ## 1. The sandbox, with its hub hidden
 
 ```sh
+make -C ../infra/sandbox clean
 make -C ../infra/sandbox up-topology NODES="relay relay2" CHAINS=evm HS=relay
 ```
 
-It dials the real Anyone network and takes a minute or two. Its last lines name the hub:
-`relay is reached at http://<hub>.anyone:3200/ilp`. The same address serves the hub's
-relay on port 7100. A second relay node, `g.toon.relay2`, sits behind the hub, and the
-sandbox's own client daemon is a SOCKS proxy at `127.0.0.1:19050`: the "other machine" a
-hidden service is checked from.
+`clean` first, because the sandbox's chain keeps nothing and its connectors do: started on
+the volumes of an earlier run, the peerings fail with `batch-settlement channel … not
+found`. `up-topology` dials the real Anyone network and takes a minute or two. Its last
+lines name the hub: `relay is reached at http://<hub>.anyone:3200/ilp`. The same address
+serves the hub's relay on port 7100. A second relay node, `g.toon.relay2`, sits behind the
+hub, and the sandbox's own client daemon is a SOCKS proxy at `127.0.0.1:19050`: the
+"other machine" a hidden service is checked from.
+
+A sandbox node that is not hidden is paid through the hub and is not peered with
+directly: it publishes a compose-network name, and a connector dials what the other side
+publishes.
 
 ```sh
 export HUB=<hub>.anyone
@@ -104,7 +108,8 @@ $E/toon up --foreground --json
 
 **Expect** one JSON document naming the connector's address, a `toon-<id>-relay` container
 from the pinned image in `docker ps`, and `toon status --json` exiting 0 with the connector
-and the relay running.
+and the relay running. The relay's address is the agent node's own:
+`g.toon.<segment>.relay`.
 
 ### It is reachable only at its onion endpoint
 
@@ -115,8 +120,9 @@ curl -s --socks5-hostname 127.0.0.1:19050 -H 'Accept: application/nostr+json' ht
 ```
 
 **Expect** the connector's self-description, naming the onion endpoint as its
-`httpEndpoint`, and the relay's information document on port 7100 of the same address.
-Both go through a daemon that is not the agent node's own.
+`httpEndpoint`, and the relay's information document on port 7100 of the same address,
+whose `toon` object names the relay's address, the connector's onion endpoint, its seal
+key and a price of 1. Both go through a daemon that is not the agent node's own.
 
 ### Join
 
@@ -136,32 +142,54 @@ it carries no event, so the relay behind it answers 400. The channel's watermark
 ### Publish an event
 
 ```sh
-$E/toon event publish --kind 1 --content "end-to-end run" --json | tee $E/event.json
-READ=$(docker ps --format '{{.Names}} {{.Ports}}' | grep -- '-relay ' \
-  | grep -o '127.0.0.1:[0-9]*->7100' | cut -d- -f1)
+$E/toon event publish --kind 1 --content "end-to-end run" --json > $E/event.json
+READ=$($E/toon status --json \
+  | jq -r '.agent_node.toon_apps[0].apps[] | select(.name == "relay") | .read_address')
 $E/toon event query ws://$READ --filter "{\"ids\":[\"$(jq -r .event.id $E/event.json)\"]}" --json
 ```
 
-**Expect** `outcome: published`, with the relay's own answer naming the event id, and the
-query returning that event. The write costs the operator nothing although the route's
-price is 1.
+**Expect** `outcome: published` in `event.json`, with the relay's own answer naming the
+event id, and the query returning that event. The write costs the operator nothing
+although the route's price is 1.
+
+### Publish to another relay
+
+The hub's relay, at its `.anyone` address, then `relay2`, which is reached through the
+hub:
+
+```sh
+$E/toon event publish --kind 1 --content "to the hub's relay" \
+  --relay ws://$HUB:7100 --yes --json > $E/hub-event.json
+$E/toon event query ws://$HUB:7100 \
+  --filter "{\"ids\":[\"$(jq -r .event.id $E/hub-event.json)\"]}" --json
+$E/toon event publish --kind 1 --content "to relay2" --relay ws://localhost:7110 --yes --json
+$E/toon channel list --json
+```
+
+**Expect** the first `published` with `paid: 1` and the query returning the event: the
+command line read the hub's information document and the event through the agent node's
+daemon, and sealed the write to the key the document pins. The watermark is then 102.
+The second is expected to be `published` too; today the hub rejects it with `F03` (#92),
+and the watermark moves to 103 all the same (#93).
 
 ### Create a second TOON app
 
 ```sh
 $E/toon create second --image toon-e2e-app --deposit 1000000 --accept-anyone-terms --yes --json \
-  | tee $E/create.json
+  > $E/create.json
 ```
 
 The first attempt fails with `unfunded` and names the new TOON app's settlement address.
 Fund it with `fund <address> 10000000` and run the command again.
 
-**Expect** a second onion endpoint, different from the first, and two peerings, each with
-a channel of 1000000. Then pay the app behind the new connector from the first one:
+**Expect** a second onion endpoint, different from the first, an address of its own
+(`g.toon.<segment>`, another segment), and two peerings, each with a channel of 1000000.
+Then pay the app behind the new connector from the first one:
 
 ```sh
 SECOND=$(jq -r .created.listen $E/create.json)
-$E/toon send g.toon.second --amount 1 --seal-to http://$SECOND/ilp --yes --json
+APP=$(jq -r .created.address $E/create.json).second
+$E/toon send $APP --amount 1 --seal-to http://$SECOND/ilp --yes --json
 $E/toon --app second channel list --json
 ```
 
@@ -172,26 +200,58 @@ endpoint.
 ### Add an app
 
 ```sh
-$E/toon add notes --to second --image toon-e2e-app --price 2 --yes --json
-$E/toon route add g.toon.notes --peer second --json
-$E/toon send g.toon.notes --amount 2 --seal-to http://$SECOND/ilp --yes --json
+$E/toon add notes --to second --image toon-e2e-app --price 2 --yes --json > $E/add.json
+$E/toon send $(jq -r .address $E/add.json) --amount 2 --seal-to http://$SECOND/ilp --yes --json
 $E/toon status --json
+RELAY_IMAGE=$($E/toon --version | sed 's/.*relay \([^@)]*\).*/\1/')
+$E/toon add archive --to second --image $RELAY_IMAGE --yes --json
 ```
 
-**Expect** `restarted: true`, the packet `fulfilled` (a first packet sent while the
-restarted connector is still coming back is rejected with `T01`: send it again), and
-status showing `second` with two apps, both running.
+**Expect** `restarted: true` in `add.json`, the packet `fulfilled` over the route `create`
+made (a first packet sent while the restarted connector is still coming back is rejected
+with `T01`: send it again), and status showing `second` with two apps, both running. The
+last command is refused with `one_relay`: an agent node runs one relay.
+
+### Another agent node publishes to this one's relay
+
+A second hidden agent node, in a home of its own, peers with the first at its onion
+endpoint and pays its relay:
+
+```sh
+export HOME=$E/other
+$E/toon init --network sandbox --accept-anyone-terms --allow-plaintext-peers \
+  --evm-token $USDC --connector-url http://$HUB:3200/ilp --relay-url ws://$HUB:7100 \
+  --json > $E/other-init.json
+fund $(jq -r '.wallet.chains.evm[0].address' $E/other-init.json) 100000000
+$E/toon up --foreground --json        # in a third terminal, with this HOME
+$E/toon peer add http://$ME/ilp --deposit 1000000 --id first --yes --json
+$E/toon route add $(HOME=$E/sandbox $E/toon status --json \
+  | jq -r '.agent_node.toon_apps[0].connector.ilp_address') --peer first --json
+$E/toon event publish --kind 1 --content "from another agent node" \
+  --relay ws://$ME:7100 --yes --json > $E/other-event.json
+$E/toon event query ws://$ME:7100 \
+  --filter "{\"ids\":[\"$(jq -r .event.id $E/other-event.json)\"]}" --json
+$E/toon down --json
+export HOME=$E/sandbox
+$E/toon channel list --json
+```
+
+**Expect** `published` with `paid: 1`, the event read back from the first agent node's
+relay at its onion endpoint, and the first agent node's inbound channel from the other
+one at watermark 1. Everything between the two crosses the overlay, from one hidden
+service to another. Before the `route add`, the publish fails with `peering_needed`.
 
 ### Hold a subscription
 
 ```sh
-$E/toon relay subscribe ws://localhost:7100 --filter '{"kinds":[1]}' --amount 10 --yes --json
+$E/toon relay subscribe ws://$HUB:7100 --filter '{"kinds":[1]}' --amount 10 --yes --json
 $E/toon relay subscriptions --json
 ```
 
 **Expect** a balance at that relay, and its events arriving in the agent node's own
-relay. While no relay sells a feed the command fails with `relay_not_payable`, and the
-step is recorded as not run.
+relay. While no relay sells a feed the command fails with `relay_not_payable`, having
+read the relay's information document through the overlay, and the step is recorded as
+not run.
 
 ### Stop
 
@@ -212,11 +272,13 @@ devnet, through the overlay.
 export HOME=$E/devnet
 $E/toon init --network devnet --accept-anyone-terms --json > $E/devnet-init.json
 $E/toon wallet fund --json
+$E/toon wallet balances --json
 ```
 
-**Expect** the faucet to send the token. `init` stopped the daemon when it was done, so
-start it again from the files `init` left, and ask for each thing the agent node needs
-through its proxy:
+**Expect** the faucet to send the token and no ETH, and the balance to show it: the
+command line asked the faucet and the chain through the agent node's daemon. `init`
+stopped the daemon when it was done, so start it again from the files `init` left, and
+ask for each thing the agent node needs through its proxy:
 
 ```sh
 O=$HOME/.toon/agent-node/overlay
@@ -230,39 +292,38 @@ via https://faucet.devnet.toonprotocol.dev/
 via "$(jq -r .connector_url $HOME/.toon/agent-node/state.json)"
 via "$(jq -r .relay_url $HOME/.toon/agent-node/state.json | sed 's/^ws/http/')" \
   -H 'Accept: application/nostr+json'
-```
-
-**Expect** 200 from all four. While the profile names the wrong hosts (#66), ask for the
-devnet's own instead, which is what settles the question:
-
-```sh
-via https://proxy.relay.devnet.toonprotocol.dev/ilp
-via https://relay-ws.devnet.toonprotocol.dev/ -H 'Accept: application/nostr+json'
-```
-
-Then the connector itself, whose settlement RPC goes
-through the same proxy:
-
-```sh
-C=$HOME/.toon/agent-node/connectors/0
-sleep 30 | $E/toon connector $C/connector.toml 2>&1 | grep -E 'socks_proxy|listening'
 kill $ANON
 ```
 
-**Expect** `settlement rpc via socks_proxy` and `connector listening`: the connector read
-the chain through the overlay. Then the agent node as an operator runs it:
+**Expect** 200 from all four. Then the agent node itself, with no ETH yet:
 
 ```sh
 $E/toon up --foreground --json        # in a second terminal
+grep -E 'socks_proxy|listening' $HOME/.toon/agent-node/connectors/0/connector.log
+$E/toon event query "$(jq -r .relay_url $HOME/.toon/agent-node/state.json)" \
+  --filter '{"kinds":[1],"limit":2}' --json
 $E/toon join devnet --deposit 1000000 --yes --json
+```
+
+**Expect** `settlement rpc via socks_proxy` and `connector listening`: the connector read
+the chain through the overlay. The query returns events from the devnet's relay, read
+over `wss://` through the overlay. The `join` is refused with `unfunded`, naming the
+settlement address and the ETH it needs for gas, and the day's spending is unchanged.
+
+The devnet faucet sends no ETH, and a node pays its own gas. Send about 0.0001 Base
+Sepolia ETH to that address from a public faucet, and join:
+
+```sh
+$E/toon join devnet --deposit 1000000 --yes --json
+$E/toon channel list --json
 $E/toon down --json
 ```
 
-**Expect** a peering `devnet` with an open channel.
+**Expect** a peering `devnet` with an open channel of 1000000.
 
 ## Afterwards
 
 ```sh
-make -C ../infra/sandbox down
+make -C ../infra/sandbox clean
 rm -rf $E
 ```
