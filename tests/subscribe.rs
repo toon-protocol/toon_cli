@@ -640,3 +640,51 @@ fn a_relay_without_a_whole_seal_key_is_not_payable() {
     }
     assert_eq!(relay.posts(), 0);
 }
+
+#[test]
+fn a_rejected_subscribe_packet_is_in_paid_and_in_the_limit_by_what_the_watermark_moved() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    // The far connector has no route for the subscribe address: it rejects the packet.
+    let far = node_on(&chain);
+    let relay = FakeRemoteRelay::start(SUBSCRIBE, PRICE, BROADCAST_PRICE);
+    relay.set_connector(&far.url());
+    peer_and_route(&near, &far);
+    let watermark = || {
+        let list = near.toon(&["channel", "list", "--json"]).json();
+        list["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|channel| channel["direction"] == "outbound")
+            .map(|channel| {
+                channel["watermark"]
+                    .to_string()
+                    .trim_matches('"')
+                    .parse::<u64>()
+                    .unwrap()
+            })
+            .sum::<u64>()
+    };
+    let remaining = || -> u64 {
+        near.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let (watermark_before, remaining_before) = (watermark(), remaining());
+
+    let run = subscribe(
+        &near,
+        &relay,
+        &["--filter", FILTER, "--amount", "2000", "--yes"],
+    );
+
+    assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
+    let report = run.json();
+    assert_eq!(report["outcome"], "rejected", "{report}");
+    let moved = watermark() - watermark_before;
+    assert_eq!(report["paid"], moved, "{report}");
+    assert_eq!(remaining_before - remaining(), moved);
+}

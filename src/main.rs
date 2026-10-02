@@ -101,11 +101,22 @@ fn run() -> ExitCode {
         .into(),
         Command::Send(args) => render(
             home::resolve().and_then(|home| {
-                spending::spend(&home, args.amount.into(), args.yes, || {
-                    let report =
+                let amount: u128 = args.amount.into();
+                spending::spend_packets(&home, amount, args.yes, |packets| {
+                    let mut report =
                         operator::send(&home, &args.address, args.amount, args.seal_to.as_deref())?;
-                    // A packet that was rejected moved nothing.
-                    let paid = report.exit == Exit::Success;
+                    // A packet that was rejected, or fulfilled wrongly, moved what its
+                    // channels moved by, which is nothing when the agent node's own
+                    // connector refused it.
+                    let paid = if report.exit == Exit::Success {
+                        amount
+                    } else {
+                        packets.moved(amount)
+                    };
+                    report.json["paid"] = json!(paid);
+                    if report.exit != Exit::Success && paid > 0 {
+                        report.text = format!("{} It cost {paid} base units.", report.text);
+                    }
                     Ok((report, paid))
                 })
             }),

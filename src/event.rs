@@ -458,15 +458,22 @@ fn publish_to(
     }
     let secret = agent_secret(home)?;
     let event = sign(&secret, now(), kind, tags, content)?;
-    spending::spend(home, amount.into(), yes, || {
+    let sent: u128 = amount.into();
+    spending::spend_packets(home, sent, yes, |packets| {
         let mut report = write_to(home, event, &edge.ilp_address, amount, Some(&edge.seal_key))?;
-        // A fulfilled packet moved money, whatever the relay or its fulfilment said.
-        let paid = report.json["outcome"] != "rejected";
+        // A fulfilled packet moved money, whatever the relay or its fulfilment said. A
+        // rejected one moved what its channels moved by.
+        let rejected = report.json["outcome"] == "rejected";
+        let paid = if rejected { packets.moved(sent) } else { sent };
         report.json["relay"] = json!(relay);
-        report.json["paid"] = json!(if paid { amount } else { 0 });
-        if paid && amount == price {
+        report.json["paid"] = json!(paid);
+        if rejected {
+            if paid > 0 {
+                report.text = format!("{} It cost {paid} base units.", report.text);
+            }
+        } else if amount == price {
             report.text = format!("{} Paid {amount} base units to {relay}.", report.text);
-        } else if paid {
+        } else {
             report.text = format!(
                 "{} Sent {amount} base units for {relay}, whose price is {price}; the \
                  connectors in between keep the rest.",

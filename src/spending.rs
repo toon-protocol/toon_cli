@@ -2,8 +2,8 @@
 //!
 //! A command that pays calls [`spend`] with its amount. `spend` refuses it without `--yes`,
 //! and past the per-command limit or what is left of the day's, and otherwise records the
-//! amount against the day before the command runs. The command hands back whether money
-//! actually moved; if it certainly did not, the record is undone.
+//! amount against the day before the command runs. The command hands back how much actually
+//! moved; what did not is given back.
 //!
 //! The limits are in `limits.json`, signed with a key derived from the wallet's mnemonic
 //! (`derive::limits_secret`). Reading them needs no passphrase, only the public key the file
@@ -27,7 +27,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde_json::{json, Value};
 
 use crate::outcome::{Error, ErrorCode, Exit, Report};
-use crate::{derive, keystore, node};
+use crate::{derive, keystore, node, operator};
 
 /// The most one command may pay, in the token's base units, unless `init` says otherwise:
 /// ten tokens at six decimals.
@@ -282,33 +282,75 @@ fn write_ledger(home: &Path, ledger: Ledger) -> Result<(), Error> {
 
 /// Run `change` on the ledger while holding the lock that serialises spenders.
 fn locked<T>(home: &Path, change: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
-    let file = lock_path(home);
+    locked_by(&lock_path(home), change)
+}
+
+/// Run `change` while holding the advisory lock at `file`.
+fn locked_by<T>(file: &Path, change: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     let lock: File = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .open(&file)
-        .map_err(|source| io(&file, source))?;
-    lock.lock().map_err(|source| io(&file, source))?;
+        .open(file)
+        .map_err(|source| io(file, source))?;
+    lock.lock().map_err(|source| io(file, source))?;
     let result = change();
     let _ = lock.unlock();
     result
 }
 
-/// What a money-moving command did: its report, and whether money actually moved. A
-/// payment that was rejected moved none, and is not counted.
-pub type Spent<T> = Result<(T, bool), Error>;
+/// How much of what a command was counted for actually moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Moved {
+    /// All of it, or as much as may have.
+    All,
+    /// None of it.
+    Nothing,
+    /// This much, which is at most what was counted.
+    Amount(u128),
+}
+
+impl From<bool> for Moved {
+    fn from(moved: bool) -> Self {
+        if moved {
+            Moved::All
+        } else {
+            Moved::Nothing
+        }
+    }
+}
+
+impl From<u128> for Moved {
+    fn from(amount: u128) -> Self {
+        Moved::Amount(amount)
+    }
+}
+
+impl Moved {
+    /// What stays counted out of `amount`.
+    fn of(self, amount: u128) -> u128 {
+        match self {
+            Moved::All => amount,
+            Moved::Nothing => 0,
+            Moved::Amount(moved) => moved.min(amount),
+        }
+    }
+}
+
+/// What a money-moving command did: its report, and how much money actually moved. A
+/// payment that was rejected may have moved none, and then it is not counted.
+pub type Spent<T, M = bool> = Result<(T, M), Error>;
 
 /// The one gate for a command that moves `amount` base units: it needs `--yes`, it must
 /// fit the per-command limit and what is left of the day's, and it is counted before
-/// `act` runs so that a second command cannot spend the same remainder. If `act` says no
-/// money moved, or fails before it could have paid, the count is taken back.
-pub fn spend<T>(
+/// `act` runs so that a second command cannot spend the same remainder. What `act` says
+/// did not move, or what it failed before it could have paid, is given back.
+pub fn spend<T, M: Into<Moved> + Copy>(
     home: &Path,
     amount: u128,
     yes: bool,
-    act: impl FnOnce() -> Spent<T>,
+    act: impl FnOnce() -> Spent<T, M>,
 ) -> Result<T, Error> {
     if !yes {
         return Err(Error {
@@ -331,18 +373,60 @@ pub fn spend<T>(
         write_ledger(home, charged)
     })?;
     let outcome = act();
-    let moved_nothing = match &outcome {
-        Ok((_, moved)) => !moved,
-        Err(error) => failed_before_paying(error),
+    let kept = match &outcome {
+        Ok((_, moved)) => (*moved).into().of(amount),
+        Err(error) if failed_before_paying(error) => 0,
+        Err(_) => amount,
     };
-    if moved_nothing {
-        // The amount is free again. A failure to take it back leaves it counted, which
+    if kept < amount {
+        // The rest is free again. A failure to take it back leaves it counted, which
         // errs on the side of the limit.
         let _ = locked(home, || {
-            write_ledger(home, read_ledger(home)?.refund(day, amount))
+            write_ledger(home, read_ledger(home)?.refund(day, amount - kept))
         });
     }
     outcome.map(|(report, _)| report)
+}
+
+/// What the outbound channels' watermarks were before a packet, read under the lock that
+/// keeps another `toon` command's packet from moving them meanwhile.
+pub struct Packets<'a> {
+    home: &'a Path,
+    before: Option<u128>,
+}
+
+impl Packets<'_> {
+    /// What the packets sent since moved the watermarks by, at most `cap`; `cap` when the
+    /// watermarks cannot be read or went down (a channel closed), which errs on the side of
+    /// the limit.
+    pub fn moved(&self, cap: u128) -> u128 {
+        let after = operator::outbound_watermark(self.home).ok().flatten();
+        match (self.before, after) {
+            (Some(before), Some(after)) => after
+                .checked_sub(before)
+                .map_or(cap, |moved| moved.min(cap)),
+            _ => cap,
+        }
+    }
+}
+
+/// [`spend`] for a command that sends packets. `act` is given the watermarks as they stand
+/// before, and no other packet-sending command of this agent node runs until it returns, so
+/// that what moved across it is its own.
+pub fn spend_packets<T, M: Into<Moved> + Copy>(
+    home: &Path,
+    amount: u128,
+    yes: bool,
+    act: impl FnOnce(&Packets) -> Spent<T, M>,
+) -> Result<T, Error> {
+    spend(home, amount, yes, || {
+        locked_by(&home.join("packets.lock"), || {
+            act(&Packets {
+                home,
+                before: operator::outbound_watermark(home).ok().flatten(),
+            })
+        })
+    })
 }
 
 /// Whether a command that failed with `error` certainly paid nothing: it never reached the
@@ -350,7 +434,7 @@ pub fn spend<T>(
 /// other side refused the peering before a channel was opened, or it failed before it sent
 /// a packet (`nothing_sent`). Any other failure, a timeout or an answer not understood, may
 /// come after the money moved, so it stays counted.
-fn failed_before_paying(error: &Error) -> bool {
+pub fn failed_before_paying(error: &Error) -> bool {
     error.nothing_sent
         || matches!(
             error.code,

@@ -347,6 +347,7 @@ fn a_stated_amount_pays_a_connector_that_charges_to_forward_and_without_it_is_re
     let chain = AnvilChain::start();
     let (near, _mid, far, relay) = through_a_charging_connector(&chain);
     let before: u128 = remaining(&near).parse().expect("a number");
+    let watermark = outbound_watermark(&near);
 
     let rejected = near.toon(&[
         "event", "publish", "--relay", &relay, "--kind", "1", "--yes", "--json",
@@ -395,8 +396,11 @@ fn a_stated_amount_pays_a_connector_that_charges_to_forward_and_without_it_is_re
         "{}",
         query.stdout
     );
+    // The two rejected writes are counted too, as what `mid` took of them (#93).
     let after: u128 = remaining(&near).parse().expect("a number");
-    assert_eq!(before - after, u128::from(FORWARD));
+    let moved = outbound_watermark(&near) - watermark;
+    assert!(moved > u128::from(FORWARD), "{moved}");
+    assert_eq!(before - after, moved);
 }
 
 #[test]
@@ -544,4 +548,145 @@ fn events_at(near: &Node, far: &Node) -> usize {
         "--json",
     ]);
     query.json()["events"].as_array().map(Vec::len).unwrap_or(0)
+}
+
+/// What the watermarks of `node`'s outbound channels add up to, as `toon channel list` shows.
+fn outbound_watermark(node: &Node) -> u128 {
+    let list = node.toon(&["channel", "list", "--json"]).json();
+    list["channels"]
+        .as_array()
+        .expect("channels")
+        .iter()
+        .filter(|channel| channel["direction"] == "outbound")
+        .map(|channel| match &channel["watermark"] {
+            Value::String(text) => text.parse::<u128>().expect("a watermark"),
+            other => other.as_u64().expect("a watermark") as u128,
+        })
+        .sum()
+}
+
+fn remaining_today(node: &Node) -> u128 {
+    node.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"]
+        .as_str()
+        .expect("remaining_today")
+        .parse()
+        .expect("a number")
+}
+
+/// A destination `far` has no route for, reached through `near`'s peering.
+const NOWHERE: &str = "g.toon.nowhere";
+
+fn route_nowhere(near: &Node) {
+    let routed = near.toon(&["route", "add", NOWHERE, "--peer", "far"]);
+    assert_eq!(routed.exit_code, 0, "{}{}", routed.stdout, routed.stderr);
+}
+
+/// Run `send` to `NOWHERE` and check that what it reports as paid is what the outbound
+/// watermark moved by, and what the day's limit lost.
+fn send_to_nowhere_is_counted_as_the_watermark_moved(near: &Node, code: &str) {
+    let watermark = outbound_watermark(near);
+    let remaining = remaining_today(near);
+
+    let run = near.toon(&["send", NOWHERE, "--amount", "7", "--yes", "--json"]);
+
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
+    let report = run.json();
+    assert_eq!(report["outcome"], "rejected", "{report}");
+    assert_eq!(report["reject"]["code"], code, "{report}");
+    let moved = outbound_watermark(near) - watermark;
+    assert_eq!(report["paid"], moved as u64, "{report}");
+    assert_eq!(remaining - remaining_today(near), moved, "{report}");
+}
+
+#[test]
+fn a_packet_rejected_by_the_far_connector_is_reported_and_counted_as_the_watermark_moved() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    peer_and_route(&near, &far);
+    route_nowhere(&near);
+
+    send_to_nowhere_is_counted_as_the_watermark_moved(&near, "F02");
+}
+
+#[test]
+fn a_packet_rejected_because_the_far_connector_is_not_running_is_counted_as_the_watermark_moved() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    peer_and_route(&near, &far);
+    route_nowhere(&near);
+    let down = far.machine.toon(&["down", "--json"]);
+    assert_eq!(down.exit_code, 0, "{}{}", down.stdout, down.stderr);
+
+    send_to_nowhere_is_counted_as_the_watermark_moved(&near, "T01");
+}
+
+#[test]
+fn a_packet_rejected_by_the_agent_nodes_own_connector_is_not_counted() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    peer_and_route(&near, &far);
+    let watermark = outbound_watermark(&near);
+    let remaining = remaining_today(&near);
+
+    let run = near.toon(&["send", "g.nobody.here", "--amount", "7", "--yes", "--json"]);
+
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
+    assert_eq!(run.json()["paid"], 0);
+    assert_eq!(outbound_watermark(&near), watermark);
+    assert_eq!(remaining_today(&near), remaining);
+}
+
+#[test]
+fn a_fulfilled_packet_reports_and_counts_its_amount() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    peer_and_route(&near, &far);
+    let remaining = remaining_today(&near);
+
+    let run = near.toon(&[
+        "send",
+        &far.machine.relay_prefix(),
+        "--amount",
+        "1",
+        "--seal-to",
+        &far.url(),
+        "--yes",
+        "--json",
+    ]);
+
+    assert_eq!(run.json()["outcome"], "fulfilled", "{}", run.stdout);
+    assert_eq!(run.json()["paid"], 1);
+    assert_eq!(remaining - remaining_today(&near), 1);
+}
+
+#[test]
+fn a_publish_rejected_by_the_far_connector_reports_and_counts_the_watermark_moved() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let relay = document(json!({
+        "ilp_address": NOWHERE,
+        "connector_url": far.url(),
+        "connector_seal_key": support::seal_key(&far.url()),
+        "price": 7,
+    }));
+    peer_and_route(&near, &far);
+    route_nowhere(&near);
+    let watermark = outbound_watermark(&near);
+    let remaining = remaining_today(&near);
+
+    let run = near.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--yes", "--json",
+    ]);
+
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
+    let report = run.json();
+    assert_eq!(report["outcome"], "rejected", "{report}");
+    let moved = outbound_watermark(&near) - watermark;
+    assert_eq!(report["paid"], moved as u64, "{report}");
+    assert_eq!(remaining - remaining_today(&near), moved);
 }
