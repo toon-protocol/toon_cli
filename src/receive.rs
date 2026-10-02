@@ -245,7 +245,7 @@ fn hand_over(own: SocketAddr, event: &Value) -> bool {
         Some(20000..=29999) => "/write-ephemeral",
         _ => "/write",
     };
-    let body = event.to_string();
+    let body = crate::event::write_body(event);
     let Ok(mut stream) = TcpStream::connect_timeout(&own, Duration::from_secs(5)) else {
         return false;
     };

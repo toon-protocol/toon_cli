@@ -34,10 +34,14 @@ fn a_packet_to_the_operators_own_route_is_fulfilled() {
         .machine
         .toon(&["send", "g.toon.relay", "--amount", "0", "--yes", "--json"]);
 
+    // The packet carries no event, so the relay it is delivered to refuses the write.
     let report = run.json();
     assert_eq!(report["outcome"], "fulfilled", "{report}");
-    assert_eq!(report["response"]["status"], 200);
-    assert_eq!(report["response"]["body"], "stored");
+    assert_eq!(report["response"]["status"], 400);
+    assert_eq!(
+        report["response"]["body"],
+        r#"{"error":"Invalid request body"}"#
+    );
     assert_eq!(run.exit_code, 0);
     assert_eq!(run.stderr, "");
 }
@@ -52,7 +56,7 @@ fn a_packet_to_a_route_under_the_prefix_is_fulfilled() {
 
     assert_eq!(
         run.stdout,
-        "Fulfilled: 0 base units to g.toon.relay.write. The app answered 200.\n"
+        "Fulfilled: 0 base units to g.toon.relay.write. The app answered 400.\n"
     );
     assert_eq!(run.exit_code, 0);
 }

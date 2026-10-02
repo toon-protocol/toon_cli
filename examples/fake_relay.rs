@@ -2,13 +2,14 @@
 //!
 //! It takes what the relay's image takes (`TOON_BLS_PORT`, `TOON_DATA_DIR`,
 //! `NOSTR_SECRET_KEY`, and `TOON_WS_PORT` for the read port), answers `GET /health`, and
-//! answers a `POST` to `/`, `/write` or
-//! `/write-ephemeral` with 200 after appending `<path> <body in hex>` to `writes.log` in its
-//! data directory. It writes the secret key it was handed to `environment` there, and the
+//! appends `<path> <body in hex>` to `writes.log` in its data directory for every `POST` to
+//! `/`, `/write` or `/write-ephemeral`. As the relay does, it answers a write with 200 only
+//! if the body is `{"event": ...}`, and with 400 otherwise; a `POST` to `/`, where it stands
+//! in for any other app, is always answered with 200. It writes the secret key it was handed to `environment` there, and the
 //! `TOON_RELAY_*` settings it was handed, one `NAME=value` per line, to `settings`. It
 //! exits when its standard input closes, as a supervisor's apps do.
 //!
-//! A body that is a JSON event is also stored in `events.log`, one per line, and a websocket
+//! The event of a write, or a JSON body posted to `/`, is also stored in `events.log`, one per line, and a websocket
 //! client on the same port reads them back with a NIP-01 `REQ` (`ids`, `authors`, `kinds`,
 //! `#<letter>` tags and `limit` are honoured) and gets `EOSE` after the stored events. An
 //! addressable event replaces the earlier one at its address.
@@ -104,27 +105,42 @@ fn serve(stream: TcpStream, data: &Path) {
     let mut body = vec![0; length];
     let _ = reader.read_exact(&mut body);
 
-    let (status, answer) = match (method.as_str(), path.as_str()) {
-        ("GET", "/health") => ("200 OK", "ok"),
-        ("POST", "/" | "/write" | "/write-ephemeral") => {
-            let mut log = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(data.join("writes.log"))
-                .expect("open the write log");
-            let _ = writeln!(
-                log,
-                "{path} {}",
-                body.iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
-            );
-            if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&body) {
-                store(data, event);
-            }
+    let posted = method == "POST" && matches!(path.as_str(), "/" | "/write" | "/write-ephemeral");
+    if posted {
+        let mut log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(data.join("writes.log"))
+            .expect("open the write log");
+        let _ = writeln!(
+            log,
+            "{path} {}",
+            body.iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        );
+    }
+    // A write carries its event in the body's `event` field. A body without one is
+    // refused in the words the relay's image uses.
+    let write = path != "/";
+    let parsed = serde_json::from_slice::<serde_json::Value>(&body);
+    let (status, answer) = match (method.as_str(), parsed) {
+        ("GET", _) if path == "/health" => ("200 OK", "ok"),
+        _ if !posted => ("404 Not Found", "not found"),
+        (_, Err(_)) if write => ("400 Bad Request", r#"{"error":"Invalid request body"}"#),
+        (_, Ok(body)) if write && body["event"].is_null() => (
+            "400 Bad Request",
+            r#"{"error":"Missing required field: event"}"#,
+        ),
+        (_, Ok(mut body)) if write => {
+            store(data, body["event"].take());
             ("200 OK", "stored")
         }
-        _ => ("404 Not Found", "not found"),
+        (_, Ok(event)) => {
+            store(data, event);
+            ("200 OK", "stored")
+        }
+        (_, Err(_)) => ("200 OK", "stored"),
     };
     let _ = write!(
         reader.get_mut(),

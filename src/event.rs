@@ -147,6 +147,11 @@ pub fn public_key(secret: &[u8; 32]) -> Result<String, Error> {
         })
 }
 
+/// The body of a write to a relay: the relay reads the event from the `event` field.
+pub fn write_body(event: &Value) -> String {
+    json!({ "event": event }).to_string()
+}
+
 /// Write a signed event to the agent node's own relay through the relay's write route.
 pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
     write_to(home, event, node::RELAY_WRITE_PREFIX, amount, None)
@@ -165,7 +170,7 @@ fn write_to(
         "event.{}.json",
         hex::encode(keystore::random::<8>()?)
     ));
-    node::write(&body, event.to_string().as_bytes(), 0o600)?;
+    node::write(&body, write_body(&event).as_bytes(), 0o600)?;
     let answer = operator::dispatch(home, destination, amount, seal_to, Some(&body));
     let _ = std::fs::remove_file(&body);
 
