@@ -282,10 +282,12 @@ fn made(
     // A connector whose key holds nothing would fail later and not say why. A chain that
     // cannot be asked is not a verdict, as it is not for `toon up`. The key sends a
     // deposit only if one was asked for, and that needs gas.
-    let mut wanted = funding::start_needs(home, new).map_err(undo)?;
-    if deposit {
-        wanted = funding::needs(home, new).map_err(undo)?;
+    let wanted = if deposit {
+        funding::needs(home, new)
+    } else {
+        funding::start_needs(home, new)
     }
+    .map_err(undo)?;
     if let Ok(lacking) = funding::shortfalls(wanted) {
         if !lacking.is_empty() {
             return Err(undo(funding::unfunded(

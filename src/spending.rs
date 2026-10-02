@@ -342,13 +342,17 @@ pub fn spend<T>(
 }
 
 /// Whether a command that failed with `error` certainly paid nothing: it never reached the
-/// connector, or the other side refused the peering before a channel was opened. Any other
+/// connector, the settlement key was refused as `unfunded` before anything was sent, or the
+/// other side refused the peering before a channel was opened. Any other
 /// failure, a timeout or an answer not understood, may come after the money moved, so it
 /// stays counted.
 fn failed_before_paying(error: &Error) -> bool {
     matches!(
         error.code,
-        ErrorCode::NoAgentNode | ErrorCode::NotRunning | ErrorCode::PeerNotPeerable
+        ErrorCode::NoAgentNode
+            | ErrorCode::NotRunning
+            | ErrorCode::Unfunded
+            | ErrorCode::PeerNotPeerable
     )
 }
 
