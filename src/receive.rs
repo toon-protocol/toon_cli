@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::event;
 use crate::feed::{self, Ended};
 use crate::subscribe::{self, Kept};
 
@@ -245,7 +246,7 @@ fn hand_over(own: SocketAddr, event: &Value) -> bool {
         Some(20000..=29999) => "/write-ephemeral",
         _ => "/write",
     };
-    let body = crate::event::write_body(event);
+    let body = event::write_body(event);
     let Ok(mut stream) = TcpStream::connect_timeout(&own, Duration::from_secs(5)) else {
         return false;
     };

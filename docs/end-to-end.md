@@ -2,7 +2,9 @@
 
 The gate substitutes four things: the chain, the overlay, the app runner and the remote
 relay. This run uses the real ones: the `anon` daemon on the Anyone network, the relay
-image in a container, and the `infra` sandbox's local chain and hub. It is run by hand,
+image in a container, the `infra` sandbox's local chain and hub, and, once one sells a
+feed, a relay to subscribe to. "Hub" and "relay node" below are the sandbox's own names
+for its connector and for a connector with a relay behind it. It is run by hand,
 before a release and after moving the connector pin, the relay image or the `anon`
 release. It is not part of the gate, because it needs Docker and a network nobody here
 controls.
@@ -212,8 +214,9 @@ $E/toon init --network devnet --accept-anyone-terms --json > $E/devnet-init.json
 $E/toon wallet fund --json
 ```
 
-**Expect** the faucet to send the token. Then start the agent node's daemon from the
-files `init` left, and ask for each thing the agent node needs through its proxy:
+**Expect** the faucet to send the token. `init` stopped the daemon when it was done, so
+start it again from the files `init` left, and ask for each thing the agent node needs
+through its proxy:
 
 ```sh
 O=$HOME/.toon/agent-node/overlay
@@ -229,7 +232,15 @@ via "$(jq -r .relay_url $HOME/.toon/agent-node/state.json | sed 's/^ws/http/')" 
   -H 'Accept: application/nostr+json'
 ```
 
-**Expect** 200 from all four. Then the connector itself, whose settlement RPC goes
+**Expect** 200 from all four. While the profile names the wrong hosts (#66), ask for the
+devnet's own instead, which is what settles the question:
+
+```sh
+via https://proxy.relay.devnet.toonprotocol.dev/ilp
+via https://relay-ws.devnet.toonprotocol.dev/ -H 'Accept: application/nostr+json'
+```
+
+Then the connector itself, whose settlement RPC goes
 through the same proxy:
 
 ```sh

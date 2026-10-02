@@ -2,17 +2,19 @@
 //!
 //! It takes what the relay's image takes (`TOON_BLS_PORT`, `TOON_DATA_DIR`,
 //! `NOSTR_SECRET_KEY`, and `TOON_WS_PORT` for the read port), answers `GET /health`, and
-//! appends `<path> <body in hex>` to `writes.log` in its data directory for every `POST` to
-//! `/`, `/write` or `/write-ephemeral`. As the relay does, it answers a write with 200 only
-//! if the body is `{"event": ...}`, and with 400 otherwise; a `POST` to `/`, where it stands
-//! in for any other app, is always answered with 200. It writes the secret key it was handed to `environment` there, and the
-//! `TOON_RELAY_*` settings it was handed, one `NAME=value` per line, to `settings`. It
-//! exits when its standard input closes, as a supervisor's apps do.
+//! appends `<path> <body in hex>` to `writes.log` in its data directory for every `POST`
+//! to `/`, `/write` or `/write-ephemeral`. As the relay does, it answers a write with 200
+//! only if the body is `{"event": ...}`, and with 400 otherwise; a `POST` to `/`, where
+//! it stands in for any other app, is always answered with 200. It writes the secret key
+//! it was handed to `environment` there, and the `TOON_RELAY_*` settings it was handed,
+//! one `NAME=value` per line, to `settings`. It exits when its standard input closes, as
+//! a supervisor's apps do.
 //!
-//! The event of a write, or a JSON body posted to `/`, is also stored in `events.log`, one per line, and a websocket
-//! client on the same port reads them back with a NIP-01 `REQ` (`ids`, `authors`, `kinds`,
-//! `#<letter>` tags and `limit` are honoured) and gets `EOSE` after the stored events. An
-//! addressable event replaces the earlier one at its address.
+//! The event of a write, or a JSON body posted to `/`, is also stored in `events.log`,
+//! one per line, and a websocket client on the same port reads them back with a NIP-01
+//! `REQ` (`ids`, `authors`, `kinds`, `#<letter>` tags and `limit` are honoured) and gets
+//! `EOSE` after the stored events. An addressable event replaces the earlier one at its
+//! address.
 
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -121,26 +123,28 @@ fn serve(stream: TcpStream, data: &Path) {
         );
     }
     // A write carries its event in the body's `event` field. A body without one is
-    // refused in the words the relay's image uses.
-    let write = path != "/";
-    let parsed = serde_json::from_slice::<serde_json::Value>(&body);
-    let (status, answer) = match (method.as_str(), parsed) {
-        ("GET", _) if path == "/health" => ("200 OK", "ok"),
-        _ if !posted => ("404 Not Found", "not found"),
-        (_, Err(_)) if write => ("400 Bad Request", r#"{"error":"Invalid request body"}"#),
-        (_, Ok(body)) if write && body["event"].is_null() => (
+    // refused in the words the relay's image uses. Anything posted to `/`, where this
+    // stands in for any other app, is taken.
+    let to_relay = posted && path != "/";
+    let json = serde_json::from_slice::<serde_json::Value>(&body);
+    let (status, answer) = if method == "GET" && path == "/health" {
+        ("200 OK", "ok")
+    } else if !posted {
+        ("404 Not Found", "not found")
+    } else if to_relay && json.is_err() {
+        ("400 Bad Request", r#"{"error":"Invalid request body"}"#)
+    } else if to_relay && json.as_ref().is_ok_and(|json| json["event"].is_null()) {
+        (
             "400 Bad Request",
             r#"{"error":"Missing required field: event"}"#,
-        ),
-        (_, Ok(mut body)) if write => {
-            store(data, body["event"].take());
-            ("200 OK", "stored")
+        )
+    } else {
+        match json {
+            Ok(mut json) if to_relay => store(data, json["event"].take()),
+            Ok(event) => store(data, event),
+            Err(_) => {}
         }
-        (_, Ok(event)) => {
-            store(data, event);
-            ("200 OK", "stored")
-        }
-        (_, Err(_)) => ("200 OK", "stored"),
+        ("200 OK", "stored")
     };
     let _ = write!(
         reader.get_mut(),

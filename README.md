@@ -74,6 +74,6 @@ cargo test --locked
 
 These are the steps of the `gate` job in `.github/workflows/ci.yml`.
 
-The gate runs on loopback with a stand-in for the overlay, for the relay's container and
-for the chain. [`docs/end-to-end.md`](docs/end-to-end.md) is the run that uses the real
+The gate runs on loopback with a stand-in for the overlay, for the relay's container, for
+the chain and for another operator's relay. [`docs/end-to-end.md`](docs/end-to-end.md) is the run that uses the real
 ones, by hand, against the `infra` sandbox.
