@@ -19,6 +19,7 @@ use std::time::Duration;
 use crate::node::{Reach, State};
 use crate::outcome::Error;
 use crate::overlay::{self, Edge};
+use crate::tls;
 
 /// The overlay this process bootstrapped for a request, and the agent node it is of.
 static EDGE: Mutex<Option<(PathBuf, Box<dyn Edge>)>> = Mutex::new(None);
@@ -79,7 +80,14 @@ impl Egress {
 
     /// A blocking HTTP client for a request to `url`.
     pub fn client(&self, url: &str, timeout: Duration) -> Result<reqwest::blocking::Client, Error> {
-        let mut builder = reqwest::blocking::Client::builder().timeout(timeout);
+        self.build(reqwest::blocking::Client::builder().timeout(timeout), url)
+    }
+
+    fn build(
+        &self,
+        mut builder: reqwest::blocking::ClientBuilder,
+        url: &str,
+    ) -> Result<reqwest::blocking::Client, Error> {
         if let Some(proxy) = self.proxy_for(url)? {
             builder = builder.proxy(
                 reqwest::Proxy::all(format!("socks5h://{proxy}"))
@@ -87,6 +95,25 @@ impl Egress {
             );
         }
         builder.build().map_err(|error| self.unusable(error))
+    }
+
+    /// A client for a request to a relay's `url`: `client`, trusting `TOON_TRUSTED_ROOT`
+    /// as well for an `https://` one. Roots that cannot be had fail as an unpayable relay.
+    pub fn relay_client(
+        &self,
+        url: &str,
+        timeout: Duration,
+    ) -> Result<reqwest::blocking::Client, Error> {
+        let mut builder = reqwest::blocking::Client::builder().timeout(timeout);
+        if url.starts_with("https://") {
+            for der in tls::extra_roots().map_err(crate::event::unpayable)? {
+                builder = builder.add_root_certificate(
+                    reqwest::Certificate::from_der(&der)
+                        .map_err(|error| crate::event::unpayable(format!("{error}")))?,
+                );
+            }
+        }
+        self.build(builder, url)
     }
 
     fn unusable(&self, error: reqwest::Error) -> Error {

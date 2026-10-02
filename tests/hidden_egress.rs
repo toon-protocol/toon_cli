@@ -504,3 +504,51 @@ fn a_hidden_agent_node_with_no_overlay_does_not_ask_a_remote_chain() {
         run.stdout
     );
 }
+
+#[test]
+fn a_hidden_agent_node_reads_a_wss_relay_at_an_anyone_name_through_the_proxy() {
+    let chain = AnvilChain::start();
+    let far = far_on(&chain);
+    let relay = selling(&far);
+    let relay = relay.with_tls(&["relay.anyone"]);
+    relay.also_at("relay.anyone:7100");
+    // The name is one only the proxy knows, and it takes the connection to the TLS front.
+    let names = declare("relay.anyone", 7100, relay.wss_address());
+    let near = hidden_near(&chain, &names);
+    peer_and_route(&near, &far, SUBSCRIBE);
+    let url = "wss://relay.anyone:7100";
+    let root = relay.root_file();
+    let trusting = |args: &[&str]| {
+        near.machine.toon_with(args, |command| {
+            command
+                .env("TOON_PASSPHRASE", support::PASSPHRASE)
+                .env("TOON_OVERLAY_NAMES", &names)
+                .env("TOON_TRUSTED_ROOT", &root);
+        })
+    };
+
+    // The information document is read over `https://` and the balance with it, both
+    // through the proxy: this machine cannot resolve the name.
+    let subscribed = trusting(&[
+        "relay",
+        "subscribe",
+        url,
+        "--filter",
+        FILTER,
+        "--amount",
+        "1000",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(
+        subscribed.exit_code, 0,
+        "{}{}",
+        subscribed.stdout, subscribed.stderr
+    );
+    assert_eq!(subscribed.json()["outcome"], "subscribed");
+
+    relay.broadcast(event(1));
+    let query = trusting(&["event", "query", url, "--filter", FILTER, "--json"]);
+    assert_eq!(query.exit_code, 0, "{}{}", query.stdout, query.stderr);
+    assert_eq!(query.json()["events"], json!([event(1)]));
+}

@@ -4,7 +4,8 @@
 //!
 //! The supervisor (`receive`) and `toon event follow` both read a feed this way. A relay
 //! reached through the overlay is dialled through its SOCKS5 proxy, naming the host
-//! (`socks5h`), so that nothing is resolved on this machine.
+//! (`socks5h`), so that nothing is resolved on this machine; a `wss://` relay's TLS runs
+//! inside the stream the proxy returns.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -12,9 +13,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
+use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{Message, WebSocket};
 
 use crate::event;
+use crate::relay_url::RelayUrl;
+use crate::tls;
 
 /// How long a relay gets to answer the connection: its `AUTH` challenge and the proof.
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -40,22 +44,6 @@ pub enum Ended {
     Dropped(String),
     /// The caller asked it to stop.
     Stopped,
-}
-
-/// `host` and `port` of a `ws://host:port` URL.
-fn authority(relay: &str) -> Result<(String, u16), String> {
-    let rest = relay.strip_prefix("ws://").ok_or_else(|| {
-        format!("{relay} is not a ws:// URL; this build dials plain websocket relays only.")
-    })?;
-    let rest = rest.split('/').next().unwrap_or_default();
-    match rest.rsplit_once(':') {
-        Some((host, port)) if !host.is_empty() => port
-            .parse()
-            .map(|port| (host.to_owned(), port))
-            .map_err(|_| format!("{relay} has no valid port.")),
-        _ if !rest.is_empty() => Ok((rest.to_owned(), 80)),
-        _ => Err(format!("{relay} names no host.")),
-    }
 }
 
 /// Connect to `host:port` through the SOCKS5 proxy at `proxy`, which resolves the name.
@@ -114,19 +102,53 @@ fn direct(host: &str, port: u16) -> std::io::Result<TcpStream> {
     Err(last.unwrap_or_else(|| std::io::Error::other("the name resolves to no address")))
 }
 
-pub fn dial(relay: &str, proxy: Option<SocketAddr>) -> Result<WebSocket<TcpStream>, String> {
-    let (host, port) = authority(relay)?;
+/// A websocket to a relay, in TLS when the relay is `wss://`.
+pub type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
+
+/// The connection under a socket, whether it is wrapped in TLS or not.
+pub fn tcp(socket: &Socket) -> &TcpStream {
+    match socket.get_ref() {
+        MaybeTlsStream::Plain(stream) => stream,
+        MaybeTlsStream::Rustls(stream) => stream.get_ref(),
+        _ => unreachable!("only rustls is compiled in"),
+    }
+}
+
+/// How long a read on `socket` waits before it gives up, and how long a write does.
+pub fn set_timeouts(socket: &Socket, read: Duration, write: Duration) -> std::io::Result<()> {
+    let stream = tcp(socket);
+    stream.set_read_timeout(Some(read))?;
+    stream.set_write_timeout(Some(write))
+}
+
+/// Dial `relay` and complete the websocket handshake, after the TLS one if it is `wss://`.
+/// Through `proxy` the proxy is asked for the host by name and the TLS runs inside the
+/// stream it returns.
+pub fn dial(relay: &str, proxy: Option<SocketAddr>) -> Result<Socket, String> {
+    let url = RelayUrl::parse(relay)?;
+    let connector = if url.tls {
+        Some(tls::connector()?)
+    } else {
+        None
+    };
     let stream = match proxy {
-        Some(proxy) => through(proxy, &host, port)?,
-        None => direct(&host, port)
+        Some(proxy) => through(proxy, &url.host, url.port)?,
+        None => direct(&url.host, url.port)
             .map_err(|error| format!("{relay} did not accept a connection: {error}."))?,
     };
-    // The handshake gets the patience; once it is done a read gives up every tick.
+    // The handshakes get the patience; once they are done a read gives up every tick.
     stream.set_read_timeout(Some(PATIENCE)).ok();
     stream.set_write_timeout(Some(PATIENCE)).ok();
-    let (socket, _) = tungstenite::client(relay, stream)
-        .map_err(|error| format!("{relay} did not complete a websocket handshake: {error}."))?;
-    socket.get_ref().set_read_timeout(Some(TICK)).ok();
+    let (socket, _) =
+        tungstenite::client_tls_with_config(relay, stream, None, connector).map_err(|error| {
+            let error = tls::chain(&error);
+            if url.tls && tls::is_certificate(&error) {
+                format!("The certificate of {relay} did not verify: {error}.")
+            } else {
+                format!("{relay} did not complete a websocket handshake: {error}.")
+            }
+        })?;
+    tcp(&socket).set_read_timeout(Some(TICK)).ok();
     Ok(socket)
 }
 
