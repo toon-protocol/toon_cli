@@ -398,8 +398,8 @@ pub enum EventCommand {
         /// What the write is paid, in the token's base units
         #[arg(long, default_value_t = 0, conflicts_with = "relay")]
         amount: u64,
-        /// Publish to this relay instead (`ws://host:port` or `wss://host:port`), paying the price its
-        /// information document states
+        /// Publish to this relay instead (`ws://host:port` or `wss://host:port`), paying the
+        /// price its information document states
         #[arg(long)]
         relay: Option<String>,
         /// Confirm that this command moves money: without it nothing is paid
@@ -433,8 +433,8 @@ pub enum NipCommand {
     Publish {
         /// The draft's file, named after its identifier: `<identifier>.md`
         draft: PathBuf,
-        /// The agent node's own relay, `ws://host:port` or `wss://host:port`, which the draft is written to: asked
-        /// first for the draft's current revision
+        /// The agent node's own relay, `ws://host:port` or `wss://host:port`, which the draft
+        /// is written to: asked first for the draft's current revision
         #[arg(long)]
         relay: String,
         /// A topic of the draft, in lower case; may be repeated

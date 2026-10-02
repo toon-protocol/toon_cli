@@ -141,8 +141,10 @@ pub fn dial(relay: &str, proxy: Option<SocketAddr>) -> Result<Socket, String> {
     stream.set_write_timeout(Some(PATIENCE)).ok();
     let (socket, _) =
         tungstenite::client_tls_with_config(relay, stream, None, connector).map_err(|error| {
+            let certificate = matches!(&error,
+                tungstenite::HandshakeError::Failure(failure) if tls::is_certificate(failure));
             let error = tls::chain(&error);
-            if url.tls && tls::is_certificate(&error) {
+            if certificate {
                 format!("The certificate of {relay} did not verify: {error}.")
             } else {
                 format!("{relay} did not complete a websocket handshake: {error}.")

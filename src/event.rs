@@ -354,7 +354,8 @@ pub fn http_url(relay: &str) -> Result<String, Error> {
     relay_url::http_form(relay).map_err(unpayable)
 }
 
-/// The NIP-11 information document of `relay`, served at its own URL over `http://` or, for a `wss://` relay, `https://`.
+/// The NIP-11 information document of `relay`, served at its own URL over `http://` or,
+/// for a `wss://` relay, `https://`.
 pub fn information_document(egress: &Egress, relay: &str) -> Result<Value, Error> {
     let url = http_url(relay)?;
     egress
@@ -365,14 +366,13 @@ pub fn information_document(egress: &Egress, relay: &str) -> Result<Value, Error
         .and_then(|response| response.error_for_status())
         .and_then(|response| response.json())
         .map_err(|error| {
+            let certificate = tls::is_certificate(&error);
             let error = tls::chain(&error);
-            unpayable(
-                if url.starts_with("https://") && tls::is_certificate(&error) {
-                    format!("The certificate of {relay} did not verify: {error}.")
-                } else {
-                    format!("The information document of {relay} could not be read: {error}.")
-                },
-            )
+            unpayable(if certificate {
+                format!("The certificate of {relay} did not verify: {error}.")
+            } else {
+                format!("The information document of {relay} could not be read: {error}.")
+            })
         })
 }
 

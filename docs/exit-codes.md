@@ -184,7 +184,7 @@ fulfilled but not by this connector. `toon event query` is a plain NIP-01 `REQ` 
 passphrase; it reads from `ws://` and `wss://` relays.
 
 `toon event publish --relay <relay-url>` publishes to a relay this agent node does not run. It
-reads the relay's NIP-11 information document (`GET` of the relay's URL as `http://`, with
+reads the relay's NIP-11 information document (`GET` of the relay's URL as `http://`, or `https://` for a `wss://` relay, with
 `Accept: application/nostr+json`) for its `toon` object: `ilp_address`, `connector_url`,
 `connector_seal_key` and `price`. It seals the packet to `connector_seal_key` and makes no
 request to `connector_url`, which only appears in the `peering_needed` message. It shows the
@@ -195,7 +195,7 @@ the same outcomes as a publish to the own relay, plus `relay` and `paid`: the pr
 when the packet was rejected and nothing moved. `--amount` is refused with `--relay`, and
 `--yes` without it.
 
-`toon relay subscribe <ws-url> --filter <filter> --amount <amount>` subscribes to another
+`toon relay subscribe <relay-url> --filter <filter> --amount <amount>` subscribes to another
 relay's paid live feed (`nips/paid-subscription.md`). It reads `toon_subscription` from the
 relay's information document and shows the subscribe price, the broadcast price and the
 events the amount buys. It pays only with `--yes`, under the spending limit, over a peering
@@ -222,7 +222,7 @@ resumes, a top-up resumes one that ran out, and a feed that drops is dialled aga
 relay closes a feed with `payment-required` the subscription is marked exhausted until it is
 topped up.
 
-`toon event follow <ws-url>` prints the events of the live feed of a relay this agent node
+`toon event follow <relay-url>` prints the events of the live feed of a relay this agent node
 subscribed to, one JSON document to a line, as they arrive, with or without `--json`. A feed
 has no end, so it exits 1 with the reason it stopped: `query_failed` when the relay closed
 the feed or dropped (the subscription has run out, if the message says so), and
@@ -232,8 +232,8 @@ directly, not through the overlay.
 `toon nip publish` signs a draft (`nips/proposals-as-events.md`) the same way and writes it
 to the agent node's own relay as `toon event publish` does, with the same outcomes. It first
 asks `--relay` for the draft's current revision, so `--relay` must be the agent node's own
-relay's `ws://` or `wss://` URL. It exits 1 with `draft_refused` when the file is not a draft it can
-publish, or the relay holds that identifier under another title and `--title-changed` was
+relay's `ws://` or `wss://` URL. It exits 1 with `draft_refused` when the file is not a
+draft it can publish, or the relay holds that identifier under another title and `--title-changed` was
 not given.
 
 ## Backup and restore

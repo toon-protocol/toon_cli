@@ -66,7 +66,24 @@ pub fn chain(error: &dyn std::error::Error) -> String {
     text
 }
 
-/// Whether an error's text says that a certificate did not verify.
-pub fn is_certificate(text: &str) -> bool {
-    text.to_ascii_lowercase().contains("certificate")
+/// Whether `error`, or anything it was caused by, is a certificate that did not verify.
+pub fn is_certificate(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut next = Some(error);
+    while let Some(error) = next {
+        // An I/O error carries the TLS error it wraps without naming it as its source.
+        let wrapped = error
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+            .map(|inner| inner as &(dyn std::error::Error + 'static));
+        if [Some(error), wrapped].into_iter().flatten().any(|error| {
+            matches!(
+                error.downcast_ref::<rustls::Error>(),
+                Some(rustls::Error::InvalidCertificate(_))
+            )
+        }) {
+            return true;
+        }
+        next = error.source();
+    }
+    false
 }
