@@ -29,6 +29,25 @@ fn shipped_skills() -> Vec<(String, PathBuf)> {
     skills
 }
 
+/// Every Markdown file of a shipped skill, as a path relative to its directory: `SKILL.md` and
+/// the references beside it.
+fn skill_files(dir: &Path) -> Vec<String> {
+    let mut files = vec!["SKILL.md".to_owned()];
+    if let Ok(entries) = fs::read_dir(dir.join("references")) {
+        files.extend(entries.map(|entry| {
+            format!(
+                "references/{}",
+                entry
+                    .expect("read references/")
+                    .file_name()
+                    .to_string_lossy()
+            )
+        }));
+    }
+    files.sort();
+    files
+}
+
 /// Every inline code span of the skill that starts with `toon `, as its words.
 fn named_commands(text: &str) -> Vec<Vec<String>> {
     text.split('`')
@@ -136,15 +155,19 @@ fn skill_install_installs_every_skill_in_the_repository() {
             .collect::<Vec<_>>()
     );
     for (name, file) in shipped {
-        let target = machine
-            .home()
-            .join(".claude/skills")
-            .join(&name)
-            .join("SKILL.md");
-        assert_eq!(
-            fs::read_to_string(target).unwrap(),
-            fs::read_to_string(file).unwrap()
-        );
+        let source = file.parent().unwrap();
+        for relative in skill_files(source) {
+            let target = machine
+                .home()
+                .join(".claude/skills")
+                .join(&name)
+                .join(&relative);
+            assert_eq!(
+                fs::read_to_string(&target)
+                    .unwrap_or_else(|_| panic!("{} was not installed", target.display())),
+                fs::read_to_string(source.join(&relative)).unwrap()
+            );
+        }
     }
 }
 
@@ -172,4 +195,100 @@ fn the_nip_skill_walks_through_proposing_and_supporting_a_draft() {
     ] {
         assert!(text.contains(needed), "the skill does not mention {needed}");
     }
+}
+
+/// The NIPs of the social set, one reference each: 17 holds 44 and 59 too.
+const SOCIAL_NIPS: [&str; 21] = [
+    "01", "02", "65", "51", "38", "58", "10", "22", "18", "25", "23", "88", "84", "28", "29", "72",
+    "17", "09", "40", "56", "36",
+];
+
+fn social_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/social")
+}
+
+#[test]
+fn the_social_skill_has_one_reference_per_nip_in_the_set() {
+    let mut found = skill_files(&social_dir());
+    found.retain(|file| file != "SKILL.md");
+    let mut wanted: Vec<String> = SOCIAL_NIPS
+        .iter()
+        .map(|nip| format!("references/nip-{nip}.md"))
+        .collect();
+    wanted.sort();
+    assert_eq!(found, wanted);
+
+    let skill = skill_text("social");
+    for nip in SOCIAL_NIPS {
+        assert!(
+            skill.contains(&format!("references/nip-{nip}.md")),
+            "SKILL.md does not list NIP-{nip}"
+        );
+        let text =
+            fs::read_to_string(social_dir().join(format!("references/nip-{nip}.md"))).unwrap();
+        assert!(
+            text.starts_with(&format!("# NIP-{nip}")),
+            "NIP-{nip} has no title"
+        );
+        for needed in [
+            "## Publish",
+            "## Read",
+            "toon event publish",
+            "toon event query",
+        ] {
+            assert!(text.contains(needed), "NIP-{nip} lacks {needed}");
+        }
+    }
+    let private = fs::read_to_string(social_dir().join("references/nip-17.md")).unwrap();
+    assert!(private.contains("NIP-44") && private.contains("NIP-59"));
+}
+
+#[test]
+fn the_social_skill_states_cost_gaps_and_omissions() {
+    let text = skill_text("social");
+    for needed in [
+        "a TOON app is a connector with its apps, an app is the service alone",
+        "toon limit show",
+        "not_confirmed",
+        "toon relay subscriptions",
+        "NIP-29",
+        "NIP-42",
+        "NIP-57",
+        "NIP-05",
+    ] {
+        assert!(text.contains(needed), "the skill does not mention {needed}");
+    }
+    let omitted = text
+        .split("## Left out, and why")
+        .nth(1)
+        .expect("a section on what is left out");
+    assert!(omitted.contains("Lightning") && omitted.contains("clearnet domain"));
+}
+
+#[test]
+fn every_toon_event_command_in_the_social_references_uses_flags_it_has() {
+    let machine = Machine::new();
+    let mut seen = 0;
+    for file in skill_files(&social_dir()) {
+        let text = fs::read_to_string(social_dir().join(&file)).unwrap();
+        for line in text.lines().filter(|line| line.starts_with("toon event ")) {
+            let mut words = line.split_whitespace().skip(2);
+            let sub = words.next().unwrap();
+            let help = machine.toon(&["event", sub, "--help"]);
+            assert_eq!(
+                help.exit_code, 0,
+                "{file}: `toon event {sub}` does not exist"
+            );
+            for flag in words.filter(|word| word.starts_with("--")) {
+                assert!(
+                    help.stdout
+                        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                        .any(|w| w == flag),
+                    "{file}: `toon event {sub}` has no {flag}"
+                );
+            }
+            seen += 1;
+        }
+    }
+    assert!(seen > 40, "the references show their commands");
 }
