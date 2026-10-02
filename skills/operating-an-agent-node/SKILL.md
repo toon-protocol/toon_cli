@@ -55,7 +55,10 @@ over either is refused with `spending_limit` before anything is sent, and the me
 which limit and how much of the day remains. `toon limit show` prints the limits and what is
 left today. `toon limit set --max-per-command <n> --max-per-day <n>` changes them and needs the
 passphrase. Do not raise the limit to get past a refusal unless the operator who gave you this
-task said to; report the refusal instead. A payment that was rejected is not counted.
+task said to; report the refusal instead. A payment that was rejected is not counted, and
+neither is one whose packet was never sent (the key could not be read, the identity to seal
+to could not be fetched, the packet could not be sealed, or the connector's `send` refused its
+arguments); any other failure stays counted, because the packet may have left.
 
 `toon channel open` and `toon channel fund` also put collateral in a channel; they take no
 `--yes`, so state the deposit deliberately and check `toon limit show` and `toon wallet balances`
@@ -101,14 +104,16 @@ with `unfunded` without it, before anything is charged or sent.
 app that exists already; `--url <url>` names an app you already serve and runs nothing. `--price`
 is what a client pays the connector for a packet to the app, `--address` the ILP prefix
 (`g.toon.<app>` by default). It restarts that connector, so it needs `--yes`. `toon remove <app>`
-takes an app and its route away.
+takes an app and its route away. An agent node has one relay, the one `toon init` made: `add`
+refuses the relay's image (any tag or digest) with `one_relay`.
 
 ## Create a TOON app: `toon create`
 
 `toon create <name> --app <from> --image <image>` starts a new TOON app: a new connector with its
 own identity and keys, and an app behind it. It peers with `<from>` in both directions, each
 channel opened with `--deposit`, so it moves money (see above); `--no-peer` creates no peerings
-and needs no deposit. `--clearnet` and `--accept-anyone-terms` work as for `init`.
+and needs no deposit. It refuses the relay's image with `one_relay`, as `add` does. `--clearnet`
+and `--accept-anyone-terms` work as for `init`.
 `toon destroy <name>` stops and removes a TOON app, and refuses with `funds_held` while a
 channel still holds funds; the last TOON app is never removed.
 

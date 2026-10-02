@@ -37,7 +37,11 @@ pub struct Create<'a> {
 }
 
 fn failed(code: ErrorCode, message: String) -> Error {
-    Error { code, message }
+    Error {
+        code,
+        message,
+        nothing_sent: false,
+    }
 }
 
 /// Ask the supervisor to make what runs match the state.
@@ -150,6 +154,7 @@ fn peer(
 
 /// `toon create`.
 pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
+    create.origin.refuse_relay_image()?;
     let Some(state) = State::load(home)? else {
         return Err(node::no_agent_node(home));
     };

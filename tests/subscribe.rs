@@ -242,6 +242,30 @@ fn the_prices_and_the_events_the_amount_buys_are_shown_and_nothing_is_paid_witho
 }
 
 #[test]
+fn a_first_packet_that_fails_before_it_is_sent_is_not_counted() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    // The relay names a connector nothing listens on, so its identity cannot be fetched.
+    relay.set_connector("http://127.0.0.1:1/ilp");
+    let remaining =
+        || near.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone();
+    let before = remaining();
+
+    let run = subscribe(
+        &near,
+        &relay,
+        &["--filter", FILTER, "--amount", "2000", "--yes"],
+    );
+
+    assert_eq!(run.json()["error"]["code"], "send_failed", "{}", run.stdout);
+    assert_eq!(run.exit_code, 1);
+    assert_eq!(remaining(), before);
+    assert_eq!(relay.posts(), 0);
+}
+
+#[test]
 fn a_price_over_the_spending_limit_is_refused() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);

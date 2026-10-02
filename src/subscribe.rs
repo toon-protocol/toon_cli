@@ -30,6 +30,7 @@ const HTTP_AUTH: u64 = 27235;
 
 fn usage(message: impl Into<String>) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::Usage,
         message: message.into(),
     }
@@ -93,6 +94,7 @@ pub fn receiving_secret(home: &Path) -> Option<[u8; 32]> {
 /// The subscriber key's secret, opened with the passphrase.
 fn subscriber_secret(home: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
     derive::subscriber_secret(&*event::wallet_seed(home)?).map_err(|source| Error {
+        nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
     })
@@ -179,12 +181,14 @@ pub fn load(home: &Path) -> Result<Vec<Kept>, Error> {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(source) => {
             return Err(Error {
+                nothing_sent: false,
                 code: ErrorCode::Io,
                 message: format!("{}: {source}.", kept_path(home).display()),
             })
         }
     };
     let value: Value = serde_json::from_str(&text).map_err(|source| Error {
+        nothing_sent: false,
         code: ErrorCode::Io,
         message: format!("{}: {source}.", kept_path(home).display()),
     })?;
@@ -252,6 +256,7 @@ pub fn subscribe(
     let paid = packets * terms.price;
     if !operator::forwards(home, &terms.address)? {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::PeeringNeeded,
             message: format!(
                 "No peering of this agent node reaches {}, where {relay} sells its feed. A \
@@ -263,6 +268,7 @@ pub fn subscribe(
     }
     if !yes {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::NotConfirmed,
             message: format!(
                 "{relay} charges {} per subscribe packet and {} for each event it broadcasts. \
@@ -523,6 +529,7 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
     }
     let Some(kept) = load(home)?.into_iter().find(|kept| kept.relay == relay) else {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::NotSubscribed,
             message: format!(
                 "This agent node holds no subscription at {relay}: `toon relay subscribe` opens one."
@@ -544,6 +551,7 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
         !unwritten
     });
     let failed = |message: String| Error {
+        nothing_sent: false,
         code: ErrorCode::QueryFailed,
         message,
     };

@@ -91,6 +91,7 @@ A failed command with `--json` prints:
 | `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
 | `funds_held` | 1 | `toon destroy` did nothing: a channel of the TOON app still holds funds, or its channels could not be read; the message names each |
 | `last_toon_app` | 1 | `toon destroy` was given the only TOON app: an agent node always has one |
+| `one_relay` | 1 | `toon create` or `toon add` was given the relay's image (any tag or digest of the repository this build pins): an agent node runs one relay, the one `toon init` created; nothing was changed |
 
 
 ## The wallet passphrase
@@ -253,9 +254,13 @@ Every command that moves money (`toon send`, `toon peer add`, `toon join`) state
 `--max-per-command` for one command, and `--max-per-day` for the commands of one UTC day
 together, both in the token's base units, set at `toon init` (defaults 10000000 and
 100000000). A payment that was rejected is not counted, nor one that failed before it
-reached the connector or that the other side refused; any other failure may have paid, and
-stays counted. `toon limit show` prints the limits and what is left today. `toon limit set`
-changes them and reads the wallet passphrase, so an agent without it cannot raise them: the
-limits are signed with a key the wallet derives, and an unsigned or edited `limits.json`
-stops every payment. When `limits.json` is missing or was edited, `toon limit set` needs
-both `--max-per-command` and `--max-per-day`.
+reached the connector or that the other side refused. A packet that was never sent is not
+counted either: the operator key could not be read, the identity of the connector to seal to
+could not be fetched or has no usable public key, the packet could not be sealed, or the
+connector's `send` refused its arguments. These still fail with `send_failed`. Any other
+failure may have paid, and stays counted, including a refusal from the operator surface and
+an answer that was not understood. `toon limit show` prints the limits and what is left
+today. `toon limit set` changes them and reads the wallet passphrase, so an agent without it
+cannot raise them: the limits are signed with a key the wallet derives, and an unsigned or
+edited `limits.json` stops every payment. When `limits.json` is missing or was edited,
+`toon limit set` needs both `--max-per-command` and `--max-per-day`.

@@ -52,6 +52,8 @@ const HEALTHY: Duration = Duration::from_secs(60);
 struct AppStatus {
     name: String,
     address: SocketAddr,
+    /// Where it is read on this machine, if it has a read port.
+    read_address: Option<SocketAddr>,
     running: AtomicBool,
 }
 
@@ -201,6 +203,7 @@ pub enum Stopped {
 
 fn failed(message: String) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::ConnectorFailed,
         message,
     }
@@ -227,11 +230,13 @@ pub fn start(home: &Path) -> Result<Supervisor, Error> {
         return Err(funding::unfunded_to_start(state.network, &lacking));
     }
     let Some(listener) = control::bind(home).map_err(|error| Error {
+        nothing_sent: false,
         code: ErrorCode::Io,
         message: format!("{}: {error}.", control::path(home).display()),
     })?
     else {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::AlreadyRunning,
             message: format!(
                 "A supervisor is already running this agent node, at {}.",
@@ -265,6 +270,7 @@ fn start_app(
         // The relay's own Nostr identity is the wallet's, in hex.
         Source::Relay => {
             let identity = fs::read(&files.identity_key).map_err(|error| Error {
+                nothing_sent: false,
                 code: ErrorCode::AppFailed,
                 message: format!(
                     "The identity key of the app {} is not readable at {}: {error}.",
@@ -274,6 +280,18 @@ fn start_app(
             })?;
             let mut env = vec![("NOSTR_SECRET_KEY".to_owned(), hex::encode(identity))];
             env.extend(toon.relay.env());
+            // The relay asks its own connector where a write to it is paid, and which
+            // prefix of that connector's is its own. The connector is on this machine's
+            // loopback, a hidden one too: its self-description names the onion endpoint.
+            let port = toon
+                .listen
+                .rsplit_once(':')
+                .map_or(toon.listen.as_str(), |(_, port)| port);
+            env.push((
+                "TOON_CONNECTOR_URL".to_owned(),
+                format!("http://127.0.0.1:{port}/ilp"),
+            ));
+            env.push(("TOON_WRITE_ILP_ADDRESS".to_owned(), app.prefix.clone()));
             (env!("TOON_RELAY_IMAGE").to_owned(), env)
         }
         Source::Image(image) => (image.clone(), Vec::new()),
@@ -283,6 +301,7 @@ fn start_app(
         image,
         env,
         data_dir: files.data_dir,
+        relay: matches!(app.source, Source::Relay),
     };
     runner.start(&spec).map(Some)
 }
@@ -361,6 +380,7 @@ fn statuses(apps: &StartedApps) -> Vec<AppStatus> {
         .map(|(name, running)| AppStatus {
             name: name.clone(),
             address: running.write_address(),
+            read_address: running.read_address(),
             running: AtomicBool::new(true),
         })
         .collect()
@@ -543,6 +563,7 @@ impl UnitShared {
             "apps": self.apps().iter().map(|app| json!({
                 "name": app.name,
                 "address": app.address.to_string(),
+                "read_address": app.read_address.map(|read| read.to_string()),
                 "running": app.running.load(Ordering::SeqCst),
             })).collect::<Vec<_>>(),
         })
@@ -568,6 +589,7 @@ fn answer_all(waiting: Vec<Reload>, result: &Result<(), Unreloaded>) {
             Ok(()) => Ok(()),
             Err(unreloaded) => Err(Unreloaded {
                 error: Error {
+                    nothing_sent: unreloaded.error.nothing_sent,
                     code: unreloaded.error.code,
                     message: unreloaded.error.message.clone(),
                 },
@@ -643,6 +665,7 @@ impl Supervisor {
                 apps_checked = Instant::now();
                 if let Some(app) = self.units.iter_mut().find_map(Unit::stopped_app) {
                     stopped = Stopped::Failed(Error {
+                        nothing_sent: false,
                         code: ErrorCode::AppFailed,
                         message: format!("The app {app} stopped."),
                     });
