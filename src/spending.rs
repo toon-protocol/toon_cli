@@ -147,6 +147,7 @@ fn today() -> u64 {
 
 fn limit_error(message: impl Into<String>) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::SpendingLimit,
         message: message.into(),
     }
@@ -154,6 +155,7 @@ fn limit_error(message: impl Into<String>) -> Error {
 
 fn io(path: &Path, source: std::io::Error) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::Io,
         message: format!("{}: {source}.", path.display()),
     }
@@ -182,6 +184,7 @@ fn signed_text(limits: &Limits) -> String {
 /// hand: at `init`, and at `limit set` once the passphrase has opened the keystore.
 pub fn write_limits(home: &Path, seed: &[u8], limits: &Limits) -> Result<(), Error> {
     let secret = derive::limits_secret(seed).map_err(|source| Error {
+        nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
     })?;
@@ -309,6 +312,7 @@ pub fn spend<T>(
 ) -> Result<T, Error> {
     if !yes {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::NotConfirmed,
             message: format!(
                 "This moves {amount} base units. Add `--yes` to say that you mean it."
@@ -342,14 +346,19 @@ pub fn spend<T>(
 }
 
 /// Whether a command that failed with `error` certainly paid nothing: it never reached the
-/// connector, or the other side refused the peering before a channel was opened. Any other
-/// failure, a timeout or an answer not understood, may come after the money moved, so it
-/// stays counted.
+/// connector, the settlement key was refused as `unfunded` before anything was sent, the
+/// other side refused the peering before a channel was opened, or it failed before it sent
+/// a packet (`nothing_sent`). Any other failure, a timeout or an answer not understood, may
+/// come after the money moved, so it stays counted.
 fn failed_before_paying(error: &Error) -> bool {
-    matches!(
-        error.code,
-        ErrorCode::NoAgentNode | ErrorCode::NotRunning | ErrorCode::PeerNotPeerable
-    )
+    error.nothing_sent
+        || matches!(
+            error.code,
+            ErrorCode::NoAgentNode
+                | ErrorCode::NotRunning
+                | ErrorCode::Unfunded
+                | ErrorCode::PeerNotPeerable
+        )
 }
 
 /// `toon limit show`: the limits, and what is left of today's.
@@ -384,6 +393,7 @@ pub fn set(home: &Path, per_command: Option<u128>, per_day: Option<u128>) -> Res
         keystore::open(home, &passphrase)?
             .parse()
             .map_err(|_| Error {
+                nothing_sent: false,
                 code: ErrorCode::KeystoreCorrupt,
                 message: "The keystore does not hold a valid mnemonic.".into(),
             })?;
@@ -506,12 +516,17 @@ mod tests {
     #[test]
     fn only_a_failure_before_paying_frees_the_amount() {
         let failure = |code| Error {
+            nothing_sent: false,
             code,
             message: String::new(),
         };
         assert!(failed_before_paying(&failure(ErrorCode::NotRunning)));
         assert!(failed_before_paying(&failure(ErrorCode::PeerNotPeerable)));
+        assert!(failed_before_paying(&failure(ErrorCode::Unfunded)));
         assert!(!failed_before_paying(&failure(ErrorCode::SendFailed)));
+        let mut unsent = failure(ErrorCode::SendFailed);
+        unsent.nothing_sent = true;
+        assert!(failed_before_paying(&unsent));
         assert!(!failed_before_paying(&failure(ErrorCode::PeerFailed)));
     }
 }

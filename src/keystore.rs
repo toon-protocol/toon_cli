@@ -31,6 +31,7 @@ pub fn path(home: &Path) -> PathBuf {
 
 fn error(code: ErrorCode, message: impl Into<String>) -> Error {
     Error {
+        nothing_sent: false,
         code,
         message: message.into(),
     }

@@ -53,9 +53,10 @@ fn node_on(chain: &AnvilChain) -> Node {
         .to_owned();
     chain.fund(&evm, DEPOSIT * 10);
     let up = machine.start(&["up", "--foreground", "--json"]);
-    let address = up.report()["connector"]["address"]
+    let report = up.report();
+    let address = report["connector"]["address"]
         .as_str()
-        .expect("the connector's address")
+        .unwrap_or_else(|| panic!("the connector's address: {report}"))
         .to_owned();
     Node {
         machine,
@@ -67,15 +68,17 @@ fn node_on(chain: &AnvilChain) -> Node {
 /// A relay's information document, served for any request, naming `far`'s connector as
 /// where a write is paid for. Returns the relay's `ws://` URL.
 fn information_document(far: &Node) -> String {
-    let body = json!({
-        "name": "far",
-        "toon": {
-            "ilp_address": "g.toon.relay.far",
-            "connector_url": far.url(),
-            "price": PRICE,
-        },
-    })
-    .to_string();
+    document(json!({
+        "ilp_address": far.machine.relay_prefix(),
+        "connector_url": far.url(),
+        "connector_seal_key": support::seal_key(&far.url()),
+        "price": PRICE,
+    }))
+}
+
+/// A relay's information document with `toon` as given, served for any request.
+fn document(toon: Value) -> String {
+    let body = json!({ "name": "far", "toon": toon }).to_string();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let address = listener.local_addr().expect("address");
     thread::spawn(move || {
@@ -105,7 +108,7 @@ fn peer_and_route(near: &Node, far: &Node) {
         "far",
     ]);
     assert_eq!(peered.exit_code, 0, "{}{}", peered.stdout, peered.stderr);
-    let routed = near.toon(&["route", "add", "g.toon.relay.far", "--peer", "far"]);
+    let routed = near.toon(&["route", "add", &far.machine.relay_prefix(), "--peer", "far"]);
     assert_eq!(routed.exit_code, 0, "{}{}", routed.stdout, routed.stderr);
 }
 
@@ -180,6 +183,33 @@ fn the_price_is_shown_and_nothing_is_paid_without_yes() {
 }
 
 #[test]
+fn a_publish_that_fails_before_a_packet_is_sent_is_not_counted() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    // The relay pins a key that reads as one and is no point on the curve, so the packet
+    // cannot be sealed.
+    let relay = document(json!({
+        "ilp_address": far.machine.relay_prefix(),
+        "connector_url": far.url(),
+        "connector_seal_key": support::UNSEALABLE_KEY,
+        "price": PRICE,
+    }));
+    peer_and_route(&near, &far);
+    let remaining =
+        || near.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone();
+    let before = remaining();
+
+    let run = near.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--yes", "--json",
+    ]);
+
+    assert_eq!(run.json()["error"]["code"], "send_failed", "{}", run.stdout);
+    assert_eq!(run.exit_code, 1);
+    assert_eq!(remaining(), before);
+}
+
+#[test]
 fn a_price_over_the_spending_limit_is_refused() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);
@@ -217,6 +247,13 @@ fn with_no_peering_the_command_says_one_is_needed_and_creates_none() {
 
     let error = run.json()["error"].clone();
     assert_eq!(error["code"], "peering_needed", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("toon peer add {}`", far.url())),
+        "{error}"
+    );
     assert_eq!(run.exit_code, 1);
     let peers = near.toon(&["peer", "list", "--json"]).json();
     assert_eq!(peers["peers"].as_array().map(Vec::len), Some(0));
@@ -244,4 +281,96 @@ fn an_amount_is_refused_with_relay_and_yes_without_it() {
         assert_eq!(run.json()["error"]["code"], "usage", "{}", run.stdout);
         assert_eq!(run.exit_code, 2);
     }
+}
+
+#[test]
+fn a_write_is_sealed_to_the_published_key_and_never_dials_the_connector_url() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let hint = support::spy::start();
+    let relay = document(json!({
+        "ilp_address": far.machine.relay_prefix(),
+        "connector_url": hint.url(),
+        "connector_seal_key": support::seal_key(&far.url()).trim_start_matches("0x"),
+        "price": PRICE,
+    }));
+    peer_and_route(&near, &far);
+
+    let published = near.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--yes", "--json",
+    ]);
+
+    assert_eq!(published.exit_code, 0, "{}", published.stdout);
+    let report = published.json();
+    assert_eq!(report["outcome"], "published", "{report}");
+    assert_eq!(report["paid"], PRICE);
+    assert_eq!(hint.connections(), 0);
+    assert_eq!(events_at(&near, &far), 1);
+}
+
+#[test]
+fn a_toon_object_without_a_whole_write_edge_is_not_payable() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    peer_and_route(&near, &far);
+    let whole = json!({
+        "ilp_address": far.machine.relay_prefix(),
+        "connector_url": far.url(),
+        "connector_seal_key": support::seal_key(&far.url()),
+        "price": PRICE,
+    });
+    let mut cases = Vec::new();
+    for field in [
+        "ilp_address",
+        "connector_url",
+        "connector_seal_key",
+        "price",
+    ] {
+        let mut toon = whole.clone();
+        toon.as_object_mut().unwrap().remove(field);
+        cases.push((toon, field.to_owned()));
+    }
+    // 65 bytes, but not an uncompressed key.
+    let compressed = format!("05{}", "ab".repeat(64));
+    for bad in ["", "04ab", "zz", &"04".repeat(66), &compressed] {
+        let mut toon = whole.clone();
+        toon["connector_seal_key"] = json!(bad);
+        cases.push((toon, "connector_seal_key".to_owned()));
+    }
+    for (toon, missing) in cases {
+        let relay = document(toon.clone());
+        let run = near.toon(&[
+            "event", "publish", "--relay", &relay, "--kind", "1", "--yes", "--json",
+        ]);
+        let error = run.json()["error"].clone();
+        assert_eq!(error["code"], "relay_not_payable", "{toon}: {}", run.stdout);
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("has no `{missing}`"))
+                || error["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("has a `{missing}` that is not")),
+            "{toon}: {error}"
+        );
+        assert_eq!(run.exit_code, 1);
+    }
+    assert_eq!(events_at(&near, &far), 0);
+}
+
+/// How many kind 1 events the relay behind `far` holds.
+fn events_at(near: &Node, far: &Node) -> usize {
+    let query = near.machine.toon(&[
+        "event",
+        "query",
+        &far.relay_url(),
+        "--filter",
+        r#"{"kinds":[1]}"#,
+        "--json",
+    ]);
+    query.json()["events"].as_array().map(Vec::len).unwrap_or(0)
 }

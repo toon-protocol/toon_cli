@@ -23,7 +23,7 @@ A payment-oblivious HTTP service that a connector delivers to at the end of a ro
 _Avoid_: Backend, service
 
 **Relay**:
-The Nostr relay app: paid to write to through its connector.
+The Nostr relay app: paid to write to through its connector. An agent node has one, the one `toon init` creates; `toon create` and `toon add` refuse the relay's image.
 
 **Supervisor**:
 The one process per machine that runs an agent node: it starts each connector as a child process of the same binary and keeps it running.
@@ -78,6 +78,18 @@ The Nostr key a subscription belongs to. A subscriber signs each payment of the 
 _Avoid_: Token, credential, payer (the payer is the channel that paid, and a subscription does not depend on it)
 
 ### How it is reached
+
+**ILP address**:
+Where a packet is sent: `g.toon`, then the address segment of a TOON app, then the app behind its connector. It says which app a packet is for, not where the connector is dialled, which is the onion endpoint or the clearnet hostname.
+_Avoid_: Address on its own, where it could mean the onion endpoint or a wallet's address
+
+**Address segment**:
+The part of a TOON app's ILP addresses that no other TOON app has: taken from its connector's identity key, never chosen by the operator. Every ILP address the connector answers to sits under `g.toon.<address segment>`.
+_Avoid_: Node name, node id, namespace
+
+**Write edge**:
+What a relay says about where a write to it is paid: the ILP address the write is sent to, the seal key of the connector that terminates it, and the price. A relay names its own write edge in its information document. The connector URL beside it is a location hint, not something the write depends on.
+_Avoid_: Paid edge, payment endpoint
 
 **Hidden service**:
 The mode in which a connector is reachable only at an address inside the Anyone overlay, which public DNS cannot resolve. It is the default for a new TOON app.

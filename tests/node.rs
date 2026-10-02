@@ -53,7 +53,7 @@ fn init_records_the_first_toon_app_and_writes_its_keys() {
         serde_json::from_slice(&fs::read(machine.agent_node_home().join("state.json")).unwrap())
             .unwrap();
     assert_eq!(state["toon_apps"][0]["name"], "relay");
-    assert_eq!(state["toon_apps"][0]["apps"][0], "relay");
+    assert_eq!(state["toon_apps"][0]["apps"][0]["name"], "relay");
     for key in ["identity.key", "settlement.key"] {
         let file = connector_dir(&machine).join(key);
         assert_eq!(fs::read(&file).unwrap().len(), 32);
@@ -103,6 +103,37 @@ fn init_that_the_connector_would_refuse_leaves_no_wallet() {
     assert!(!machine.agent_node_home().join("keystore.json").exists());
     assert!(!machine.agent_node_home().join("state.json").exists());
     assert!(!machine.agent_node_home().join("connectors").exists());
+}
+
+#[test]
+fn init_picks_a_port_the_system_does_not_hand_out_by_itself() {
+    let machine = Machine::new();
+    // Without `--listen`, which the other tests give: `init` picks the port.
+    let init = machine.toon_with(&["init", "--json", "--accept-anyone-terms"], |command| {
+        command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+    });
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+
+    // `init` picks the connector's port and every `up` binds it, later. The system hands
+    // its ephemeral ports to any socket bound to port 0 and to any outgoing connection,
+    // so a port picked among them can be taken by the time the connector binds it.
+    let state: Value =
+        serde_json::from_slice(&fs::read(machine.agent_node_home().join("state.json")).unwrap())
+            .unwrap();
+    let listen: std::net::SocketAddr = state["toon_apps"][0]["listen"]
+        .as_str()
+        .and_then(|listen| listen.parse().ok())
+        .unwrap_or_else(|| panic!("the first TOON app has no listen address: {state}"));
+    let range = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range").unwrap();
+    let bounds: Vec<u16> = range
+        .split_whitespace()
+        .map(|bound| bound.parse().unwrap())
+        .collect();
+    assert!(
+        !(bounds[0]..=bounds[1]).contains(&listen.port()),
+        "{listen} is in the system's ephemeral range, {}",
+        range.trim()
+    );
 }
 
 #[test]
@@ -249,4 +280,32 @@ fn up_refuses_a_state_with_no_toon_app() {
 
     assert_eq!(run.json()["error"]["code"], "io");
     assert_eq!(run.exit_code, 1);
+}
+
+#[test]
+fn a_home_with_a_long_path_has_a_working_supervisor() {
+    let chain = FakeChain::start();
+    let machine = Machine::with_long_home();
+    let socket = machine.agent_node_home().join("supervisor.sock");
+    assert!(socket.as_os_str().len() > 107, "the socket path is long");
+    machine.init_on(&chain);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    assert!(up.report().get("error").is_none(), "up started");
+
+    let status = machine.toon(&["status", "--json"]);
+    assert_eq!(status.exit_code, 0);
+    let status = status.json();
+    assert_eq!(status["agent_node"]["supervisor"]["running"], true);
+    assert_eq!(
+        status["agent_node"]["supervisor"]["socket"],
+        socket.to_str().unwrap()
+    );
+
+    let second = machine.toon(&["up", "--foreground", "--json"]);
+    assert_eq!(second.json()["error"]["code"], "already_running");
+    assert_eq!(second.exit_code, 1);
+
+    let down = machine.toon(&["down", "--json"]);
+    assert_eq!(down.exit_code, 0);
+    assert_eq!(down.json()["stopped"], true);
 }

@@ -4,8 +4,10 @@
 //! The fake chain carries a connector through start and no further. A peering opens and
 //! funds a channel, which is a transaction, so a test that peers runs on this.
 
-use std::net::TcpListener;
+use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 use connector_settlement_evm::test_support::x402::X402Chain;
@@ -15,6 +17,12 @@ use tokio::runtime::Runtime;
 
 /// The token's decimals: USDC's.
 pub const TOKEN_DECIMALS: u8 = 6;
+
+/// What `anvil` prints before the address it listens on, once it does.
+const LISTENING: &str = "Listening on ";
+
+/// How long `anvil` gets to say where it listens.
+const STARTS_WITHIN: Duration = Duration::from_secs(60);
 
 pub struct AnvilChain {
     child: Child,
@@ -27,17 +35,31 @@ pub struct AnvilChain {
 impl AnvilChain {
     /// Start `anvil` on a free port, place x402 on it and deploy a USDC.
     pub fn start() -> Self {
-        let port = TcpListener::bind("127.0.0.1:0")
-            .and_then(|bound| bound.local_addr())
-            .expect("a free port")
-            .port();
-        let rpc_url = format!("http://127.0.0.1:{port}");
-        let child = Command::new("anvil")
-            .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-            .stdout(Stdio::null())
+        // `anvil` picks the port as it binds it, and says which. A port picked here and
+        // handed to it could be another socket's by the time it binds, and a test would
+        // then talk to whatever chain is listening there.
+        let mut child = Command::new("anvil")
+            .args(["--host", "127.0.0.1", "--port", "0"])
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .expect("start anvil (is it on PATH? see foundryup)");
+        let stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
+        let (sender, listening) = mpsc::channel();
+        // It logs every request there, so the rest is read too, or it would block.
+        thread::spawn(move || {
+            for line in stdout.lines().map_while(Result::ok) {
+                if let Some(address) = line.trim().strip_prefix(LISTENING) {
+                    let _ = sender.send(address.to_owned());
+                }
+            }
+        });
+        let Ok(address) = listening.recv_timeout(STARTS_WITHIN) else {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("anvil did not say where it listens");
+        };
+        let rpc_url = format!("http://{address}");
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()

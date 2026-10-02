@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 use crate::cli::WalletCommand;
 use crate::derive::{self, Addresses};
+use crate::egress::Egress;
 use crate::funding;
 use crate::keystore;
 use crate::node::{self, Reach};
@@ -46,10 +47,12 @@ enum Onion {
 
 fn addresses(mnemonic: &str, connectors: u32) -> Result<Addresses, Error> {
     let mnemonic: bip39::Mnemonic = mnemonic.parse().map_err(|_| Error {
+        nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
         message: "The keystore does not hold a valid mnemonic.".into(),
     })?;
     derive::addresses(&*derive::seed(&mnemonic), connectors).map_err(|source| Error {
+        nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
     })
@@ -118,6 +121,7 @@ pub fn init(home: &Path, options: &node::Options, restore: bool) -> Result<Repor
     if keystore::exists(home) {
         if restore {
             return Err(Error {
+                nothing_sent: false,
                 code: ErrorCode::Io,
                 message: format!(
                     "There is already a wallet at {}: a mnemonic restores into an empty home.",
@@ -129,6 +133,7 @@ pub fn init(home: &Path, options: &node::Options, restore: bool) -> Result<Repor
     }
     if node::State::load(home)?.is_some() {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::Io,
             message: format!(
                 "{} has an agent node's state but no wallet.",
@@ -222,6 +227,7 @@ const ADDRESSES_CHANGED: &str = "The onion endpoints are new: a mnemonic does no
 /// `TOON_MNEMONIC_FILE`, else from `TOON_MNEMONIC`: never a flag, so it is not in a process list.
 fn restoring_mnemonic() -> Result<bip39::Mnemonic, Error> {
     let usage = |message: String| Error {
+        nothing_sent: false,
         code: ErrorCode::Usage,
         message,
     };
@@ -308,6 +314,7 @@ fn create_toon_app(
 pub fn write_connector_keys(home: &Path, seed: &[u8], app: &node::ToonApp) -> Result<(), Error> {
     let files = node::ConnectorFiles::of(home, app.connector);
     let corrupt = |source: derive::DeriveError| Error {
+        nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
     };
@@ -328,6 +335,7 @@ pub fn write_onion_key(home: &Path, seed: &[u8], app: &node::ToonApp) -> Result<
     let files = node::ConnectorFiles::of(home, app.connector);
     if app.reach == Reach::Hidden && !files.onion_key.exists() {
         let onion = derive::onion_secret(seed, app.connector).map_err(|source| Error {
+            nothing_sent: false,
             code: ErrorCode::KeystoreCorrupt,
             message: source.0,
         })?;
@@ -350,8 +358,14 @@ fn write_toon_app(
         listen: node::concrete(&options.listen)?,
         ..options.clone()
     };
-    let state = node::State::first(&options);
+    let segment = derive::address_segment(&*seed, 0).map_err(|source| Error {
+        nothing_sent: false,
+        code: ErrorCode::KeystoreCorrupt,
+        message: source.0,
+    })?;
+    let state = node::State::first(&options, &segment);
     let operator = derive::operator_write_secret(&*seed).map_err(|source| Error {
+        nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
     })?;
@@ -360,6 +374,7 @@ fn write_toon_app(
     for app in &state.toon_apps {
         let files = node::ConnectorFiles::of(home, app.connector);
         let corrupt = |source: derive::DeriveError| Error {
+            nothing_sent: false,
             code: ErrorCode::KeystoreCorrupt,
             message: source.0,
         };
@@ -418,6 +433,7 @@ fn existing(home: &Path, options: &node::Options) -> Result<Report, Error> {
                 keystore::open(home, &passphrase)?
                     .parse()
                     .map_err(|_| Error {
+                        nothing_sent: false,
                         code: ErrorCode::KeystoreCorrupt,
                         message: "The keystore does not hold a valid mnemonic.".into(),
                     })?;
@@ -513,12 +529,18 @@ const HIDDEN_NOTE: &str =
     "A hidden service hides where the TOON app is reachable, and not who it pays: \
      payments are on a public chain.";
 
+/// Said when the network has no connector: `mainnet`, unless `init` was given one.
+const NO_NETWORK_NOTE: &str = "There is no mainnet TOON network yet, so `toon join mainnet` is refused until `init` is given `--connector-url` (and `--relay-url`).";
+
 fn notes(state: &node::State) -> Vec<&'static str> {
+    let mut notes = Vec::new();
     if state.toon_apps.iter().any(|app| app.reach == Reach::Hidden) {
-        vec![HIDDEN_NOTE]
-    } else {
-        Vec::new()
+        notes.push(HIDDEN_NOTE);
     }
+    if state.connector_url.is_none() {
+        notes.push(NO_NETWORK_NOTE);
+    }
+    notes
 }
 
 fn toon_app_text(home: &Path, state: &node::State, created: bool) -> String {
@@ -564,6 +586,7 @@ pub fn check_reach(reach: &Reach, accept_anyone_terms: bool, listen: &str) -> Re
             || hostname.contains(|c: char| c.is_whitespace() || "/:@".contains(c))
         {
             return Err(Error {
+                nothing_sent: false,
                 code: ErrorCode::Usage,
                 message: format!("`--clearnet` takes a hostname, and {hostname:?} is not one."),
             });
@@ -572,6 +595,7 @@ pub fn check_reach(reach: &Reach, accept_anyone_terms: bool, listen: &str) -> Re
     }
     if !accept_anyone_terms {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::Usage,
             message: "A new TOON app is a hidden service on the Anyone overlay. Pass \
                       `--accept-anyone-terms` to agree to the Anyone Protocol's terms, or \
@@ -584,6 +608,7 @@ pub fn check_reach(reach: &Reach, accept_anyone_terms: bool, listen: &str) -> Re
         .is_ok_and(|listen| !listen.ip().is_loopback())
     {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::Usage,
             message: format!(
                 "A hidden service listens on loopback only, and {listen} is not: its onion endpoint \
@@ -627,20 +652,17 @@ const CHAIN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 const BALANCE_OF: &str = "70a08231";
 
 /// One JSON-RPC call to `rpc_url`, whose `result` is a hex quantity.
-fn quantity(rpc_url: &str, method: &str, params: Value) -> Result<u128, Error> {
+fn quantity(egress: &Egress, rpc_url: &str, method: &str, params: Value) -> Result<u128, Error> {
     let chain_failed = |message: String| Error {
+        nothing_sent: false,
         code: ErrorCode::ChainFailed,
         message: format!("{method} to {rpc_url}: {message}."),
     };
-    let reply: Value = reqwest::blocking::Client::builder()
-        .timeout(CHAIN_PATIENCE)
-        .build()
-        .and_then(|client| {
-            client
-                .post(rpc_url)
-                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
-                .send()
-        })
+    let reply: Value = egress
+        .client(rpc_url, CHAIN_PATIENCE)?
+        .post(rpc_url)
+        .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
+        .send()
         .and_then(|response| response.error_for_status())
         .and_then(|response| response.json())
         .map_err(|error| chain_failed(error.to_string()))?;
@@ -671,6 +693,7 @@ pub fn balances(home: &Path) -> Result<Report, Error> {
     let passphrase = keystore::passphrase()?;
     let mnemonic = keystore::open(home, &passphrase)?;
     let addresses = addresses(&mnemonic, connectors(home)?)?;
+    let egress = Egress::of_state(home, &state);
     let mut entries = Vec::new();
     let mut lines = Vec::new();
     for app in &state.toon_apps {
@@ -679,13 +702,20 @@ pub fn balances(home: &Path) -> Result<Report, Error> {
             .iter()
             .find(|keys| keys.index == app.connector)
             .ok_or_else(|| Error {
+                nothing_sent: false,
                 code: ErrorCode::KeystoreCorrupt,
                 message: format!("The wallet has no keys for connector {}.", app.connector),
             })?;
         let evm = match &app.evm {
             Some(evm) => {
-                let native = quantity(&evm.rpc_url, "eth_getBalance", json!([keys.evm, "latest"]))?;
+                let native = quantity(
+                    &egress,
+                    &evm.rpc_url,
+                    "eth_getBalance",
+                    json!([keys.evm, "latest"]),
+                )?;
                 let token = quantity(
+                    &egress,
                     &evm.rpc_url,
                     "eth_call",
                     json!([{
@@ -770,6 +800,7 @@ pub fn backup(home: &Path, out: &Path) -> Result<Report, Error> {
     {
         let file = node::ConnectorFiles::of(home, app.connector).onion_key;
         let key = std::fs::read(&file).map_err(|source| Error {
+            nothing_sent: false,
             code: ErrorCode::Io,
             message: format!("{}: {source}.", file.display()),
         })?;
@@ -791,6 +822,7 @@ pub fn backup(home: &Path, out: &Path) -> Result<Report, Error> {
     );
     let sealed = keystore::seal(&passphrase, plain.as_bytes())?;
     let io = |source: std::io::Error| Error {
+        nothing_sent: false,
         code: ErrorCode::Io,
         message: format!("{}: {source}.", out.display()),
     };
@@ -827,6 +859,7 @@ pub fn backup(home: &Path, out: &Path) -> Result<Report, Error> {
 pub fn restore(home: &Path, from: &Path) -> Result<Report, Error> {
     if keystore::exists(home) {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::Io,
             message: format!(
                 "There is already a wallet at {}: a backup restores into an empty home.",
@@ -836,6 +869,7 @@ pub fn restore(home: &Path, from: &Path) -> Result<Report, Error> {
     }
     if node::State::load(home)?.is_some() {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::Io,
             message: format!(
                 "{} has an agent node's state but no wallet: a backup restores into an empty home.",
@@ -845,10 +879,12 @@ pub fn restore(home: &Path, from: &Path) -> Result<Report, Error> {
     }
     let passphrase = keystore::passphrase()?;
     let text = std::fs::read_to_string(from).map_err(|source| Error {
+        nothing_sent: false,
         code: ErrorCode::Io,
         message: format!("{}: {source}.", from.display()),
     })?;
     let corrupt = || Error {
+        nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
         message: format!("{} is not a backup this version reads.", from.display()),
     };
@@ -897,6 +933,7 @@ pub fn restore(home: &Path, from: &Path) -> Result<Report, Error> {
         if file.exists() {
             undo(&written);
             return Err(Error {
+                nothing_sent: false,
                 code: ErrorCode::Io,
                 message: format!(
                     "{} is there already: a backup restores into an empty home.",
@@ -918,6 +955,7 @@ pub fn restore(home: &Path, from: &Path) -> Result<Report, Error> {
         Ok(false) => {
             undo(&written);
             return Err(Error {
+                nothing_sent: false,
                 code: ErrorCode::Io,
                 message: "A wallet was made here while the backup was being restored.".into(),
             });

@@ -45,22 +45,17 @@ fn set_limits(machine: &Machine, per_command: &str, per_day: &str) {
 }
 
 fn send(machine: &Machine, amount: &str) -> support::Run {
-    machine.toon(&[
-        "send",
-        "g.toon.relay",
-        "--amount",
-        amount,
-        "--yes",
-        "--json",
-    ])
+    let relay = machine.relay_prefix();
+    machine.toon(&["send", &relay, "--amount", amount, "--yes", "--json"])
 }
 
 #[test]
 fn a_command_that_moves_money_needs_yes() {
     let node = running();
 
+    let relay = node.machine.relay_prefix();
     for args in [
-        &["send", "g.toon.relay", "--amount", "1", "--json"][..],
+        &["send", relay.as_str(), "--amount", "1", "--json"][..],
         &[
             "peer",
             "add",
@@ -119,6 +114,35 @@ fn a_payment_that_did_not_happen_is_not_counted() {
         "{}",
         rejected.stdout
     );
+
+    let shown = node.machine.toon(&["limit", "show", "--json"]).json();
+    assert_eq!(shown["limits"]["remaining_today"], "5");
+}
+
+#[test]
+fn a_send_that_fails_before_a_packet_is_sent_is_not_counted() {
+    let node = running();
+    set_limits(&node.machine, "5", "5");
+
+    let relay = node.machine.relay_prefix();
+    let failed = node.machine.toon(&[
+        "send",
+        &relay,
+        "--amount",
+        "5",
+        "--seal-to",
+        "http://127.0.0.1:1/ilp",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(
+        failed.json()["error"]["code"],
+        "send_failed",
+        "{}",
+        failed.stdout
+    );
+    assert_eq!(failed.exit_code, 1);
+    assert!(failed.json()["error"].get("nothing_sent").is_none());
 
     let shown = node.machine.toon(&["limit", "show", "--json"]).json();
     assert_eq!(shown["limits"]["remaining_today"], "5");

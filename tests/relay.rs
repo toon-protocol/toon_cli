@@ -88,7 +88,7 @@ fn a_packet_to_the_relays_address_is_delivered_to_the_relay() {
     let up = machine.start(&["up", "--foreground", "--json"]);
     let address = connector(&up.report());
 
-    send(address, "g.toon.relay.ephemeral", b"hello relay");
+    send(address, &machine.ephemeral_prefix(), b"hello relay");
 
     wait_until("the relay never received the packet", || {
         !writes(&machine).is_empty()
@@ -139,13 +139,18 @@ fn the_connectors_config_routes_the_relays_write_and_its_free_ephemeral_write() 
     .unwrap();
     assert!(
         config.contains(&format!(
-            "prefix = \"g.toon.relay\"\nhandler_url = \"http://{write}/write\"\nprice = 1\n"
+            "prefix = \"{}\"\nhandler_url = \"http://{write}/write\"\nprice = 1\n",
+            machine.relay_prefix()
         )),
         "{config}"
     );
-    assert!(config.contains(&format!(
-        "prefix = \"g.toon.relay.ephemeral\"\nhandler_url = \"http://{write}/write-ephemeral\"\nprice = 0\n"
-    )), "{config}");
+    assert!(
+        config.contains(&format!(
+            "prefix = \"{}\"\nhandler_url = \"http://{write}/write-ephemeral\"\nprice = 0\n",
+            machine.ephemeral_prefix()
+        )),
+        "{config}"
+    );
     // The write port is on loopback, so only this machine's connector reaches it.
     assert!(write.starts_with("127.0.0.1:"), "{write}");
 }

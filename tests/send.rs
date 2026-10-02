@@ -30,9 +30,10 @@ fn running() -> Running {
 fn a_packet_to_the_operators_own_route_is_fulfilled() {
     let node = running();
 
+    let relay = node.machine.relay_prefix();
     let run = node
         .machine
-        .toon(&["send", "g.toon.relay", "--amount", "0", "--yes", "--json"]);
+        .toon(&["send", &relay, "--amount", "0", "--yes", "--json"]);
 
     // The packet carries no event, so the relay it is delivered to refuses the write.
     let report = run.json();
@@ -50,13 +51,14 @@ fn a_packet_to_the_operators_own_route_is_fulfilled() {
 fn a_packet_to_a_route_under_the_prefix_is_fulfilled() {
     let node = running();
 
+    let write = format!("{}.write", node.machine.relay_prefix());
     let run = node
         .machine
-        .toon(&["send", "g.toon.relay.write", "--amount", "0", "--yes"]);
+        .toon(&["send", &write, "--amount", "0", "--yes"]);
 
     assert_eq!(
         run.stdout,
-        "Fulfilled: 0 base units to g.toon.relay.write. The app answered 400.\n"
+        format!("Fulfilled: 0 base units to {write}. The app answered 400.\n")
     );
     assert_eq!(run.exit_code, 0);
 }
@@ -97,7 +99,7 @@ fn a_rejected_packet_is_readable_text_without_json() {
 fn send_needs_an_amount() {
     let machine = Machine::new();
 
-    let run = machine.toon(&["send", "g.toon.relay", "--json"]);
+    let run = machine.toon(&["send", "g.toon.abc.relay", "--json"]);
 
     assert_eq!(run.json()["error"]["code"], "usage");
     assert_eq!(run.exit_code, 2);
@@ -180,9 +182,9 @@ fn route_list_shows_the_routing_table() {
         .expect("the relay's address")
         .to_owned();
     assert_eq!(routes.as_array().map(Vec::len), Some(2), "{routes}");
-    assert_eq!(routes[0]["prefix"], "g.toon.relay");
+    assert_eq!(routes[0]["prefix"], node.machine.relay_prefix());
     assert_eq!(routes[0]["handler_url"], format!("http://{relay}/write"));
-    assert_eq!(routes[1]["prefix"], "g.toon.relay.ephemeral");
+    assert_eq!(routes[1]["prefix"], node.machine.ephemeral_prefix());
     assert_eq!(
         routes[1]["handler_url"],
         format!("http://{relay}/write-ephemeral")
@@ -198,7 +200,10 @@ fn route_list_is_readable_text_without_json() {
     let run = node.machine.toon(&["route", "list"]);
 
     assert!(
-        run.stdout.starts_with("g.toon.relay -> http://127.0.0.1:"),
+        run.stdout.starts_with(&format!(
+            "{} -> http://127.0.0.1:",
+            node.machine.relay_prefix()
+        )),
         "{}",
         run.stdout
     );

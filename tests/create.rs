@@ -135,9 +135,30 @@ fn a_second_toon_app_is_peered_both_ways_and_a_packet_crosses_each_way() {
 
     // First to second: the app behind the new connector gets the packet.
     let second = format!("http://{}/ilp", listening(&machine, "second"));
+    let second_segment = machine.segment("second");
+    assert_ne!(second_segment, machine.segment("relay"));
+    assert_eq!(second_segment.len(), 16);
+    let second_app = format!("g.toon.{second_segment}.second");
+    assert_eq!(
+        report["created"]["address"],
+        format!("g.toon.{second_segment}")
+    );
+    // The source forwards the new connector's address to it.
+    let routes = machine.toon(&["route", "list", "--json"]).json();
+    assert!(
+        routes["forwarding_routes"]
+            .as_array()
+            .expect("the forwarding routes")
+            .iter()
+            .any(
+                |route| route["prefix"] == format!("g.toon.{second_segment}").as_str()
+                    && route["peer_id"] == "second"
+            ),
+        "{routes}"
+    );
     let sent = machine.toon(&[
         "send",
-        "g.toon.second",
+        &second_app,
         "--amount",
         "0",
         "--yes",
@@ -151,11 +172,12 @@ fn a_second_toon_app_is_peered_both_ways_and_a_packet_crosses_each_way() {
 
     // Second to first: the relay's price is paid.
     let first = format!("http://{}/ilp", listening(&machine, "relay"));
+    let relay = machine.relay_prefix();
     let back = machine.toon(&[
         "send",
         "--app",
         "second",
-        "g.toon.relay",
+        &relay,
         "--amount",
         "1",
         "--yes",

@@ -13,6 +13,7 @@ use zeroize::Zeroizing;
 
 use crate::cli::{ChannelCommand, JoinArgs, PeerCommand, RouteCommand};
 use crate::control;
+use crate::egress::Egress;
 use crate::node::{self, ConnectorFiles, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::spending;
@@ -31,7 +32,11 @@ pub struct Surface {
 }
 
 fn failed(code: ErrorCode, message: String) -> Error {
-    Error { code, message }
+    Error {
+        code,
+        message,
+        nothing_sent: false,
+    }
 }
 
 /// The TOON app every command that talks to a connector is about, when the operator named
@@ -581,6 +586,7 @@ pub fn channel_open(
     deposit: u128,
     url: Option<&str>,
 ) -> Result<Report, Error> {
+    ensure_gas(home)?;
     let contents = std::fs::read_to_string(terms).map_err(|source| {
         failed(
             ErrorCode::ChannelFailed,
@@ -609,6 +615,7 @@ pub fn channel_open(
 
 /// `toon channel fund`: add `amount` to an outbound channel.
 pub fn channel_fund(home: &Path, id: &str, amount: u128) -> Result<Report, Error> {
+    ensure_gas(home)?;
     let channel = channel_write(
         home,
         &channel_path(id, "fund")?,
@@ -620,6 +627,7 @@ pub fn channel_fund(home: &Path, id: &str, amount: u128) -> Result<Report, Error
 /// `toon channel withdraw`: the connector starts the withdrawal, or finishes it once it
 /// is due, and says which.
 pub fn channel_withdraw(home: &Path, id: &str) -> Result<Report, Error> {
+    ensure_gas(home)?;
     let channel = channel_write(home, &channel_path(id, "withdraw")?, String::new())?;
     let step = channel["step"].as_str().unwrap_or("withdraw").to_owned();
     Ok(channel_report(channel, &format!("Withdrawal step {step}")))
@@ -627,8 +635,19 @@ pub fn channel_withdraw(home: &Path, id: &str) -> Result<Report, Error> {
 
 /// `toon channel land`: land the latest voucher held on an inbound channel.
 pub fn channel_land(home: &Path, id: &str) -> Result<Report, Error> {
+    ensure_gas(home)?;
     let channel = channel_write(home, &channel_path(id, "land")?, String::new())?;
     Ok(channel_report(channel, "Landed"))
+}
+
+/// Refuse with `unfunded` unless the settlement key of the TOON app these commands are
+/// about holds the gas a transaction spends. Nothing has been charged or sent yet.
+fn ensure_gas(home: &Path) -> Result<(), Error> {
+    let Some(state) = State::load(home)? else {
+        return Err(node::no_agent_node(home));
+    };
+    let app = crate::apps::toon_app(&state, TARGET.get().map(String::as_str))?;
+    crate::funding::ensure_gas(home, state.network, app)
 }
 
 /// What a packet came to.
@@ -661,6 +680,25 @@ fn answer(summary: &str) -> Option<Answer> {
     })
 }
 
+/// Whether the connector's `send` failed before it wrote to the operator surface: its
+/// arguments were refused, the operator key could not be read, the identity to seal to
+/// could not be fetched, or the packet could not be sealed. A `Transport` failure may
+/// come after the packet left, and an answer not understood does, so neither is here.
+///
+/// The connector keeps `SendError` private, so its variant is read from its `Debug`.
+fn before_sending(error: &connector_cli::CliError) -> bool {
+    match error {
+        connector_cli::CliError::Usage(_) => true,
+        connector_cli::CliError::Send(send) => {
+            let variant = format!("{send:?}");
+            ["KeyFile", "Identity", "Seal"]
+                .iter()
+                .any(|name| variant.starts_with(name))
+        }
+        _ => false,
+    }
+}
+
 /// Send one packet from the operator surface to `destination`, for `amount`, sealed to the
 /// connector at `seal_to`, or to this one, and return what the connector says it came to.
 /// `body` is a file the request carries as its JSON body.
@@ -681,6 +719,30 @@ pub fn dispatch(
     let seal_to = seal_to.map_or_else(|| format!("{}/ilp", surface.url), str::to_owned);
     let write_key = surface.write_key.to_string_lossy();
     let body = body.map(|path| path.to_string_lossy().into_owned());
+    let egress = Egress::of(home)?;
+    // An overlay that cannot be had is found out before anything is sent.
+    let socks_proxy = egress
+        .proxy_for(&seal_to)
+        .map_err(|error| Error {
+            nothing_sent: true,
+            ..error
+        })?
+        .map(|proxy| format!("socks5h://{proxy}"));
+    // The connector's `send` takes its proxy only to an onion endpoint and dials any other
+    // host directly, so a request that must go through the overlay to another host is
+    // formed here, with the same envelope the connector's `send` makes.
+    if socks_proxy.is_some() && !is_onion_endpoint(&seal_to) {
+        let body = match &body {
+            Some(path) => std::fs::read(path).map_err(|error| Error {
+                nothing_sent: true,
+                ..send_failed(format!("{path} could not be read: {error}."))
+            })?,
+            None => Vec::new(),
+        };
+        let headers = vec![("content-type".to_owned(), "application/json".to_owned())];
+        let public = identity(&egress, &seal_to)?;
+        return dispatch_with_headers(home, destination, amount, &public, headers, body);
+    }
     let mut arguments = vec![
         "toon send",
         "send",
@@ -698,9 +760,16 @@ pub fn dispatch(
     if let Some(body) = &body {
         arguments.extend(["--body", body]);
     }
+    if let Some(proxy) = &socks_proxy {
+        arguments.extend(["--socks-proxy", proxy]);
+    }
     let summary = runtime
         .block_on(connector_cli::run(&arguments))
-        .map_err(|error| send_failed(error.to_string()))
+        .map_err(|error| {
+            let mut failure = send_failed(error.to_string());
+            failure.nothing_sent = before_sending(&error);
+            failure
+        })
         .and_then(|command| match command {
             connector_cli::Command::Finished { summary } => Ok(summary),
             connector_cli::Command::Serve(_) => {
@@ -714,15 +783,56 @@ pub fn dispatch(
     })
 }
 
-/// Send one packet like [`dispatch`] does, but with `headers` on the request and `body` in
-/// memory. The connector's `send` fixes the request's headers, so this forms, seals and
+/// Whether `url` names an onion endpoint, which the connector's `send` dials through its
+/// `--socks-proxy`.
+fn is_onion_endpoint(url: &str) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|url| {
+        url.host_str().is_some_and(|host| {
+            let host = host.to_ascii_lowercase();
+            host.ends_with(&format!(".{}", crate::overlay::TLD)) || host.ends_with(".onion")
+        })
+    })
+}
+
+/// The sealing key the connector at `seal_to` gives as its identity, asked for the way
+/// `egress` says a request leaves this machine. Nothing has been sent when it fails.
+fn identity(egress: &Egress, seal_to: &str) -> Result<[u8; 65], Error> {
+    let not_sent = |message: String| Error {
+        nothing_sent: true,
+        ..failed(ErrorCode::SendFailed, message)
+    };
+    let identity_url = format!("{}/identity", seal_to.trim_end_matches('/'));
+    let identity: Value = egress
+        .client(&identity_url, PATIENCE)
+        .map_err(|error| Error {
+            nothing_sent: true,
+            ..error
+        })?
+        .get(&identity_url)
+        .send()
+        .and_then(|response| response.json())
+        .map_err(|error| {
+            not_sent(format!(
+                "{identity_url} did not give its identity: {error}."
+            ))
+        })?;
+    identity["publicKey"]
+        .as_str()
+        .and_then(|key| hex::decode(key.trim_start_matches("0x")).ok())
+        .and_then(|key| key.try_into().ok())
+        .ok_or_else(|| not_sent(format!("{identity_url} has no 65-byte `publicKey`.")))
+}
+
+/// Send one packet like [`dispatch`] does, but sealed to the key `public` itself, which
+/// is not fetched from anywhere, with `headers` on the request and `body` in memory. The
+/// connector's `send` fixes the request's headers, so this forms, seals and
 /// signs the packet itself, with the connector's own crates, and reads the answer the
 /// same way.
 pub fn dispatch_with_headers(
     home: &Path,
     destination: &str,
     amount: u64,
-    seal_to: &str,
+    public: &[u8; 65],
     headers: Vec<(String, String)>,
     body: Vec<u8>,
 ) -> Result<Answer, Error> {
@@ -731,27 +841,18 @@ pub fn dispatch_with_headers(
 
     let surface = surface(home)?;
     let send_failed = |message: String| failed(ErrorCode::SendFailed, message);
-    let keypair = write_keypair(&surface.write_key)?;
+    let not_sent = |message: String| Error {
+        nothing_sent: true,
+        ..send_failed(message)
+    };
+    let keypair = write_keypair(&surface.write_key).map_err(|error| Error {
+        nothing_sent: true,
+        ..error
+    })?;
     let client = reqwest::blocking::Client::builder()
         .timeout(PATIENCE)
         .build()
-        .map_err(|error| send_failed(error.to_string()))?;
-
-    let identity_url = format!("{}/identity", seal_to.trim_end_matches('/'));
-    let identity: Value = client
-        .get(&identity_url)
-        .send()
-        .and_then(|response| response.json())
-        .map_err(|error| {
-            send_failed(format!(
-                "{identity_url} did not give its identity: {error}."
-            ))
-        })?;
-    let public: [u8; 65] = identity["publicKey"]
-        .as_str()
-        .and_then(|key| hex::decode(key.trim_start_matches("0x")).ok())
-        .and_then(|key| key.try_into().ok())
-        .ok_or_else(|| send_failed(format!("{identity_url} has no 65-byte `publicKey`.")))?;
+        .map_err(|error| not_sent(error.to_string()))?;
 
     let plaintext = EnvelopeRequest {
         method: "POST".into(),
@@ -760,8 +861,8 @@ pub fn dispatch_with_headers(
         body,
     }
     .encode();
-    let (data, secret) = seal_request(&plaintext, &public)
-        .map_err(|error| send_failed(format!("The packet could not be sealed: {error}.")))?;
+    let (data, secret) = seal_request(&plaintext, public)
+        .map_err(|error| not_sent(format!("The packet could not be sealed: {error}.")))?;
     let prepare = Prepare {
         amount,
         expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
@@ -891,19 +992,23 @@ pub fn channel(home: &Path, command: ChannelCommand) -> Result<Report, Error> {
 /// `toon peer`.
 pub fn peer(home: &Path, command: &PeerCommand) -> Result<Report, Error> {
     match command {
-        PeerCommand::Add(args) => spending::spend(home, args.deposit, args.yes, || {
-            let report = peer_add(
-                home,
-                &PeerAdd {
-                    address: &args.address,
-                    deposit: args.deposit,
-                    id: args.id.as_deref(),
-                    fee: args.fee,
-                    max_packet_amount: args.max_packet_amount,
-                },
-            )?;
-            Ok((report, true))
-        }),
+        PeerCommand::Add(args) => {
+            // Refused before the spending limit is charged: nothing is sent.
+            ensure_gas(home)?;
+            spending::spend(home, args.deposit, args.yes, || {
+                let report = peer_add(
+                    home,
+                    &PeerAdd {
+                        address: &args.address,
+                        deposit: args.deposit,
+                        id: args.id.as_deref(),
+                        fee: args.fee,
+                        max_packet_amount: args.max_packet_amount,
+                    },
+                )?;
+                Ok((report, true))
+            })
+        }
         PeerCommand::List => peer_list(home),
         PeerCommand::Remove { id } => peer_remove(home, id),
     }
@@ -952,11 +1057,22 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
             format!("This agent node has already joined {joined}."),
         ));
     }
+    let Some(connector_url) = state.connector_url.clone() else {
+        return Err(failed(
+            ErrorCode::JoinRefused,
+            format!(
+                "There is no {name} TOON network yet: this agent node records no connector for it. \
+                 Name one with `--connector-url` (and `--relay-url`) on `init`."
+            ),
+        ));
+    };
+    let app = crate::apps::toon_app(&state, TARGET.get().map(String::as_str))?;
+    crate::funding::ensure_gas(home, state.network, app)?;
     spending::spend(home, args.deposit, args.yes, || {
         let peered = peer_add(
             home,
             &PeerAdd {
-                address: &state.connector_url,
+                address: &connector_url,
                 deposit: args.deposit,
                 id: Some(name),
                 fee: 0,
@@ -966,10 +1082,16 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
         let routed = route_add(home, NETWORK_PREFIX, name, 0)?;
         let relay = state.relay_url.clone();
         state.joined = Some(name.to_owned());
-        if !state.reads.contains(&relay) {
-            state.reads.push(relay.clone());
+        if let Some(relay) = &relay {
+            if !state.reads.contains(relay) {
+                state.reads.push(relay.clone());
+            }
         }
         state.save(home)?;
+        let reading = match &relay {
+            Some(relay) => format!("Reading its relay at {relay}."),
+            None => "It names no relay, so the agent reads no relay of it.".to_owned(),
+        };
         Ok((
             Report {
                 exit: Exit::Success,
@@ -981,12 +1103,63 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
                 }),
                 text: format!(
                     "Joined {name}: peered with {} and forwarding {NETWORK_PREFIX} to it, deposit {}. \
-                     Reading its relay at {relay}.\n\
+                     {reading}\n\
                      Its connector forwards back to you only if its operator creates a peering toward you in return.",
-                    state.connector_url, args.deposit
+                    connector_url, args.deposit
                 ),
             },
             true,
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::before_sending;
+
+    /// The connector's `send`, run as `dispatch` runs it, with `operator_key` and `seal_to`.
+    fn sent(operator_key: &str, seal_to: &str) -> connector_cli::CliError {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let arguments = [
+            "toon send",
+            "send",
+            "--operator",
+            "http://127.0.0.1:1",
+            "--operator-key",
+            operator_key,
+            "--to",
+            "g.toon.relay",
+            "--seal-to",
+            seal_to,
+            "--amount",
+            "1",
+        ];
+        match runtime.block_on(connector_cli::run(&arguments)) {
+            Err(error) => error,
+            Ok(_) => panic!("the send did not fail"),
+        }
+    }
+
+    /// `before_sending` reads the connector's private `SendError` from its `Debug`, so a
+    /// pin move that renames a variant fails here instead of counting these failures again.
+    #[test]
+    fn a_failure_before_the_write_is_told_from_the_connectors_error() {
+        let home = tempfile::tempdir().expect("a directory");
+        let missing = home.path().join("missing").to_string_lossy().into_owned();
+        assert!(before_sending(&sent(&missing, "http://127.0.0.1:1/ilp")));
+
+        let key = home.path().join("operator.key");
+        std::fs::write(&key, [7u8; 32]).expect("the key");
+        assert!(before_sending(&sent(
+            &key.to_string_lossy(),
+            "http://127.0.0.1:1/ilp"
+        )));
+
+        assert!(before_sending(&connector_cli::CliError::Usage(
+            String::new()
+        )));
+    }
 }

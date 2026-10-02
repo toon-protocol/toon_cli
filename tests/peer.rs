@@ -90,7 +90,7 @@ fn one_operator_peers_alone_and_a_packet_crosses_and_is_fulfilled() {
     let routed = near.toon(&[
         "route",
         "add",
-        "g.toon.relay.far",
+        &far.machine.relay_prefix(),
         "--peer",
         "far",
         "--json",
@@ -100,7 +100,7 @@ fn one_operator_peers_alone_and_a_packet_crosses_and_is_fulfilled() {
     // The far connector charges the relay's write price, so the packet carries it.
     let sent = near.toon(&[
         "send",
-        "g.toon.relay.far",
+        &far.machine.relay_prefix(),
         "--amount",
         "1",
         "--yes",

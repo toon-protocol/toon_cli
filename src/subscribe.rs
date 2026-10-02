@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::derive;
+use crate::egress::Egress;
 use crate::event;
 use crate::feed;
 use crate::node;
@@ -30,6 +31,7 @@ const HTTP_AUTH: u64 = 27235;
 
 fn usage(message: impl Into<String>) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::Usage,
         message: message.into(),
     }
@@ -37,8 +39,10 @@ fn usage(message: impl Into<String>) -> Error {
 
 /// What a relay says it sells its feed for, from its information document.
 struct Terms {
-    /// Where the relay's connector is reached, for sealing a packet to it.
+    /// Where the relay's connector is reached, for the peering the subscriber needs.
     connector_url: String,
+    /// The key a packet is sealed to.
+    seal_key: [u8; 65],
     /// The subscribe route.
     address: String,
     /// What one packet costs and credits.
@@ -47,29 +51,36 @@ struct Terms {
     broadcast_price: u64,
 }
 
-fn terms(relay: &str) -> Result<Terms, Error> {
-    let document = event::information_document(relay)?;
+fn terms(egress: &Egress, relay: &str) -> Result<Terms, Error> {
+    let document = event::information_document(egress, relay)?;
     let subscription = &document["toon_subscription"];
     fn text(value: &Value) -> Option<&str> {
         value.as_str().filter(|text| !text.is_empty())
     }
     let positive = |value: &Value| value.as_u64().filter(|number| *number > 0);
+    let edge = event::edge_fields(&document["toon"]).map_err(|missing| {
+        event::unpayable(format!(
+            "The information document of {relay} does not say where its feed is paid for: \
+             its `toon` object needs an `ilp_address`, a `connector_url`, a \
+             `connector_seal_key` of 65 bytes of hex and a `price`, and has {missing}."
+        ))
+    })?;
     match (
-        text(&document["toon"]["connector_url"]),
         text(&subscription["ilp_address"]),
         positive(&subscription["price"]),
         positive(&subscription["broadcast_price"]),
     ) {
-        (Some(connector_url), Some(address), Some(price), Some(broadcast_price)) => Ok(Terms {
-            connector_url: connector_url.to_owned(),
+        (Some(address), Some(price), Some(broadcast_price)) => Ok(Terms {
+            connector_url: edge.connector_url,
+            seal_key: edge.seal_key,
             address: address.to_owned(),
             price,
             broadcast_price,
         }),
         _ => Err(event::unpayable(format!(
             "The information document of {relay} has no `toon_subscription` with an \
-             `ilp_address`, a `price` and a `broadcast_price` above 0 beside a `toon` with a \
-             `connector_url`, so it does not sell its feed."
+             `ilp_address`, a `price` and a `broadcast_price` above 0, so it does not sell \
+             its feed."
         ))),
     }
 }
@@ -93,6 +104,7 @@ pub fn receiving_secret(home: &Path) -> Option<[u8; 32]> {
 /// The subscriber key's secret, opened with the passphrase.
 fn subscriber_secret(home: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
     derive::subscriber_secret(&*event::wallet_seed(home)?).map_err(|source| Error {
+        nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
     })
@@ -179,12 +191,14 @@ pub fn load(home: &Path) -> Result<Vec<Kept>, Error> {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(source) => {
             return Err(Error {
+                nothing_sent: false,
                 code: ErrorCode::Io,
                 message: format!("{}: {source}.", kept_path(home).display()),
             })
         }
     };
     let value: Value = serde_json::from_str(&text).map_err(|source| Error {
+        nothing_sent: false,
         code: ErrorCode::Io,
         message: format!("{}: {source}.", kept_path(home).display()),
     })?;
@@ -226,7 +240,7 @@ pub fn subscribe(
     if node::State::load(home)?.is_none() {
         return Err(node::no_agent_node(home));
     }
-    let terms = terms(relay)?;
+    let terms = terms(&Egress::of(home)?, relay)?;
     // A top-up sends the filter last kept again: the relay may have forgotten an exhausted
     // subscription, and the draft says to send `filter` when that may be so.
     let filter = match filter {
@@ -252,6 +266,7 @@ pub fn subscribe(
     let paid = packets * terms.price;
     if !operator::forwards(home, &terms.address)? {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::PeeringNeeded,
             message: format!(
                 "No peering of this agent node reaches {}, where {relay} sells its feed. A \
@@ -263,6 +278,7 @@ pub fn subscribe(
     }
     if !yes {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::NotConfirmed,
             message: format!(
                 "{relay} charges {} per subscribe packet and {} for each event it broadcasts. \
@@ -299,7 +315,7 @@ pub fn subscribe(
                 home,
                 &terms.address,
                 terms.price,
-                &terms.connector_url,
+                &terms.seal_key,
                 headers,
                 body.clone(),
             ) {
@@ -411,36 +427,43 @@ enum Read {
 }
 
 /// A relay's answer to a read of the balance of the subscriber key `secret`.
-fn read_balance(relay: &str, secret: &[u8; 32]) -> Read {
-    let Some(response) = balance_response(relay, secret) else {
-        return Read::Unanswered;
+/// An overlay that is not there is an error, and not a relay that did not answer: nothing
+/// is dialled in its place.
+fn read_balance(egress: &Egress, relay: &str, secret: &[u8; 32]) -> Result<Read, Error> {
+    let Some(response) = balance_response(egress, relay, secret)? else {
+        return Ok(Read::Unanswered);
     };
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Read::NotSubscribed;
+        return Ok(Read::NotSubscribed);
     }
-    response
+    Ok(response
         .error_for_status()
         .ok()
         .and_then(|response| response.text().ok())
         .and_then(|text| Kept::from_answer(relay, &text))
         .filter(|kept| kept.subscriber_key == derive::nostr_public_key(secret))
-        .map_or(Read::Unanswered, Read::Held)
+        .map_or(Read::Unanswered, Read::Held))
 }
 
-fn balance_response(relay: &str, secret: &[u8; 32]) -> Option<reqwest::blocking::Response> {
-    let url = format!("{}/", event::http_url(relay).ok()?);
-    reqwest::blocking::Client::builder()
-        .timeout(PATIENCE)
-        .build()
-        .ok()?
+fn balance_response(
+    egress: &Egress,
+    relay: &str,
+    secret: &[u8; 32],
+) -> Result<Option<reqwest::blocking::Response>, Error> {
+    let Ok(base) = event::http_url(relay) else {
+        return Ok(None);
+    };
+    let url = format!("{base}/");
+    let client = egress.relay_client(&url, PATIENCE)?;
+    let Ok(authorization) = authorization(secret, "GET", &url, None) else {
+        return Ok(None);
+    };
+    Ok(client
         .get(&url)
         .header("accept", "application/toon-subscription+json")
-        .header(
-            "authorization",
-            authorization(secret, "GET", &url, None).ok()?,
-        )
+        .header("authorization", authorization)
         .send()
-        .ok()
+        .ok())
 }
 
 /// `toon relay subscriptions`: the balance and filter at each relay the operator
@@ -449,6 +472,7 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
     if node::State::load(home)?.is_none() {
         return Err(node::no_agent_node(home));
     }
+    let egress = Egress::of(home)?;
     let mut kept = load(home)?;
     let secret = if kept.is_empty() {
         None
@@ -458,9 +482,10 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
     let mut shown = Vec::new();
     let mut lines = Vec::new();
     for entry in &mut kept {
-        let read = secret.as_deref().map_or(Read::Unanswered, |secret| {
-            read_balance(&entry.relay, secret)
-        });
+        let read = match secret.as_deref() {
+            Some(secret) => read_balance(&egress, &entry.relay, secret)?,
+            None => Read::Unanswered,
+        };
         let current = !matches!(read, Read::Unanswered);
         match read {
             Read::Held(fresh) => *entry = fresh,
@@ -523,6 +548,7 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
     }
     let Some(kept) = load(home)?.into_iter().find(|kept| kept.relay == relay) else {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::NotSubscribed,
             message: format!(
                 "This agent node holds no subscription at {relay}: `toon relay subscribe` opens one."
@@ -533,10 +559,11 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
         Some(secret) => secret,
         None => *subscriber_secret(home)?,
     };
+    let proxy = Egress::of(home)?.proxy_for(relay)?;
     let stop = std::sync::atomic::AtomicBool::new(false);
     let mut stdout = std::io::stdout().lock();
     let mut unwritten = false;
-    let ended = feed::read(relay, &secret, &kept.filter, None, &stop, |event| {
+    let ended = feed::read(relay, &secret, &kept.filter, proxy, &stop, |event| {
         use std::io::Write;
         unwritten = writeln!(stdout, "{event}")
             .and_then(|()| stdout.flush())
@@ -544,6 +571,7 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
         !unwritten
     });
     let failed = |message: String| Error {
+        nothing_sent: false,
         code: ErrorCode::QueryFailed,
         message,
     };

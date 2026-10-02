@@ -23,8 +23,10 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use sha2::Digest;
 
+use crate::anon;
 use crate::connector::{self, Startup};
 use crate::control;
+use crate::egress::Egress;
 use crate::funding;
 use crate::node::{self, App, AppFiles, ConnectorFiles, Reach, Source, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
@@ -52,6 +54,8 @@ const HEALTHY: Duration = Duration::from_secs(60);
 struct AppStatus {
     name: String,
     address: SocketAddr,
+    /// Where it is read on this machine, if it has a read port.
+    read_address: Option<SocketAddr>,
     running: AtomicBool,
 }
 
@@ -201,6 +205,7 @@ pub enum Stopped {
 
 fn failed(message: String) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::ConnectorFailed,
         message,
     }
@@ -219,19 +224,24 @@ pub fn start(home: &Path) -> Result<Supervisor, Error> {
     // A settlement key that cannot be read is.
     let mut lacking = Vec::new();
     for app in &state.toon_apps {
-        if let Ok(short) = funding::shortfalls(funding::needs(home, app)?) {
+        if let Ok(short) = funding::shortfalls(
+            &Egress::of_state(home, &state),
+            funding::start_needs(home, app)?,
+        ) {
             lacking.extend(short);
         }
     }
     if !lacking.is_empty() {
-        return Err(funding::unfunded(state.network, &lacking));
+        return Err(funding::unfunded_to_start(state.network, &lacking));
     }
     let Some(listener) = control::bind(home).map_err(|error| Error {
+        nothing_sent: false,
         code: ErrorCode::Io,
         message: format!("{}: {error}.", control::path(home).display()),
     })?
     else {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::AlreadyRunning,
             message: format!(
                 "A supervisor is already running this agent node, at {}.",
@@ -265,6 +275,7 @@ fn start_app(
         // The relay's own Nostr identity is the wallet's, in hex.
         Source::Relay => {
             let identity = fs::read(&files.identity_key).map_err(|error| Error {
+                nothing_sent: false,
                 code: ErrorCode::AppFailed,
                 message: format!(
                     "The identity key of the app {} is not readable at {}: {error}.",
@@ -274,6 +285,18 @@ fn start_app(
             })?;
             let mut env = vec![("NOSTR_SECRET_KEY".to_owned(), hex::encode(identity))];
             env.extend(toon.relay.env());
+            // The relay asks its own connector where a write to it is paid, and which
+            // prefix of that connector's is its own. The connector is on this machine's
+            // loopback, a hidden one too: its self-description names the onion endpoint.
+            let port = toon
+                .listen
+                .rsplit_once(':')
+                .map_or(toon.listen.as_str(), |(_, port)| port);
+            env.push((
+                "TOON_CONNECTOR_URL".to_owned(),
+                format!("http://127.0.0.1:{port}/ilp"),
+            ));
+            env.push(("TOON_WRITE_ILP_ADDRESS".to_owned(), app.prefix.clone()));
             (env!("TOON_RELAY_IMAGE").to_owned(), env)
         }
         Source::Image(image) => (image.clone(), Vec::new()),
@@ -283,6 +306,7 @@ fn start_app(
         image,
         env,
         data_dir: files.data_dir,
+        relay: matches!(app.source, Source::Relay),
     };
     runner.start(&spec).map(Some)
 }
@@ -339,6 +363,7 @@ fn launch(
             return Err(error);
         }
     }
+    supervisor.reconcile(state);
     supervisor.receiver = Some(Receiver::start(home, supervisor.shared.clone()));
     let answering = Arc::clone(&supervisor.shared);
     thread::spawn(move || {
@@ -361,6 +386,7 @@ fn statuses(apps: &StartedApps) -> Vec<AppStatus> {
         .map(|(name, running)| AppStatus {
             name: name.clone(),
             address: running.write_address(),
+            read_address: running.read_address(),
             running: AtomicBool::new(true),
         })
         .collect()
@@ -543,6 +569,7 @@ impl UnitShared {
             "apps": self.apps().iter().map(|app| json!({
                 "name": app.name,
                 "address": app.address.to_string(),
+                "read_address": app.read_address.map(|read| read.to_string()),
                 "running": app.running.load(Ordering::SeqCst),
             })).collect::<Vec<_>>(),
         })
@@ -568,6 +595,7 @@ fn answer_all(waiting: Vec<Reload>, result: &Result<(), Unreloaded>) {
             Ok(()) => Ok(()),
             Err(unreloaded) => Err(Unreloaded {
                 error: Error {
+                    nothing_sent: unreloaded.error.nothing_sent,
                     code: unreloaded.error.code,
                     message: unreloaded.error.message.clone(),
                 },
@@ -643,6 +671,7 @@ impl Supervisor {
                 apps_checked = Instant::now();
                 if let Some(app) = self.units.iter_mut().find_map(Unit::stopped_app) {
                     stopped = Stopped::Failed(Error {
+                        nothing_sent: false,
                         code: ErrorCode::AppFailed,
                         message: format!("The app {app} stopped."),
                     });
@@ -696,7 +725,13 @@ impl Supervisor {
             .ok_or_else(|| untouched(node::no_agent_node(&self.home)))?;
         for app in &state.toon_apps {
             if !self.units.iter().any(|unit| unit.app.name == app.name) {
-                self.add(app).map_err(untouched)?;
+                if let Err(error) = self.add(app) {
+                    // The endpoint may have been issued before the app failed to start.
+                    if matches!(app.reach, Reach::Hidden) {
+                        self.withdraw(app.connector);
+                    }
+                    return Err(untouched(error));
+                }
             }
         }
         let (kept, gone): (Vec<Unit>, Vec<Unit>) = std::mem::take(&mut self.units)
@@ -709,7 +744,43 @@ impl Supervisor {
                 .retain(|shared| !Arc::ptr_eq(shared, &unit.shared));
             unit.stop();
         }
+        self.reconcile(&state);
         Ok(())
+    }
+
+    /// Leave the overlay holding a hidden service for exactly the hidden TOON apps of
+    /// `state`: one for any other connector is withdrawn. A withdrawal that fails is
+    /// reported and changes nothing else.
+    pub(crate) fn reconcile(&self, state: &State) {
+        let wanted: Vec<u32> = state
+            .toon_apps
+            .iter()
+            .filter(|app| matches!(app.reach, Reach::Hidden))
+            .map(|app| app.connector)
+            .collect();
+        let stranded: Vec<u32> = overlay::hosted(&anon::directory(&self.home))
+            .into_iter()
+            .filter(|connector| !wanted.contains(connector))
+            .collect();
+        for connector in stranded {
+            self.withdraw(connector);
+        }
+    }
+
+    /// Withdraw connector `connector`'s hidden service, and say so if that fails.
+    fn withdraw(&self, connector: u32) {
+        let withdrawn = match &self.edge {
+            Some(edge) => edge.withdraw(connector),
+            // No hidden service runs, so no overlay is up here: what it kept for the
+            // connector is removed without starting one.
+            None => anon::withdraw_in(&anon::directory(&self.home), connector),
+        };
+        if let Err(error) = withdrawn {
+            eprintln!(
+                "toon: the hidden service of connector {connector} was not withdrawn: {}",
+                error.message
+            );
+        }
     }
 }
 

@@ -33,6 +33,7 @@ pub struct Subscription {
 #[derive(Default)]
 struct State {
     connector_url: String,
+    connector_seal_key: String,
     subscriptions: HashMap<String, Subscription>,
     /// The subscriber key of every request the subscribe route accepted, in order.
     credited: Vec<String>,
@@ -46,12 +47,23 @@ struct State {
     refused_feeds: usize,
 }
 
+/// The relay's TLS front: a listener that terminates TLS and hands the plain bytes to the
+/// relay's own port, so the routes and the live feed are the same.
+struct Tls {
+    address: SocketAddr,
+    /// Holds the PEM of the certificate the front presents, which is also its root.
+    dir: tempfile::TempDir,
+}
+
 pub struct FakeRemoteRelay {
+    tls: Option<Tls>,
     address: SocketAddr,
     price: u64,
     broadcast_price: u64,
     ilp_address: String,
     state: Arc<Mutex<State>>,
+    /// The other authorities the relay is reached at, as a client names it in a NIP-98 `u`.
+    aliases: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeRemoteRelay {
@@ -60,11 +72,13 @@ impl FakeRemoteRelay {
     pub fn start(ilp_address: &str, price: u64, broadcast_price: u64) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let relay = Self {
+            tls: None,
             address: listener.local_addr().expect("address"),
             price,
             broadcast_price,
             ilp_address: ilp_address.to_owned(),
             state: Arc::default(),
+            aliases: Arc::default(),
         };
         let served = relay.shared();
         thread::spawn(move || {
@@ -78,12 +92,89 @@ impl FakeRemoteRelay {
 
     fn shared(&self) -> Self {
         Self {
+            tls: None,
             address: self.address,
             price: self.price,
             broadcast_price: self.broadcast_price,
             ilp_address: self.ilp_address.clone(),
             state: self.state.clone(),
+            aliases: self.aliases.clone(),
         }
+    }
+
+    /// Also serve the relay over TLS, on a port of its own, with a certificate generated now
+    /// for `localhost`, `127.0.0.1` and each of `hosts`. The certificate is its own root:
+    /// `root_file` hands it over for `TOON_TRUSTED_ROOT`.
+    pub fn with_tls(mut self, hosts: &[&str]) -> Self {
+        let mut names: Vec<String> = vec!["localhost".into(), "127.0.0.1".into()];
+        names.extend(hosts.iter().map(|host| (*host).to_owned()));
+        let certificate = rcgen::generate_simple_self_signed(names).expect("a certificate");
+        let dir = tempfile::tempdir().expect("a directory");
+        std::fs::write(
+            dir.path().join("root.pem"),
+            certificate.serialize_pem().expect("a PEM"),
+        )
+        .expect("write the PEM");
+        let config = tokio_rustls::rustls::ServerConfig::builder()
+            .with_safe_defaults()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![tokio_rustls::rustls::Certificate(
+                    certificate.serialize_der().expect("a DER"),
+                )],
+                tokio_rustls::rustls::PrivateKey(certificate.serialize_private_key_der()),
+            )
+            .expect("a server config");
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let address = listener.local_addr().expect("address");
+        let plain = self.address;
+        thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .build()
+                .expect("a runtime");
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
+                while let Ok((socket, _)) = listener.accept().await {
+                    let acceptor = acceptor.clone();
+                    tokio::spawn(async move {
+                        let Ok(mut secured) = acceptor.accept(socket).await else {
+                            return;
+                        };
+                        let Ok(mut inner) = tokio::net::TcpStream::connect(plain).await else {
+                            return;
+                        };
+                        let _ = tokio::io::copy_bidirectional(&mut secured, &mut inner).await;
+                    });
+                }
+            });
+        });
+        // A client names the relay's routes by the authority it dialled.
+        self.also_at(&format!("localhost:{}", address.port()));
+        self.also_at(&format!("127.0.0.1:{}", address.port()));
+        self.tls = Some(Tls { address, dir });
+        self
+    }
+
+    fn tls(&self) -> &Tls {
+        self.tls.as_ref().expect("a relay served with `with_tls`")
+    }
+
+    /// The relay's `wss://` URL, at `localhost`.
+    pub fn wss_url(&self) -> String {
+        format!("wss://localhost:{}", self.tls().address.port())
+    }
+
+    /// Where the TLS front listens.
+    pub fn wss_address(&self) -> SocketAddr {
+        self.tls().address
+    }
+
+    /// The PEM file of the certificate the TLS front presents, for `TOON_TRUSTED_ROOT`.
+    pub fn root_file(&self) -> std::path::PathBuf {
+        self.tls().dir.path().join("root.pem")
     }
 
     /// The relay's `ws://` URL.
@@ -96,9 +187,24 @@ impl FakeRemoteRelay {
         format!("http://{}", self.address)
     }
 
-    /// Name the connector that terminates the relay's routes.
+    /// Say that the relay is also reached at `authority`, a `host:port` a client names its
+    /// requests with: the overlay's proxy takes a client there.
+    pub fn also_at(&self, authority: &str) {
+        self.aliases.lock().unwrap().push(authority.to_owned());
+    }
+
+    /// Name the connector that terminates the relay's routes, as the relay publishes it: the
+    /// real sealing key of the connector at `url`, and `url` as the location hint.
     pub fn set_connector(&self, url: &str) {
-        self.state.lock().unwrap().connector_url = url.to_owned();
+        self.publish_connector(url, &super::seal_key(url));
+    }
+
+    /// Publish `url` as the connector's location and `key` as its sealing key, as given; an
+    /// empty `key` is left out of the document.
+    pub fn publish_connector(&self, url: &str, key: &str) {
+        let mut state = self.state.lock().unwrap();
+        state.connector_url = url.to_owned();
+        state.connector_seal_key = key.to_owned();
     }
 
     pub fn subscription(&self, pubkey: &str) -> Option<Subscription> {
@@ -140,12 +246,13 @@ impl FakeRemoteRelay {
     }
 
     fn document(&self) -> Value {
-        json!({
+        let state = self.state.lock().unwrap();
+        let mut document = json!({
             "name": "far",
             "supported_nips": [1, 11, 42],
             "toon": {
                 "ilp_address": "g.toon.relay",
-                "connector_url": self.state.lock().unwrap().connector_url,
+                "connector_url": state.connector_url,
                 "price": 1,
             },
             "toon_subscription": {
@@ -153,7 +260,11 @@ impl FakeRemoteRelay {
                 "price": self.price,
                 "broadcast_price": self.broadcast_price,
             },
-        })
+        });
+        if !state.connector_seal_key.is_empty() {
+            document["toon"]["connector_seal_key"] = json!(state.connector_seal_key);
+        }
+        document
     }
 
     fn serve(&self, stream: TcpStream) {
@@ -260,10 +371,16 @@ impl FakeRemoteRelay {
         let created_at = event["created_at"].as_u64()?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
         let payload = body.map(|body| hex::encode(Sha256::digest(body)));
-        let this_relay = [
+        let mut this_relay = vec![
             format!("http://{}", self.address),
             format!("http://{}/", self.address),
         ];
+        for alias in self.aliases.lock().unwrap().iter() {
+            this_relay.push(format!("http://{alias}"));
+            this_relay.push(format!("http://{alias}/"));
+            this_relay.push(format!("https://{alias}"));
+            this_relay.push(format!("https://{alias}/"));
+        }
         (event["kind"] == 27235
             && Self::tag(&event, "method").as_deref() == Some(method)
             && Self::tag(&event, "u").is_some_and(|u| this_relay.contains(&u))
