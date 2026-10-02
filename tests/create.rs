@@ -239,6 +239,29 @@ fn destroy_refuses_while_a_channel_holds_funds_and_names_it() {
 }
 
 #[test]
+fn a_peering_that_fails_after_the_create_names_the_peer_add_that_makes_the_rest() {
+    let chain = AnvilChain::start();
+    let (machine, _up) = running(&chain);
+    let deposit = (DEPOSIT * 2).to_string();
+    let refused = create_second(&machine, &["--deposit", &deposit, "--yes"]);
+    // Enough for the new connector to start, not for its deposit.
+    let address = address_in(refused.json()["error"]["message"].as_str().unwrap());
+    chain.fund(&address, DEPOSIT);
+
+    let run = create_second(&machine, &["--deposit", &deposit, "--yes"]);
+
+    let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
+    assert!(message.contains("was created"), "{message}");
+    assert!(
+        message.contains(&format!(
+            "`toon peer add <connector_url> --deposit {deposit} --yes --app <name>`"
+        )),
+        "{message}"
+    );
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
+}
+
+#[test]
 fn destroy_stops_and_removes_a_toon_app_that_holds_nothing() {
     let chain = FakeChain::start();
     let machine = Machine::new();
