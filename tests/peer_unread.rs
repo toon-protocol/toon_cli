@@ -184,6 +184,12 @@ fn a_peering_whose_first_read_outlasts_the_connectors_wait_is_made_by_the_next()
     let json = run.json();
     assert_eq!(json["deposited"], true, "{}", run.stdout);
     assert_eq!(json["peering"]["id"], "far", "{}", run.stdout);
+    assert_eq!(
+        json["peering"]["channel"]["status"], "created",
+        "{}",
+        run.stdout
+    );
+    assert_eq!(chain.balance(&evm), DEPOSIT * 9, "one deposit, on chain");
     assert_eq!(seen.load(Ordering::SeqCst), 2);
 }
 
@@ -199,12 +205,14 @@ fn an_endpoint_that_never_answers_is_attempted_four_times_and_the_refusal_is_rep
 
     assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
     assert_eq!(run.json()["error"]["code"], "peer_failed", "{}", run.stdout);
+    // The wording the repeat is keyed on, `UNREAD` and `UNREAD_TIMEOUT` in `src/operator.rs`.
     assert!(
-        run.stdout.contains("could not read the self-description"),
+        run.stdout
+            .contains("could not read the self-description at"),
         "{}",
         run.stdout
     );
-    assert!(run.stdout.contains("timed out"), "{}", run.stdout);
+    assert!(run.stdout.contains("operation timed out"), "{}", run.stdout);
     assert_eq!(seen.load(Ordering::SeqCst), 4);
 }
 
