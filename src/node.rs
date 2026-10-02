@@ -652,6 +652,14 @@ pub fn concrete(listen: &str) -> Result<String, Error> {
     let Some((host, "0")) = listen.rsplit_once(':') else {
         return Ok(listen.to_owned());
     };
+    let port = free_port(host)?;
+    Ok(format!("{host}:{port}"))
+}
+
+/// A port on `host` that was free a moment ago. It is tried below the range the system
+/// hands out to sockets that ask for any port, so that no other process takes it before
+/// its user binds; a system with no free port there is asked for one.
+pub fn free_port(host: &str) -> Result<u16, Error> {
     let below_the_system_range = (0..64).find_map(|_| {
         let mut random = [0u8; 2];
         getrandom::getrandom(&mut random).ok()?;
@@ -660,17 +668,16 @@ pub fn concrete(listen: &str) -> Result<String, Error> {
             .ok()
             .map(|_| port)
     });
-    let port = match below_the_system_range {
-        Some(port) => port,
-        None => std::net::TcpListener::bind(listen)
+    match below_the_system_range {
+        Some(port) => Ok(port),
+        None => std::net::TcpListener::bind(format!("{host}:0"))
             .and_then(|bound| bound.local_addr())
+            .map(|address| address.port())
             .map_err(|source| Error {
                 code: ErrorCode::Io,
-                message: format!("{listen}: no free port: {source}."),
-            })?
-            .port(),
-    };
-    Ok(format!("{host}:{port}"))
+                message: format!("{host}: no free port: {source}."),
+            }),
+    }
 }
 
 /// Where an app's write port is reached, by the app's name.

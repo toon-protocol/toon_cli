@@ -10,7 +10,7 @@
 use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::thread;
@@ -143,12 +143,14 @@ impl AppRunner for ProcessRunner {
             .map_err(|error| io(&log, error))?;
         // A port is free until something else takes it; the app fails to bind and says so.
         let free_port = || {
-            TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-                .and_then(|listener| listener.local_addr())
-                .map(|address| address.port())
-                .map_err(|error| failed(format!("No free port for the app: {error}.")))
+            crate::node::free_port("127.0.0.1")
+                .map_err(|error| failed(format!("No free port for the app: {}", error.message)))
         };
-        let (port, read_port) = (free_port()?, free_port()?);
+        let port = free_port()?;
+        let mut read_port = free_port()?;
+        while read_port == port {
+            read_port = free_port()?;
+        }
         let mut command = Command::new(&self.program);
         command
             .env_clear()
