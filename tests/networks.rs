@@ -370,6 +370,9 @@ fn the_mainnet_profile_records_no_connector_and_no_relay_and_join_is_refused() {
     let notes = init.json()["notes"].to_string();
     assert!(notes.contains("no mainnet TOON network yet"), "{notes}");
 
+    let left =
+        machine.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone();
+
     let joined = machine.toon(&["join", "mainnet", "--deposit", "1000000", "--yes", "--json"]);
 
     assert_eq!(joined.exit_code, 1, "{}", joined.stdout);
@@ -377,11 +380,18 @@ fn the_mainnet_profile_records_no_connector_and_no_relay_and_join_is_refused() {
     let message = joined.json()["error"]["message"].to_string();
     assert!(message.contains("--connector-url"), "{message}");
     assert!(message.contains("--relay-url"), "{message}");
-    let spent = fs::read_to_string(machine.agent_node_home().join("spent.json"));
-    if let Ok(spent) = spent {
-        let spent: serde_json::Value = serde_json::from_str(&spent).unwrap();
-        assert_eq!(spent["spent"], "0", "{spent}");
-    }
+    let still = machine.toon(&["limit", "show", "--json"]);
+    assert_eq!(
+        still.json()["limits"]["remaining_today"],
+        left,
+        "a refused join is not counted"
+    );
+    let status = machine.toon(&["status", "--json"]);
+    assert!(
+        status.json()["agent_node"]["joined"].is_null(),
+        "{}",
+        status.stdout
+    );
 }
 
 #[test]
