@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 
 use crate::outcome::{Error, ErrorCode};
 use crate::profile::Profile;
-use crate::{derive, keystore, overlay};
+use crate::{derive, keystore, overlay, ports};
 
 /// The name of the first TOON app, the one whose connector fronts the relay, and of the
 /// relay app behind it.
@@ -651,20 +651,19 @@ pub struct Overlay {
 }
 
 /// `listen` with a port: a connector publishes where it can be paid, so it cannot be left
-/// to the system to pick one when it binds. Port 0 is replaced by a port that was free a
-/// moment ago.
+/// to the system to pick one when it binds. Port 0 is replaced by a port that is free now
+/// and that the system does not hand out by itself (`ports::kept`), because it is bound
+/// later, by every `toon up`.
 pub fn concrete(listen: &str) -> Result<String, Error> {
     let Some((host, "0")) = listen.rsplit_once(':') else {
         return Ok(listen.to_owned());
     };
-    let free = std::net::TcpListener::bind(listen)
-        .and_then(|bound| bound.local_addr())
-        .map_err(|source| Error {
-            nothing_sent: false,
-            code: ErrorCode::Io,
-            message: format!("{listen}: no free port: {source}."),
-        })?;
-    Ok(format!("{host}:{}", free.port()))
+    let free = ports::kept(host).map_err(|source| Error {
+        nothing_sent: false,
+        code: ErrorCode::Io,
+        message: format!("{listen}: no free port: {source}."),
+    })?;
+    Ok(format!("{host}:{free}"))
 }
 
 /// Where an app's write port is reached, by the app's name.
