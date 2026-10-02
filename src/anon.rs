@@ -22,7 +22,7 @@
 
 use std::fs;
 use std::io::{self, Cursor, Read};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -329,10 +329,10 @@ fn extract(bytes: &[u8], target: &Path) -> Result<(), Error> {
 
 /// Write the daemon's configuration and start it, detached from this process.
 fn spawn(dir: &Path, binary: &Path) -> Result<(Child, SocketAddr), Error> {
-    let port = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .and_then(|listener| listener.local_addr())
+    // The daemon binds the port later, so it is one the system does not hand out by itself.
+    let port = crate::ports::passing(&Ipv4Addr::LOCALHOST.to_string())
         .map_err(|error| unavailable(&format!("no port for the proxy: {error}")))?
-        .port();
+        .port;
     let services = dir.join("services.d");
     fs::create_dir_all(&services).map_err(|error| io_error(&services, error))?;
     let log = dir.join("anon.log");

@@ -198,7 +198,7 @@ pub struct CreateArgs {
     /// Make the TOON app reachable at this public hostname instead of as a hidden service
     #[arg(long, value_name = "HOSTNAME")]
     pub clearnet: Option<String>,
-    /// Where the connector listens; the system picks a port when it is 0
+    /// Where the connector listens; a free port is picked when it is 0
     #[arg(long, default_value = "127.0.0.1:0")]
     pub listen: String,
     /// Confirm that the peerings move money: without it nothing is deposited
@@ -218,7 +218,7 @@ pub struct InitArgs {
     /// Make the TOON app reachable at this public hostname instead of as a hidden service
     #[arg(long, value_name = "HOSTNAME")]
     pub clearnet: Option<String>,
-    /// Where the connector listens; the system picks a port when it is 0
+    /// Where the connector listens; a free port is picked when it is 0
     #[arg(long, default_value = "127.0.0.1:0")]
     pub listen: String,
     /// The network profile the chain settings come from

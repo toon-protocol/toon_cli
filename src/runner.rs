@@ -10,13 +10,14 @@
 use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::outcome::{Error, ErrorCode};
+use crate::ports::{self, Passing};
 
 /// The environment variable that swaps the container runner for a local process.
 pub const COMMAND_VARIABLE: &str = "TOON_APP_COMMAND";
@@ -89,22 +90,24 @@ pub fn from_environment() -> Box<dyn AppRunner> {
     }
 }
 
-/// Two loopback ports, a write port and a read port, that are free until something else
-/// takes them; the app fails to bind and says so. Both are held until both are picked, so
-/// they differ.
-fn free_ports() -> Result<(u16, u16), Error> {
-    let bind = || {
-        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+/// Two loopback ports, a write port and a read port. They are free now and the app binds
+/// them later, so they are ports the system does not hand out by itself, and they are
+/// claimed for this app until what is returned is dropped (`ports::passing`), so they differ
+/// and no other supervisor gives them to an app of its own. If another program takes one
+/// all the same, the app fails to bind and says so.
+fn free_ports() -> Result<(Passing, Passing), Error> {
+    let free = || {
+        ports::passing(&Ipv4Addr::LOCALHOST.to_string())
             .map_err(|error| failed(format!("No free port for the app: {error}.")))
     };
-    let (write, read) = (bind()?, bind()?);
-    let port = |listener: &TcpListener| {
-        listener
-            .local_addr()
-            .map(|address| address.port())
-            .map_err(|error| failed(format!("No free port for the app: {error}.")))
-    };
-    Ok((port(&write)?, port(&read)?))
+    let write = free()?;
+    loop {
+        let read = free()?;
+        // Only ports the system was left to pick, which are not claimed, can be the same.
+        if read.port != write.port {
+            return Ok((write, read));
+        }
+    }
 }
 
 /// Wait for `GET /health` on `address` to answer 200. `alive` says whether the app is
@@ -164,7 +167,9 @@ impl AppRunner for ProcessRunner {
             .append(true)
             .open(&log)
             .map_err(|error| io(&log, error))?;
-        let (port, read_port) = free_ports()?;
+        // Held until the app answers, which it does once it has bound them.
+        let claimed = free_ports()?;
+        let (port, read_port) = (claimed.0.port, claimed.1.port);
         let mut command = Command::new(&self.program);
         command
             .env_clear()
@@ -300,11 +305,15 @@ impl AppRunner for ContainerRunner {
 
         let mut command = Command::new("docker");
         command.args(["run", "--detach", "--rm", "--name", &name]);
-        let relay_ports = if spec.relay {
+        // Held until the relay answers, which it does once it has bound them.
+        let claimed = if spec.relay {
             Some(free_ports()?)
         } else {
             None
         };
+        let relay_ports = claimed
+            .as_ref()
+            .map(|(write, read)| (write.port, read.port));
         command
             .args(network_arguments(relay_ports))
             .arg("--volume")
@@ -553,7 +562,7 @@ mod tests {
     #[test]
     fn the_ports_picked_for_an_app_differ() {
         let (write, read) = free_ports().unwrap();
-        assert_ne!(write, read);
+        assert_ne!(write.port, read.port);
     }
 
     /// The same contract, against the real relay image. It needs a docker daemon that

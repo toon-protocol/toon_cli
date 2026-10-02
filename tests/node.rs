@@ -106,6 +106,37 @@ fn init_that_the_connector_would_refuse_leaves_no_wallet() {
 }
 
 #[test]
+fn init_picks_a_port_the_system_does_not_hand_out_by_itself() {
+    let machine = Machine::new();
+    // Without `--listen`, which the other tests give: `init` picks the port.
+    let init = machine.toon_with(&["init", "--json", "--accept-anyone-terms"], |command| {
+        command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+    });
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+
+    // `init` picks the connector's port and every `up` binds it, later. The system hands
+    // its ephemeral ports to any socket bound to port 0 and to any outgoing connection,
+    // so a port picked among them can be taken by the time the connector binds it.
+    let state: Value =
+        serde_json::from_slice(&fs::read(machine.agent_node_home().join("state.json")).unwrap())
+            .unwrap();
+    let listen: std::net::SocketAddr = state["toon_apps"][0]["listen"]
+        .as_str()
+        .and_then(|listen| listen.parse().ok())
+        .unwrap_or_else(|| panic!("the first TOON app has no listen address: {state}"));
+    let range = fs::read_to_string("/proc/sys/net/ipv4/ip_local_port_range").unwrap();
+    let bounds: Vec<u16> = range
+        .split_whitespace()
+        .map(|bound| bound.parse().unwrap())
+        .collect();
+    assert!(
+        !(bounds[0]..=bounds[1]).contains(&listen.port()),
+        "{listen} is in the system's ephemeral range, {}",
+        range.trim()
+    );
+}
+
+#[test]
 fn the_connector_config_is_rendered_from_the_state_on_every_up() {
     let chain = FakeChain::start();
     let machine = Machine::new();

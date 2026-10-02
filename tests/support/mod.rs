@@ -15,8 +15,12 @@ pub mod local_chain;
 pub mod spy;
 pub mod unpeerable;
 
+use std::collections::hash_map::RandomState;
 use std::fs::{self, File};
+use std::hash::{BuildHasher, Hasher};
 use std::io::{BufRead, BufReader};
+use std::net::{Ipv4Addr, TcpListener, UdpSocket};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -63,10 +67,51 @@ pub fn fake_relay() -> PathBuf {
     program
 }
 
+/// The ports a machine's connector is given: below the ones `toon` picks by itself
+/// (`src/ports.rs`) and, unless the system was told otherwise, below the ones the system
+/// hands out by itself. So nothing takes one except by its number.
+const CONNECTOR_PORTS: Range<u16> = 1_024..10_000;
+
+/// A loopback TCP port that is one machine's alone, for its connector to listen on.
+///
+/// `toon init` writes the connector's port down and `toon up` binds it later. Left to pick
+/// for itself, `init` takes a port that is free at that moment, and between the two another
+/// test's `init` can take the same one: one of the two connectors then refuses to start,
+/// and its test sees an agent node that is not running. A test knows no better moment, but
+/// it can hold a claim for as long as it runs. The claim is the UDP port of the same
+/// number: binding it takes nothing from the TCP port, and no two tests can hold it at
+/// once, in this process or in another.
+struct ConnectorPort {
+    port: u16,
+    _claim: UdpSocket,
+}
+
+impl ConnectorPort {
+    fn claim() -> Self {
+        let ports = u64::from(CONNECTOR_PORTS.end - CONNECTOR_PORTS.start);
+        for _ in 0..10_000 {
+            let random = RandomState::new().build_hasher().finish();
+            let port = CONNECTOR_PORTS.start + (random % ports) as u16;
+            let Ok(claim) = UdpSocket::bind((Ipv4Addr::LOCALHOST, port)) else {
+                continue;
+            };
+            // Free of whatever is not a test of this crate, too.
+            if TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok() {
+                return Self {
+                    port,
+                    _claim: claim,
+                };
+            }
+        }
+        panic!("no port is free for a connector");
+    }
+}
+
 /// One operator's machine: an empty home directory that is deleted on drop.
 pub struct Machine {
     root: TempDir,
     home: PathBuf,
+    connector_port: ConnectorPort,
 }
 
 /// What one run of `toon` printed and how it exited.
@@ -81,7 +126,11 @@ impl Machine {
     pub fn new() -> Self {
         let root = tempfile::tempdir().expect("create a temporary home directory");
         let home = root.path().to_path_buf();
-        Self { root, home }
+        Self {
+            root,
+            home,
+            connector_port: ConnectorPort::claim(),
+        }
     }
 
     /// A machine whose home path is long enough that the agent node's control socket,
@@ -99,7 +148,11 @@ impl Machine {
             home.push("a-directory-with-a-rather-long-name");
         }
         std::fs::create_dir_all(&home).expect("create a home with a long path");
-        Self { root, home }
+        Self {
+            root,
+            home,
+            connector_port: ConnectorPort::claim(),
+        }
     }
 
     /// The operator's home directory (`$HOME`).
@@ -151,9 +204,20 @@ impl Machine {
         command
     }
 
+    /// Where this machine's first connector listens: a loopback port that is this
+    /// machine's alone, which `init_with` and `init_on` give `toon init` as `--listen`.
+    fn listen(&self) -> String {
+        format!("127.0.0.1:{}", self.connector_port.port)
+    }
+
     /// Run `toon init --json` with `args` after it, and the passphrase every test uses.
+    /// The connector listens on this machine's own port unless `args` say where.
     pub fn init_with(&self, args: &[&str]) -> Run {
+        let listen = self.listen();
         let mut all = vec!["init", "--json", "--accept-anyone-terms"];
+        if !args.contains(&"--listen") {
+            all.extend_from_slice(&["--listen", &listen]);
+        }
         all.extend_from_slice(args);
         self.toon_with(&all, |command| {
             command.env("TOON_PASSPHRASE", PASSPHRASE);
@@ -163,28 +227,20 @@ impl Machine {
     /// Run `toon init` for an agent node that settles on `chain`, with the passphrase
     /// every test uses.
     pub fn init_on(&self, chain: &fake_chain::FakeChain) -> Run {
-        self.toon_with(
-            &[
-                "init",
-                "--json",
-                "--accept-anyone-terms",
-                "--evm-rpc-url",
-                &chain.rpc_url(),
-                "--evm-token",
-                fake_chain::TOKEN,
-                "--evm-decimals",
-                &fake_chain::TOKEN_DECIMALS.to_string(),
-                "--evm-asset-name",
-                "USDC",
-                "--evm-asset-version",
-                "2",
-                "--evm-transfer-method",
-                "permit2",
-            ],
-            |command| {
-                command.env("TOON_PASSPHRASE", PASSPHRASE);
-            },
-        )
+        self.init_with(&[
+            "--evm-rpc-url",
+            &chain.rpc_url(),
+            "--evm-token",
+            fake_chain::TOKEN,
+            "--evm-decimals",
+            &fake_chain::TOKEN_DECIMALS.to_string(),
+            "--evm-asset-name",
+            "USDC",
+            "--evm-asset-version",
+            "2",
+            "--evm-transfer-method",
+            "permit2",
+        ])
     }
 
     /// Like `init_on`, for a connector that is reached on clearnet: a connector peers over
