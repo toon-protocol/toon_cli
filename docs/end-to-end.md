@@ -266,6 +266,11 @@ service to another. Before the `route add`, the publish fails with `peering_need
 its message names the `peer add`, with `--deposit <amount> --yes`, and the `route add` to
 run.
 
+A first publish over a cold link may be rejected after 30 seconds, or fail with
+`send_failed` when the connector does not answer in time (the packet has expired by then;
+the failure's `paid` and `event` say what it cost and which event it carried). It is paid
+for, and the same command succeeds when run again.
+
 ### Hold a subscription
 
 ```sh

@@ -81,11 +81,28 @@ pub struct Error {
     /// Set when the command certainly failed before it sent a packet, so that what it was
     /// to carry was never at risk. It is not part of the output.
     pub nothing_sent: bool,
+    /// Set when a packet went unanswered: what it cost, and the event it carried.
+    pub unanswered: Option<Unanswered>,
+}
+
+/// What a packet that the connector did not answer within the wait cost, and carried.
+#[derive(Debug)]
+pub struct Unanswered {
+    /// What the outbound channels' watermarks moved by, at most what was sent.
+    pub paid: u128,
+    pub event: Option<Value>,
 }
 
 impl Error {
     pub fn json(&self) -> Value {
-        json!({ "error": { "code": self.code.as_str(), "message": self.message } })
+        let mut json = json!({ "error": { "code": self.code.as_str(), "message": self.message } });
+        if let Some(unanswered) = &self.unanswered {
+            json["paid"] = json!(unanswered.paid);
+            if let Some(event) = &unanswered.event {
+                json["event"] = event.clone();
+            }
+        }
+        json
     }
 }
 

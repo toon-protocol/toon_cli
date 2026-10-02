@@ -317,6 +317,7 @@ pub struct State {
 fn io(path: &Path, source: std::io::Error) -> Error {
     Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::Io,
         message: format!("{}: {source}.", path.display()),
     }
@@ -326,6 +327,7 @@ fn io(path: &Path, source: std::io::Error) -> Error {
 pub fn no_agent_node(home: &Path) -> Error {
     Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::NoAgentNode,
         message: format!("No agent node at {}. Run `toon init`.", home.display()),
     }
@@ -599,6 +601,7 @@ impl State {
             .map(Some)
             .ok_or_else(|| Error {
                 nothing_sent: false,
+                unanswered: None,
                 code: ErrorCode::Io,
                 message: format!("{} is not a state file this version reads.", file.display()),
             })
@@ -685,6 +688,7 @@ pub fn concrete(listen: &str) -> Result<String, Error> {
     };
     let free = ports::kept(host).map_err(|source| Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::Io,
         message: format!("{listen}: no free port: {source}."),
     })?;
@@ -711,6 +715,7 @@ pub fn render(
         (Reach::Hidden, None) => {
             return Err(Error {
                 nothing_sent: false,
+                unanswered: None,
                 code: ErrorCode::OverlayUnavailable,
                 message: format!(
                     "{} is a hidden service and the overlay is not there to render it with.",
@@ -833,6 +838,7 @@ pub fn render(
     connector_cli::load_config(&["toon connector", &files.config.to_string_lossy()]).map_err(
         |error| Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::ConnectorFailed,
             message: format!("The connector would not accept its config: {error}"),
         },
@@ -858,6 +864,7 @@ fn write_operator_files(home: &Path, files: &ConnectorFiles) -> Result<bool, Err
     let secret: zeroize::Zeroizing<[u8; 32]> =
         zeroize::Zeroizing::new(bytes.as_slice().try_into().map_err(|_| Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::Io,
             message: format!("{} is not a 32-byte key.", key.display()),
         })?);
