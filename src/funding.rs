@@ -22,6 +22,24 @@ const SOLANA_GAS: u128 = 10_000_000;
 const SOLANA_AIRDROP: u64 = 1_000_000_000;
 const TIMEOUT: Duration = Duration::from_secs(30);
 
+/// What a need is for: a connector to start, or a transaction its key sends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Purpose {
+    /// Without it the connector does not start.
+    Start,
+    /// A deposit, or another transaction from the key, spends it.
+    Deposit,
+}
+
+impl Purpose {
+    fn as_str(self) -> &'static str {
+        match self {
+            Purpose::Start => "start",
+            Purpose::Deposit => "deposit",
+        }
+    }
+}
+
 /// One thing an address must hold: gas, or the token the connector is paid in.
 #[derive(Clone, Debug)]
 pub struct Need {
@@ -34,6 +52,8 @@ pub struct Need {
     /// How the amount reads to a person.
     pub shown: String,
     gas: bool,
+    /// What it is held for.
+    pub purpose: Purpose,
     /// Where to read the balance, and which token.
     rpc_url: String,
     token: String,
@@ -51,6 +71,7 @@ impl Need {
             "asset": self.asset,
             "amount": self.amount.to_string(),
             "shown": self.shown,
+            "for": self.purpose.as_str(),
         })
     }
 }
@@ -72,22 +93,26 @@ fn secret(path: &Path) -> Result<[u8; 32], Error> {
     })
 }
 
-/// What the settlement keys of `app` must hold, for every chain it settles on.
+/// What the settlement keys of `app` must hold, for every chain it settles on. An EVM
+/// connector starts without gas: its boot only reads the chain, and gas is spent when it
+/// sends a transaction. A Solana connector sends one at boot, so its gas is for starting.
 pub fn needs(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
     let files = ConnectorFiles::of(home, app.connector);
     let mut needs = Vec::new();
     if let Some(evm) = &app.evm {
         let address = derive::evm_address(&secret(&files.settlement_key)?);
         let token = 10u128.pow(u32::from(evm.decimals));
-        for (gas, asset, amount, shown) in [
+        for (gas, purpose, asset, amount, shown) in [
             (
                 true,
+                Purpose::Deposit,
                 "ETH".to_owned(),
                 EVM_GAS,
                 "0.0001 ETH for gas".to_owned(),
             ),
             (
                 false,
+                Purpose::Start,
                 evm.token.clone(),
                 token,
                 format!("1 token ({token} base units of {})", evm.token),
@@ -100,6 +125,7 @@ pub fn needs(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
                 amount,
                 shown,
                 gas,
+                purpose,
                 rpc_url: evm.rpc_url.clone(),
                 token: evm.token.clone(),
             });
@@ -108,15 +134,17 @@ pub fn needs(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
     if let Some(solana) = &app.solana {
         let address = derive::solana_address(&secret(&files.solana_settlement_key)?);
         let token = 10u128.pow(u32::from(solana.decimals));
-        for (gas, asset, amount, shown) in [
+        for (gas, purpose, asset, amount, shown) in [
             (
                 true,
+                Purpose::Start,
                 "SOL".to_owned(),
                 SOLANA_GAS,
                 "0.01 SOL for fees".to_owned(),
             ),
             (
                 false,
+                Purpose::Start,
                 solana.token.clone(),
                 token,
                 format!("1 token ({token} base units of {})", solana.token),
@@ -129,12 +157,44 @@ pub fn needs(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
                 amount,
                 shown,
                 gas,
+                purpose,
                 rpc_url: solana.rpc_url.clone(),
                 token: solana.token.clone(),
             });
         }
     }
     Ok(needs)
+}
+
+/// What a connector needs to start.
+pub fn start_needs(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
+    let mut needs = needs(home, app)?;
+    needs.retain(|need| need.purpose == Purpose::Start);
+    Ok(needs)
+}
+
+/// What a transaction from the settlement key of `app` needs.
+fn deposit_needs(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
+    let mut needs = needs(home, app)?;
+    needs.retain(|need| need.purpose == Purpose::Deposit);
+    Ok(needs)
+}
+
+/// Refuse with `unfunded` unless the settlement key of `app` holds the gas a deposit
+/// spends. A chain that cannot be asked is not a verdict: the connector answers for itself.
+pub fn ensure_gas(home: &Path, network: Profile, app: &ToonApp) -> Result<(), Error> {
+    let lacking = shortfalls(deposit_needs(home, app)?).unwrap_or_default();
+    if lacking.is_empty() {
+        return Ok(());
+    }
+    Err(unfunded(
+        network,
+        &format!(
+            "The settlement key of {} has no gas for a transaction, so nothing was sent.",
+            app.name
+        ),
+        &lacking,
+    ))
 }
 
 fn client() -> reqwest::blocking::Client {
@@ -230,26 +290,49 @@ pub fn shortfalls(needs: Vec<Need>) -> Result<Vec<Need>, String> {
 }
 
 /// How to get what is lacking, for the network the agent node is on.
-fn how_to_fund(network: Profile) -> &'static str {
+fn how_to_fund(network: Profile, lacking: &[Need]) -> String {
+    let token = lacking.iter().any(|need| !need.gas);
+    let eth = lacking.iter().any(|need| need.gas && need.asset == "ETH");
     match network {
-        Profile::Devnet => "Run `toon wallet fund` to fund them from the devnet faucet.",
-        Profile::Sandbox => "Fund them from the sandbox's own chain tooling; `toon wallet fund` has no faucet there.",
-        Profile::Mainnet => "This is mainnet: fund them yourself, with your own money. `toon` has no way to fund them. Run `toon up` again once they are funded.",
+        Profile::Devnet => {
+            let mut advice = Vec::new();
+            if token || lacking.iter().any(|need| need.gas && need.asset != "ETH") {
+                advice.push("Run `toon wallet fund` to fund them from the devnet faucet.".to_owned());
+            }
+            if eth {
+                advice.push(
+                    "The devnet faucet sends no ETH: Base Sepolia ETH comes from a public Base Sepolia faucet, which you give the EVM address named here."
+                        .to_owned(),
+                );
+            }
+            advice.join(" ")
+        }
+        Profile::Sandbox => "Fund them from the sandbox's own chain tooling; `toon wallet fund` has no faucet there.".to_owned(),
+        Profile::Mainnet => "This is mainnet: fund them yourself, with your own money. `toon` has no way to fund them. Run the command again once they are funded.".to_owned(),
     }
 }
 
-/// The refusal for a settlement key that is not funded: the connector is not started.
-pub fn unfunded(network: Profile, lacking: &[Need]) -> Error {
+/// The refusal for a settlement key that is not funded. `what` says what was not done.
+pub fn unfunded(network: Profile, what: &str, lacking: &[Need]) -> Error {
     let list: Vec<String> = lacking.iter().map(Need::text).collect();
     Error {
         nothing_sent: false,
         code: ErrorCode::Unfunded,
         message: format!(
-            "A settlement key is not funded, so the connector is not started. It needs: {}. {}",
+            "{what} It needs: {}. {}",
             list.join("; "),
-            how_to_fund(network)
+            how_to_fund(network, lacking)
         ),
     }
+}
+
+/// The refusal of `toon up`: the connector is not started.
+pub fn unfunded_to_start(network: Profile, lacking: &[Need]) -> Error {
+    unfunded(
+        network,
+        "A settlement key is not funded, so the connector is not started.",
+        lacking,
+    )
 }
 
 /// What `init` tells the operator to fund, and how.
@@ -261,15 +344,33 @@ pub fn requirements(home: &Path, state: &State) -> Result<(Vec<Need>, String), E
     let text = if all.is_empty() {
         String::new()
     } else {
-        let list: Vec<String> = all
-            .iter()
-            .map(|need| format!("  {}", need.text()))
-            .collect();
-        format!(
+        let part = |purpose: Purpose| -> Vec<Need> {
+            all.iter()
+                .filter(|need| need.purpose == purpose)
+                .cloned()
+                .collect()
+        };
+        let lines = |needs: &[Need]| -> String {
+            needs
+                .iter()
+                .map(|need| format!("  {}", need.text()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let (start, deposit) = (part(Purpose::Start), part(Purpose::Deposit));
+        let mut text = format!(
             "Before `toon up` can start the connector, fund:\n{}\n{}",
-            list.join("\n"),
-            how_to_fund(state.network)
-        )
+            lines(&start),
+            how_to_fund(state.network, &start)
+        );
+        if !deposit.is_empty() {
+            text.push_str(&format!(
+                "\nA deposit (`toon join`, `toon peer add`, `toon create`, `toon channel`) spends gas, which `toon up` does not need:\n{}\n{}",
+                lines(&deposit),
+                how_to_fund(state.network, &deposit)
+            ));
+        }
+        text
     };
     Ok((all, text))
 }
@@ -368,11 +469,28 @@ pub fn fund(home: &Path) -> Result<Report, Error> {
             text.push_str("Every settlement key is funded. Run `toon up`.");
         }
         Ok(lacking) => {
-            let list: Vec<String> = lacking.iter().map(Need::text).collect();
-            text.push_str(&format!(
-                "Still lacking, which the faucet did not send: {}.",
-                list.join("; ")
-            ));
+            let (start, deposit): (Vec<Need>, Vec<Need>) = lacking
+                .iter()
+                .cloned()
+                .partition(|need| need.purpose == Purpose::Start);
+            let list = |needs: &[Need]| -> String {
+                needs.iter().map(Need::text).collect::<Vec<_>>().join("; ")
+            };
+            if start.is_empty() {
+                text.push_str("Every settlement key holds what `toon up` needs. Run `toon up`.");
+            } else {
+                text.push_str(&format!(
+                    "Still lacking, which the faucet did not send: {}.",
+                    list(&start)
+                ));
+            }
+            if !deposit.is_empty() {
+                text.push_str(&format!(
+                    "\nThe gas a deposit needs is not held: {}. {}",
+                    list(&deposit),
+                    how_to_fund(state.network, &deposit)
+                ));
+            }
         }
         Err(message) => {
             text.push_str(&format!(

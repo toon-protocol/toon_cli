@@ -88,10 +88,14 @@ connector is running, or fail with `confirmation_required` and change nothing.
 
 ## Funding
 
-`toon up` fails with `unfunded` while a settlement key holds less than 0.0001 ETH (0.01 SOL) for
-gas and one whole token; the message names each address and the amount.
+`toon up` fails with `unfunded` while a settlement key holds less than one whole token (on Solana,
+also 0.01 SOL for fees); the message names each address and the amount. An EVM connector starts
+without gas. Gas (0.0001 ETH) is needed where it is spent: `toon join`, `toon peer add` with a
+deposit, `toon create` with a deposit and `toon channel open`, `fund`, `withdraw` and `land` fail
+with `unfunded` without it, before anything is charged or sent.
 
-- On the devnet, `toon wallet fund` asks the faucet.
+- On the devnet, `toon wallet fund` asks the faucet. It sends the token and no ETH: Base Sepolia
+  ETH comes from a public Base Sepolia faucet, which you cannot use, so say so and stop.
 - On `sandbox` and `mainnet` there is no faucet (`faucet_unavailable`): the operator sends funds
   to the addresses `toon wallet show` lists. You cannot do that, so say so and stop.
 - `toon wallet balances` shows the balance of every address by TOON app and chain.

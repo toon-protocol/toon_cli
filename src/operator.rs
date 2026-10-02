@@ -585,6 +585,7 @@ pub fn channel_open(
     deposit: u128,
     url: Option<&str>,
 ) -> Result<Report, Error> {
+    ensure_gas(home)?;
     let contents = std::fs::read_to_string(terms).map_err(|source| {
         failed(
             ErrorCode::ChannelFailed,
@@ -613,6 +614,7 @@ pub fn channel_open(
 
 /// `toon channel fund`: add `amount` to an outbound channel.
 pub fn channel_fund(home: &Path, id: &str, amount: u128) -> Result<Report, Error> {
+    ensure_gas(home)?;
     let channel = channel_write(
         home,
         &channel_path(id, "fund")?,
@@ -624,6 +626,7 @@ pub fn channel_fund(home: &Path, id: &str, amount: u128) -> Result<Report, Error
 /// `toon channel withdraw`: the connector starts the withdrawal, or finishes it once it
 /// is due, and says which.
 pub fn channel_withdraw(home: &Path, id: &str) -> Result<Report, Error> {
+    ensure_gas(home)?;
     let channel = channel_write(home, &channel_path(id, "withdraw")?, String::new())?;
     let step = channel["step"].as_str().unwrap_or("withdraw").to_owned();
     Ok(channel_report(channel, &format!("Withdrawal step {step}")))
@@ -631,8 +634,19 @@ pub fn channel_withdraw(home: &Path, id: &str) -> Result<Report, Error> {
 
 /// `toon channel land`: land the latest voucher held on an inbound channel.
 pub fn channel_land(home: &Path, id: &str) -> Result<Report, Error> {
+    ensure_gas(home)?;
     let channel = channel_write(home, &channel_path(id, "land")?, String::new())?;
     Ok(channel_report(channel, "Landed"))
+}
+
+/// Refuse with `unfunded` unless the settlement key of the TOON app these commands are
+/// about holds the gas a transaction spends. Nothing has been charged or sent yet.
+fn ensure_gas(home: &Path) -> Result<(), Error> {
+    let Some(state) = State::load(home)? else {
+        return Err(node::no_agent_node(home));
+    };
+    let app = crate::apps::toon_app(&state, TARGET.get().map(String::as_str))?;
+    crate::funding::ensure_gas(home, state.network, app)
 }
 
 /// What a packet came to.
@@ -925,19 +939,23 @@ pub fn channel(home: &Path, command: ChannelCommand) -> Result<Report, Error> {
 /// `toon peer`.
 pub fn peer(home: &Path, command: &PeerCommand) -> Result<Report, Error> {
     match command {
-        PeerCommand::Add(args) => spending::spend(home, args.deposit, args.yes, || {
-            let report = peer_add(
-                home,
-                &PeerAdd {
-                    address: &args.address,
-                    deposit: args.deposit,
-                    id: args.id.as_deref(),
-                    fee: args.fee,
-                    max_packet_amount: args.max_packet_amount,
-                },
-            )?;
-            Ok((report, true))
-        }),
+        PeerCommand::Add(args) => {
+            // Refused before the spending limit is charged: nothing is sent.
+            ensure_gas(home)?;
+            spending::spend(home, args.deposit, args.yes, || {
+                let report = peer_add(
+                    home,
+                    &PeerAdd {
+                        address: &args.address,
+                        deposit: args.deposit,
+                        id: args.id.as_deref(),
+                        fee: args.fee,
+                        max_packet_amount: args.max_packet_amount,
+                    },
+                )?;
+                Ok((report, true))
+            })
+        }
         PeerCommand::List => peer_list(home),
         PeerCommand::Remove { id } => peer_remove(home, id),
     }
@@ -995,6 +1013,8 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
             ),
         ));
     };
+    let app = crate::apps::toon_app(&state, TARGET.get().map(String::as_str))?;
+    crate::funding::ensure_gas(home, state.network, app)?;
     spending::spend(home, args.deposit, args.yes, || {
         let peered = peer_add(
             home,

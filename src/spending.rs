@@ -346,14 +346,18 @@ pub fn spend<T>(
 }
 
 /// Whether a command that failed with `error` certainly paid nothing: it never reached the
-/// connector, or the other side refused the peering before a channel was opened, or it
-/// failed before it sent a packet (`nothing_sent`). Any other failure, a timeout or an
-/// answer not understood, may come after the money moved, so it stays counted.
+/// connector, the settlement key was refused as `unfunded` before anything was sent, the
+/// other side refused the peering before a channel was opened, or it failed before it sent
+/// a packet (`nothing_sent`). Any other failure, a timeout or an answer not understood, may
+/// come after the money moved, so it stays counted.
 fn failed_before_paying(error: &Error) -> bool {
     error.nothing_sent
         || matches!(
             error.code,
-            ErrorCode::NoAgentNode | ErrorCode::NotRunning | ErrorCode::PeerNotPeerable
+            ErrorCode::NoAgentNode
+                | ErrorCode::NotRunning
+                | ErrorCode::Unfunded
+                | ErrorCode::PeerNotPeerable
         )
 }
 
@@ -518,6 +522,7 @@ mod tests {
         };
         assert!(failed_before_paying(&failure(ErrorCode::NotRunning)));
         assert!(failed_before_paying(&failure(ErrorCode::PeerNotPeerable)));
+        assert!(failed_before_paying(&failure(ErrorCode::Unfunded)));
         assert!(!failed_before_paying(&failure(ErrorCode::SendFailed)));
         let mut unsent = failure(ErrorCode::SendFailed);
         unsent.nothing_sent = true;
