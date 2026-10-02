@@ -21,8 +21,8 @@ step.
 | --- | --- | --- |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
 | 2, hold a subscription | No relay serves the subscribe route | relay #215 |
-| 3, `join` | `unfunded` asks for 0.0001 ETH, and the deposit cost 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
-| 3, `join` | The deposit lands and the `join` fails with `peer_failed`, "the chain shows no balance there"; the same command again finds the channel, and each attempt is counted against the day's spending | #102 |
+| 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
+| 3, `join` | The deposit lands and the `join` fails with `peer_failed`, "confirmed, and the chain shows no balance there"; the same command again finds the channel, and is counted against the day's spending a second time | #102 |
 
 ## What it needs
 
@@ -353,19 +353,36 @@ names is too little, #101), and join:
 $E/toon join devnet --deposit 1000000 --yes --json
 $E/toon channel list --json
 $E/toon peer list --json
+$E/toon limit show --json
+```
+
+**Expect** a peering `devnet`, a route for `g.toon` over it, and an open channel of
+1000000, with the day's spending down by 1000000. Two failures are known, both
+`peer_failed`, and after either the same `join` is run again:
+
+- "out of gas": the address holds too little ETH and nothing was sent, so send it more
+  first (#101).
+- "confirmed, and the chain shows no balance there": the deposit landed, and the
+  connector's next read of the chain looks to have been answered before the block was
+  seen. The second `join` reports `peering.channel.status` as `found` and deposits
+  nothing (#102).
+
+Each failed attempt, and the one that finds the channel, takes 1000000 more off the day's
+spending.
+
+Then pay the devnet's relay over the new channel:
+
+```sh
 RELAY=$(jq -r .relay_url $HOME/.toon/agent-node/state.json)
-$E/toon event publish --kind 1 --content "end-to-end run" --relay $RELAY --yes --json \
+$E/toon event publish --kind 1 --content "end-to-end run" --relay "$RELAY" --yes --json \
   > $E/devnet-event.json
-$E/toon event query $RELAY \
+$E/toon event query "$RELAY" \
   --filter "{\"ids\":[\"$(jq -r .event.id $E/devnet-event.json)\"]}" --json
 $E/toon down --json
 ```
 
-**Expect** a peering `devnet` with an open channel of 1000000, then `published` with
-`paid: 1` and the event read back from the devnet's relay: a hidden agent node paid a
-network on clearnet. If the `join` fails with "confirmed, and the chain shows no balance
-there", the deposit landed and the read after it did not see it: run the `join` again,
-and it reports the channel as `found` (#102).
+**Expect** `published` with `paid: 1` and the event read back from the devnet's relay: a
+hidden agent node paid a network on clearnet.
 
 ## Afterwards
 
