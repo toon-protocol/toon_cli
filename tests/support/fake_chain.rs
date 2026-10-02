@@ -15,7 +15,7 @@
 //! It holds no channels and accepts no transaction, so it carries a connector that
 //! nobody pays. A test that moves money needs more than this. Every address holds the
 //! same balance of gas and of the token, unless the chain was started unfunded and
-//! nobody has funded it yet.
+//! nobody has funded it yet, or gasless: the token and no gas.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -57,12 +57,17 @@ pub struct FakeChain {
 impl FakeChain {
     /// A chain on which every address is funded.
     pub fn start() -> Self {
-        Self::spawn(true)
+        Self::spawn(true, true)
+    }
+
+    /// A chain on which every address holds the token and no gas.
+    pub fn start_gasless() -> Self {
+        Self::spawn(true, false)
     }
 
     /// A chain on which every address holds nothing until `fund` is called.
     pub fn start_unfunded() -> Self {
-        Self::spawn(false)
+        Self::spawn(false, true)
     }
 
     /// What a faucet does: from now on every address holds gas and the token.
@@ -70,7 +75,7 @@ impl FakeChain {
         Arc::clone(&self.funded)
     }
 
-    fn spawn(funded: bool) -> Self {
+    fn spawn(funded: bool, gas: bool) -> Self {
         let funded = Arc::new(AtomicBool::new(funded));
         let held = Arc::clone(&funded);
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -79,7 +84,7 @@ impl FakeChain {
             .build()
             .expect("a runtime for the fake chain");
         let rpc = runtime.block_on(FakeRpc::spawn(move |call: &RpcCall| {
-            answer(call, held.load(Ordering::SeqCst))
+            answer(call, held.load(Ordering::SeqCst), gas)
         }));
         Self {
             rpc,
@@ -98,13 +103,13 @@ impl FakeChain {
     }
 }
 
-fn answer(call: &RpcCall, funded: bool) -> RpcReply {
+fn answer(call: &RpcCall, funded: bool, gas: bool) -> RpcReply {
     match call.method.as_str() {
         "eth_chainId" => RpcReply::Result(json!(format!("{CHAIN_ID:#x}"))),
         "eth_blockNumber" => RpcReply::Result(json!("0x1")),
         // Any code at all: the connector asks only whether the contract is deployed.
         "eth_getCode" => RpcReply::Result(json!("0x60")),
-        "eth_getBalance" => RpcReply::Result(json!(if funded {
+        "eth_getBalance" => RpcReply::Result(json!(if funded && gas {
             format!("{NATIVE_BALANCE:#x}")
         } else {
             "0x0".into()

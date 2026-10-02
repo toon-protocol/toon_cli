@@ -10,7 +10,7 @@
 use std::env;
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::thread;
@@ -26,7 +26,7 @@ pub const COMMAND_VARIABLE: &str = "TOON_APP_COMMAND";
 pub const WRITE_PORT: u16 = 3100;
 
 /// The port the relay serves reads on inside its container, and the one a local process
-/// is told to use through `TOON_WS_PORT`.
+/// is told to use through `TOON_RELAY_PORT`, the name the relay's image reads.
 pub const READ_PORT: u16 = crate::overlay::RELAY_READ_PORT;
 
 /// How long an app gets to answer its health check once started.
@@ -48,6 +48,10 @@ pub struct AppSpec {
     pub env: Vec<(String, String)>,
     /// Where the app keeps what it must not lose.
     pub data_dir: PathBuf,
+    /// Whether the app is the relay. A container runner starts the relay on the host's
+    /// network, both listeners on loopback ports it picks, so that it can ask a connector
+    /// that listens on loopback (ADR 0006). Every other app stays on docker's bridge.
+    pub relay: bool,
 }
 
 pub trait AppRunner {
@@ -68,6 +72,7 @@ pub trait RunningApp: Send {
 
 fn failed(message: String) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::AppFailed,
         message,
     }
@@ -82,6 +87,24 @@ pub fn from_environment() -> Box<dyn AppRunner> {
         }),
         None => Box::new(ContainerRunner),
     }
+}
+
+/// Two loopback ports, a write port and a read port, that are free until something else
+/// takes them; the app fails to bind and says so. Both are held until both are picked, so
+/// they differ.
+fn free_ports() -> Result<(u16, u16), Error> {
+    let bind = || {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .map_err(|error| failed(format!("No free port for the app: {error}.")))
+    };
+    let (write, read) = (bind()?, bind()?);
+    let port = |listener: &TcpListener| {
+        listener
+            .local_addr()
+            .map(|address| address.port())
+            .map_err(|error| failed(format!("No free port for the app: {error}.")))
+    };
+    Ok((port(&write)?, port(&read)?))
 }
 
 /// Wait for `GET /health` on `address` to answer 200. `alive` says whether the app is
@@ -141,22 +164,13 @@ impl AppRunner for ProcessRunner {
             .append(true)
             .open(&log)
             .map_err(|error| io(&log, error))?;
-        // A port is free until something else takes it; the app fails to bind and says so.
-        let free_port = || {
-            crate::node::free_port("127.0.0.1")
-                .map_err(|error| failed(format!("No free port for the app: {}", error.message)))
-        };
-        let port = free_port()?;
-        let mut read_port = free_port()?;
-        while read_port == port {
-            read_port = free_port()?;
-        }
+        let (port, read_port) = free_ports()?;
         let mut command = Command::new(&self.program);
         command
             .env_clear()
             .envs(spec.env.iter().map(|(name, value)| (name, value)))
             .env("TOON_BLS_PORT", port.to_string())
-            .env("TOON_WS_PORT", read_port.to_string())
+            .env("TOON_RELAY_PORT", read_port.to_string())
             .env("TOON_DATA_DIR", &spec.data_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::from(
@@ -223,7 +237,8 @@ impl Drop for Process {
     }
 }
 
-/// Runs an app as a container of `docker`, its write port published on loopback only.
+/// Runs an app as a container of `docker`, its write port published on loopback only. The
+/// relay is the exception: it shares the host's network and binds loopback.
 pub struct ContainerRunner;
 
 struct Container {
@@ -245,6 +260,34 @@ fn docker(args: &[&str]) -> Result<String, String> {
     }
 }
 
+/// How `docker run` places an app on the network. The relay, given its write and read ports,
+/// shares the host's network and is told to bind both on loopback; any other app stays on
+/// the bridge and is told nothing but where it is published.
+fn network_arguments(relay_ports: Option<(u16, u16)>) -> Vec<String> {
+    match relay_ports {
+        Some((write, read)) => vec![
+            "--network".to_owned(),
+            "host".to_owned(),
+            "--env".to_owned(),
+            "TOON_HOST=127.0.0.1".to_owned(),
+            "--env".to_owned(),
+            "TOON_WRITE_HOST=127.0.0.1".to_owned(),
+            "--env".to_owned(),
+            format!("TOON_BLS_PORT={write}"),
+            "--env".to_owned(),
+            format!("TOON_RELAY_PORT={read}"),
+        ],
+        None => vec![
+            "--publish".to_owned(),
+            format!("127.0.0.1::{WRITE_PORT}"),
+            "--publish".to_owned(),
+            format!("127.0.0.1::{READ_PORT}"),
+            "--env".to_owned(),
+            format!("TOON_BLS_PORT={WRITE_PORT}"),
+        ],
+    }
+}
+
 impl AppRunner for ContainerRunner {
     fn start(&self, spec: &AppSpec) -> Result<Box<dyn RunningApp>, Error> {
         let name = format!("toon-{}", spec.instance);
@@ -256,13 +299,16 @@ impl AppRunner for ContainerRunner {
         let _ = docker(&["rm", "--force", &name]);
 
         let mut command = Command::new("docker");
+        command.args(["run", "--detach", "--rm", "--name", &name]);
+        let relay_ports = if spec.relay {
+            Some(free_ports()?)
+        } else {
+            None
+        };
         command
-            .args(["run", "--detach", "--rm", "--name", &name])
-            .args(["--publish", &format!("127.0.0.1::{WRITE_PORT}")])
-            .args(["--publish", &format!("127.0.0.1::{READ_PORT}")])
+            .args(network_arguments(relay_ports))
             .arg("--volume")
             .arg(format!("{}:/data", data.display()))
-            .args(["--env", &format!("TOON_BLS_PORT={WRITE_PORT}")])
             .args(["--env", "TOON_DATA_DIR=/data"]);
         // `--env NAME` takes the value from this process's environment, so a secret is
         // never in the argument list that `ps` shows.
@@ -295,7 +341,14 @@ impl AppRunner for ContainerRunner {
                     .ok_or_else(|| format!("docker did not say where {name} publishes {port}"))
             })
         };
-        match published(WRITE_PORT).and_then(|write| Ok((write, published(READ_PORT)?))) {
+        let reached = match relay_ports {
+            Some((write, read)) => Ok((
+                SocketAddr::from((Ipv4Addr::LOCALHOST, write)),
+                SocketAddr::from((Ipv4Addr::LOCALHOST, read)),
+            )),
+            None => published(WRITE_PORT).and_then(|write| Ok((write, published(READ_PORT)?))),
+        };
+        match reached {
             Ok((write, read)) => {
                 container.address = write;
                 container.read = read;
@@ -371,6 +424,7 @@ mod tests {
             image: image.into(),
             env: vec![("NOSTR_SECRET_KEY".into(), "02".repeat(32))],
             data_dir: data_dir.to_path_buf(),
+            relay: false,
         }
     }
 
@@ -469,15 +523,61 @@ mod tests {
         assert_eq!(error.code, ErrorCode::AppFailed);
     }
 
+    #[test]
+    fn the_relay_shares_the_hosts_network_and_any_other_image_stays_on_the_bridge() {
+        let relay = network_arguments(Some((4100, 4101))).join(" ");
+        assert!(relay.contains("--network host"), "{relay}");
+        assert!(!relay.contains("--publish"), "{relay}");
+        assert!(relay.contains("--env TOON_HOST=127.0.0.1"), "{relay}");
+        assert!(relay.contains("--env TOON_WRITE_HOST=127.0.0.1"), "{relay}");
+        assert!(relay.contains("--env TOON_BLS_PORT=4100"), "{relay}");
+        assert!(relay.contains("--env TOON_RELAY_PORT=4101"), "{relay}");
+
+        let other = network_arguments(None).join(" ");
+        assert!(!other.contains("--network"), "{other}");
+        assert!(
+            other.contains(&format!("--publish 127.0.0.1::{WRITE_PORT}")),
+            "{other}"
+        );
+        assert!(
+            other.contains(&format!("--publish 127.0.0.1::{READ_PORT}")),
+            "{other}"
+        );
+        assert!(
+            other.contains(&format!("--env TOON_BLS_PORT={WRITE_PORT}")),
+            "{other}"
+        );
+        assert!(!other.contains("TOON_HOST"), "{other}");
+    }
+
+    #[test]
+    fn the_ports_picked_for_an_app_differ() {
+        let (write, read) = free_ports().unwrap();
+        assert_ne!(write, read);
+    }
+
     /// The same contract, against the real relay image. It needs a docker daemon that
     /// can pull the image, so it runs on request: `cargo test -- --ignored`.
     #[test]
     #[ignore = "needs docker and a network to pull the relay image"]
     fn the_container_runner_meets_the_contract() {
         let data = tempfile::tempdir().unwrap();
-        contract(
-            &ContainerRunner,
-            &spec(data.path(), env!("TOON_RELAY_IMAGE")),
+        let mut relay = spec(data.path(), env!("TOON_RELAY_IMAGE"));
+        relay.relay = true;
+        contract(&ContainerRunner, &relay);
+
+        // The relay is on the host's network: both addresses are on loopback, and the
+        // health check answers there.
+        let mut app = ContainerRunner.start(&relay).expect("the relay starts");
+        let read = app.read_address().expect("the relay has a read address");
+        assert!(
+            read.ip().is_loopback(),
+            "the read port is on loopback: {read}"
         );
+        assert!(app.write_address().ip().is_loopback());
+        assert_ne!(read.port(), app.write_address().port());
+        assert!(get(app.write_address(), "/health")
+            .is_some_and(|answer| answer.starts_with("HTTP/1.1 200")));
+        app.stop();
     }
 }

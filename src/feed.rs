@@ -114,7 +114,7 @@ fn direct(host: &str, port: u16) -> std::io::Result<TcpStream> {
     Err(last.unwrap_or_else(|| std::io::Error::other("the name resolves to no address")))
 }
 
-fn dial(relay: &str, proxy: Option<SocketAddr>) -> Result<WebSocket<TcpStream>, String> {
+pub fn dial(relay: &str, proxy: Option<SocketAddr>) -> Result<WebSocket<TcpStream>, String> {
     let (host, port) = authority(relay)?;
     let stream = match proxy {
         Some(proxy) => through(proxy, &host, port)?,

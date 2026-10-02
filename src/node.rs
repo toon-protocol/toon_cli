@@ -60,9 +60,9 @@ pub struct Options {
     /// The faucet `toon wallet fund` asks, if the network has one.
     pub faucet_url: Option<String>,
     /// The `/ilp` URL of the network's connector, which `toon join` peers toward.
-    pub connector_url: String,
+    pub connector_url: Option<String>,
     /// The websocket URL of the network's relay, which `toon join` makes one the agent reads.
-    pub relay_url: String,
+    pub relay_url: Option<String>,
     /// The spending limit, signed into `limits.json` at `init`.
     pub limits: crate::spending::Limits,
 }
@@ -220,8 +220,14 @@ impl App {
 
     fn json(&self) -> Value {
         match &self.source {
-            Source::Relay if self.price == RELAY_WRITE_PRICE => json!(self.name),
-            Source::Relay => json!({ "name": self.name, "price": self.price }),
+            Source::Relay
+                if self.price == RELAY_WRITE_PRICE && self.prefix == RELAY_WRITE_PREFIX =>
+            {
+                json!(self.name)
+            }
+            Source::Relay => {
+                json!({ "name": self.name, "price": self.price, "prefix": self.prefix })
+            }
             Source::Image(image) => json!({
                 "name": self.name, "image": image, "prefix": self.prefix, "price": self.price,
             }),
@@ -260,6 +266,10 @@ impl App {
         Some(Self {
             name,
             price,
+            prefix: value["prefix"]
+                .as_str()
+                .unwrap_or(RELAY_WRITE_PREFIX)
+                .to_owned(),
             ..Self::relay()
         })
     }
@@ -271,10 +281,10 @@ pub struct State {
     pub network: Profile,
     /// Where `toon wallet fund` asks for funds; the networks without a faucet have none.
     pub faucet_url: Option<String>,
-    /// The network's connector, as the profile or `init` names it.
-    pub connector_url: String,
-    /// The network's relay, as the profile or `init` names it.
-    pub relay_url: String,
+    /// The network's connector, as the profile or `init` names it; none if it names none.
+    pub connector_url: Option<String>,
+    /// The network's relay, as the profile or `init` names it; none if it names none.
+    pub relay_url: Option<String>,
     /// The network this agent node has joined: none until `toon join`.
     pub joined: Option<String>,
     /// The relays the agent reads: those of the networks it has joined.
@@ -284,6 +294,7 @@ pub struct State {
 
 fn io(path: &Path, source: std::io::Error) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::Io,
         message: format!("{}: {source}.", path.display()),
     }
@@ -292,6 +303,7 @@ fn io(path: &Path, source: std::io::Error) -> Error {
 /// What a command that needs an agent node says when `home` has none.
 pub fn no_agent_node(home: &Path) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::NoAgentNode,
         message: format!("No agent node at {}. Run `toon init`.", home.display()),
     }
@@ -519,9 +531,11 @@ impl State {
             url => Some(url.as_str()?.to_owned()),
         };
         // A state from before `join` names the profile's own connector and relay.
-        let text = |name: &str, default: &str| match &value[name] {
-            Value::Null => Some(default.to_owned()),
-            url => url.as_str().map(str::to_owned),
+        // One that is `null` names none: a network with no connector or relay.
+        let text = |name: &str, default: Option<&str>| match value.get(name) {
+            None => Some(default.map(str::to_owned)),
+            Some(Value::Null) => Some(None),
+            Some(url) => url.as_str().map(|url| Some(url.to_owned())),
         };
         let joined = match &value["joined"] {
             Value::Null => None,
@@ -559,6 +573,7 @@ impl State {
             .and_then(|value| Self::from_json(&value))
             .map(Some)
             .ok_or_else(|| Error {
+                nothing_sent: false,
                 code: ErrorCode::Io,
                 message: format!("{} is not a state file this version reads.", file.display()),
             })
@@ -606,15 +621,7 @@ pub fn write(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Error> {
 /// answers, so a plain-http endpoint on this machine, which has nothing to hide from a
 /// relay, is the one RPC that is dialed directly.
 fn via_proxy(overlay: Option<&Overlay>, rpc_url: &str) -> &'static str {
-    let local_http = rpc_url
-        .strip_prefix("http://")
-        .and_then(|rest| rest.split('/').next())
-        .map(|authority| match authority.find(']') {
-            Some(end) => &authority[..=end],
-            None => authority.split(':').next().unwrap_or(authority),
-        })
-        .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "[::1]"));
-    if overlay.is_some() && !local_http {
+    if overlay.is_some() && !overlay::is_local_plain(rpc_url) {
         "rpc_via_socks_proxy = true\n"
     } else {
         ""
@@ -645,39 +652,19 @@ pub struct Overlay {
 
 /// `listen` with a port: a connector publishes where it can be paid, so it cannot be left
 /// to the system to pick one when it binds. Port 0 is replaced by a port that was free a
-/// moment ago. It is tried below the range the system hands out to sockets that ask for any
-/// port, so that no other process takes it between now and the connector's bind; a system
-/// with no free port there is asked for one.
+/// moment ago.
 pub fn concrete(listen: &str) -> Result<String, Error> {
     let Some((host, "0")) = listen.rsplit_once(':') else {
         return Ok(listen.to_owned());
     };
-    let port = free_port(host)?;
-    Ok(format!("{host}:{port}"))
-}
-
-/// A port on `host` that was free a moment ago. It is tried below the range the system
-/// hands out to sockets that ask for any port, so that no other process takes it before
-/// its user binds; a system with no free port there is asked for one.
-pub fn free_port(host: &str) -> Result<u16, Error> {
-    let below_the_system_range = (0..64).find_map(|_| {
-        let mut random = [0u8; 2];
-        getrandom::getrandom(&mut random).ok()?;
-        let port = 10_000 + u16::from_le_bytes(random) % 22_000;
-        std::net::TcpListener::bind(format!("{host}:{port}"))
-            .ok()
-            .map(|_| port)
-    });
-    match below_the_system_range {
-        Some(port) => Ok(port),
-        None => std::net::TcpListener::bind(format!("{host}:0"))
-            .and_then(|bound| bound.local_addr())
-            .map(|address| address.port())
-            .map_err(|source| Error {
-                code: ErrorCode::Io,
-                message: format!("{host}: no free port: {source}."),
-            }),
-    }
+    let free = std::net::TcpListener::bind(listen)
+        .and_then(|bound| bound.local_addr())
+        .map_err(|source| Error {
+            nothing_sent: false,
+            code: ErrorCode::Io,
+            message: format!("{listen}: no free port: {source}."),
+        })?;
+    Ok(format!("{host}:{}", free.port()))
 }
 
 /// Where an app's write port is reached, by the app's name.
@@ -699,6 +686,7 @@ pub fn render(
         (Reach::Hidden, Some(overlay)) => Some(overlay),
         (Reach::Hidden, None) => {
             return Err(Error {
+                nothing_sent: false,
                 code: ErrorCode::OverlayUnavailable,
                 message: format!(
                     "{} is a hidden service and the overlay is not there to render it with.",
@@ -820,6 +808,7 @@ pub fn render(
     fs::create_dir_all(&files.state_dir).map_err(|source| io(&files.state_dir, source))?;
     connector_cli::load_config(&["toon connector", &files.config.to_string_lossy()]).map_err(
         |error| Error {
+            nothing_sent: false,
             code: ErrorCode::ConnectorFailed,
             message: format!("The connector would not accept its config: {error}"),
         },
@@ -844,6 +833,7 @@ fn write_operator_files(home: &Path, files: &ConnectorFiles) -> Result<bool, Err
     let bytes = zeroize::Zeroizing::new(fs::read(&key).map_err(|source| io(&key, source))?);
     let secret: zeroize::Zeroizing<[u8; 32]> =
         zeroize::Zeroizing::new(bytes.as_slice().try_into().map_err(|_| Error {
+            nothing_sent: false,
             code: ErrorCode::Io,
             message: format!("{} is not a 32-byte key.", key.display()),
         })?);

@@ -95,20 +95,22 @@ impl Profile {
     }
 
     /// The `/ilp` URL of the connector `toon join` peers toward.
-    pub fn connector_url(self) -> &'static str {
+    /// Mainnet has none: no mainnet TOON network exists yet.
+    pub fn connector_url(self) -> Option<&'static str> {
         match self {
-            Profile::Devnet => "https://connector.devnet.toonprotocol.dev/ilp",
-            Profile::Sandbox => "http://localhost:4100/ilp",
-            Profile::Mainnet => "https://connector.toonprotocol.dev/ilp",
+            Profile::Devnet => Some("https://proxy.relay.devnet.toonprotocol.dev/ilp"),
+            Profile::Sandbox => Some("http://localhost:4100/ilp"),
+            Profile::Mainnet => None,
         }
     }
 
     /// The websocket URL of the relay `toon join` makes one the agent reads.
-    pub fn relay_url(self) -> &'static str {
+    /// Mainnet has none: no mainnet TOON network exists yet.
+    pub fn relay_url(self) -> Option<&'static str> {
         match self {
-            Profile::Devnet => "wss://relay.devnet.toonprotocol.dev",
-            Profile::Sandbox => "ws://localhost:7100",
-            Profile::Mainnet => "wss://relay.toonprotocol.dev",
+            Profile::Devnet => Some("wss://relay-ws.devnet.toonprotocol.dev"),
+            Profile::Sandbox => Some("ws://localhost:7100"),
+            Profile::Mainnet => None,
         }
     }
 }

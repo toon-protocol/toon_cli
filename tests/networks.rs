@@ -149,9 +149,17 @@ fn init_says_which_address_needs_how_much_and_how_to_fund_it() {
     assert!(needs.iter().all(|need| need["address"] == address));
     assert_eq!(needs[0]["amount"], "100000000000000");
     assert_eq!(needs[1]["amount"], "1000000");
+    assert_eq!(needs[0]["for"], "deposit");
+    assert_eq!(needs[1]["for"], "start");
     let text = fresh_text_init();
-    assert!(text.contains("0.0001 ETH"), "{text}");
-    assert!(text.contains("toon wallet fund"), "{text}");
+    let (start, deposit) = text
+        .split_once("A deposit")
+        .expect("the text says separately what a deposit needs");
+    assert!(!start.contains("ETH"), "{text}");
+    assert!(start.contains("toon wallet fund"), "{text}");
+    assert!(deposit.contains("0.0001 ETH"), "{text}");
+    assert!(deposit.contains("sends no ETH"), "{text}");
+    assert!(deposit.contains("Base Sepolia"), "{text}");
 }
 
 fn fresh_text_init() -> String {
@@ -195,7 +203,7 @@ fn up_does_not_start_a_connector_whose_settlement_key_is_unfunded() {
     assert_eq!(error["code"], "unfunded");
     let message = error["message"].as_str().unwrap();
     assert!(message.contains(&address), "{message}");
-    assert!(message.contains("0.0001 ETH"), "{message}");
+    assert!(!message.contains("ETH"), "{message}");
     assert!(message.contains("1000000 base units"), "{message}");
     assert!(message.contains("toon wallet fund"), "{message}");
     assert!(!machine.agent_node_home().join("control.sock").exists());
@@ -247,6 +255,37 @@ fn wallet_fund_asks_the_faucet_for_the_addresses_and_then_up_starts() {
 }
 
 #[test]
+fn wallet_fund_against_a_faucet_that_sends_the_token_only_says_up_can_run() {
+    let chain = FakeChain::start_gasless();
+    let faucet = FakeFaucet::funding(chain.funded());
+    let machine = Machine::new();
+    machine.init_with(&[
+        "--evm-rpc-url",
+        &chain.rpc_url(),
+        "--faucet-url",
+        faucet.url(),
+    ]);
+
+    let json = machine.toon(&["wallet", "fund", "--json"]);
+    let text = machine.toon(&["wallet", "fund"]);
+
+    assert_eq!(json.exit_code, 0, "{}", json.stdout);
+    let lacking = json.json()["lacking"].as_array().unwrap().clone();
+    assert_eq!(lacking.len(), 1);
+    assert_eq!(lacking[0]["asset"], "ETH");
+    assert_eq!(lacking[0]["for"], "deposit");
+    assert_eq!(text.exit_code, 0, "{}", text.stdout);
+    assert!(text.stdout.contains("`toon up`"), "{}", text.stdout);
+    assert!(
+        text.stdout.contains("holds what `toon up` needs"),
+        "{}",
+        text.stdout
+    );
+    assert!(!text.stdout.contains("did not send"), "{}", text.stdout);
+    assert!(text.stdout.contains("Base Sepolia"), "{}", text.stdout);
+}
+
+#[test]
 fn wallet_fund_says_what_the_faucet_left_unfunded() {
     let chain = FakeChain::start_unfunded();
     // A faucet that was never connected to the chain: it answers, and nothing arrives.
@@ -263,7 +302,10 @@ fn wallet_fund_says_what_the_faucet_left_unfunded() {
     let fund = machine.toon(&["wallet", "fund", "--json"]);
 
     assert_eq!(fund.exit_code, 0, "{}", fund.stdout);
-    assert_eq!(fund.json()["lacking"].as_array().unwrap().len(), 2);
+    let lacking = fund.json()["lacking"].as_array().unwrap().clone();
+    assert_eq!(lacking.len(), 2);
+    assert_eq!(lacking[0]["for"], "deposit");
+    assert_eq!(lacking[1]["for"], "start");
 }
 
 #[test]
@@ -335,4 +377,80 @@ fn wallet_fund_says_when_the_balances_cannot_be_read_after_asking_the_faucet() {
     assert_eq!(fund.exit_code, 0, "{}", fund.stdout);
     assert_eq!(faucet.asked().len(), 1);
     assert!(fund.json()["lacking"].is_null(), "{}", fund.stdout);
+}
+
+fn state(machine: &Machine) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(machine.agent_node_home().join("state.json")).unwrap())
+        .expect("state.json is JSON")
+}
+
+#[test]
+fn the_devnet_profile_records_the_devnets_connector_and_relay() {
+    let machine = Machine::new();
+
+    let init = machine.init_with(&[]);
+
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let state = state(&machine);
+    assert_eq!(
+        state["connector_url"],
+        "https://proxy.relay.devnet.toonprotocol.dev/ilp"
+    );
+    assert_eq!(state["relay_url"], "wss://relay-ws.devnet.toonprotocol.dev");
+}
+
+#[test]
+fn the_mainnet_profile_records_no_connector_and_no_relay_and_join_is_refused() {
+    let machine = Machine::new();
+
+    let init = machine.init_with(&["--network", "mainnet"]);
+
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let state = state(&machine);
+    assert!(state["connector_url"].is_null(), "{state}");
+    assert!(state["relay_url"].is_null(), "{state}");
+    let notes = init.json()["notes"].to_string();
+    assert!(notes.contains("no mainnet TOON network yet"), "{notes}");
+
+    let left =
+        machine.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone();
+
+    let joined = machine.toon(&["join", "mainnet", "--deposit", "1000000", "--yes", "--json"]);
+
+    assert_eq!(joined.exit_code, 1, "{}", joined.stdout);
+    assert_eq!(joined.json()["error"]["code"], "join_refused");
+    let message = joined.json()["error"]["message"].to_string();
+    assert!(message.contains("--connector-url"), "{message}");
+    assert!(message.contains("--relay-url"), "{message}");
+    let still = machine.toon(&["limit", "show", "--json"]);
+    assert_eq!(
+        still.json()["limits"]["remaining_today"],
+        left,
+        "a refused join is not counted"
+    );
+    let status = machine.toon(&["status", "--json"]);
+    assert!(
+        status.json()["agent_node"]["joined"].is_null(),
+        "{}",
+        status.stdout
+    );
+}
+
+#[test]
+fn the_mainnet_profile_records_the_urls_init_is_given() {
+    let machine = Machine::new();
+
+    let init = machine.init_with(&[
+        "--network",
+        "mainnet",
+        "--connector-url",
+        "https://connector.example/ilp",
+        "--relay-url",
+        "wss://relay.example",
+    ]);
+
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let state = state(&machine);
+    assert_eq!(state["connector_url"], "https://connector.example/ilp");
+    assert_eq!(state["relay_url"], "wss://relay.example");
 }
