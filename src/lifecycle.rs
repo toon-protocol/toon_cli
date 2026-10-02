@@ -131,7 +131,7 @@ fn peer(
     from: (&ToonApp, &Surface),
     to: (&ToonApp, &Surface),
     deposit: u128,
-) -> Result<Value, Error> {
+) -> Result<(Value, bool), Error> {
     let url = peer_url(home, to.0, to.1)?;
     let peering = operator::peer_add_on(
         from.1,
@@ -145,12 +145,15 @@ fn peer(
     )?;
     let prefix = to.0.address();
     operator::route_add_on(from.1, &prefix, &to.0.name, 0)?;
-    Ok(json!({
-        "from": from.0.name,
-        "to": to.0.name,
-        "route": prefix,
-        "peering": peering.json["peering"],
-    }))
+    Ok((
+        json!({
+            "from": from.0.name,
+            "to": to.0.name,
+            "route": prefix,
+            "peering": peering.report.json["peering"],
+        }),
+        peering.deposited,
+    ))
 }
 
 /// `toon create`.
@@ -220,9 +223,11 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
         let restarted = match make() {
             Ok(restarted) => restarted,
             // Nothing was paid.
-            Err(error) => return Ok((Err(error), false)),
+            Err(error) => return Ok((Err(error), spending::Moved::Nothing)),
         };
         let mut peerings = Vec::new();
+        // The deposits the connectors say they received. A failure may come after one.
+        let mut deposits = 0u128;
         let outcome = (|| {
             let state = State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
             let source = state.toon_apps.iter().find(|app| app.name == from);
@@ -237,10 +242,17 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
             };
             let near = operator::surface_of(home, Some(&source.name))?;
             let far = operator::surface_of(home, Some(&new.name))?;
-            peerings.push(peer(home, (new, &far), (source, &near), deposit)?);
-            peerings.push(peer(home, (source, &near), (new, &far), deposit)?);
+            for (from, to) in [
+                ((new, &far), (source, &near)),
+                ((source, &near), (new, &far)),
+            ] {
+                let (made, deposited) = peer(home, from, to, deposit)?;
+                peerings.push(made);
+                deposits += u128::from(deposited);
+            }
             Ok(())
         })();
+        let both = peerings.len() == 2;
         Ok((
             match outcome {
                 Ok(()) => Ok(created(home, &new, &from, restarted, peerings)),
@@ -260,8 +272,12 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
                     ),
                 )),
             },
-            // The first deposit may have gone out.
-            true,
+            // A failed peering may have deposited, so then both stay counted.
+            if both {
+                spending::Moved::Amount(deposit.saturating_mul(deposits))
+            } else {
+                spending::Moved::All
+            },
         ))
     })?
 }

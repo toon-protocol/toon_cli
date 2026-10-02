@@ -336,14 +336,33 @@ pub struct PeerAdd<'a> {
     pub max_packet_amount: u64,
 }
 
+/// What the connector's answer to a peering is on the connector's own words: it confirmed
+/// the opening deposit and then read no balance on the channel. The deposit is on chain, the
+/// connector keeps its record of the channel, and the same request finds it. Pinned by a
+/// test against the connector the build embeds.
+pub(crate) const STALE_READ: &str = "confirmed, and the chain shows no balance there";
+
+/// How many times a peering refused with [`STALE_READ`] is repeated, and how long to wait
+/// before each. The wait is over a second so that no two requests are signed in the same
+/// second, which the connector refuses as a replayed signature.
+const STALE_READ_REPEATS: u32 = 3;
+const STALE_READ_WAIT: Duration = Duration::from_millis(1_200);
+
+/// A peering made, and whether this command deposited into its channel.
+pub struct Peered {
+    pub report: Report,
+    /// False when the channel was already open and nothing was deposited.
+    pub deposited: bool,
+}
+
 /// `toon peer add`: create a peering toward the connector at `address`, opening and
 /// funding the channel it pays on with `deposit`.
-pub fn peer_add(home: &Path, add: &PeerAdd) -> Result<Report, Error> {
+pub fn peer_add(home: &Path, add: &PeerAdd) -> Result<Peered, Error> {
     peer_add_on(&surface(home)?, add)
 }
 
 /// `peer_add`, on the connector whose operator surface is `surface`.
-pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Report, Error> {
+pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Peered, Error> {
     let id = add.id.map_or_else(|| label(add.address), str::to_owned);
     segment(ErrorCode::PeerFailed, "The peering's label", &id)?;
     let body = json!({
@@ -353,7 +372,28 @@ pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Report, Error> {
         "max_packet_amount": add.max_packet_amount,
         "deposit": add.deposit,
     });
-    let (status, text) = write(surface, reqwest::Method::POST, "/peers", Some(&body))?;
+    let (mut status, mut text) = write(surface, reqwest::Method::POST, "/peers", Some(&body))?;
+    // Set once the connector has said that the deposit this command sent confirmed.
+    let mut deposit_confirmed = false;
+    let mut repeats = 0;
+    while status == 502 && text.contains(STALE_READ) {
+        deposit_confirmed = true;
+        if repeats == STALE_READ_REPEATS {
+            return Err(failed(
+                ErrorCode::PeerFailed,
+                format!(
+                    "The deposit of {} confirmed on chain, but the peering was not created. \
+                     Running the same command again finds the channel and deposits nothing \
+                     more. {}",
+                    add.deposit,
+                    refusal(status, &text)
+                ),
+            ));
+        }
+        repeats += 1;
+        std::thread::sleep(STALE_READ_WAIT);
+        (status, text) = write(surface, reqwest::Method::POST, "/peers", Some(&body))?;
+    }
     if status != 200 {
         // The connector reads the other side's self-description first, and a connector
         // that is not peerable publishes none a peer can use. A connector that does not
@@ -394,15 +434,26 @@ pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Report, Error> {
     })?;
     let channel = peering["channel"]["id"].as_str().unwrap_or_default();
     let channel_status = peering["channel"]["status"].as_str().unwrap_or_default();
-    Ok(Report {
-        exit: Exit::Success,
-        json: json!({ "peering": peering }),
-        text: format!(
-            "Peered with {} as {id}, paying on channel {channel} ({channel_status}), deposit {}.\n\
-             Packets forwarded to it are served by that connector. It forwards back to you \
-             only if its operator creates a peering toward you in return.",
-            add.address, add.deposit
-        ),
+    // What the connector says it did decides what was deposited: a channel it found
+    // moved nothing, unless this command's own deposit confirmed before a repeat found it.
+    let deposited = deposit_confirmed || channel_status != "found";
+    let paid = if deposited {
+        format!("deposit {}", add.deposit)
+    } else {
+        "already open, nothing deposited".to_owned()
+    };
+    Ok(Peered {
+        report: Report {
+            exit: Exit::Success,
+            json: json!({ "peering": peering, "deposited": deposited }),
+            text: format!(
+                "Peered with {} as {id}, paying on channel {channel} ({channel_status}), {paid}.\n\
+                 Packets forwarded to it are served by that connector. It forwards back to you \
+                 only if its operator creates a peering toward you in return.",
+                add.address
+            ),
+        },
+        deposited,
     })
 }
 
@@ -1019,7 +1070,7 @@ pub fn peer(home: &Path, command: &PeerCommand) -> Result<Report, Error> {
             // Refused before the spending limit is charged: nothing is sent.
             ensure_gas(home)?;
             spending::spend(home, args.deposit, args.yes, || {
-                let report = peer_add(
+                let peered = peer_add(
                     home,
                     &PeerAdd {
                         address: &args.address,
@@ -1029,7 +1080,7 @@ pub fn peer(home: &Path, command: &PeerCommand) -> Result<Report, Error> {
                         max_packet_amount: args.max_packet_amount,
                     },
                 )?;
-                Ok((report, true))
+                Ok((peered.report, peered.deposited))
             })
         }
         PeerCommand::List => peer_list(home),
@@ -1102,6 +1153,8 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
                 max_packet_amount: 0,
             },
         )?;
+        let deposited = peered.deposited;
+        let peered = peered.report;
         let routed = route_add(home, NETWORK_PREFIX, name, 0)?;
         let relay = state.relay_url.clone();
         state.joined = Some(name.to_owned());
@@ -1111,6 +1164,11 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
             }
         }
         state.save(home)?;
+        let paid = if deposited {
+            format!("deposit {}", args.deposit)
+        } else {
+            "its channel already open and nothing deposited".to_owned()
+        };
         let reading = match &relay {
             Some(relay) => format!("Reading its relay at {relay}."),
             None => "It names no relay, so the agent reads no relay of it.".to_owned(),
@@ -1123,22 +1181,147 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
                     "peering": peered.json["peering"],
                     "route": routed.json["route"],
                     "relay": relay,
+                    "deposited": deposited,
                 }),
                 text: format!(
-                    "Joined {name}: peered with {} and forwarding {NETWORK_PREFIX} to it, deposit {}. \
+                    "Joined {name}: peered with {connector_url} and forwarding {NETWORK_PREFIX} to it, {paid}. \
                      {reading}\n\
                      Its connector forwards back to you only if its operator creates a peering toward you in return.",
-                    connector_url, args.deposit
                 ),
             },
-            true,
+            deposited,
         ))
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::before_sending;
+    use super::{before_sending, peer_add_on, PeerAdd, Surface, STALE_READ};
+    use crate::outcome::ErrorCode;
+    use std::io::{Read, Write};
+
+    /// A connector that answers each `POST /peers` with the next of `answers`, and says
+    /// when each arrived. The last answer repeats.
+    fn connector(
+        answers: Vec<(u16, String)>,
+    ) -> (String, std::sync::mpsc::Receiver<std::time::Instant>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let url = format!("http://{}", listener.local_addr().expect("an address"));
+        let (arrived, seen) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for (index, stream) in listener.incoming().enumerate() {
+                let mut stream = stream.expect("a connection");
+                let mut buffer = [0u8; 8192];
+                let _ = stream.read(&mut buffer);
+                let _ = arrived.send(std::time::Instant::now());
+                let (status, body) = &answers[index.min(answers.len() - 1)];
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (url, seen)
+    }
+
+    fn surface(home: &std::path::Path, url: String) -> Surface {
+        let write_key = home.join("write.key");
+        std::fs::write(&write_key, [7u8; 32]).expect("the key");
+        Surface {
+            url,
+            bearer_token: home.join("token"),
+            write_key,
+            plaintext_peers: true,
+        }
+    }
+
+    fn add() -> PeerAdd<'static> {
+        PeerAdd {
+            address: "http://127.0.0.1:1/ilp",
+            deposit: 5,
+            id: Some("far"),
+            fee: 0,
+            max_packet_amount: 0,
+        }
+    }
+
+    fn stale() -> (u16, String) {
+        (502, format!("the opening deposit into 'c' {STALE_READ}"))
+    }
+
+    fn found() -> (u16, String) {
+        (
+            200,
+            r#"{"id":"far","channel":{"id":"c","status":"found"}}"#.to_owned(),
+        )
+    }
+
+    #[test]
+    fn a_peering_refused_for_a_stale_read_is_repeated_a_second_apart_and_counts_the_deposit() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (url, seen) = connector(vec![stale(), stale(), found()]);
+        let peered = peer_add_on(&surface(home.path(), url), &add()).expect("peered");
+        assert!(peered.deposited, "the deposit this command sent is counted");
+        assert!(!peered.report.text.contains("nothing deposited"));
+        let times: Vec<_> = seen.try_iter().collect();
+        assert_eq!(times.len(), 3);
+        for pair in times.windows(2) {
+            assert!(pair[1] - pair[0] >= std::time::Duration::from_secs(1));
+        }
+    }
+
+    #[test]
+    fn a_peering_refused_every_time_fails_and_says_to_run_it_again() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (url, seen) = connector(vec![stale()]);
+        let Err(error) = peer_add_on(&surface(home.path(), url), &add()) else {
+            panic!("the peering was made");
+        };
+        assert_eq!(error.code, ErrorCode::PeerFailed);
+        assert!(
+            error.message.contains("confirmed on chain"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("same command again"),
+            "{}",
+            error.message
+        );
+        assert!(!crate::spending::failed_before_paying(&error));
+        assert_eq!(
+            seen.try_iter().count(),
+            1 + super::STALE_READ_REPEATS as usize
+        );
+    }
+
+    #[test]
+    fn a_channel_found_on_the_first_answer_moved_nothing() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (url, _) = connector(vec![found()]);
+        let peered = peer_add_on(&surface(home.path(), url), &add()).expect("peered");
+        assert!(!peered.deposited);
+        assert!(peered.report.text.contains("nothing deposited"));
+        assert!(!peered.report.text.contains("deposit 5"));
+        assert_eq!(peered.report.json["deposited"], false);
+    }
+
+    /// The repeat of a peering is keyed on the connector's wording, which the connector
+    /// keeps in a string literal. The connector's crates are linked into this binary, so
+    /// a pin move that rewords the refusal fails here instead of ending the repeat.
+    #[test]
+    fn the_connectors_stale_read_wording_is_pinned() {
+        let binary = std::fs::read(std::env::current_exe().expect("this binary")).expect("read");
+        let found = binary
+            .windows(STALE_READ.len())
+            .any(|window| window == STALE_READ.as_bytes());
+        assert!(
+            found,
+            "the embedded connector no longer says {STALE_READ:?}"
+        );
+    }
 
     /// The connector's `send`, run as `dispatch` runs it, with `operator_key` and `seal_to`.
     fn sent(operator_key: &str, seal_to: &str) -> connector_cli::CliError {

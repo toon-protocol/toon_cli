@@ -320,3 +320,49 @@ fn a_label_or_prefix_that_is_not_one_path_segment_is_refused() {
         assert_eq!(run.exit_code, 1);
     }
 }
+
+fn remaining_today(node: &Node) -> u128 {
+    node.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"]
+        .as_str()
+        .expect("remaining_today")
+        .parse()
+        .expect("a number")
+}
+
+#[test]
+fn a_peering_that_finds_its_channel_open_deposits_nothing_and_is_not_counted() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let add = [
+        "peer",
+        "add",
+        &far.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+        "--id",
+        "far",
+        "--json",
+    ];
+
+    let first = near.toon(&add);
+    assert_eq!(first.exit_code, 0, "{}", first.stdout);
+    assert_eq!(first.json()["peering"]["channel"]["status"], "created");
+    let balance = chain.balance(&near.evm);
+    let remaining = remaining_today(&near);
+
+    // A write repeated in the same second is refused as a replayed signature.
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let second = near.toon(&add);
+    assert_eq!(second.exit_code, 0, "{}", second.stdout);
+    assert_eq!(second.json()["peering"]["channel"]["status"], "found");
+    assert_eq!(second.json()["deposited"], false);
+    assert!(
+        !second.stdout.contains("deposit 1000000"),
+        "{}",
+        second.stdout
+    );
+    assert_eq!(chain.balance(&near.evm), balance, "nothing was deposited");
+    assert_eq!(remaining_today(&near), remaining, "and nothing is counted");
+}
