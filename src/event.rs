@@ -156,6 +156,11 @@ pub fn public_key(secret: &[u8; 32]) -> Result<String, Error> {
         })
 }
 
+/// The body of a write to a relay: the relay reads the event from the `event` field.
+pub fn write_body(event: &Value) -> String {
+    json!({ "event": event }).to_string()
+}
+
 /// Write a signed event to the agent node's own relay through the relay's write route.
 pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
     // The relay of the TOON app that fronts the agent node's connector. With none, the
@@ -188,7 +193,7 @@ fn write_to(
                 amount,
                 key,
                 headers,
-                event.to_string().into_bytes(),
+                write_body(&event).into_bytes(),
             )
         }
         None => {
@@ -196,7 +201,7 @@ fn write_to(
                 "event.{}.json",
                 hex::encode(keystore::random::<8>()?)
             ));
-            node::write(&body, event.to_string().as_bytes(), 0o600)?;
+            node::write(&body, write_body(&event).as_bytes(), 0o600)?;
             let answer = operator::dispatch(home, destination, amount, None, Some(&body));
             let _ = std::fs::remove_file(&body);
             answer

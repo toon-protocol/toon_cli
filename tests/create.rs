@@ -186,7 +186,8 @@ fn a_second_toon_app_is_peered_both_ways_and_a_packet_crosses_each_way() {
         "--json",
     ]);
     assert_eq!(back.json()["outcome"], "fulfilled", "{}", back.stdout);
-    assert_eq!(back.json()["response"]["body"], "stored");
+    // It reached the relay, which refuses a write that carries no event.
+    assert_eq!(back.json()["response"]["body"], support::NOT_A_WRITE);
 
     // Every other command takes the new name: its peerings are its own.
     let peers = machine
