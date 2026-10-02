@@ -247,8 +247,9 @@ fn a_first_packet_that_fails_before_it_is_sent_is_not_counted() {
     let near = node_on(&chain);
     let (far, relay) = remote(&chain);
     peer_and_route(&near, &far);
-    // The relay names a connector nothing listens on, so its identity cannot be fetched.
-    relay.set_connector("http://127.0.0.1:1/ilp");
+    // The relay pins a key that reads as one and is no point on the curve, so the packet
+    // cannot be sealed.
+    relay.publish_connector(&far.url(), support::UNSEALABLE_KEY);
     let remaining =
         || near.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone();
     let before = remaining();
@@ -417,7 +418,7 @@ fn the_subscriber_key_is_not_the_agent_identity() {
 fn with_no_peering_the_command_says_one_is_needed_with_its_deposit_and_creates_none() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);
-    let (_far, relay) = remote(&chain);
+    let (far, relay) = remote(&chain);
 
     let run = subscribe(
         &near,
@@ -430,6 +431,10 @@ fn with_no_peering_the_command_says_one_is_needed_with_its_deposit_and_creates_n
     assert_eq!(run.exit_code, 1);
     let message = error["message"].as_str().unwrap();
     assert!(message.contains("deposit of at least 2000"), "{message}");
+    assert!(
+        message.contains(&format!("toon peer add {} --deposit", far.url())),
+        "{message}"
+    );
     let peers = near.toon(&["peer", "list", "--json"]).json();
     assert_eq!(peers["peers"].as_array().map(Vec::len), Some(0));
     assert_eq!(relay.posts(), 0);
@@ -581,4 +586,54 @@ fn follow_needs_a_subscription() {
         run.stdout
     );
     assert_eq!(run.exit_code, 1);
+}
+
+#[test]
+fn a_subscription_is_sealed_to_the_published_key_and_never_dials_the_connector_url() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    let hint = support::spy::start();
+    relay.publish_connector(&hint.url(), &support::seal_key(&far.url()));
+
+    let run = subscribe(
+        &near,
+        &relay,
+        &["--filter", FILTER, "--amount", "1000", "--yes"],
+    );
+
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    assert_eq!(run.json()["outcome"], "subscribed");
+    assert_eq!(hint.connections(), 0);
+}
+
+#[test]
+fn a_relay_without_a_whole_seal_key_is_not_payable() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+
+    // An empty key is left out of the document; the last is 65 bytes but not uncompressed.
+    let compressed = format!("05{}", "ab".repeat(64));
+    for key in ["", "04ab", "not hex", &compressed] {
+        relay.publish_connector(&far.url(), key);
+        let run = subscribe(
+            &near,
+            &relay,
+            &["--filter", FILTER, "--amount", "1000", "--yes"],
+        );
+        let error = run.json()["error"].clone();
+        assert_eq!(error["code"], "relay_not_payable", "{key}: {error}");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("`connector_seal_key`"),
+            "{key}: {error}"
+        );
+        assert_eq!(run.exit_code, 1);
+    }
+    assert_eq!(relay.posts(), 0);
 }

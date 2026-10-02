@@ -84,7 +84,7 @@ A failed command with `--json` prints:
 | `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
 | `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap (its `anon` release could not be downloaded or did not match its pinned checksum, its terms were not agreed to, or the daemon did not come up), so a hidden service was not created or started; nothing falls back to clearnet |
 | `join_refused` | 1 | `toon join` named a network other than the one this agent node was initialised for, the agent node has already joined one, or it records no connector for the network (`mainnet` has none unless `init` was given `--connector-url`); nothing was spent |
-| `relay_not_payable` | 1 | `toon event publish --relay` or `toon relay subscribe` could not read the relay's information document, or it names no paid write edge (`toon`: `ilp_address`, `connector_url`, `price`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
+| `relay_not_payable` | 1 | `toon event publish --relay` or `toon relay subscribe` could not read the relay's information document, or it names no write edge (`toon`: `ilp_address`, `connector_url`, `connector_seal_key`, `price`; the key is 65 bytes of hex beginning `04`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
 | `peering_needed` | 1 | `toon event publish --relay` or `toon relay subscribe` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. Run `toon peer add` and `toon route add` first |
 | `not_subscribed` | 1 | `toon event follow` named a relay at which this agent node holds no subscription: `toon relay subscribe` opens one |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
@@ -164,9 +164,11 @@ passphrase; it reads from `ws://` relays only.
 
 `toon event publish --relay <ws-url>` publishes to a relay this agent node does not run. It
 reads the relay's NIP-11 information document (`GET` of the relay's URL as `http://`, with
-`Accept: application/nostr+json`) for its `toon` object: `ilp_address`, `connector_url` and
-`price`. It shows the price and publishes only with `--yes`, under the spending limit, paying
-from this agent node's own connector over a peering. If no peering of the agent node reaches
+`Accept: application/nostr+json`) for its `toon` object: `ilp_address`, `connector_url`,
+`connector_seal_key` and `price`. It seals the packet to `connector_seal_key` and makes no
+request to `connector_url`, which only appears in the `peering_needed` message. It shows the
+price and publishes only with `--yes`, under the spending limit, paying from this agent
+node's own connector over a peering. If no peering of the agent node reaches
 the relay's `ilp_address` it fails with `peering_needed` and creates nothing. The report has
 the same outcomes as a publish to the own relay, plus `relay` and `paid`: the price, or `0`
 when the packet was rejected and nothing moved. `--amount` is refused with `--relay`, and

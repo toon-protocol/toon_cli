@@ -12,6 +12,7 @@ pub mod fake_chain;
 pub mod fake_faucet;
 pub mod fake_remote_relay;
 pub mod local_chain;
+pub mod spy;
 pub mod unpeerable;
 
 use std::fs::{self, File};
@@ -28,6 +29,23 @@ use tempfile::TempDir;
 /// How long a foreground `toon` gets to print a line or to exit. A connector binds to
 /// its chain before it listens, so this is generous.
 const TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The sealing key the connector at `url` answers with for its identity, as it gives it.
+pub fn seal_key(url: &str) -> String {
+    let identity: Value = reqwest::blocking::get(format!("{url}/identity"))
+        .and_then(|response| response.json())
+        .expect("the connector's identity");
+    identity["publicKey"]
+        .as_str()
+        .expect("a publicKey")
+        .to_owned()
+}
+
+/// A `connector_seal_key` that is 65 bytes beginning `04`, so it is read as a key, and is
+/// no point on the curve, so nothing can be sealed to it.
+pub const UNSEALABLE_KEY: &str =
+    "04abababababababababababababababababababababababababababababababab\
+                                  abababababababababababababababababababababababababababababababab";
 
 /// The wallet passphrase the tests use.
 pub const PASSPHRASE: &str = "correct horse battery staple";
