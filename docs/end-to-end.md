@@ -20,7 +20,7 @@ step.
 | Step | What happens today | Ticket |
 | --- | --- | --- |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
-| 2, another agent node | Now and then the first packet between two hidden services outlasts the 30 seconds the command line waits: `send_failed`, "operation timed out", paid for and not delivered | #105 |
+| 2, another agent node | Now and then the first packet between two hidden services outlasts the 30 seconds the command line waits: `send_failed`, "operation timed out", paid for, and the relay holds no event | #105 |
 | 2, hold a subscription | No relay serves the subscribe route | relay #215 |
 | 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
 
@@ -187,6 +187,7 @@ spending have each moved by that 1.
 ```sh
 $E/toon create second --image toon-e2e-app --deposit 1000000 --accept-anyone-terms --yes --json \
   > $E/create.json
+$E/toon limit show --json
 ```
 
 The first attempt fails with `unfunded` and names the new TOON app's settlement address.
@@ -194,8 +195,8 @@ Fund it with `fund <address> 10000000` and run the command again.
 
 **Expect** a second onion endpoint, different from the first, an ILP address under an
 address segment of its own (`g.toon.<segment>`), and two peerings, each with a channel of
-1000000: two deposits, so the day's spending is down by 2000000. Then pay the app behind
-the new connector from the first one:
+1000000: two deposits, so `limit show` is down by 2000000. Then pay the app behind the
+new connector from the first one:
 
 ```sh
 SECOND=$(jq -r .created.listen $E/create.json)
@@ -255,6 +256,21 @@ $E/toon event publish --kind 1 --content "from another agent node" \
   --relay ws://$ME:7100 --yes --json > $E/other-event.json
 $E/toon event query ws://$ME:7100 \
   --filter "{\"ids\":[\"$(jq -r .event.id $E/other-event.json)\"]}" --json
+```
+
+**Expect** `published` with `paid: 1`, and the event read back from the first agent
+node's relay at its onion endpoint. Everything between the two crosses the overlay, from
+one hidden service to another. Before the `route add`, the publish fails with
+`peering_needed`, and its message names the `peer add`, with `--deposit <amount> --yes`,
+and the `route add` to run.
+
+If the publish fails with `send_failed`, "operation timed out", the packet was paid for
+and the relay holds no event from it (#105): run the publish and the query again, and
+expect a watermark of 2 where the step below says 1.
+
+Then the same `peer add` a second time, and the first agent node's side of the channel:
+
+```sh
 $E/toon limit show --json
 $E/toon peer add http://$ME/ilp --deposit 1000000 --id first --yes --json
 $E/toon limit show --json
@@ -263,18 +279,9 @@ export HOME=$E/sandbox
 $E/toon channel list --json
 ```
 
-**Expect** `published` with `paid: 1`, the event read back from the first agent node's
-relay at its onion endpoint, and the first agent node's inbound channel from the other
-one at watermark 1. Everything between the two crosses the overlay, from one hidden
-service to another. Before the `route add`, the publish fails with `peering_needed`, and
-its message names the `peer add`, with `--deposit <amount> --yes`, and the `route add` to
-run.
-
-The second `peer add` finds the channel the first one opened: `deposited: false`, a
-channel status of `found`, and `limit show` the same before and after it.
-
-If the publish fails with `send_failed`, "operation timed out", the packet was paid for
-and not delivered (#105): run it again, and expect the watermark at 2.
+**Expect** the `peer add` to find the channel the first one opened: `deposited: false`, a
+channel status of `found`, and `limit show` the same before and after it. The first agent
+node's inbound channel from the other one is at watermark 1.
 
 ### Hold a subscription
 
@@ -369,15 +376,17 @@ $E/toon limit show --json
 **Expect** a peering `devnet`, a route for `g.toon` over it, and an open channel of
 1000000, with `deposited: true` and the day's spending down by 1000000.
 
-One failure is known: `peer_failed` with "out of gas", when the address holds too little
-ETH. Nothing was sent and the attempt still takes 1000000 off the day's spending, so send
-the address more and run the same `join` again (#101).
+A `join` that fails with `peer_failed` and "out of gas" found too little ETH on the
+settlement address. Nothing was sent and the attempt still takes 1000000 off the day's
+spending, so send the settlement address more and run the same `join` again (#101).
 
 The public RPC can answer the connector's read after the deposit from before the
 deposit's block. The connector then refuses the peering, and `join` repeats it for a few
-seconds before giving up. If it gives up, it fails with `peer_failed` and says that the
-deposit confirmed on chain: the same `join` again finds the channel, reports `deposited:
-false` and takes nothing more off the day's spending.
+seconds, which no run has yet seen on a real chain. A repeat that succeeds reports the
+channel's status as `found`, still with `deposited: true`. A `join` that still fails says
+that the deposit confirmed on chain; the same `join` again finds the channel, reports
+`deposited: false` and takes nothing more off the day's spending. Record either on the
+connector's ticket, toon-protocol/connector#1447.
 
 Then pay the devnet's relay over the new channel:
 
