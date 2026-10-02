@@ -169,6 +169,10 @@ refusal reaches the subscriber as an HTTP status inside a fulfilled packet, and 
 price of that packet is spent. A subscriber SHOULD read the information document and
 check its request before it pays, and MUST read the status of every answer.
 
+A connector between the subscriber and the relay's connector may charge to forward the
+packet. The subscriber then pays more for a packet than `price`, and the packet still
+credits what the subscribe route charged.
+
 To pay more than `price`, a subscriber sends more packets. `filter` MAY be repeated on
 each of them; repeating the same filter changes nothing.
 
@@ -429,6 +433,9 @@ costs `1000`, and answers `400`:
   its balance.
 - **A refused request still costs its price.** The connector charges for a packet the
   relay answered, whatever the answer.
+- **A subscriber may pay more than is credited.** What a subscriber pays through a
+  connector that charges to forward is more than what is credited, and the relay
+  neither sees nor owes the difference.
 - **The balance is the key's.** Whoever holds the subscriber key can pay into the
   subscription, change its filter and draw it down. A subscriber that loses the key
   loses the balance, and nobody else can recover it.

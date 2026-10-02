@@ -197,8 +197,11 @@ pub fn run(home: &Path, command: RelayCommand) -> Result<Report, Error> {
             relay,
             filter,
             amount,
+            packet_amount,
             yes,
-        } => crate::subscribe::subscribe(home, &relay, filter.as_deref(), amount, yes),
+        } => {
+            crate::subscribe::subscribe(home, &relay, filter.as_deref(), amount, packet_amount, yes)
+        }
         RelayCommand::Subscriptions => crate::subscribe::subscriptions(home),
     }
 }

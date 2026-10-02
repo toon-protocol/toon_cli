@@ -205,13 +205,22 @@ relay's paid live feed (`nips/paid-subscription.md`). It reads `toon_subscriptio
 relay's information document and shows the subscribe price, the broadcast price and the
 events the amount buys. It pays only with `--yes`, under the spending limit, over a peering
 (`peering_needed` names the deposit it would take and creates nothing). The amount is paid as
-whole packets at the subscribe price, each authorized by NIP-98 with the subscriber key
-(`m/10473'/6'/0'`, not the agent identity), and the report gives `packets`, `paid`,
-`credited`, `balance`, `broadcast_price` and `filter`. A packet the relay refuses still cost
-its price; a rejected or wrongly fulfilled packet adds to `paid` what it moved the outbound
+whole packets of the packet amount, each authorized by NIP-98 with the subscriber key
+(`m/10473'/6'/0'`, not the agent identity). A packet is sent for the subscribe price unless
+`--packet-amount <n>` states another: every packet is sent for exactly `n`, `toon` never
+probes for the path's cost, and a `--packet-amount` below the subscribe price is `usage`. The
+number of packets is `--amount` divided by the packet amount, rounded down, and an `--amount`
+that buys none is `usage`. The spending limit is checked against packets times packet amount,
+and the day's count rises by `paid`. A connector between this agent node and the relay may
+charge to forward and rejects any other amount than its route's price (`F03`); the text report
+then tells the operator to state the path's cost with `--packet-amount`. The report gives
+`packets`, `paid` (the packet amount times the packets fulfilled), `credited` (what the relay
+answered, less than `paid` through such a connector), `price` (the subscribe price),
+`packet_amount`, `balance`, `broadcast_price` and `filter`. A packet the relay refuses still cost
+its amount; a rejected or wrongly fulfilled packet adds to `paid` what it moved the outbound
 channels by. `outcome` says `refused`, `rejected`, `wrong_fulfilment` or, when a later packet
 could not be sent, `failed`, with the exit code 1; a packet that failed after it may have left
-stays counted against the limit at its price. A first subscription needs
+stays counted against the limit at its amount. A first subscription needs
 `--filter`; a later one may leave it out to top up with the filter last kept, or give a new
 one to replace the old, and keeps the balance. `toon relay subscriptions` lists, per relay, the
 `balance`, `filter` and `subscriber_key`, read from the relay now (`current: true`; a relay

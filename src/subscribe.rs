@@ -221,12 +221,15 @@ fn keep(home: &Path, now: Kept) -> Result<(), Error> {
     save(home, &kept)
 }
 
-/// `toon relay subscribe`: pay `amount` to `relay`'s subscribe route, as whole packets.
+/// `toon relay subscribe`: pay `amount` to `relay`'s subscribe route, as whole packets of
+/// `packet_amount`, which is the relay's subscribe price unless the operator states more
+/// (a connector in between may charge to forward).
 pub fn subscribe(
     home: &Path,
     relay: &str,
     filter: Option<&str>,
     amount: u64,
+    packet_amount: Option<u64>,
     yes: bool,
 ) -> Result<Report, Error> {
     let filter: Option<Value> = filter
@@ -256,14 +259,23 @@ pub fn subscribe(
                 ))
             })?,
     };
-    let packets = amount / terms.price;
-    if packets == 0 {
+    let packet_amount = packet_amount.unwrap_or(terms.price);
+    if packet_amount < terms.price {
         return Err(usage(format!(
-            "--amount {amount} is less than {}, the price of one packet to {relay}.",
+            "--packet-amount {packet_amount} is less than {}, the subscribe price of {relay}: \
+             its connector would reject the packet.",
             terms.price
         )));
     }
-    let paid = packets * terms.price;
+    let packets = amount / packet_amount;
+    if packets == 0 {
+        return Err(usage(format!(
+            "--amount {amount} is less than {packet_amount}, what one packet to {relay} is \
+             sent for."
+        )));
+    }
+    let paid = packets as u128 * packet_amount as u128;
+    let credit = packets as u128 * terms.price as u128;
     if !operator::forwards(home, &terms.address)? {
         return Err(Error {
             nothing_sent: false,
@@ -284,12 +296,16 @@ pub fn subscribe(
             code: ErrorCode::NotConfirmed,
             message: format!(
                 "{relay} charges {} per subscribe packet and {} for each event it broadcasts. \
-                 {amount} is paid as {packets} packets of {}: {paid} base units, which buy {} \
-                 events. Add `--yes` to say that you mean it.",
+                 {amount} is paid as {packets} packets of {packet_amount}: {paid} base units{}, \
+                 which buy {} events. Add `--yes` to say that you mean it.",
                 terms.price,
                 terms.broadcast_price,
-                terms.price,
-                paid / terms.broadcast_price
+                if packet_amount == terms.price {
+                    String::new()
+                } else {
+                    format!(", of which {credit} is credited")
+                },
+                credit / terms.broadcast_price as u128
             ),
         });
     }
@@ -300,8 +316,8 @@ pub fn subscribe(
     let subscriber_key = derive::nostr_public_key(&secret);
     let body = json!({ "filter": filter }).to_string().into_bytes();
 
-    spending::spend_packets(home, paid.into(), yes, |meter| {
-        let mut paid_so_far = 0;
+    spending::spend_packets(home, paid, yes, |meter| {
+        let mut paid_so_far: u64 = 0;
         // Whether the last packet sent was rejected or wrongly fulfilled, which the
         // watermarks tell the cost of, or failed in a way that may have paid.
         let mut metered = false;
@@ -320,7 +336,7 @@ pub fn subscribe(
             let answer = match operator::dispatch_with_headers(
                 home,
                 &terms.address,
-                terms.price,
+                packet_amount,
                 &terms.seal_key,
                 headers,
                 body.clone(),
@@ -336,7 +352,7 @@ pub fn subscribe(
             match answer {
                 Answer::Fulfilled { status, body } => {
                     // A fulfilled packet is paid for, whatever the relay answered.
-                    paid_so_far += terms.price;
+                    paid_so_far += packet_amount;
                     let credit = (200..300).contains(&status).then(|| {
                         let answer: Value = serde_json::from_str(&body).unwrap_or_default();
                         (
@@ -383,15 +399,15 @@ pub fn subscribe(
         }
         if metered {
             // The last packet moved what the channels moved by beyond the fulfilled
-            // packets' price, which is nothing when the agent node's own connector
+            // packets' amount, which is nothing when the agent node's own connector
             // refused it.
-            let price = u128::from(terms.price);
+            let sent = u128::from(packet_amount);
             let fulfilled = u128::from(paid_so_far);
             let cost = meter
-                .moved(fulfilled + price)
+                .moved(fulfilled + sent)
                 .saturating_sub(fulfilled)
-                .min(price);
-            paid_so_far += u64::try_from(cost).unwrap_or(terms.price);
+                .min(sent);
+            paid_so_far += u64::try_from(cost).unwrap_or(packet_amount);
         }
         if let Some(kept) = &now {
             keep(home, kept.clone())?;
@@ -402,6 +418,7 @@ pub fn subscribe(
             "paid": paid_so_far,
             "credited": credited,
             "price": terms.price,
+            "packet_amount": packet_amount,
         });
         let (exit, text) = match (&now, stopped) {
             (_, None) => {
@@ -419,11 +436,20 @@ pub fn subscribe(
                 )
             }
             (_, Some((outcome, detail, text))) => {
+                let hint = if outcome == "rejected" && detail["code"] == "F03" {
+                    format!(
+                        " A connector on the path to {relay} refused a packet of \
+                         {packet_amount} base units: state the path's exact cost with \
+                         `--packet-amount`."
+                    )
+                } else {
+                    String::new()
+                };
                 json["outcome"] = json!(outcome);
                 json["response"] = detail;
                 (
                     Exit::Failure,
-                    format!("{text} Paid {paid_so_far} base units, credited {credited}."),
+                    format!("{text} Paid {paid_so_far} base units, credited {credited}.{hint}"),
                 )
             }
         };
@@ -433,10 +459,10 @@ pub fn subscribe(
             json["broadcast_price"] = json!(kept.broadcast_price);
             json["filter"] = kept.filter.clone();
         }
-        // A packet that failed after it may have left stays counted at its price.
+        // A packet that failed after it may have left stays counted at its amount.
         let counted = u128::from(paid_so_far)
             + if may_have_paid {
-                u128::from(terms.price)
+                u128::from(packet_amount)
             } else {
                 0
             };

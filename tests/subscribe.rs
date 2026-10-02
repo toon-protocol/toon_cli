@@ -444,6 +444,34 @@ fn with_no_peering_the_command_says_one_is_needed_with_its_deposit_and_creates_n
 }
 
 #[test]
+fn with_no_peering_the_deposit_named_is_what_would_be_paid_not_what_is_credited() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (_far, relay) = remote(&chain);
+
+    let run = subscribe(
+        &near,
+        &relay,
+        &[
+            "--filter",
+            FILTER,
+            "--amount",
+            "2500",
+            "--packet-amount",
+            "1100",
+            "--yes",
+        ],
+    );
+
+    let error = run.json()["error"].clone();
+    assert_eq!(error["code"], "peering_needed", "{error}");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("deposit of at least 2200"), "{message}");
+    assert!(message.contains("--deposit 2200 --yes`"), "{message}");
+    assert_eq!(relay.posts(), 0);
+}
+
+#[test]
 fn a_first_subscription_needs_a_filter_and_an_amount_must_buy_a_packet() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);
@@ -639,6 +667,261 @@ fn a_relay_without_a_whole_seal_key_is_not_payable() {
         assert_eq!(run.exit_code, 1);
     }
     assert_eq!(relay.posts(), 0);
+}
+
+/// What `mid` charges to forward a subscribe packet to the relay.
+const FORWARD: u64 = 1100;
+
+fn peer_with(from: &Node, to: &Node, id: &str) {
+    let peered = from.toon(&[
+        "peer",
+        "add",
+        &to.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+        "--id",
+        id,
+    ]);
+    assert_eq!(peered.exit_code, 0, "{}{}", peered.stdout, peered.stderr);
+}
+
+/// `near` peered with `mid`, `mid` peered with `far` and charging `FORWARD` for the
+/// subscribe route, which `near` reaches through `mid`.
+fn through_a_charging_connector(chain: &AnvilChain) -> (Node, Node, Node, FakeRemoteRelay) {
+    let near = node_on(chain);
+    let mid = node_on(chain);
+    let (far, relay) = remote(chain);
+    peer_with(&near, &mid, "mid");
+    peer_with(&mid, &far, "far");
+    let routed = mid.toon(&[
+        "route",
+        "add",
+        SUBSCRIBE,
+        "--peer",
+        "far",
+        "--price",
+        &FORWARD.to_string(),
+    ]);
+    assert_eq!(routed.exit_code, 0, "{}{}", routed.stdout, routed.stderr);
+    let routed = near.toon(&["route", "add", SUBSCRIBE, "--peer", "mid"]);
+    assert_eq!(routed.exit_code, 0, "{}{}", routed.stdout, routed.stderr);
+    (near, mid, far, relay)
+}
+
+fn remaining(near: &Node) -> u128 {
+    near.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"]
+        .as_str()
+        .expect("remaining_today")
+        .parse()
+        .expect("a number")
+}
+
+#[test]
+fn a_connector_that_charges_to_forward_rejects_the_price_and_the_text_names_the_flag() {
+    let chain = AnvilChain::start();
+    let (near, _mid, _far, relay) = through_a_charging_connector(&chain);
+    let before = remaining(&near);
+
+    // The text report: a rejected packet's claim leaves value behind that a second run
+    // would use, so each way of looking at the rejection has an arrangement of its own.
+    let url = relay.url();
+    let run = near.toon(&[
+        "relay",
+        "subscribe",
+        &url,
+        "--filter",
+        FILTER,
+        "--amount",
+        "2200",
+        "--yes",
+    ]);
+    assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
+    let text = format!("{}{}", run.stdout, run.stderr);
+    assert!(text.contains("F03"), "{text}");
+    assert!(text.contains("--packet-amount"), "{text}");
+    // The rejected packet moved the channel by its amount, and the limit counts it.
+    assert_eq!(remaining(&near), before - u128::from(PRICE));
+}
+
+#[test]
+fn the_reject_of_a_charging_connector_is_in_the_json_report_unchanged() {
+    let chain = AnvilChain::start();
+    let (near, _mid, _far, relay) = through_a_charging_connector(&chain);
+
+    let rejected = subscribe(
+        &near,
+        &relay,
+        &["--filter", FILTER, "--amount", "2200", "--yes"],
+    );
+
+    assert_eq!(rejected.exit_code, 1, "{}", rejected.stdout);
+    let report = rejected.json();
+    assert_eq!(report["outcome"], "rejected", "{report}");
+    assert_eq!(report["response"]["code"], "F03", "{report}");
+    assert_eq!(report["paid"], PRICE);
+    assert_eq!(report["credited"], 0);
+    assert_eq!(report["packet_amount"], PRICE);
+}
+
+#[test]
+fn a_stated_packet_amount_pays_a_connector_that_charges_to_forward() {
+    let chain = AnvilChain::start();
+    let (near, _mid, _far, relay) = through_a_charging_connector(&chain);
+    let before = remaining(&near);
+
+    let run = subscribe(
+        &near,
+        &relay,
+        &[
+            "--filter",
+            FILTER,
+            "--amount",
+            "2500",
+            "--packet-amount",
+            "1100",
+            "--yes",
+        ],
+    );
+
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    let report = run.json();
+    assert_eq!(report["outcome"], "subscribed", "{report}");
+    assert_eq!(report["packets"], 2);
+    assert_eq!(report["paid"], 2200);
+    assert_eq!(report["credited"], 2000);
+    assert_eq!(report["price"], PRICE);
+    assert_eq!(report["packet_amount"], 1100);
+    let key = report["subscriber_key"].as_str().unwrap().to_owned();
+    assert_eq!(relay.subscription(&key).unwrap().balance, 2000);
+    assert_eq!(remaining(&near), before - 2200);
+}
+
+#[test]
+fn without_yes_the_packets_the_amounts_and_the_credit_are_stated() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+
+    let run = subscribe(
+        &near,
+        &relay,
+        &[
+            "--filter",
+            FILTER,
+            "--amount",
+            "2500",
+            "--packet-amount",
+            "1100",
+        ],
+    );
+
+    let error = run.json()["error"].clone();
+    assert_eq!(error["code"], "not_confirmed", "{error}");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("2 packets of 1100"), "{message}");
+    assert!(message.contains("2200 base units"), "{message}");
+    assert!(message.contains("2000 is credited"), "{message}");
+    assert!(message.contains("200 events"), "{message}");
+    assert_eq!(relay.posts(), 0);
+}
+
+#[test]
+fn a_packet_amount_under_the_price_or_over_the_amount_is_usage_and_a_total_over_the_limit_is_refused(
+) {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+
+    for extra in [
+        &["--packet-amount", "999", "--amount", "5000"][..],
+        &["--packet-amount", "1100", "--amount", "1099"][..],
+    ] {
+        let mut args = vec!["--filter", FILTER, "--yes"];
+        args.extend_from_slice(extra);
+        let run = subscribe(&near, &relay, &args);
+        assert_eq!(run.json()["error"]["code"], "usage", "{}", run.stdout);
+        assert_eq!(run.exit_code, 2);
+        // Both messages name the packet amount the command was given.
+        let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
+        assert!(message.contains(extra[1]), "{message}");
+    }
+    let limit = near.toon(&[
+        "limit",
+        "set",
+        "--max-per-command",
+        "2199",
+        "--max-per-day",
+        "100000",
+        "--json",
+    ]);
+    assert_eq!(limit.exit_code, 0, "{}{}", limit.stdout, limit.stderr);
+    // Two packets of 1100 are 2200, over the limit of 2199.
+    let run = subscribe(
+        &near,
+        &relay,
+        &[
+            "--filter",
+            FILTER,
+            "--packet-amount",
+            "1100",
+            "--amount",
+            "2200",
+            "--yes",
+        ],
+    );
+    assert_eq!(
+        run.json()["error"]["code"],
+        "spending_limit",
+        "{}",
+        run.stdout
+    );
+    assert_eq!(relay.posts(), 0);
+}
+
+#[test]
+fn a_direct_subscription_reports_the_packet_amount_as_the_price() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+
+    let report = subscribed(&near, &relay, "1000");
+
+    assert_eq!(report["packet_amount"], PRICE);
+    assert_eq!(report["price"], PRICE);
+}
+
+#[test]
+fn a_later_packet_that_is_rejected_is_counted_beside_the_packets_fulfilled() {
+    let chain = AnvilChain::start();
+    let (near, _mid, _far, relay) = through_a_charging_connector(&chain);
+    // A rejected packet's claim leaves value behind, enough for the next run's first
+    // packet to get through at the price and not for its second.
+    let first = subscribe(
+        &near,
+        &relay,
+        &["--filter", FILTER, "--amount", "1000", "--yes"],
+    );
+    assert_eq!(first.json()["outcome"], "rejected", "{}", first.stdout);
+    let before = remaining(&near);
+
+    let run = subscribe(
+        &near,
+        &relay,
+        &["--filter", FILTER, "--amount", "2000", "--yes"],
+    );
+
+    assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
+    let report = run.json();
+    assert_eq!(report["outcome"], "rejected", "{report}");
+    assert_eq!(report["packets"], 2);
+    // One packet fulfilled and credited, one rejected that still moved the channel.
+    assert_eq!(report["credited"], 1000);
+    assert_eq!(report["paid"], 2000);
+    assert_eq!(remaining(&near), before - 2000);
 }
 
 #[test]
