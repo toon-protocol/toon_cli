@@ -206,6 +206,7 @@ pub enum Stopped {
 fn failed(message: String) -> Error {
     Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::ConnectorFailed,
         message,
     }
@@ -236,12 +237,14 @@ pub fn start(home: &Path) -> Result<Supervisor, Error> {
     }
     let Some(listener) = control::bind(home).map_err(|error| Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::Io,
         message: format!("{}: {error}.", control::path(home).display()),
     })?
     else {
         return Err(Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::AlreadyRunning,
             message: format!(
                 "A supervisor is already running this agent node, at {}.",
@@ -276,6 +279,7 @@ fn start_app(
         Source::Relay => {
             let identity = fs::read(&files.identity_key).map_err(|error| Error {
                 nothing_sent: false,
+                unanswered: None,
                 code: ErrorCode::AppFailed,
                 message: format!(
                     "The identity key of the app {} is not readable at {}: {error}.",
@@ -597,6 +601,7 @@ fn answer_all(waiting: Vec<Reload>, result: &Result<(), Unreloaded>) {
                 error: Error {
                     nothing_sent: unreloaded.error.nothing_sent,
                     code: unreloaded.error.code,
+                    unanswered: None,
                     message: unreloaded.error.message.clone(),
                 },
                 stopped: unreloaded.stopped,
@@ -672,6 +677,7 @@ impl Supervisor {
                 if let Some(app) = self.units.iter_mut().find_map(Unit::stopped_app) {
                     stopped = Stopped::Failed(Error {
                         nothing_sent: false,
+                        unanswered: None,
                         code: ErrorCode::AppFailed,
                         message: format!("The app {app} stopped."),
                     });

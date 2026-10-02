@@ -61,6 +61,7 @@ pub fn unit(toon: &Path) -> String {
 fn failed(message: String) -> Error {
     Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::SystemdFailed,
         message,
     }
@@ -102,6 +103,7 @@ pub fn install() -> Result<Installed, Error> {
     let user_home = home::user()?;
     let toon = std::env::current_exe().map_err(|error| Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::Io,
         message: format!("This binary could not find itself: {error}."),
     })?;

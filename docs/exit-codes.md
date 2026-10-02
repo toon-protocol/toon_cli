@@ -70,7 +70,7 @@ A failed command with `--json` prints:
 | `unfunded` | 1 | A settlement key does not hold what is needed, so `toon up` did not start the connector (the token; on Solana also SOL), or a command that has a connector send a transaction did not (EVM gas: `toon join`, `toon peer add` with a deposit, `toon create` with a deposit, `toon channel open`, `fund`, `withdraw`, `land`); the message names each address and the amount |
 | `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
-| `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event) could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
+| `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event) could not be sent: the connector's operator surface refused the write, could not be reached, or did not answer within the wait (the packet's 30-second expiry and five seconds more); the message carries the reason. A packet that went unanswered has expired and will not be delivered, so the command can be run again; the failure's JSON carries `paid` and, for the event commands, the `event` with its id (see Spending limit) |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
 | `unknown_name` | 1 | `--app`, `toon create --app`, `toon destroy`, `toon logs`, `toon add` or `toon remove` was given a name that is not a TOON app or an app of this agent node, as that command needs |
 | `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
@@ -309,7 +309,14 @@ either: the operator key could not be read, the identity of the connector to sea
 could not be fetched or has no usable public key, the packet could not be sealed, or the
 connector's `send` refused its arguments. These still fail with `send_failed`. Any other
 failure may have paid, and stays counted, including a refusal from the operator surface and
-an answer that was not understood. `toon limit show` prints the limits and what is left
+an answer that was not understood. A packet the connector did not answer within the wait,
+which is longer than the packet's 30-second expiry so that the connector's own reject is
+what is normally reported, fails with `send_failed` and is counted by what the watermarks
+moved by, like a rejected packet (the whole amount, if they cannot be read). The failure's
+JSON is `{"error": {"code", "message"}, "paid"}` with the `event` for `toon event publish
+--relay`; the text says that the packet has expired, names the event's id so that
+`toon event query` can ask the relay for it, and gives the "It cost N base units." sentence
+when N is above 0. `toon limit show` prints the limits and what is left
 today. `toon limit set` changes them and reads the wallet passphrase, so an agent without it
 cannot raise them: the limits are signed with a key the wallet derives, and an unsigned or
 edited `limits.json` stops every payment. When `limits.json` is missing or was edited,

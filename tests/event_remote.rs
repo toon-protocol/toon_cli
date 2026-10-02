@@ -690,3 +690,77 @@ fn a_publish_rejected_by_the_far_connector_reports_and_counts_the_watermark_move
     assert_eq!(report["paid"], moved as u64, "{report}");
     assert_eq!(remaining - remaining_today(&near), moved);
 }
+
+/// Stops the connectors `toon up` started, and lets them run again when dropped, so that a
+/// test that fails does not leave one stopped.
+struct Stopped(u32);
+
+impl Stopped {
+    fn connectors_of(up: &Foreground) -> Self {
+        let stopped = Self(up.pid());
+        stopped.signal("STOP");
+        stopped
+    }
+
+    fn signal(&self, name: &str) {
+        let _ = std::process::Command::new("pkill")
+            .args([&format!("-{name}"), "-P", &self.0.to_string()])
+            .status();
+    }
+}
+
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        self.signal("CONT");
+    }
+}
+
+#[test]
+fn a_publish_the_connector_does_not_answer_reports_its_cost_and_its_event() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let relay = information_document(&far);
+    peer_and_route(&near, &far);
+    let watermark = outbound_watermark(&near);
+    let remaining = remaining_today(&near);
+    // The far connector takes the packet and never answers; the packet's expiry is far off
+    // and the command line gives up first, which a wait longer than the expiry never does.
+    let _stopped = Stopped::connectors_of(&far._up);
+
+    let run = near.machine.toon_with(
+        &[
+            "event", "publish", "--relay", &relay, "--kind", "1", "--yes", "--json",
+        ],
+        |command| {
+            command
+                .env("TOON_PASSPHRASE", support::PASSPHRASE)
+                .env("TOON_PACKET_WAIT_MS", "4000");
+        },
+    );
+
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
+    let report = run.json();
+    assert_eq!(report["error"]["code"], "send_failed", "{report}");
+    let message = report["error"]["message"].as_str().expect("a message");
+    assert!(message.contains("has expired"), "{message}");
+    assert!(message.contains("run again"), "{message}");
+    let id = report["event"]["id"].as_str().expect("the event's id");
+    assert!(message.contains(id), "{message}");
+    let moved = outbound_watermark(&near) - watermark;
+    assert_eq!(report["paid"], moved as u64, "{report}");
+    assert_eq!(remaining - remaining_today(&near), moved, "{report}");
+
+    let text = near.machine.toon_with(
+        &[
+            "event", "publish", "--relay", &relay, "--kind", "1", "--yes",
+        ],
+        |command| {
+            command
+                .env("TOON_PASSPHRASE", support::PASSPHRASE)
+                .env("TOON_PACKET_WAIT_MS", "4000");
+        },
+    );
+    assert_eq!(text.exit_code, 1, "{}", text.stderr);
+    assert!(text.stderr.contains("has expired"), "{}", text.stderr);
+}

@@ -36,6 +36,7 @@ fn failed(code: ErrorCode, message: String) -> Error {
         code,
         message,
         nothing_sent: false,
+        unanswered: None,
     }
 }
 
@@ -730,9 +731,84 @@ fn ensure_gas(home: &Path) -> Result<(), Error> {
 
 /// What a packet came to.
 pub enum Answer {
-    Fulfilled { status: u64, body: String },
-    Rejected { code: String, message: String },
+    Fulfilled {
+        status: u64,
+        body: String,
+    },
+    Rejected {
+        code: String,
+        message: String,
+    },
     WrongFulfilment,
+    /// The connector did not answer within [`packet_wait`]. The packet has expired by now.
+    Unanswered,
+}
+
+/// How long a packet sent with [`dispatch_with_headers`] lives before a connector must
+/// reject it. The hidden `TOON_PACKET_EXPIRY_MS` shortens it for tests; it is not
+/// documented and an operator is not told of it.
+fn packet_expiry() -> Duration {
+    std::env::var("TOON_PACKET_EXPIRY_MS")
+        .ok()
+        .and_then(|millis| millis.parse().ok())
+        .map_or(Duration::from_secs(30), Duration::from_millis)
+}
+
+/// How long the command line waits for its connector's answer to a packet: the packet's
+/// expiry and a few seconds more, so that a packet that outlasts its expiry is answered
+/// with the connector's own reject rather than given up on. The hidden
+/// `TOON_PACKET_WAIT_MS` replaces it, for a test of a wait that runs out.
+fn packet_wait() -> Duration {
+    std::env::var("TOON_PACKET_WAIT_MS")
+        .ok()
+        .and_then(|millis| millis.parse().ok())
+        .map_or_else(
+            || packet_expiry() + Duration::from_secs(5),
+            Duration::from_millis,
+        )
+}
+
+fn seconds(wait: Duration) -> String {
+    if wait.subsec_millis() != 0 {
+        return format!("{} milliseconds", wait.as_millis());
+    }
+    match wait.as_secs() {
+        1 => "1 second".to_owned(),
+        seconds => format!("{seconds} seconds"),
+    }
+}
+
+/// `error`, if it is for a packet that went unanswered, with the cost the caller read from
+/// the watermarks in place of the whole amount [`send`] and the like assume.
+pub fn repriced(error: Error, paid: u128) -> Error {
+    match error.unanswered {
+        Some(unanswered) => unanswered_cost(paid, unanswered.event),
+        None => error,
+    }
+}
+
+/// The error for a packet that went unanswered, with what it cost and, if it carried one,
+/// the event. `event_id` is the id the text names so that the relay can be asked for it.
+pub fn unanswered_cost(paid: u128, event: Option<Value>) -> Error {
+    let sentence = if paid > 0 {
+        format!(" It cost {paid} base units.")
+    } else {
+        String::new()
+    };
+    let id = event
+        .as_ref()
+        .and_then(|event| event["id"].as_str())
+        .map(|id| format!(" Event {id} may be asked of the relay with `toon event query`."))
+        .unwrap_or_default();
+    let message = format!(
+        "The connector did not answer within {}. The packet has expired by now and will not \
+         be delivered; the command can be run again.{sentence}{id}",
+        seconds(packet_wait())
+    );
+    Error {
+        unanswered: Some(crate::outcome::Unanswered { paid, event }),
+        ..failed(ErrorCode::SendFailed, message)
+    }
 }
 
 /// Read the connector's one-line summary of a send. The connector's own `send` verb is
@@ -803,6 +879,7 @@ pub fn dispatch(
         .proxy_for(&seal_to)
         .map_err(|error| Error {
             nothing_sent: true,
+            unanswered: None,
             ..error
         })?
         .map(|proxy| format!("socks5h://{proxy}"));
@@ -813,6 +890,7 @@ pub fn dispatch(
         let body = match &body {
             Some(path) => std::fs::read(path).map_err(|error| Error {
                 nothing_sent: true,
+                unanswered: None,
                 ..send_failed(format!("{path} could not be read: {error}."))
             })?,
             None => Vec::new(),
@@ -877,6 +955,7 @@ fn is_onion_endpoint(url: &str) -> bool {
 fn identity(egress: &Egress, seal_to: &str) -> Result<[u8; 65], Error> {
     let not_sent = |message: String| Error {
         nothing_sent: true,
+        unanswered: None,
         ..failed(ErrorCode::SendFailed, message)
     };
     let identity_url = format!("{}/identity", seal_to.trim_end_matches('/'));
@@ -884,6 +963,7 @@ fn identity(egress: &Egress, seal_to: &str) -> Result<[u8; 65], Error> {
         .client(&identity_url, PATIENCE)
         .map_err(|error| Error {
             nothing_sent: true,
+            unanswered: None,
             ..error
         })?
         .get(&identity_url)
@@ -921,14 +1001,16 @@ pub fn dispatch_with_headers(
     let send_failed = |message: String| failed(ErrorCode::SendFailed, message);
     let not_sent = |message: String| Error {
         nothing_sent: true,
+        unanswered: None,
         ..send_failed(message)
     };
     let keypair = write_keypair(&surface.write_key).map_err(|error| Error {
         nothing_sent: true,
+        unanswered: None,
         ..error
     })?;
     let client = reqwest::blocking::Client::builder()
-        .timeout(PATIENCE)
+        .timeout(packet_wait())
         .build()
         .map_err(|error| not_sent(error.to_string()))?;
 
@@ -943,7 +1025,8 @@ pub fn dispatch_with_headers(
         .map_err(|error| not_sent(format!("The packet could not be sealed: {error}.")))?;
     let prepare = Prepare {
         amount,
-        expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
+        expires_at: chrono::Utc::now()
+            + chrono::Duration::from_std(packet_expiry()).unwrap_or_default(),
         greeting: false,
         destination: destination.to_owned(),
         data,
@@ -958,7 +1041,9 @@ pub fn dispatch_with_headers(
         created,
         Some(created + 60),
     );
-    let response = client
+    // A wait that ran out is an answer of its own, not a failure: the packet may have been
+    // paid for.
+    let response = match client
         .post(format!("{}/packets", surface.url))
         .header("content-type", "application/octet-stream")
         .header("content-digest", content_digest)
@@ -966,11 +1051,17 @@ pub fn dispatch_with_headers(
         .header("signature", signature)
         .body(prepare)
         .send()
-        .map_err(|error| send_failed(error.to_string()))?;
+    {
+        Ok(response) => response,
+        Err(error) if error.is_timeout() => return Ok(Answer::Unanswered),
+        Err(error) => return Err(send_failed(error.to_string())),
+    };
     let status = response.status();
-    let bytes = response
-        .bytes()
-        .map_err(|error| send_failed(error.to_string()))?;
+    let bytes = match response.bytes() {
+        Ok(bytes) => bytes,
+        Err(error) if error.is_timeout() => return Ok(Answer::Unanswered),
+        Err(error) => return Err(send_failed(error.to_string())),
+    };
     if !status.is_success() {
         return Err(send_failed(format!(
             "The connector refused the write with {status}: {}",
@@ -1016,6 +1107,10 @@ pub fn send(
     seal_to: Option<&str>,
 ) -> Result<Report, Error> {
     let answer = dispatch(home, destination, amount, seal_to, None)?;
+    if matches!(answer, Answer::Unanswered) {
+        // `toon send` reads the watermarks, which only its caller can.
+        return Err(unanswered_cost(u128::from(amount), None));
+    }
     let sent = format!("{amount} base units to {destination}");
     Ok(match answer {
         Answer::Fulfilled { status, body } => Report {
@@ -1038,6 +1133,7 @@ pub fn send(
             }),
             text: format!("Rejected with {code}: {sent}. {message}"),
         },
+        Answer::Unanswered => unreachable!("handled above"),
         Answer::WrongFulfilment => Report {
             exit: Exit::Failure,
             json: json!({
@@ -1393,5 +1489,15 @@ mod tests {
         assert!(before_sending(&connector_cli::CliError::Usage(
             String::new()
         )));
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+
+    #[test]
+    fn the_wait_for_a_packet_outlasts_its_expiry() {
+        assert!(packet_wait() > packet_expiry());
     }
 }

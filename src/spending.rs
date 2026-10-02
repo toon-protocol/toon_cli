@@ -148,6 +148,7 @@ fn today() -> u64 {
 fn limit_error(message: impl Into<String>) -> Error {
     Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::SpendingLimit,
         message: message.into(),
     }
@@ -156,6 +157,7 @@ fn limit_error(message: impl Into<String>) -> Error {
 fn io(path: &Path, source: std::io::Error) -> Error {
     Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::Io,
         message: format!("{}: {source}.", path.display()),
     }
@@ -185,6 +187,7 @@ fn signed_text(limits: &Limits) -> String {
 pub fn write_limits(home: &Path, seed: &[u8], limits: &Limits) -> Result<(), Error> {
     let secret = derive::limits_secret(seed).map_err(|source| Error {
         nothing_sent: false,
+        unanswered: None,
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
     })?;
@@ -355,6 +358,7 @@ pub fn spend<T, M: Into<Moved> + Copy>(
     if !yes {
         return Err(Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::NotConfirmed,
             message: format!(
                 "This moves {amount} base units. Add `--yes` to say that you mean it."
@@ -376,6 +380,11 @@ pub fn spend<T, M: Into<Moved> + Copy>(
     let kept = match &outcome {
         Ok((_, moved)) => (*moved).into().of(amount),
         Err(error) if failed_before_paying(error) => 0,
+        // A packet nobody answered cost what the watermarks moved by.
+        Err(Error {
+            unanswered: Some(unanswered),
+            ..
+        }) => unanswered.paid.min(amount),
         Err(_) => amount,
     };
     if kept < amount {
@@ -478,6 +487,7 @@ pub fn set(home: &Path, per_command: Option<u128>, per_day: Option<u128>) -> Res
             .parse()
             .map_err(|_| Error {
                 nothing_sent: false,
+                unanswered: None,
                 code: ErrorCode::KeystoreCorrupt,
                 message: "The keystore does not hold a valid mnemonic.".into(),
             })?;
@@ -601,6 +611,7 @@ mod tests {
     fn only_a_failure_before_paying_frees_the_amount() {
         let failure = |code| Error {
             nothing_sent: false,
+            unanswered: None,
             code,
             message: String::new(),
         };
@@ -612,5 +623,14 @@ mod tests {
         unsent.nothing_sent = true;
         assert!(failed_before_paying(&unsent));
         assert!(!failed_before_paying(&failure(ErrorCode::PeerFailed)));
+    }
+
+    #[test]
+    fn a_packet_nobody_answered_reports_what_it_cost() {
+        let error = crate::operator::unanswered_cost(3, None);
+        assert_eq!(error.code, ErrorCode::SendFailed);
+        assert!(!failed_before_paying(&error));
+        assert_eq!(error.json()["paid"], 3);
+        assert!(error.message.contains("It cost 3 base units."));
     }
 }
