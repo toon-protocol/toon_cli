@@ -454,7 +454,7 @@ fn balance_response(
         return Ok(None);
     };
     let url = format!("{base}/");
-    let client = egress.client(&url, PATIENCE)?;
+    let client = egress.relay_client(&url, PATIENCE)?;
     let Ok(authorization) = authorization(secret, "GET", &url, None) else {
         return Ok(None);
     };

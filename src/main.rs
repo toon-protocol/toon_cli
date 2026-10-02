@@ -26,12 +26,14 @@ mod overlay;
 mod profile;
 mod receive;
 mod relay;
+mod relay_url;
 mod runner;
 mod service;
 mod skill;
 mod spending;
 mod status;
 mod subscribe;
+mod tls;
 mod up;
 mod wallet;
 

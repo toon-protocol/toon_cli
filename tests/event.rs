@@ -203,23 +203,3 @@ fn query_of_a_relay_that_is_not_there_fails() {
     assert_eq!(run.json()["error"]["code"], "query_failed");
     assert_eq!(run.exit_code, 1);
 }
-
-#[test]
-fn query_of_a_relay_over_tls_is_refused_plainly() {
-    let machine = Machine::new();
-
-    let run = machine.toon(&[
-        "event",
-        "query",
-        "wss://relay.example",
-        "--filter",
-        "{}",
-        "--json",
-    ]);
-
-    assert_eq!(run.json()["error"]["code"], "query_failed");
-    assert!(run.json()["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("ws://"));
-}
