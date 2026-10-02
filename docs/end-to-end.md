@@ -20,7 +20,7 @@ step.
 | Step | What happens today | Ticket |
 | --- | --- | --- |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
-| 2, another agent node | Now and then the first packet between two hidden services outlasts the 30 seconds the command line waits: `send_failed`, "operation timed out", paid for, and the relay holds no event | #105 |
+| 2, another agent node | Now and then the first packet between two hidden services outlasts its 30-second expiry: `rejected` or `send_failed`, paid for, and the relay holds no event | #109 |
 | 2, hold a subscription | No relay serves the subscribe route | relay #215 |
 | 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
 
@@ -124,6 +124,7 @@ curl -s --socks5-hostname 127.0.0.1:19050 -H 'Accept: application/nostr+json' ht
 `httpEndpoint`, and the relay's information document on port 7100 of the same address,
 whose `toon` object names the relay's ILP address, the connector's onion endpoint, its
 seal key and a price of 1. Both go through a daemon that is not the agent node's own.
+Asked within seconds of `up`, the onion endpoint may not answer yet: ask again.
 
 ### Join
 
@@ -222,9 +223,10 @@ $E/toon add archive --to second --image $RELAY_IMAGE --yes --json
 
 **Expect** `restarted: true` in `add.json`, the packet `fulfilled` over the route `create`
 made (a first packet sent while the restarted connector is still coming back is rejected
-with `T01`, which is expected: its report says `paid: 2`, what the rejected packet cost,
-so send it again), and status showing `second` with two apps, both running. The last
-command is refused with `one_relay`: an agent node runs one relay.
+with `T01`, after as long as the packet's 30-second expiry, which is expected: its report
+says `paid: 2`, what the rejected packet cost, so send it again), and status showing
+`second` with two apps, both running. The last command is refused with `one_relay`: an
+agent node runs one relay.
 
 ### Another agent node publishes to this one's relay
 
@@ -264,14 +266,19 @@ one hidden service to another. Before the `route add`, the publish fails with
 `peering_needed`, and its message names the `peer add`, with `--deposit <amount> --yes`,
 and the `route add` to run.
 
-If the publish fails with `send_failed`, "operation timed out", the packet was paid for
-and the relay holds no event from it (#105): run the publish and the query again, and
-expect a watermark of 2 where the step below says 1.
+The first packet over a link between two hidden services can outlast its expiry (#109).
+The publish is then `rejected`, or fails with `send_failed` when the connector does not
+answer in time; either way the output carries `paid`, what the packet cost, and the
+`event`. The relay holds no event from it, and the same command succeeds when run again:
+run the publish and the query again, and expect the watermark in the step below to be
+higher by that `paid`.
 
-Then the same `peer add` a second time, and the first agent node's side of the channel:
+Then the same `peer add` twice more, back to back, and the first agent node's side of
+the channel:
 
 ```sh
 $E/toon limit show --json
+$E/toon peer add http://$ME/ilp --deposit 1000000 --id first --yes --json
 $E/toon peer add http://$ME/ilp --deposit 1000000 --id first --yes --json
 $E/toon limit show --json
 $E/toon down --json
@@ -279,14 +286,11 @@ export HOME=$E/sandbox
 $E/toon channel list --json
 ```
 
-**Expect** the `peer add` to find the channel the first one opened: `deposited: false`, a
-channel status of `found`, and `limit show` the same before and after it. The first agent
-node's inbound channel from the other one is at watermark 1.
-
-A first publish over a cold link may be rejected after 30 seconds, or fail with
-`send_failed` when the connector does not answer in time (the packet has expired by then;
-the failure's `paid` and `event` say what it cost and which event it carried). It is paid
-for, and the same command succeeds when run again.
+**Expect** each `peer add` to find the channel the first one opened: `deposited: false`, a
+channel status of `found`, and `limit show` the same before and after them. A connector
+refuses a request it has already accepted in the same clock second, so the later of the
+pair may take up to a second longer: the command line signs it again once the second has
+turned. The first agent node's inbound channel from the other one is at watermark 1.
 
 ### Hold a subscription
 
