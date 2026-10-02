@@ -19,6 +19,7 @@ pub fn user() -> Result<PathBuf, Error> {
         Some(home) => Ok(PathBuf::from(home)),
         None => Err(Error {
             nothing_sent: false,
+            unanswered: None,
             code: ErrorCode::HomeUnresolved,
             message: "HOME is not set or is empty, so there is nowhere to look for an agent node."
                 .into(),
