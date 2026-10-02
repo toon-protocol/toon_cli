@@ -398,8 +398,8 @@ pub enum EventCommand {
         /// What the write is paid, in the token's base units
         #[arg(long, default_value_t = 0, conflicts_with = "relay")]
         amount: u64,
-        /// Publish to this relay instead (`ws://host:port`), paying the price its
-        /// information document states
+        /// Publish to this relay instead (`ws://host:port` or `wss://host:port`), paying the
+        /// price its information document states
         #[arg(long)]
         relay: Option<String>,
         /// Confirm that this command moves money: without it nothing is paid
@@ -408,7 +408,7 @@ pub enum EventCommand {
     },
     /// Read the stored events of a relay that match a filter
     Query {
-        /// The relay's websocket URL, `ws://host:port`
+        /// The relay's websocket URL, `ws://host:port` or `wss://host:port`
         relay: String,
         /// A NIP-01 filter, as one JSON object
         #[arg(long)]
@@ -433,8 +433,8 @@ pub enum NipCommand {
     Publish {
         /// The draft's file, named after its identifier: `<identifier>.md`
         draft: PathBuf,
-        /// The agent node's own relay, `ws://host:port`, which the draft is written to: asked
-        /// first for the draft's current revision
+        /// The agent node's own relay, `ws://host:port` or `wss://host:port`, which the draft
+        /// is written to: asked first for the draft's current revision
         #[arg(long)]
         relay: String,
         /// A topic of the draft, in lower case; may be repeated
@@ -510,7 +510,7 @@ pub enum RelayCommand {
     },
     /// Subscribe to another relay's paid live feed, or top a subscription up
     Subscribe {
-        /// The relay's websocket URL, `ws://host:port`
+        /// The relay's websocket URL, `ws://host:port` or `wss://host:port`
         relay: String,
         /// The NIP-01 filter the subscription pays for; a first subscription needs one, and
         /// a later one replaces the old filter

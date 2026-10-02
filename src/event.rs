@@ -21,7 +21,9 @@ use crate::keystore;
 use crate::node;
 use crate::operator::{self, Answer};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::relay_url::{self, RelayUrl};
 use crate::spending;
+use crate::tls;
 
 /// How long a relay gets to answer each message of a query.
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -259,17 +261,10 @@ pub fn fetch(egress: &Egress, relay: &str, filter: &Value) -> Result<Vec<Value>,
         code: ErrorCode::QueryFailed,
         message,
     };
-    if !relay.starts_with("ws://") {
-        return Err(failed(format!(
-            "{relay} is not a ws:// URL; this build dials plain websocket relays only."
-        )));
-    }
+    RelayUrl::parse(relay).map_err(failed)?;
     let proxy = egress.proxy_for(relay)?;
     let mut socket = feed::dial(relay, proxy).map_err(failed)?;
-    let stream = socket.get_ref();
-    stream
-        .set_read_timeout(Some(PATIENCE))
-        .and_then(|()| stream.set_write_timeout(Some(PATIENCE)))
+    feed::set_timeouts(&socket, PATIENCE, PATIENCE)
         .map_err(|error| failed(format!("{relay}: {error}.")))?;
     socket
         .send(Message::text(
@@ -353,32 +348,31 @@ pub fn unpayable(message: String) -> Error {
     }
 }
 
-/// The HTTP form of a `ws://` relay URL: where its information document is served.
+/// The HTTP form of a relay URL: where its information document is served, `http://` for
+/// a `ws://` relay and `https://` for a `wss://` one.
 pub fn http_url(relay: &str) -> Result<String, Error> {
-    relay
-        .strip_prefix("ws://")
-        .map(|rest| format!("http://{rest}"))
-        .ok_or_else(|| {
-            unpayable(format!(
-                "{relay} is not a ws:// URL; this build dials plain websocket relays only."
-            ))
-        })
+    relay_url::http_form(relay).map_err(unpayable)
 }
 
-/// The NIP-11 information document of `relay`, served at its own URL as `http://`.
+/// The NIP-11 information document of `relay`, served at its own URL over `http://` or,
+/// for a `wss://` relay, `https://`.
 pub fn information_document(egress: &Egress, relay: &str) -> Result<Value, Error> {
     let url = http_url(relay)?;
     egress
-        .client(&url, PATIENCE)?
+        .relay_client(&url, PATIENCE)?
         .get(&url)
         .header("accept", "application/nostr+json")
         .send()
         .and_then(|response| response.error_for_status())
         .and_then(|response| response.json())
         .map_err(|error| {
-            unpayable(format!(
-                "The information document of {relay} could not be read: {error}."
-            ))
+            let certificate = tls::is_certificate(&error);
+            let error = tls::chain(&error);
+            unpayable(if certificate {
+                format!("The certificate of {relay} did not verify: {error}.")
+            } else {
+                format!("The information document of {relay} could not be read: {error}.")
+            })
         })
 }
 

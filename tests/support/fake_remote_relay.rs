@@ -47,7 +47,16 @@ struct State {
     refused_feeds: usize,
 }
 
+/// The relay's TLS front: a listener that terminates TLS and hands the plain bytes to the
+/// relay's own port, so the routes and the live feed are the same.
+struct Tls {
+    address: SocketAddr,
+    /// Holds the PEM of the certificate the front presents, which is also its root.
+    dir: tempfile::TempDir,
+}
+
 pub struct FakeRemoteRelay {
+    tls: Option<Tls>,
     address: SocketAddr,
     price: u64,
     broadcast_price: u64,
@@ -63,6 +72,7 @@ impl FakeRemoteRelay {
     pub fn start(ilp_address: &str, price: u64, broadcast_price: u64) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let relay = Self {
+            tls: None,
             address: listener.local_addr().expect("address"),
             price,
             broadcast_price,
@@ -82,6 +92,7 @@ impl FakeRemoteRelay {
 
     fn shared(&self) -> Self {
         Self {
+            tls: None,
             address: self.address,
             price: self.price,
             broadcast_price: self.broadcast_price,
@@ -89,6 +100,81 @@ impl FakeRemoteRelay {
             state: self.state.clone(),
             aliases: self.aliases.clone(),
         }
+    }
+
+    /// Also serve the relay over TLS, on a port of its own, with a certificate generated now
+    /// for `localhost`, `127.0.0.1` and each of `hosts`. The certificate is its own root:
+    /// `root_file` hands it over for `TOON_TRUSTED_ROOT`.
+    pub fn with_tls(mut self, hosts: &[&str]) -> Self {
+        let mut names: Vec<String> = vec!["localhost".into(), "127.0.0.1".into()];
+        names.extend(hosts.iter().map(|host| (*host).to_owned()));
+        let certificate = rcgen::generate_simple_self_signed(names).expect("a certificate");
+        let dir = tempfile::tempdir().expect("a directory");
+        std::fs::write(
+            dir.path().join("root.pem"),
+            certificate.serialize_pem().expect("a PEM"),
+        )
+        .expect("write the PEM");
+        let config = tokio_rustls::rustls::ServerConfig::builder()
+            .with_safe_defaults()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![tokio_rustls::rustls::Certificate(
+                    certificate.serialize_der().expect("a DER"),
+                )],
+                tokio_rustls::rustls::PrivateKey(certificate.serialize_private_key_der()),
+            )
+            .expect("a server config");
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let address = listener.local_addr().expect("address");
+        let plain = self.address;
+        thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_io()
+                .build()
+                .expect("a runtime");
+            runtime.block_on(async move {
+                let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
+                while let Ok((socket, _)) = listener.accept().await {
+                    let acceptor = acceptor.clone();
+                    tokio::spawn(async move {
+                        let Ok(mut secured) = acceptor.accept(socket).await else {
+                            return;
+                        };
+                        let Ok(mut inner) = tokio::net::TcpStream::connect(plain).await else {
+                            return;
+                        };
+                        let _ = tokio::io::copy_bidirectional(&mut secured, &mut inner).await;
+                    });
+                }
+            });
+        });
+        // A client names the relay's routes by the authority it dialled.
+        self.also_at(&format!("localhost:{}", address.port()));
+        self.also_at(&format!("127.0.0.1:{}", address.port()));
+        self.tls = Some(Tls { address, dir });
+        self
+    }
+
+    fn tls(&self) -> &Tls {
+        self.tls.as_ref().expect("a relay served with `with_tls`")
+    }
+
+    /// The relay's `wss://` URL, at `localhost`.
+    pub fn wss_url(&self) -> String {
+        format!("wss://localhost:{}", self.tls().address.port())
+    }
+
+    /// Where the TLS front listens.
+    pub fn wss_address(&self) -> SocketAddr {
+        self.tls().address
+    }
+
+    /// The PEM file of the certificate the TLS front presents, for `TOON_TRUSTED_ROOT`.
+    pub fn root_file(&self) -> std::path::PathBuf {
+        self.tls().dir.path().join("root.pem")
     }
 
     /// The relay's `ws://` URL.
@@ -292,6 +378,8 @@ impl FakeRemoteRelay {
         for alias in self.aliases.lock().unwrap().iter() {
             this_relay.push(format!("http://{alias}"));
             this_relay.push(format!("http://{alias}/"));
+            this_relay.push(format!("https://{alias}"));
+            this_relay.push(format!("https://{alias}/"));
         }
         (event["kind"] == 27235
             && Self::tag(&event, "method").as_deref() == Some(method)

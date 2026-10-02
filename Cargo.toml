@@ -40,7 +40,15 @@ ed25519-dalek-v1 = { package = "ed25519-dalek", version = "1" }
 axum = "0.6"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tracing = "0.1"
-tungstenite = "0.20"
+# `rustls-tls-webpki-roots` is the TLS a `wss://` relay is dialled with: the rustls the connector
+# already selects, with roots compiled in. `rustls` is that same version; `webpki-roots` is the
+# version `reqwest` and the connector carry, whose roots `tls::connector` builds the dial's trust
+# from, with `rustls-pemfile` reading `TOON_TRUSTED_ROOT`. (The feature brings an older
+# `webpki-roots` of its own, which that connector does not use.)
+tungstenite = { version = "0.20", features = ["rustls-tls-webpki-roots"] }
+rustls = "0.21"
+rustls-pemfile = "1"
+webpki-roots = "0.25"
 reqwest = { version = "0.11", default-features = false, features = ["blocking", "json", "rustls-tls", "socks"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
@@ -52,6 +60,10 @@ connector-chain-rpc = { git = "https://github.com/toon-protocol/connector", rev 
 # `anvil`, which tests that move money run on (the spike's finding, on #2).
 connector-settlement-evm = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705", features = ["test-util"] }
 ethers = { version = "2", default-features = false }
+# The fake remote relay's TLS: a certificate generated for the test, and a front that terminates it.
+rcgen = "0.11"
+tokio = { version = "1", features = ["rt", "net", "io-util"] }
+tokio-rustls = "0.24"
 
 # The relay image `toon` runs as a container (ADR 0001), pinned by digest. `build.rs`
 # hands it to `toon --version`.
