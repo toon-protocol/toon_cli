@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use sha2::Digest;
 
+use crate::anon;
 use crate::connector::{self, Startup};
 use crate::control;
 use crate::funding;
@@ -339,6 +340,7 @@ fn launch(
             return Err(error);
         }
     }
+    supervisor.reconcile(state);
     supervisor.receiver = Some(Receiver::start(home, supervisor.shared.clone()));
     let answering = Arc::clone(&supervisor.shared);
     thread::spawn(move || {
@@ -696,7 +698,13 @@ impl Supervisor {
             .ok_or_else(|| untouched(node::no_agent_node(&self.home)))?;
         for app in &state.toon_apps {
             if !self.units.iter().any(|unit| unit.app.name == app.name) {
-                self.add(app).map_err(untouched)?;
+                if let Err(error) = self.add(app) {
+                    // The endpoint may have been issued before the app failed to start.
+                    if let (Reach::Hidden, Some(edge)) = (&app.reach, &self.edge) {
+                        withdraw(&**edge, app.connector);
+                    }
+                    return Err(untouched(error));
+                }
             }
         }
         let (kept, gone): (Vec<Unit>, Vec<Unit>) = std::mem::take(&mut self.units)
@@ -709,7 +717,58 @@ impl Supervisor {
                 .retain(|shared| !Arc::ptr_eq(shared, &unit.shared));
             unit.stop();
         }
+        self.reconcile(&state);
         Ok(())
+    }
+
+    /// Leave the overlay holding a hidden service for exactly the hidden TOON apps of
+    /// `state`: one for any other connector is withdrawn. A withdrawal that fails is
+    /// reported and changes nothing else.
+    pub(crate) fn reconcile(&mut self, state: &State) {
+        let wanted: Vec<u32> = state
+            .toon_apps
+            .iter()
+            .filter(|app| matches!(app.reach, Reach::Hidden))
+            .map(|app| app.connector)
+            .collect();
+        let stranded: Vec<u32> = overlay::hosted(&anon::directory(&self.home))
+            .into_iter()
+            .filter(|connector| !wanted.contains(connector))
+            .collect();
+        if stranded.is_empty() {
+            return;
+        }
+        let edge = match &self.edge {
+            Some(edge) => Arc::clone(edge),
+            // No hidden service runs, so there is no overlay up: bring it up to withdraw
+            // from it, and let it go again.
+            None => match overlay::bootstrap(&self.home, false) {
+                Ok(edge) => {
+                    for connector in stranded {
+                        withdraw(&*edge, connector);
+                    }
+                    edge.release();
+                    return;
+                }
+                Err(error) => {
+                    eprintln!("toon: stranded hidden services remain: {}", error.message);
+                    return;
+                }
+            },
+        };
+        for connector in stranded {
+            withdraw(&*edge, connector);
+        }
+    }
+}
+
+/// Withdraw connector `connector`'s hidden service, and say so if that fails.
+fn withdraw(edge: &dyn Edge, connector: u32) {
+    if let Err(error) = edge.withdraw(connector) {
+        eprintln!(
+            "toon: the hidden service of connector {connector} was not withdrawn: {}",
+            error.message
+        );
     }
 }
 

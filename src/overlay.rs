@@ -54,9 +54,38 @@ pub trait Edge: Send + Sync {
     /// local address behind it. Replaces what was published for that endpoint before.
     fn publish(&self, address: &str, ports: &[(u16, SocketAddr)]) -> Result<(), Error>;
 
+    /// Withdraw the hidden service of the connector numbered `connector`: its endpoint
+    /// stops being published, the daemon is told, and what the overlay kept for the
+    /// connector is gone. Safe for a connector that has none. Only that connector's
+    /// service is touched, never the daemon's own files.
+    fn withdraw(&self, connector: u32) -> Result<(), Error>;
+
     /// The overlay is no longer needed on this machine: a daemon that nothing else uses
     /// stops. The stand-in has nothing to stop.
     fn release(&self) {}
+}
+
+/// The connectors that hold a hidden service in the overlay directory `dir`: a numbered
+/// service file or a numbered hidden-service directory. The daemon's own files are not
+/// numbered and are never listed.
+pub fn hosted(dir: &Path) -> Vec<u32> {
+    let numbered = |path: PathBuf, suffix: &str| -> Vec<u32> {
+        let Ok(entries) = fs::read_dir(path) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.strip_suffix(suffix)?.parse::<u32>().ok()
+            })
+            .collect()
+    };
+    let mut found = numbered(dir.to_path_buf(), "");
+    found.extend(numbered(dir.join("services.d"), ".conf"));
+    found.sort_unstable();
+    found.dedup();
+    found
 }
 
 fn unavailable(why: &str) -> Error {
@@ -198,6 +227,25 @@ impl Edge for Loopback {
         }
         Ok(())
     }
+
+    fn withdraw(&self, connector: u32) -> Result<(), Error> {
+        let service = self.dir.join(connector.to_string());
+        let hostname = service.join("hostname");
+        if let Ok(address) = fs::read_to_string(&hostname) {
+            let address = address.trim();
+            self.published
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|(host, _), _| host != address);
+        }
+        match fs::remove_dir_all(&service) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => Err(Error {
+                code: ErrorCode::Io,
+                message: format!("{}: {error}.", service.display()),
+            }),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// Serve one SOCKS5 connection: no authentication or a username (the connector pins a
@@ -335,6 +383,24 @@ pub(crate) mod tests {
         assert!(through(edge.proxy(), &one, 81, patience).is_none());
         let other = edge.issue(1, &second).unwrap();
         assert!(through(edge.proxy(), &other, CONNECTOR_PORT, patience).is_none());
+
+        // A withdrawn endpoint is no longer reached, one that was not still is, and issuing
+        // again gives the same address.
+        edge.publish(&other, &[(CONNECTOR_PORT, serve("second"))])
+            .unwrap();
+        assert_eq!(
+            "second",
+            reaches(edge.proxy(), &other, CONNECTOR_PORT, patience)
+        );
+        edge.withdraw(1).unwrap();
+        edge.withdraw(1).unwrap();
+        edge.withdraw(7).unwrap();
+        assert!(through(edge.proxy(), &other, CONNECTOR_PORT, patience).is_none());
+        assert_eq!(
+            "connector",
+            reaches(edge.proxy(), &one, CONNECTOR_PORT, patience)
+        );
+        assert_eq!(other, edge.issue(1, &second).unwrap());
     }
 
     /// A server that answers one line, `name`, to whoever connects.
@@ -400,6 +466,29 @@ pub(crate) mod tests {
         // The address is kept where the daemon keeps its own.
         let kept = fs::read_to_string(home.path().join("overlay/0/hostname")).unwrap();
         assert!(kept.trim().ends_with(".anyone"));
+        // Withdrawn, connector 1 keeps nothing; connector 0 is as it was.
+        assert!(home.path().join("overlay/0/hostname").exists());
+    }
+
+    #[test]
+    fn only_numbered_services_are_hosted() {
+        let dir = tempfile::tempdir().unwrap();
+        for path in [
+            "0/hostname",
+            "3/hostname",
+            "services.d/3.conf",
+            "services.d/5.conf",
+        ] {
+            let path = dir.path().join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "x").unwrap();
+        }
+        for own in ["anonrc", "agreed", "daemon", "anon.log"] {
+            fs::write(dir.path().join(own), "x").unwrap();
+        }
+        fs::create_dir_all(dir.path().join("data")).unwrap();
+        fs::create_dir_all(dir.path().join("bin/0.4.10.2")).unwrap();
+        assert_eq!(vec![0, 3, 5], hosted(dir.path()));
     }
 
     #[test]

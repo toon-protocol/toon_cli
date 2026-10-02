@@ -510,6 +510,36 @@ impl Edge for Anon {
         }
     }
 
+    fn withdraw(&self, connector: u32) -> Result<(), Error> {
+        let service = self.service(connector);
+        let directory = self.dir.join(connector.to_string());
+        self.issued
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(_, known)| *known != connector);
+        let mut failed = None;
+        // The service file first, so that the daemon stops publishing it; then the daemon
+        // is told, and what it kept for the connector goes last.
+        let existed = match fs::remove_file(&service) {
+            Ok(()) => true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => {
+                failed = Some(io_error(&service, error));
+                false
+            }
+        };
+        if existed && !Daemon::read(&self.dir).is_some_and(|daemon| daemon.signal("HUP")) {
+            failed = Some(unavailable("the `anon` daemon is no longer running"));
+        }
+        match fs::remove_dir_all(&directory) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                failed.get_or_insert(io_error(&directory, error));
+            }
+            _ => {}
+        }
+        failed.map_or(Ok(()), Err)
+    }
+
     fn release(&self) {
         stop_in(&self.dir);
     }
@@ -574,6 +604,67 @@ mod tests {
         assert!(config.contains("SocksPort 127.0.0.1:9050\n"));
         assert!(config.contains("ControlPort 0\n"));
         assert!(config.contains("%include /o/services.d\n"));
+    }
+
+    #[test]
+    fn withdrawing_a_service_removes_its_file_and_has_the_daemon_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("reloaded");
+        // Stands in for the daemon: it notes that it was sent a reload.
+        let mut daemon = Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "trap 'touch {}' HUP; while :; do sleep 0.05; done",
+                marker.display()
+            ))
+            .spawn()
+            .unwrap();
+        fs::write(dir.path().join("daemon"), format!("{} 9\n", daemon.id())).unwrap();
+        let edge = Anon {
+            dir: dir.path().to_path_buf(),
+            socks: SocketAddr::from((Ipv4Addr::LOCALHOST, 9)),
+            issued: Mutex::new(Vec::new()),
+        };
+        fs::create_dir_all(dir.path().join("services.d")).unwrap();
+        for n in [2, 3] {
+            fs::write(edge.service(n), "HiddenServiceDir x\n").unwrap();
+            fs::create_dir_all(dir.path().join(n.to_string())).unwrap();
+            fs::write(dir.path().join(n.to_string()).join("hostname"), "x\n").unwrap();
+        }
+        thread::sleep(Duration::from_millis(300));
+
+        edge.withdraw(2).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !marker.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+        assert!(marker.exists(), "the daemon was not told to reload");
+        assert!(!edge.service(2).exists());
+        assert!(!dir.path().join("2").exists());
+        // The other connector's service, and the daemon's own files, are not touched.
+        assert!(edge.service(3).exists());
+        assert!(dir.path().join("3/hostname").exists());
+        assert!(dir.path().join("daemon").exists());
+        // A connector with no service is no error.
+        edge.withdraw(9).unwrap();
+    }
+
+    #[test]
+    fn a_withdrawal_with_no_daemon_still_removes_what_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let edge = Anon {
+            dir: dir.path().to_path_buf(),
+            socks: SocketAddr::from((Ipv4Addr::LOCALHOST, 9)),
+            issued: Mutex::new(Vec::new()),
+        };
+        fs::create_dir_all(dir.path().join("services.d")).unwrap();
+        fs::write(edge.service(4), "x").unwrap();
+        fs::create_dir_all(dir.path().join("4")).unwrap();
+        assert!(edge.withdraw(4).is_err());
+        assert!(!edge.service(4).exists());
+        assert!(!dir.path().join("4").exists());
     }
 
     /// Run by hand against the real network: `cargo test anon_meets_the_contract --

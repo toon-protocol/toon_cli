@@ -25,6 +25,16 @@ use std::time::Duration;
 fn main() {
     let port = env::var("TOON_BLS_PORT").expect("TOON_BLS_PORT");
     let data = PathBuf::from(env::var("TOON_DATA_DIR").expect("TOON_DATA_DIR"));
+    // `apps/fail-<name>` beside the app's directory makes that app not start, for a test of
+    // what a failed start leaves.
+    if let Some(apps) = data.parent().and_then(Path::parent) {
+        let name = data.parent().and_then(Path::file_name).unwrap_or_default();
+        let mut marker = std::ffi::OsString::from("fail-");
+        marker.push(name);
+        if apps.join(marker).exists() {
+            process::exit(1);
+        }
+    }
     let key = env::var("NOSTR_SECRET_KEY").unwrap_or_default();
     fs::write(
         data.join("environment"),

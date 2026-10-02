@@ -375,3 +375,105 @@ fn clearnet_takes_a_hostname() {
     assert_eq!(run.json()["error"]["code"], "usage");
     leaves_nothing(&machine);
 }
+
+/// Where the overlay keeps connector `n`'s hidden service.
+fn overlay_dir(machine: &Machine, n: u32) -> std::path::PathBuf {
+    machine
+        .agent_node_home()
+        .join("overlay")
+        .join(n.to_string())
+}
+
+fn create_hidden(machine: &Machine) -> support::Run {
+    machine.toon_with(
+        &[
+            "create",
+            "second",
+            "--image",
+            "second:1",
+            "--no-peer",
+            "--accept-anyone-terms",
+            "--json",
+        ],
+        |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        },
+    )
+}
+
+#[test]
+fn a_failed_hidden_create_leaves_no_hidden_service() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+    let first = fs::read_to_string(overlay_dir(&machine, 0).join("hostname")).unwrap();
+    // The app behind the new TOON app does not start.
+    fs::write(machine.agent_node_home().join("apps/fail-second"), "").unwrap();
+
+    let run = create_hidden(&machine);
+
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
+    assert_eq!(run.json()["error"]["code"], "app_failed");
+    assert!(!overlay_dir(&machine, 1).exists());
+    assert!(!machine.agent_node_home().join("connectors/1").exists());
+    assert_eq!(
+        first,
+        fs::read_to_string(overlay_dir(&machine, 0).join("hostname")).unwrap()
+    );
+}
+
+#[test]
+fn a_destroyed_hidden_toon_app_leaves_no_hidden_service() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+    let first = fs::read_to_string(overlay_dir(&machine, 0).join("hostname")).unwrap();
+    let proxy = proxy(&config(&machine));
+    let created = create_hidden(&machine);
+    assert_eq!(created.exit_code, 0, "{}", created.stdout);
+    let second = fs::read_to_string(overlay_dir(&machine, 1).join("hostname")).unwrap();
+    let second = second.trim();
+    assert!(health_through(proxy, second, 80).is_some());
+
+    let run = machine.toon(&["destroy", "second", "--json"]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    assert!(!overlay_dir(&machine, 1).exists());
+    assert!(health_through(proxy, second, 80).is_none());
+    // The first TOON app's service is as it was, and the destroyed one's key is kept.
+    assert_eq!(
+        first,
+        fs::read_to_string(overlay_dir(&machine, 0).join("hostname")).unwrap()
+    );
+    assert!(machine
+        .agent_node_home()
+        .join("connectors/1/onion.key")
+        .exists());
+    let next = create_hidden(&machine);
+    assert_eq!(next.exit_code, 0, "{}", next.stdout);
+    assert_eq!(next.json()["created"]["connector"], 2);
+}
+
+#[test]
+fn a_hidden_service_stranded_before_is_withdrawn_by_the_next_up() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    let stranded = overlay_dir(&machine, 5);
+    fs::create_dir_all(&stranded).unwrap();
+    fs::write(stranded.join("hostname"), "stranded.anyone\n").unwrap();
+    let daemons = machine.agent_node_home().join("overlay/anonrc");
+    fs::write(&daemons, "kept\n").unwrap();
+
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+
+    assert!(!stranded.exists());
+    assert!(overlay_dir(&machine, 0).join("hostname").exists());
+    // The overlay's own files are not a connector's.
+    assert_eq!("kept\n", fs::read_to_string(daemons).unwrap());
+}
