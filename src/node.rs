@@ -645,18 +645,32 @@ pub struct Overlay {
 
 /// `listen` with a port: a connector publishes where it can be paid, so it cannot be left
 /// to the system to pick one when it binds. Port 0 is replaced by a port that was free a
-/// moment ago.
+/// moment ago. It is tried below the range the system hands out to sockets that ask for any
+/// port, so that no other process takes it between now and the connector's bind; a system
+/// with no free port there is asked for one.
 pub fn concrete(listen: &str) -> Result<String, Error> {
     let Some((host, "0")) = listen.rsplit_once(':') else {
         return Ok(listen.to_owned());
     };
-    let free = std::net::TcpListener::bind(listen)
-        .and_then(|bound| bound.local_addr())
-        .map_err(|source| Error {
-            code: ErrorCode::Io,
-            message: format!("{listen}: no free port: {source}."),
-        })?;
-    Ok(format!("{host}:{}", free.port()))
+    let below_the_system_range = (0..64).find_map(|_| {
+        let mut random = [0u8; 2];
+        getrandom::getrandom(&mut random).ok()?;
+        let port = 10_000 + u16::from_le_bytes(random) % 22_000;
+        std::net::TcpListener::bind(format!("{host}:{port}"))
+            .ok()
+            .map(|_| port)
+    });
+    let port = match below_the_system_range {
+        Some(port) => port,
+        None => std::net::TcpListener::bind(listen)
+            .and_then(|bound| bound.local_addr())
+            .map_err(|source| Error {
+                code: ErrorCode::Io,
+                message: format!("{listen}: no free port: {source}."),
+            })?
+            .port(),
+    };
+    Ok(format!("{host}:{port}"))
 }
 
 /// Where an app's write port is reached, by the app's name.

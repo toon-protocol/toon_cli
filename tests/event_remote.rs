@@ -53,9 +53,10 @@ fn node_on(chain: &AnvilChain) -> Node {
         .to_owned();
     chain.fund(&evm, DEPOSIT * 10);
     let up = machine.start(&["up", "--foreground", "--json"]);
-    let address = up.report()["connector"]["address"]
+    let report = up.report();
+    let address = report["connector"]["address"]
         .as_str()
-        .expect("the connector's address")
+        .unwrap_or_else(|| panic!("the connector's address: {report}"))
         .to_owned();
     Node {
         machine,
