@@ -971,11 +971,20 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
             format!("This agent node has already joined {joined}."),
         ));
     }
+    let Some(connector_url) = state.connector_url.clone() else {
+        return Err(failed(
+            ErrorCode::JoinRefused,
+            format!(
+                "There is no {name} TOON network yet: this agent node records no connector for it. \
+                 Name one with `--connector-url` (and `--relay-url`) on `init`."
+            ),
+        ));
+    };
     spending::spend(home, args.deposit, args.yes, || {
         let peered = peer_add(
             home,
             &PeerAdd {
-                address: &state.connector_url,
+                address: &connector_url,
                 deposit: args.deposit,
                 id: Some(name),
                 fee: 0,
@@ -985,10 +994,16 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
         let routed = route_add(home, NETWORK_PREFIX, name, 0)?;
         let relay = state.relay_url.clone();
         state.joined = Some(name.to_owned());
-        if !state.reads.contains(&relay) {
-            state.reads.push(relay.clone());
+        if let Some(relay) = &relay {
+            if !state.reads.contains(relay) {
+                state.reads.push(relay.clone());
+            }
         }
         state.save(home)?;
+        let reading = match &relay {
+            Some(relay) => format!("Reading its relay at {relay}."),
+            None => "It names no relay, so the agent reads no relay of it.".to_owned(),
+        };
         Ok((
             Report {
                 exit: Exit::Success,
@@ -1000,9 +1015,9 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
                 }),
                 text: format!(
                     "Joined {name}: peered with {} and forwarding {NETWORK_PREFIX} to it, deposit {}. \
-                     Reading its relay at {relay}.\n\
+                     {reading}\n\
                      Its connector forwards back to you only if its operator creates a peering toward you in return.",
-                    state.connector_url, args.deposit
+                    connector_url, args.deposit
                 ),
             },
             true,

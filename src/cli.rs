@@ -306,11 +306,11 @@ impl InitArgs {
             connector_url: self
                 .connector_url
                 .clone()
-                .unwrap_or_else(|| self.network.connector_url().to_owned()),
+                .or_else(|| self.network.connector_url().map(str::to_owned)),
             relay_url: self
                 .relay_url
                 .clone()
-                .unwrap_or_else(|| self.network.relay_url().to_owned()),
+                .or_else(|| self.network.relay_url().map(str::to_owned)),
             faucet_url: self
                 .faucet_url
                 .clone()
