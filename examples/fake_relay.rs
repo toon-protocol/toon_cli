@@ -4,9 +4,9 @@
 //! `NOSTR_SECRET_KEY`, and `TOON_RELAY_PORT` for the read port), answers `GET /health`, and
 //! answers a `POST` to `/`, `/write` or
 //! `/write-ephemeral` with 200 after appending `<path> <body in hex>` to `writes.log` in its
-//! data directory. It writes the secret key it was handed to `environment` there, and the
-//! `TOON_RELAY_*` settings it was handed, one `NAME=value` per line, to `settings`, and `TOON_CONNECTOR_URL` and
-//! `TOON_WRITE_ILP_ADDRESS` to `connector`. It
+//! data directory. It writes the secret key it was handed to `environment` there, the
+//! `TOON_RELAY_*` settings it was handed but the read port, one `NAME=value` per line, to
+//! `settings`, and `TOON_CONNECTOR_URL` and `TOON_WRITE_ILP_ADDRESS` to `connector`. It
 //! exits when its standard input closes, as a supervisor's apps do.
 //!
 //! A body that is a JSON event is also stored in `events.log`, one per line, and a websocket

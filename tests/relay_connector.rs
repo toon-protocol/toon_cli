@@ -91,7 +91,12 @@ fn a_relay_whose_route_has_another_prefix_is_handed_that_prefix() {
 fn a_hidden_toon_apps_relay_is_handed_the_loopback_url_and_the_connector_names_the_onion() {
     let chain = FakeChain::start();
     let machine = Machine::new();
-    machine.init_on(&chain);
+    let init = machine.init_on(&chain).json();
+    let onion = init["toon_apps"][0]["onion_endpoint"]
+        .as_str()
+        .expect("a hidden TOON app")
+        .to_owned();
+    assert!(onion.ends_with(".anyone"), "{onion}");
     let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
 
@@ -102,7 +107,7 @@ fn a_hidden_toon_apps_relay_is_handed_the_loopback_url_and_the_connector_names_t
     assert!(
         description["httpEndpoint"]
             .as_str()
-            .is_some_and(|endpoint| endpoint.contains(".anyone")),
+            .is_some_and(|endpoint| endpoint.contains(&onion)),
         "{description}"
     );
 }
