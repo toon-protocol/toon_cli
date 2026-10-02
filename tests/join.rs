@@ -197,3 +197,41 @@ fn a_network_with_a_connector_and_no_relay_is_joined_and_no_relay_is_read() {
         Some(0)
     );
 }
+
+#[test]
+fn a_join_that_finds_its_channel_open_deposits_nothing_and_is_not_counted() {
+    let chain = AnvilChain::start();
+    let network = node_on(&chain, None);
+    let connector = format!("http://{}/ilp", network.address);
+    let agent = node_on(&chain, Some((&connector, "ws://127.0.0.1:7100")));
+    let deposit = DEPOSIT.to_string();
+
+    // An earlier peering under the network's label opened the channel.
+    let peered = agent.machine.toon(&[
+        "peer",
+        "add",
+        &connector,
+        "--deposit",
+        &deposit,
+        "--yes",
+        "--id",
+        "devnet",
+        "--json",
+    ]);
+    assert_eq!(peered.exit_code, 0, "{}", peered.stdout);
+    let balance = chain.balance(&agent.evm);
+    let remaining = |agent: &Node| {
+        agent.machine.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone()
+    };
+    let left = remaining(&agent);
+
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    let joined = agent
+        .machine
+        .toon(&["join", "devnet", "--deposit", &deposit, "--yes", "--json"]);
+    assert_eq!(joined.exit_code, 0, "{}", joined.stdout);
+    assert_eq!(joined.json()["peering"]["channel"]["status"], "found");
+    assert_eq!(joined.json()["deposited"], false);
+    assert_eq!(chain.balance(&agent.evm), balance, "nothing was deposited");
+    assert_eq!(remaining(&agent), left, "and nothing is counted");
+}
