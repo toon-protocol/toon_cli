@@ -31,6 +31,11 @@ fn connector(machine: &Machine) -> SocketAddr {
         .unwrap_or_else(|| panic!("the connector has no address: {status}"))
 }
 
+/// The address an app added to the first TOON app without `--address` has.
+fn default_notes(machine: &Machine) -> String {
+    format!("g.toon.{}.notes", machine.segment_of("relay"))
+}
+
 /// What the fake app `name` has been asked to write, as `<path> <body in hex>` lines.
 fn writes(machine: &Machine, name: &str) -> Vec<String> {
     let log: PathBuf = machine
@@ -135,7 +140,7 @@ fn remove_and_route_price_refuse_without_yes() {
     let (machine, _chain, _up) = running();
 
     let remove = machine.toon(&["remove", "relay", "--json"]);
-    let price = machine.toon(&["route", "price", "g.toon.relay", "5", "--json"]);
+    let price = machine.toon(&["route", "price", &machine.relay_address(), "5", "--json"]);
 
     assert_eq!(remove.json()["error"]["code"], "confirmation_required");
     assert_eq!(price.json()["error"]["code"], "confirmation_required");
@@ -174,7 +179,12 @@ fn a_packet_to_an_added_apps_address_is_delivered_to_it_after_the_restart() {
     let (_, body) = received[0].split_once(' ').unwrap();
     assert_eq!(hex::decode(body).unwrap(), b"hello notes");
     // The relay is still behind the connector.
-    send(after, "g.toon.relay.ephemeral", b"still here").expect("fulfilled");
+    send(
+        after,
+        &format!("{}.ephemeral", machine.relay_address()),
+        b"still here",
+    )
+    .expect("fulfilled");
     wait_until("the relay never received the packet", || {
         !writes(&machine, "relay").is_empty()
     });
@@ -194,7 +204,7 @@ fn status_lists_every_app_of_a_toon_app() {
     assert_eq!(apps[0]["name"], "relay");
     assert_eq!(apps[1]["name"], "notes");
     assert_eq!(apps[1]["running"], true);
-    assert_eq!(apps[1]["prefix"], "g.toon.notes");
+    assert_eq!(apps[1]["prefix"], default_notes(&machine));
     assert_eq!(apps[1]["price"], 3);
     let text = machine.toon(&["status"]).stdout;
     assert!(
@@ -267,7 +277,7 @@ fn remove_takes_the_app_and_its_route_away() {
     machine.toon(&[
         "add", "notes", "--to", "relay", "--image", "notes:1", "--yes",
     ]);
-    send(connector(&machine), "g.toon.notes", b"one").expect("fulfilled");
+    send(connector(&machine), &default_notes(&machine), b"one").expect("fulfilled");
     let notes = machine.toon(&["status", "--json"]).json()["agent_node"]["toon_apps"][0]["apps"][1]
         ["address"]
         .as_str()
@@ -287,7 +297,7 @@ fn remove_takes_the_app_and_its_route_away() {
             .len(),
         1
     );
-    assert!(send(connector(&machine), "g.toon.notes", b"two").is_err());
+    assert!(send(connector(&machine), &default_notes(&machine), b"two").is_err());
     wait_until("the removed app is still listening", || {
         std::net::TcpStream::connect(notes).is_err()
     });
@@ -296,14 +306,21 @@ fn remove_takes_the_app_and_its_route_away() {
         .as_array()
         .unwrap()
         .iter()
-        .all(|route| route["prefix"] != "g.toon.notes"));
+        .all(|route| route["prefix"] != default_notes(&machine).as_str()));
 }
 
 #[test]
 fn route_price_sets_the_price_of_an_apps_route() {
     let (machine, _chain, _up) = running();
 
-    let run = machine.toon(&["route", "price", "g.toon.relay", "7", "--yes", "--json"]);
+    let run = machine.toon(&[
+        "route",
+        "price",
+        &machine.relay_address(),
+        "7",
+        "--yes",
+        "--json",
+    ]);
 
     assert_eq!(run.exit_code, 0, "{}", run.stdout);
     let routes = machine.toon(&["route", "list", "--json"]).json();
@@ -311,7 +328,7 @@ fn route_price_sets_the_price_of_an_apps_route() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|route| route["prefix"] == "g.toon.relay")
+        .find(|route| route["prefix"] == machine.relay_address().as_str())
         .expect("the relay's route");
     assert_eq!(relay["price"], 7);
 }
@@ -335,7 +352,7 @@ fn a_node_that_is_not_running_records_the_change_without_a_restart() {
     assert_eq!(state["toon_apps"][0]["apps"][1]["name"], "notes");
     let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
-    send(connector(&machine), "g.toon.notes", b"x").expect("fulfilled");
+    send(connector(&machine), &default_notes(&machine), b"x").expect("fulfilled");
 }
 
 #[test]
@@ -366,13 +383,19 @@ fn a_node_that_is_not_running_refuses_a_change_the_connector_would_refuse() {
     );
     let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
-    send(connector(&machine), "g.toon.relay.ephemeral", b"ok").expect("fulfilled");
+    send(
+        connector(&machine),
+        &format!("{}.ephemeral", machine.relay_address()),
+        b"ok",
+    )
+    .expect("fulfilled");
 }
 
 #[test]
 fn add_refuses_names_and_addresses_that_are_taken_or_unknown() {
     let (machine, _chain, _up) = running();
 
+    let relay = machine.relay_address();
     let cases: [(&[&str], &str); 3] = [
         (
             &["add", "relay", "--to", "relay", "--image", "x", "--yes"],
@@ -391,7 +414,7 @@ fn add_refuses_names_and_addresses_that_are_taken_or_unknown() {
                 "--image",
                 "x",
                 "--address",
-                "g.toon.relay",
+                &relay,
                 "--yes",
             ],
             "route_failed",
@@ -451,5 +474,10 @@ fn a_failed_restart_puts_the_state_back_and_leaves_the_connector_running() {
     );
     // The config was refused before the connector stopped, so it never did.
     assert_eq!(pid(&machine), first);
-    send(connector(&machine), "g.toon.relay.ephemeral", b"ok").expect("fulfilled");
+    send(
+        connector(&machine),
+        &format!("{}.ephemeral", machine.relay_address()),
+        b"ok",
+    )
+    .expect("fulfilled");
 }

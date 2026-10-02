@@ -169,9 +169,10 @@ fn price_restarts_a_running_connector_only_with_yes_and_is_rendered_on_the_write
     assert_eq!(run.exit_code, 0, "{}", run.stdout);
     assert_eq!(run.json()["restarted"], true);
     let address = relay_address(&machine);
+    let prefix = machine.relay_address();
     assert!(
         config(&machine).contains(&format!(
-            "prefix = \"g.toon.relay\"\nhandler_url = \"http://{address}/write\"\nprice = 7\n"
+            "prefix = \"{prefix}\"\nhandler_url = \"http://{address}/write\"\nprice = 7\n"
         )),
         "{}",
         config(&machine)
@@ -186,7 +187,7 @@ fn price_restarts_a_running_connector_only_with_yes_and_is_rendered_on_the_write
         .as_array()
         .unwrap()
         .iter()
-        .find(|route| route["prefix"] == "g.toon.relay")
+        .find(|route| route["prefix"] == machine.relay_address().as_str())
         .expect("the write route");
     assert_eq!(write["price"], 7);
 }

@@ -143,3 +143,52 @@ fn join_over_the_per_command_limit_is_refused_and_spends_nothing() {
     assert_eq!(joined.json()["error"]["code"], "spending_limit");
     assert_eq!(chain.balance(&agent.evm), DEPOSIT * 10);
 }
+
+#[test]
+fn a_joined_agent_node_forwards_the_networks_addresses_and_keeps_its_own() {
+    let chain = AnvilChain::start();
+    let network = node_on(&chain, None);
+    let connector = format!("http://{}/ilp", network.address);
+    let agent = node_on(&chain, Some((&connector, "ws://127.0.0.1:7100")));
+    let joined = agent.machine.toon(&[
+        "join",
+        "devnet",
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(joined.exit_code, 0, "{}", joined.stdout);
+    assert_ne!(
+        agent.machine.relay_address(),
+        network.machine.relay_address()
+    );
+
+    // The network's relay is fulfilled by the network's connector, not delivered locally.
+    let sent = |destination: &str| {
+        agent.machine.toon(&[
+            "send",
+            destination,
+            "--amount",
+            "1",
+            "--yes",
+            "--seal-to",
+            &connector,
+            "--json",
+        ])
+    };
+    let theirs = sent(&network.machine.relay_address()).json();
+    assert_eq!(theirs["outcome"], "fulfilled", "{theirs}");
+    assert_eq!(theirs["response"]["body"], "stored");
+
+    // Another address under `g.toon` goes to the network's connector, which has no route
+    // for it: the answer is from there, not the agent node's own relay's F01.
+    let elsewhere = sent("g.toon.0000000000000000.relay").json();
+    assert_eq!(elsewhere["outcome"], "rejected", "{elsewhere}");
+    assert_ne!(elsewhere["reject"]["code"], "F01", "{elsewhere}");
+
+    // Its own relay's address stays local.
+    let own = sent(&agent.machine.relay_address()).json();
+    assert_eq!(own["outcome"], "rejected", "{own}");
+    assert_eq!(own["reject"]["code"], "F01", "{own}");
+}

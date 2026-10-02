@@ -219,7 +219,7 @@ a mnemonic does not hold the address keys.
 
 `toon create <name> --app <from>` makes a second TOON app (ADR 0002): a connector on the next
 unused index of the wallet's keys, and an app behind it, named `<name>` too and reached at
-`g.toon.<name>`. `--image` or `--url` says which app; `--clearnet`, `--accept-anyone-terms` and
+`g.toon.<segment>.<name>`, where `<segment>` is the first 16 characters of the new connector's identity public key (`toon wallet show`) and the connector itself answers to `g.toon.<segment>`. `--image` or `--url` says which app; `--clearnet`, `--accept-anyone-terms` and
 `--listen` say how the connector is reached, as for `toon init`. It reads the wallet passphrase.
 It is peered with `<from>`, the first TOON app if `--app` is left out, in both directions,
 each channel opened with `--deposit`, with a forwarding route each way; `--no-peer` says not to.

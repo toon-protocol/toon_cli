@@ -96,7 +96,7 @@ gas and one whole token; the message names each address and the amount.
 `toon add <app> --to <toon-app> --image <image>` puts a new app behind the connector of a TOON
 app that exists already; `--url <url>` names an app you already serve and runs nothing. `--price`
 is what a client pays the connector for a packet to the app, `--address` the ILP prefix
-(`g.toon.<app>` by default). It restarts that connector, so it needs `--yes`. `toon remove <app>`
+(`g.toon.<segment>.<app>` by default, the segment being that of the TOON app it is added to). It restarts that connector, so it needs `--yes`. `toon remove <app>`
 takes an app and its route away.
 
 ## Create a TOON app: `toon create`

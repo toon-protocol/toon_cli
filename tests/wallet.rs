@@ -341,3 +341,50 @@ fn wallet_show_gives_the_settlement_addresses_toon_client_gives() {
         "41c5dadd3b76286c4f4c4b0869b2d05e1c1a61bba8b75b7b884d2b1e1ee04079"
     );
 }
+
+#[test]
+fn the_address_segment_is_the_start_of_the_connector_identity_key_and_follows_the_mnemonic() {
+    let (first, second, restored) = (Machine::new(), Machine::new(), Machine::new());
+    init(&first);
+    init(&second);
+    keystore_of(&restored, ANVIL);
+    init(&restored);
+
+    let segment_of = |machine: &Machine| {
+        let shown = with_passphrase(machine, &["wallet", "show", "--json"]).json();
+        let key = shown["wallet"]["connector_identities"][0]["public_key"]
+            .as_str()
+            .expect("an identity key")
+            .to_owned();
+        let segment = machine.segment_of("relay");
+        assert_eq!(segment.len(), 16);
+        assert_eq!(segment, key[..16], "the segment is the key's first 16 hex");
+        let state = machine.toon(&["status", "--json"]).json();
+        assert_eq!(
+            state["agent_node"]["toon_apps"][0]["ilp_address"],
+            format!("g.toon.{segment}").as_str()
+        );
+        let config = fs::read_to_string(
+            machine
+                .agent_node_home()
+                .join("connectors/0/connector.toml"),
+        )
+        .unwrap();
+        assert!(config.contains(&format!("addresses = [\"g.toon.{segment}\"]")));
+        assert!(config.contains(&format!("prefix = \"g.toon.{segment}.relay\"")));
+        assert!(!config.contains("\"g.toon.relay"), "{config}");
+        segment
+    };
+    let (a, b, c) = (
+        segment_of(&first),
+        segment_of(&second),
+        segment_of(&restored),
+    );
+    assert_ne!(a, b);
+
+    // The same mnemonic gives the same addresses.
+    let again = Machine::new();
+    keystore_of(&again, ANVIL);
+    init(&again);
+    assert_eq!(segment_of(&again), c);
+}

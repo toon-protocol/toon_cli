@@ -70,7 +70,7 @@ fn information_document(far: &Node) -> String {
     let body = json!({
         "name": "far",
         "toon": {
-            "ilp_address": "g.toon.relay.far",
+            "ilp_address": far.machine.relay_address(),
             "connector_url": far.url(),
             "price": PRICE,
         },
@@ -105,7 +105,13 @@ fn peer_and_route(near: &Node, far: &Node) {
         "far",
     ]);
     assert_eq!(peered.exit_code, 0, "{}{}", peered.stdout, peered.stderr);
-    let routed = near.toon(&["route", "add", "g.toon.relay.far", "--peer", "far"]);
+    let routed = near.toon(&[
+        "route",
+        "add",
+        &far.machine.relay_address(),
+        "--peer",
+        "far",
+    ]);
     assert_eq!(routed.exit_code, 0, "{}{}", routed.stdout, routed.stderr);
 }
 

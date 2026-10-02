@@ -34,7 +34,7 @@ pub struct Add<'a> {
     pub name: &'a str,
     pub to: &'a str,
     pub origin: Origin<'a>,
-    /// The address prefix, `g.toon.<name>` if omitted.
+    /// The address prefix, `g.toon.<segment>.<name>` if omitted.
     pub address: Option<&'a str>,
     pub price: u64,
     pub yes: bool,
@@ -189,15 +189,16 @@ pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
         return Err(unknown(&state, add.to));
     };
     free(&state, add.name)?;
-    let prefix = add
-        .address
-        .map_or_else(|| format!("g.toon.{}", add.name), str::to_owned);
+    let prefix = add.address.map_or_else(
+        || state.toon_apps[index].app_address(add.name),
+        str::to_owned,
+    );
     plain(ErrorCode::RouteFailed, "The address", &prefix)?;
     let taken = |prefix: &str| {
         let ours = &state.toon_apps[index];
         ours.apps.iter().any(|app| {
             app.prefix == prefix
-                || (app.source == Source::Relay && prefix == node::RELAY_EPHEMERAL_PREFIX)
+                || (app.source == Source::Relay && prefix == ours.relay_ephemeral())
         })
     };
     if taken(&prefix) {

@@ -133,11 +133,26 @@ fn a_second_toon_app_is_peered_both_ways_and_a_packet_crosses_each_way() {
     let status = machine.toon(&["status", "--json"]);
     assert_eq!(status.exit_code, 0, "{}", status.stdout);
 
+    // The new TOON app has a segment of its own, and the first forwards it.
+    let relay_address = machine.relay_address();
+    let segment = machine.segment_of("second");
+    assert_ne!(segment, machine.segment_of("relay"));
+    let second_address = format!("g.toon.{segment}.second");
+    let routes = machine.toon(&["route", "list", "--json"]).json();
+    assert!(
+        routes["forwarding_routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|route| route["prefix"] == format!("g.toon.{segment}").as_str()),
+        "{routes}"
+    );
+
     // First to second: the app behind the new connector gets the packet.
     let second = format!("http://{}/ilp", listening(&machine, "second"));
     let sent = machine.toon(&[
         "send",
-        "g.toon.second",
+        &second_address,
         "--amount",
         "0",
         "--yes",
@@ -155,7 +170,7 @@ fn a_second_toon_app_is_peered_both_ways_and_a_packet_crosses_each_way() {
         "send",
         "--app",
         "second",
-        "g.toon.relay",
+        &relay_address,
         "--amount",
         "1",
         "--yes",

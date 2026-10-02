@@ -21,13 +21,10 @@ use crate::{derive, keystore, overlay};
 /// relay app behind it.
 pub const RELAY: &str = "relay";
 
-/// The connector's route to the relay's paid write endpoint, and its price per write.
-pub const RELAY_WRITE_PREFIX: &str = "g.toon.relay";
+/// The price per write on the connector's route to the relay's paid write endpoint.
 pub const RELAY_WRITE_PRICE: u64 = 1;
 /// The price of the relay's free ephemeral write.
 pub const RELAY_EPHEMERAL_PRICE: u64 = 0;
-/// The route to the relay's free ephemeral write endpoint.
-pub const RELAY_EPHEMERAL_PREFIX: &str = "g.toon.relay.ephemeral";
 
 /// How a TOON app is reached (ADR 0003).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -173,6 +170,9 @@ pub struct ToonApp {
     pub name: String,
     /// The index of the wallet's keys this app's connector uses.
     pub connector: u32,
+    /// The address segment of its connector: the first 16 hex characters of the connector's
+    /// identity public key.
+    pub segment: String,
     pub reach: Reach,
     pub listen: String,
     pub evm: Option<Evm>,
@@ -207,13 +207,41 @@ pub struct App {
     pub price: u64,
 }
 
+impl ToonApp {
+    /// The ILP address of its connector, and the route the others forward to it.
+    pub fn address(&self) -> String {
+        format!("g.toon.{}", self.segment)
+    }
+
+    /// The address an app of this name has behind its connector, unless the operator chose one.
+    pub fn app_address(&self, app: &str) -> String {
+        format!("{}.{app}", self.address())
+    }
+
+    /// The relay's paid write address, and the free ephemeral write beside it. The one place
+    /// a relay's addresses are computed.
+    pub fn relay_write(&self) -> String {
+        self.app_address(RELAY)
+    }
+
+    pub fn relay_ephemeral(&self) -> String {
+        format!("{}.ephemeral", self.relay_write())
+    }
+
+    /// The relay's route, if an app behind it is one.
+    pub fn relay_route(&self) -> Option<&App> {
+        self.apps.iter().find(|app| app.source == Source::Relay)
+    }
+}
+
 impl App {
-    /// The relay, with the price and the address it has when nothing is changed.
-    pub fn relay() -> Self {
+    /// The relay of the TOON app with this segment, with the price and the address it has
+    /// when nothing is changed.
+    pub fn relay(segment: &str) -> Self {
         Self {
             name: RELAY.into(),
             source: Source::Relay,
-            prefix: RELAY_WRITE_PREFIX.into(),
+            prefix: format!("g.toon.{segment}.{RELAY}"),
             price: RELAY_WRITE_PRICE,
         }
     }
@@ -231,12 +259,12 @@ impl App {
         }
     }
 
-    fn from_json(value: &Value) -> Option<Self> {
+    fn from_json(value: &Value, segment: &str) -> Option<Self> {
         // A state from before apps could be added holds each app as its name: the relay.
         if let Some(name) = value.as_str() {
             return Some(Self {
                 name: name.to_owned(),
-                ..Self::relay()
+                ..Self::relay(segment)
             });
         }
         let name = value["name"].as_str()?.to_owned();
@@ -260,7 +288,7 @@ impl App {
         Some(Self {
             name,
             price,
-            ..Self::relay()
+            ..Self::relay(segment)
         })
     }
 }
@@ -418,7 +446,7 @@ impl Solana {
 
 impl State {
     /// The state `init` records: one TOON app, the relay's, with the relay behind it.
-    pub fn first(options: &Options) -> Self {
+    pub fn first(options: &Options, segment: &str) -> Self {
         Self {
             network: options.network,
             faucet_url: options.faucet_url.clone(),
@@ -429,12 +457,13 @@ impl State {
             toon_apps: vec![ToonApp {
                 name: RELAY.into(),
                 connector: 0,
+                segment: segment.to_owned(),
                 reach: options.reach.clone(),
                 listen: options.listen.clone(),
                 evm: options.evm.clone(),
                 solana: options.solana.clone(),
                 plaintext_peers: options.plaintext_peers,
-                apps: vec![App::relay()],
+                apps: vec![App::relay(segment)],
                 relay: RelaySettings::default(),
             }],
         }
@@ -448,6 +477,7 @@ impl State {
                 json!({
                     "name": app.name,
                     "connector": app.connector,
+                    "segment": app.segment,
                     "reach": app.reach.json(),
                     "listen": app.listen,
                     "evm": app.evm.as_ref().map(Evm::json),
@@ -478,6 +508,7 @@ impl State {
             .as_array()?
             .iter()
             .map(|app| {
+                let segment = app["segment"].as_str()?.to_owned();
                 Some(ToonApp {
                     name: app["name"].as_str()?.to_owned(),
                     connector: u32::try_from(app["connector"].as_u64()?).ok()?,
@@ -496,8 +527,9 @@ impl State {
                     apps: app["apps"]
                         .as_array()?
                         .iter()
-                        .map(App::from_json)
+                        .map(|behind| App::from_json(behind, &segment))
                         .collect::<Option<_>>()?,
+                    segment,
                     // A state written before the relay had settings has none.
                     relay: match &app["relay"] {
                         Value::Null => RelaySettings::default(),
@@ -728,7 +760,7 @@ pub fn render(
         } else {
             ""
         },
-        string(&format!("g.toon.{}", app.name)),
+        string(&app.address()),
         string(&http_endpoint),
         string(&files.identity_key.to_string_lossy()),
     );
@@ -756,7 +788,7 @@ pub fn render(
         if let Some(ephemeral) = ephemeral {
             config.push_str(&format!(
                 "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = 0\n",
-                string(RELAY_EPHEMERAL_PREFIX),
+                string(&app.relay_ephemeral()),
                 string(&ephemeral),
             ));
         }

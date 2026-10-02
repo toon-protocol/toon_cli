@@ -90,7 +90,7 @@ fn one_operator_peers_alone_and_a_packet_crosses_and_is_fulfilled() {
     let routed = near.toon(&[
         "route",
         "add",
-        "g.toon.relay.far",
+        &far.machine.relay_address(),
         "--peer",
         "far",
         "--json",
@@ -100,7 +100,7 @@ fn one_operator_peers_alone_and_a_packet_crosses_and_is_fulfilled() {
     // The far connector charges the relay's write price, so the packet carries it.
     let sent = near.toon(&[
         "send",
-        "g.toon.relay.far",
+        &far.machine.relay_address(),
         "--amount",
         "1",
         "--yes",
@@ -317,5 +317,49 @@ fn a_label_or_prefix_that_is_not_one_path_segment_is_refused() {
         let run = machine.toon(args);
         assert_eq!(run.json()["error"]["code"], code, "{args:?}");
         assert_eq!(run.exit_code, 1);
+    }
+}
+
+#[test]
+fn two_agent_nodes_that_peer_toward_each_other_reach_each_others_relay() {
+    let chain = AnvilChain::start();
+    let (one, two) = (node_on(&chain), node_on(&chain));
+    for (from, to) in [(&one, &two), (&two, &one)] {
+        let peered = from.toon(&[
+            "peer",
+            "add",
+            &to.url(),
+            "--deposit",
+            &DEPOSIT.to_string(),
+            "--yes",
+            "--id",
+            "other",
+        ]);
+        assert_eq!(peered.exit_code, 0, "{}{}", peered.stdout, peered.stderr);
+        let routed = from.toon(&[
+            "route",
+            "add",
+            &to.machine.relay_address(),
+            "--peer",
+            "other",
+        ]);
+        assert_eq!(routed.exit_code, 0, "{}{}", routed.stdout, routed.stderr);
+    }
+    assert_ne!(one.machine.relay_address(), two.machine.relay_address());
+
+    for (from, to) in [(&one, &two), (&two, &one)] {
+        let sent = from.toon(&[
+            "send",
+            &to.machine.relay_address(),
+            "--amount",
+            "1",
+            "--yes",
+            "--seal-to",
+            &to.url(),
+            "--json",
+        ]);
+        let report = sent.json();
+        assert_eq!(report["outcome"], "fulfilled", "{report}");
+        assert_eq!(report["response"]["body"], "stored");
     }
 }

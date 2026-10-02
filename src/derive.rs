@@ -277,6 +277,14 @@ pub fn solana_address(secret: &[u8; 32]) -> String {
     bs58::encode(signing.verifying_key().as_bytes()).into_string()
 }
 
+/// The address segment of connector `connector`: the first 16 characters of its identity
+/// public key, as `toon wallet show` reports that key.
+pub fn address_segment(seed: &[u8], connector: u32) -> Result<String, DeriveError> {
+    let mut key = nostr_public_key(&*identity_secret(seed, connector)?);
+    key.truncate(16);
+    Ok(key)
+}
+
 /// Every public key for connectors `0..connectors`, plus the once-per-wallet keys.
 pub fn addresses(seed: &[u8], connectors: u32) -> Result<Addresses, DeriveError> {
     let mut keys = Vec::new();

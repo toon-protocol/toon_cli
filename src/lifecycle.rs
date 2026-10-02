@@ -138,7 +138,7 @@ fn peer(
             max_packet_amount: 0,
         },
     )?;
-    let prefix = format!("g.toon.{}", to.0.name);
+    let prefix = to.0.address();
     operator::route_add_on(from.1, &prefix, &to.0.name, 0)?;
     Ok(json!({
         "from": from.0.name,
@@ -176,10 +176,12 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
             format!("The wallet has no keys beyond connector {}.", connector - 1),
         ));
     }
-    let prefix = format!("g.toon.{}", create.name);
+    let segment = derive::address_segment(&*seed, connector)
+        .map_err(|source| failed(ErrorCode::KeystoreCorrupt, source.0))?;
     let new = ToonApp {
         name: create.name.to_owned(),
         connector,
+        segment: segment.clone(),
         reach: create.reach.clone(),
         // The port is chosen now, once, so that the address the connector publishes to its
         // peers is the same one every time it starts.
@@ -193,7 +195,7 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
                 Origin::Image(image) => Source::Image(image.to_owned()),
                 Origin::Url(url) => Source::Url(url.to_owned()),
             },
-            prefix: prefix.clone(),
+            prefix: format!("g.toon.{}.{}", segment, create.name),
             price: create.price,
         }],
         relay: node::RelaySettings::default(),
@@ -306,7 +308,8 @@ fn created(home: &Path, new: &ToonApp, from: &str, started: bool, peerings: Vec<
         "reach": match &new.reach { Reach::Hidden => "hidden", Reach::Clearnet { .. } => "clearnet" },
         "onion_endpoint": node::onion_endpoint(home, new),
         "listen": new.listen,
-        "address": format!("g.toon.{}", new.name),
+        "address": new.address(),
+        "app_address": new.app_address(&new.name),
         "config": node::ConnectorFiles::of(home, new.connector).config,
     });
     let peered = if peerings.is_empty() {

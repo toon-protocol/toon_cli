@@ -47,7 +47,7 @@ fn set_limits(machine: &Machine, per_command: &str, per_day: &str) {
 fn send(machine: &Machine, amount: &str) -> support::Run {
     machine.toon(&[
         "send",
-        "g.toon.relay",
+        &machine.relay_address(),
         "--amount",
         amount,
         "--yes",
@@ -58,9 +58,10 @@ fn send(machine: &Machine, amount: &str) -> support::Run {
 #[test]
 fn a_command_that_moves_money_needs_yes() {
     let node = running();
+    let relay = node.machine.relay_address();
 
     for args in [
-        &["send", "g.toon.relay", "--amount", "1", "--json"][..],
+        &["send", &relay, "--amount", "1", "--json"][..],
         &[
             "peer",
             "add",

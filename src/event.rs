@@ -149,7 +149,16 @@ pub fn public_key(secret: &[u8; 32]) -> Result<String, Error> {
 
 /// Write a signed event to the agent node's own relay through the relay's write route.
 pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
-    write_to(home, event, node::RELAY_WRITE_PREFIX, amount, None)
+    let state = node::State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
+    let relay = state
+        .toon_apps
+        .iter()
+        .find_map(|app| app.relay_route().map(|_| app.relay_write()))
+        .ok_or_else(|| Error {
+            code: ErrorCode::UnknownName,
+            message: "No TOON app of this agent node has a relay.".into(),
+        })?;
+    write_to(home, event, &relay, amount, None)
 }
 
 /// Write a signed event to `destination` for `amount`, sealed to the connector at

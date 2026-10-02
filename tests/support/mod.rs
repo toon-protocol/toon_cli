@@ -75,6 +75,26 @@ impl Machine {
         self.home().join(".toon").join("agent-node")
     }
 
+    /// The address segment of the TOON app `name`, as the agent node recorded it.
+    pub fn segment_of(&self, name: &str) -> String {
+        let state: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(self.agent_node_home().join("state.json"))
+                .expect("the agent node's state"),
+        )
+        .expect("state.json is JSON");
+        state["toon_apps"]
+            .as_array()
+            .and_then(|apps| apps.iter().find(|app| app["name"] == name))
+            .and_then(|app| app["segment"].as_str())
+            .unwrap_or_else(|| panic!("no TOON app {name} with a segment: {state}"))
+            .to_owned()
+    }
+
+    /// The address of the first TOON app's relay.
+    pub fn relay_address(&self) -> String {
+        format!("g.toon.{}.relay", self.segment_of("relay"))
+    }
+
     /// Run `toon` with `args`.
     pub fn toon(&self, args: &[&str]) -> Run {
         self.toon_with(args, |_| {})

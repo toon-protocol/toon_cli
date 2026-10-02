@@ -62,8 +62,9 @@ pub fn status(home: &Path) -> Result<Report, Error> {
         all_running &= running;
         let restarts = field("restarts").as_u64().unwrap_or(0);
         lines.push(format!(
-            "TOON app {}: connector {}{}{}.",
+            "TOON app {} ({}): connector {}{}{}.",
             app.name,
+            app.address(),
             if running { "running" } else { "not running" },
             field("address")
                 .as_str()
@@ -123,6 +124,7 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             .collect();
         toon_apps.push(json!({
             "name": app.name,
+            "ilp_address": app.address(),
             "apps": apps,
             "connector": {
                 "address": field("address"),
