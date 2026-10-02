@@ -161,16 +161,13 @@ pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
     // The relay of the TOON app that fronts the agent node's connector. With none, the
     // write is addressed as it would be and the connector rejects it.
     let state = node::State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
-    let app = &state.toon_apps[0];
-    let prefix = app
-        .apps
-        .iter()
-        .find(|behind| behind.source == node::Source::Relay)
-        .map_or_else(
-            || node::relay_write_prefix(&app.segment),
-            |relay| relay.prefix.clone(),
-        );
-    write_to(home, event, &prefix, amount, None)
+    write_to(
+        home,
+        event,
+        &state.toon_apps[0].relay_prefix(),
+        amount,
+        None,
+    )
 }
 
 /// Write a signed event to `destination` for `amount`, sealed to the key `seal_to`, or to

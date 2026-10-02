@@ -143,6 +143,19 @@ fn a_second_toon_app_is_peered_both_ways_and_a_packet_crosses_each_way() {
         report["created"]["address"],
         format!("g.toon.{second_segment}")
     );
+    // The source forwards the new connector's address to it.
+    let routes = machine.toon(&["route", "list", "--json"]).json();
+    assert!(
+        routes["forwarding_routes"]
+            .as_array()
+            .expect("the forwarding routes")
+            .iter()
+            .any(
+                |route| route["prefix"] == format!("g.toon.{second_segment}").as_str()
+                    && route["peer_id"] == "second"
+            ),
+        "{routes}"
+    );
     let sent = machine.toon(&[
         "send",
         &second_app,

@@ -134,6 +134,9 @@ fn publishing_with_no_relay_in_the_agent_node_is_not_an_unknown_name() {
         "{}",
         run.stdout
     );
+    // The write is addressed where the relay's route would be, and the connector, which
+    // has no such route, rejects it.
+    assert_eq!(run.json()["outcome"], "rejected", "{}", run.stdout);
     assert_ne!(run.exit_code, 0);
 }
 

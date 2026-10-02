@@ -216,6 +216,18 @@ impl ToonApp {
     pub fn address(&self) -> String {
         connector_address(&self.segment)
     }
+
+    /// The prefix of the relay's paid write: its route if it has a relay, else where the
+    /// route would be.
+    pub fn relay_prefix(&self) -> String {
+        self.apps
+            .iter()
+            .find(|app| app.source == Source::Relay)
+            .map_or_else(
+                || relay_write_prefix(&self.segment),
+                |relay| relay.prefix.clone(),
+            )
+    }
 }
 
 /// Where an app comes from.
