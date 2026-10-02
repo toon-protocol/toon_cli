@@ -248,10 +248,15 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
                     error.code,
                     format!(
                         "The TOON app {} was created, and {} of its 2 peerings were: {} \
-                         `toon peer add --app` and `toon route add --app` make the rest.",
+                         `{}` and `toon route add --app` make the rest.",
                         new.name,
                         peerings.len(),
-                        error.message
+                        error.message,
+                        operator::peer_add_command(
+                            "<connector_url>",
+                            &deposit.to_string(),
+                            " --app <name>"
+                        )
                     ),
                 )),
             },

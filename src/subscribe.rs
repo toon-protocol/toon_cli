@@ -271,8 +271,10 @@ pub fn subscribe(
             message: format!(
                 "No peering of this agent node reaches {}, where {relay} sells its feed. A \
                  peering is needed, with a deposit of at least {paid} base units: run \
-                 `toon peer add {} --deposit {paid}` and then `toon route add {} --peer <id>`.",
-                terms.address, terms.connector_url, terms.address
+                 `{}` and then `toon route add {} --peer <id>`.",
+                terms.address,
+                operator::peer_add_command(&terms.connector_url, &paid.to_string(), ""),
+                terms.address
             ),
         });
     }

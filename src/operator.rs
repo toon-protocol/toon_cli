@@ -304,6 +304,13 @@ fn refusal(status: u16, text: &str) -> String {
     format!("The connector answered {status}: {}", text.trim())
 }
 
+/// The `toon peer add` command a message tells the reader to run: it takes the deposit
+/// `peer add` requires and the `--yes` it needs to deposit it. `deposit` and `extra` are
+/// printed as given, so a placeholder in angle brackets may stand for either.
+pub fn peer_add_command(address: &str, deposit: &str, extra: &str) -> String {
+    format!("toon peer add {address} --deposit {deposit} --yes{extra}")
+}
+
 /// What `toon peer add` was asked for.
 pub struct PeerAdd<'a> {
     pub address: &'a str,
