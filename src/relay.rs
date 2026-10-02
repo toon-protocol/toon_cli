@@ -59,6 +59,7 @@ fn relay_of(state: &mut State) -> Result<&mut ToonApp, Error> {
         .iter_mut()
         .find(|app| app.apps.iter().any(|behind| behind.name == node::RELAY))
         .ok_or_else(|| Error {
+            nothing_sent: false,
             code: ErrorCode::UnknownName,
             message: "No TOON app of this agent node has a relay.".into(),
         })
@@ -79,6 +80,7 @@ fn confirm(home: &Path, yes: bool, what: &str) -> Result<(), Error> {
         return Ok(());
     }
     Err(Error {
+        nothing_sent: false,
         code: ErrorCode::ConfirmationRequired,
         message: format!(
             "{what} restarts the relay and its connector, and the packets the connector \

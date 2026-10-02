@@ -22,6 +22,7 @@ const TEMPLATE: &str = include_str!("../nips/TEMPLATE.md");
 
 fn usage(message: impl Into<String>) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::Usage,
         message: message.into(),
     }
@@ -30,6 +31,7 @@ fn usage(message: impl Into<String>) -> Error {
 /// A draft the proposals draft says not to write or publish.
 fn refused(message: impl Into<String>) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::DraftRefused,
         message: message.into(),
     }
@@ -62,6 +64,7 @@ pub fn run(command: NipCommand) -> Result<Report, Error> {
     match command {
         NipCommand::New { title } => {
             let directory = std::env::current_dir().map_err(|error| Error {
+                nothing_sent: false,
                 code: ErrorCode::Io,
                 message: format!("The current directory is unreadable: {error}."),
             })?;
@@ -249,6 +252,7 @@ pub fn publish(
         .and_then(|name| name.to_str())
         .ok_or_else(|| usage(format!("{} is not the path of a file.", path.display())))?;
     let document = std::fs::read(path).map_err(|error| Error {
+        nothing_sent: false,
         code: ErrorCode::Io,
         message: format!("{} could not be read: {error}.", path.display()),
     })?;

@@ -78,6 +78,9 @@ include!("error_codes.table");
 pub struct Error {
     pub code: ErrorCode,
     pub message: String,
+    /// Set when the command certainly failed before it sent a packet, so that what it was
+    /// to carry was never at risk. It is not part of the output.
+    pub nothing_sent: bool,
 }
 
 impl Error {

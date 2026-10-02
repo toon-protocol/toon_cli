@@ -61,6 +61,7 @@ pub trait Edge: Send + Sync {
 
 fn unavailable(why: &str) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::OverlayUnavailable,
         message: format!(
             "The Anyone overlay did not bootstrap: {why}. A hidden service is never created \
@@ -173,10 +174,12 @@ impl Edge for Loopback {
 
     fn issue(&self, connector: u32, key: &Path) -> Result<String, Error> {
         let secret = zeroize::Zeroizing::new(fs::read(key).map_err(|error| Error {
+            nothing_sent: false,
             code: ErrorCode::Io,
             message: format!("{}: {error}.", key.display()),
         })?);
         let secret: [u8; 32] = secret.as_slice().try_into().map_err(|_| Error {
+            nothing_sent: false,
             code: ErrorCode::Io,
             message: format!("{} is not a 32-byte key.", key.display()),
         })?;

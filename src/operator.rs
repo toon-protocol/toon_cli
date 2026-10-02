@@ -31,7 +31,11 @@ pub struct Surface {
 }
 
 fn failed(code: ErrorCode, message: String) -> Error {
-    Error { code, message }
+    Error {
+        code,
+        message,
+        nothing_sent: false,
+    }
 }
 
 /// The TOON app every command that talks to a connector is about, when the operator named
@@ -661,6 +665,25 @@ fn answer(summary: &str) -> Option<Answer> {
     })
 }
 
+/// Whether the connector's `send` failed before it wrote to the operator surface: its
+/// arguments were refused, the operator key could not be read, the identity to seal to
+/// could not be fetched, or the packet could not be sealed. A `Transport` failure may
+/// come after the packet left, and an answer not understood does, so neither is here.
+///
+/// The connector keeps `SendError` private, so its variant is read from its `Debug`.
+fn before_sending(error: &connector_cli::CliError) -> bool {
+    match error {
+        connector_cli::CliError::Usage(_) => true,
+        connector_cli::CliError::Send(send) => {
+            let variant = format!("{send:?}");
+            ["KeyFile", "Identity", "Seal"]
+                .iter()
+                .any(|name| variant.starts_with(name))
+        }
+        _ => false,
+    }
+}
+
 /// Send one packet from the operator surface to `destination`, for `amount`, sealed to the
 /// connector at `seal_to`, or to this one, and return what the connector says it came to.
 /// `body` is a file the request carries as its JSON body.
@@ -700,7 +723,11 @@ pub fn dispatch(
     }
     let summary = runtime
         .block_on(connector_cli::run(&arguments))
-        .map_err(|error| send_failed(error.to_string()))
+        .map_err(|error| {
+            let mut failure = send_failed(error.to_string());
+            failure.nothing_sent = before_sending(&error);
+            failure
+        })
         .and_then(|command| match command {
             connector_cli::Command::Finished { summary } => Ok(summary),
             connector_cli::Command::Serve(_) => {
@@ -731,11 +758,19 @@ pub fn dispatch_with_headers(
 
     let surface = surface(home)?;
     let send_failed = |message: String| failed(ErrorCode::SendFailed, message);
-    let keypair = write_keypair(&surface.write_key)?;
+    let not_sent = |message: String| Error {
+        nothing_sent: true,
+        ..send_failed(message)
+    };
+    let mut keypair = write_keypair(&surface.write_key);
+    if let Err(error) = &mut keypair {
+        error.nothing_sent = true;
+    }
+    let keypair = keypair?;
     let client = reqwest::blocking::Client::builder()
         .timeout(PATIENCE)
         .build()
-        .map_err(|error| send_failed(error.to_string()))?;
+        .map_err(|error| not_sent(error.to_string()))?;
 
     let identity_url = format!("{}/identity", seal_to.trim_end_matches('/'));
     let identity: Value = client
@@ -743,7 +778,7 @@ pub fn dispatch_with_headers(
         .send()
         .and_then(|response| response.json())
         .map_err(|error| {
-            send_failed(format!(
+            not_sent(format!(
                 "{identity_url} did not give its identity: {error}."
             ))
         })?;
@@ -751,7 +786,7 @@ pub fn dispatch_with_headers(
         .as_str()
         .and_then(|key| hex::decode(key.trim_start_matches("0x")).ok())
         .and_then(|key| key.try_into().ok())
-        .ok_or_else(|| send_failed(format!("{identity_url} has no 65-byte `publicKey`.")))?;
+        .ok_or_else(|| not_sent(format!("{identity_url} has no 65-byte `publicKey`.")))?;
 
     let plaintext = EnvelopeRequest {
         method: "POST".into(),
@@ -761,7 +796,7 @@ pub fn dispatch_with_headers(
     }
     .encode();
     let (data, secret) = seal_request(&plaintext, &public)
-        .map_err(|error| send_failed(format!("The packet could not be sealed: {error}.")))?;
+        .map_err(|error| not_sent(format!("The packet could not be sealed: {error}.")))?;
     let prepare = Prepare {
         amount,
         expires_at: chrono::Utc::now() + chrono::Duration::seconds(30),
