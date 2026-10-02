@@ -201,6 +201,38 @@ pub fn stop(home: &Path) {
     stop_in(&directory(home));
 }
 
+/// Withdraw connector `connector`'s hidden service from the overlay in `dir`: the service
+/// file first, so that a daemon that runs stops publishing it; then that daemon is told,
+/// and what it kept for the connector goes last. With no daemon running nothing publishes
+/// it, so there is no one to tell.
+pub fn withdraw_in(dir: &Path, connector: u32) -> Result<(), Error> {
+    let service = dir.join("services.d").join(format!("{connector}.conf"));
+    let directory = dir.join(connector.to_string());
+    let mut failed = None;
+    let existed = match fs::remove_file(&service) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => {
+            failed = Some(io_error(&service, error));
+            false
+        }
+    };
+    if existed {
+        if let Some(daemon) = Daemon::read(dir) {
+            if !daemon.signal("HUP") {
+                failed.get_or_insert(unavailable("the `anon` daemon is no longer running"));
+            }
+        }
+    }
+    match fs::remove_dir_all(&directory) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            failed.get_or_insert(io_error(&directory, error));
+        }
+        _ => {}
+    }
+    failed.map_or(Ok(()), Err)
+}
+
 fn stop_in(dir: &Path) {
     if let Some(daemon) = Daemon::read(dir) {
         daemon.signal("TERM");
@@ -511,33 +543,11 @@ impl Edge for Anon {
     }
 
     fn withdraw(&self, connector: u32) -> Result<(), Error> {
-        let service = self.service(connector);
-        let directory = self.dir.join(connector.to_string());
         self.issued
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|(_, known)| *known != connector);
-        let mut failed = None;
-        // The service file first, so that the daemon stops publishing it; then the daemon
-        // is told, and what it kept for the connector goes last.
-        let existed = match fs::remove_file(&service) {
-            Ok(()) => true,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-            Err(error) => {
-                failed = Some(io_error(&service, error));
-                false
-            }
-        };
-        if existed && !Daemon::read(&self.dir).is_some_and(|daemon| daemon.signal("HUP")) {
-            failed = Some(unavailable("the `anon` daemon is no longer running"));
-        }
-        match fs::remove_dir_all(&directory) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => {
-                failed.get_or_insert(io_error(&directory, error));
-            }
-            _ => {}
-        }
-        failed.map_or(Ok(()), Err)
+        withdraw_in(&self.dir, connector)
     }
 
     fn release(&self) {
@@ -652,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn a_withdrawal_with_no_daemon_still_removes_what_is_kept() {
+    fn a_withdrawal_with_no_daemon_removes_what_is_kept() {
         let dir = tempfile::tempdir().unwrap();
         let edge = Anon {
             dir: dir.path().to_path_buf(),
@@ -662,7 +672,7 @@ mod tests {
         fs::create_dir_all(dir.path().join("services.d")).unwrap();
         fs::write(edge.service(4), "x").unwrap();
         fs::create_dir_all(dir.path().join("4")).unwrap();
-        assert!(edge.withdraw(4).is_err());
+        edge.withdraw(4).unwrap();
         assert!(!edge.service(4).exists());
         assert!(!dir.path().join("4").exists());
     }

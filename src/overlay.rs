@@ -466,8 +466,6 @@ pub(crate) mod tests {
         // The address is kept where the daemon keeps its own.
         let kept = fs::read_to_string(home.path().join("overlay/0/hostname")).unwrap();
         assert!(kept.trim().ends_with(".anyone"));
-        // Withdrawn, connector 1 keeps nothing; connector 0 is as it was.
-        assert!(home.path().join("overlay/0/hostname").exists());
     }
 
     #[test]

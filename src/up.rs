@@ -700,8 +700,8 @@ impl Supervisor {
             if !self.units.iter().any(|unit| unit.app.name == app.name) {
                 if let Err(error) = self.add(app) {
                     // The endpoint may have been issued before the app failed to start.
-                    if let (Reach::Hidden, Some(edge)) = (&app.reach, &self.edge) {
-                        withdraw(&**edge, app.connector);
+                    if matches!(app.reach, Reach::Hidden) {
+                        self.withdraw(app.connector);
                     }
                     return Err(untouched(error));
                 }
@@ -724,7 +724,7 @@ impl Supervisor {
     /// Leave the overlay holding a hidden service for exactly the hidden TOON apps of
     /// `state`: one for any other connector is withdrawn. A withdrawal that fails is
     /// reported and changes nothing else.
-    pub(crate) fn reconcile(&mut self, state: &State) {
+    pub(crate) fn reconcile(&self, state: &State) {
         let wanted: Vec<u32> = state
             .toon_apps
             .iter()
@@ -735,40 +735,25 @@ impl Supervisor {
             .into_iter()
             .filter(|connector| !wanted.contains(connector))
             .collect();
-        if stranded.is_empty() {
-            return;
-        }
-        let edge = match &self.edge {
-            Some(edge) => Arc::clone(edge),
-            // No hidden service runs, so there is no overlay up: bring it up to withdraw
-            // from it, and let it go again.
-            None => match overlay::bootstrap(&self.home, false) {
-                Ok(edge) => {
-                    for connector in stranded {
-                        withdraw(&*edge, connector);
-                    }
-                    edge.release();
-                    return;
-                }
-                Err(error) => {
-                    eprintln!("toon: stranded hidden services remain: {}", error.message);
-                    return;
-                }
-            },
-        };
         for connector in stranded {
-            withdraw(&*edge, connector);
+            self.withdraw(connector);
         }
     }
-}
 
-/// Withdraw connector `connector`'s hidden service, and say so if that fails.
-fn withdraw(edge: &dyn Edge, connector: u32) {
-    if let Err(error) = edge.withdraw(connector) {
-        eprintln!(
-            "toon: the hidden service of connector {connector} was not withdrawn: {}",
-            error.message
-        );
+    /// Withdraw connector `connector`'s hidden service, and say so if that fails.
+    fn withdraw(&self, connector: u32) {
+        let withdrawn = match &self.edge {
+            Some(edge) => edge.withdraw(connector),
+            // No hidden service runs, so no overlay is up here: what it kept for the
+            // connector is removed without starting one.
+            None => anon::withdraw_in(&anon::directory(&self.home), connector),
+        };
+        if let Err(error) = withdrawn {
+            eprintln!(
+                "toon: the hidden service of connector {connector} was not withdrawn: {}",
+                error.message
+            );
+        }
     }
 }
 
