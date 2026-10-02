@@ -358,6 +358,7 @@ fn a_stated_amount_pays_a_connector_that_charges_to_forward_and_without_it_is_re
     let text = near.toon(&[
         "event", "publish", "--relay", &relay, "--kind", "1", "--yes",
     ]);
+    assert_eq!(text.exit_code, 1, "{}", text.stdout);
     assert!(text.stdout.contains("--amount"), "{}", text.stdout);
     assert_eq!(events_at(&near, &far), 0);
 
@@ -380,7 +381,20 @@ fn a_stated_amount_pays_a_connector_that_charges_to_forward_and_without_it_is_re
     let report = published.json();
     assert_eq!(report["outcome"], "published", "{report}");
     assert_eq!(report["paid"], FORWARD);
-    assert_eq!(events_at(&near, &far), 1);
+    let query = near.machine.toon(&[
+        "event",
+        "query",
+        &far.relay_url(),
+        "--filter",
+        r#"{"kinds":[1]}"#,
+        "--json",
+    ]);
+    assert_eq!(
+        query.json()["events"],
+        Value::Array(vec![report["event"].clone()]),
+        "{}",
+        query.stdout
+    );
     let after: u128 = remaining(&near).parse().expect("a number");
     assert_eq!(before - after, u128::from(FORWARD));
 }
@@ -392,6 +406,7 @@ fn without_yes_the_refusal_states_the_amount_and_nothing_is_paid() {
     let far = node_on(&chain);
     let relay = information_document(&far);
     peer_and_route(&near, &far);
+    let before = remaining(&near);
 
     let run = near.toon(&[
         "event", "publish", "--relay", &relay, "--kind", "1", "--amount", "101", "--json",
@@ -402,6 +417,8 @@ fn without_yes_the_refusal_states_the_amount_and_nothing_is_paid() {
     let message = error["message"].as_str().unwrap();
     assert!(message.contains("101 base"), "{message}");
     assert!(message.contains("price is 1"), "{message}");
+    assert_eq!(run.exit_code, 1);
+    assert_eq!(remaining(&near), before);
     assert_eq!(events_at(&near, &far), 0);
 }
 
@@ -433,6 +450,7 @@ fn an_amount_over_the_spending_limit_is_refused_and_sends_nothing() {
         "{}",
         run.stdout
     );
+    assert_eq!(run.exit_code, 1);
     assert_eq!(events_at(&near, &far), 0);
 }
 

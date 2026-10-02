@@ -468,8 +468,8 @@ fn publish_to(
         }
         if report.json["reject"]["code"] == "F03" {
             report.text = format!(
-                "{} The path to {relay} charges more than the relay's price of {price}: state \
-                 the path's cost with `--amount`.",
+                "{} A connector on the path to {relay} refused {amount} base units: state the \
+                 path's exact cost with `--amount`.",
                 report.text
             );
         }
