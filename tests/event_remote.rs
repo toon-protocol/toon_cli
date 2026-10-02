@@ -69,7 +69,7 @@ fn node_on(chain: &AnvilChain) -> Node {
 /// where a write is paid for. Returns the relay's `ws://` URL.
 fn information_document(far: &Node) -> String {
     document(json!({
-        "ilp_address": "g.toon.relay.far",
+        "ilp_address": far.machine.relay_prefix(),
         "connector_url": far.url(),
         "connector_seal_key": support::seal_key(&far.url()),
         "price": PRICE,
@@ -108,7 +108,7 @@ fn peer_and_route(near: &Node, far: &Node) {
         "far",
     ]);
     assert_eq!(peered.exit_code, 0, "{}{}", peered.stdout, peered.stderr);
-    let routed = near.toon(&["route", "add", "g.toon.relay.far", "--peer", "far"]);
+    let routed = near.toon(&["route", "add", &far.machine.relay_prefix(), "--peer", "far"]);
     assert_eq!(routed.exit_code, 0, "{}{}", routed.stdout, routed.stderr);
 }
 
@@ -190,7 +190,7 @@ fn a_publish_that_fails_before_a_packet_is_sent_is_not_counted() {
     // The relay pins a key that reads as one and is no point on the curve, so the packet
     // cannot be sealed.
     let relay = document(json!({
-        "ilp_address": "g.toon.relay.far",
+        "ilp_address": far.machine.relay_prefix(),
         "connector_url": far.url(),
         "connector_seal_key": support::UNSEALABLE_KEY,
         "price": PRICE,
@@ -290,7 +290,7 @@ fn a_write_is_sealed_to_the_published_key_and_never_dials_the_connector_url() {
     let far = node_on(&chain);
     let hint = support::spy::start();
     let relay = document(json!({
-        "ilp_address": "g.toon.relay.far",
+        "ilp_address": far.machine.relay_prefix(),
         "connector_url": hint.url(),
         "connector_seal_key": support::seal_key(&far.url()).trim_start_matches("0x"),
         "price": PRICE,
@@ -316,7 +316,7 @@ fn a_toon_object_without_a_whole_write_edge_is_not_payable() {
     let far = node_on(&chain);
     peer_and_route(&near, &far);
     let whole = json!({
-        "ilp_address": "g.toon.relay.far",
+        "ilp_address": far.machine.relay_prefix(),
         "connector_url": far.url(),
         "connector_seal_key": support::seal_key(&far.url()),
         "price": PRICE,

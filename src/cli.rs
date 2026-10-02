@@ -161,7 +161,7 @@ pub struct AddArgs {
     /// The URL of an app you already serve: nothing is run
     #[arg(long)]
     pub url: Option<String>,
-    /// The ILP address prefix the connector delivers to the app; `g.toon.<app>` if omitted
+    /// The ILP address prefix the connector delivers to the app; `g.toon.<segment>.<app>` if omitted
     #[arg(long)]
     pub address: Option<String>,
     /// What a client pays the connector for a packet to the app

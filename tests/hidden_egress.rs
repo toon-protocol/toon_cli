@@ -237,11 +237,11 @@ fn a_hidden_agent_node_subscribes_reads_and_follows_a_relay_at_an_anyone_name() 
 
 /// A server that answers every request with a NIP-11 document that names `connector`, and
 /// its sealing key, as where a write is paid for.
-fn information_document(connector: &str) -> SocketAddr {
+fn information_document(connector: &str, address: &str) -> SocketAddr {
     let body = json!({
         "name": "far",
         "toon": {
-            "ilp_address": "g.toon.relay.far",
+            "ilp_address": address,
             "connector_url": connector,
             "connector_seal_key": support::seal_key(connector),
             "price": 1,
@@ -269,10 +269,10 @@ fn information_document(connector: &str) -> SocketAddr {
 fn a_hidden_agent_node_publishes_to_a_relay_at_an_anyone_name() {
     let chain = AnvilChain::start();
     let far = far_on(&chain);
-    let document = information_document(&far.url());
+    let document = information_document(&far.url(), &far.machine.relay_prefix());
     let names = declare("write.anyone", 7100, document);
     let near = hidden_near(&chain, &names);
-    peer_and_route(&near, &far, "g.toon.relay.far");
+    peer_and_route(&near, &far, &far.machine.relay_prefix());
 
     let published = toon(
         &near.machine,
@@ -313,9 +313,10 @@ fn a_command_reaches_an_onion_endpoint_the_supervisor_published() {
 
     // No name was declared: this is an endpoint of the supervisor's own stand-in, which the
     // command finds at `overlay/loopback`.
+    let relay = machine.relay_prefix();
     let sent = machine.toon(&[
         "send",
-        "g.toon.relay",
+        &relay,
         "--amount",
         "0",
         "--yes",
@@ -360,9 +361,10 @@ fn a_seal_to_on_a_clearnet_name_goes_through_the_proxy_too() {
     up.report();
 
     // The connector's own `send` would dial a clearnet name directly and resolve it here.
+    let relay = machine.relay_prefix();
     let sent = machine.toon(&[
         "send",
-        "g.toon.relay",
+        &relay,
         "--amount",
         "0",
         "--yes",

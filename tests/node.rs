@@ -53,7 +53,7 @@ fn init_records_the_first_toon_app_and_writes_its_keys() {
         serde_json::from_slice(&fs::read(machine.agent_node_home().join("state.json")).unwrap())
             .unwrap();
     assert_eq!(state["toon_apps"][0]["name"], "relay");
-    assert_eq!(state["toon_apps"][0]["apps"][0], "relay");
+    assert_eq!(state["toon_apps"][0]["apps"][0]["name"], "relay");
     for key in ["identity.key", "settlement.key"] {
         let file = connector_dir(&machine).join(key);
         assert_eq!(fs::read(&file).unwrap().len(), 32);

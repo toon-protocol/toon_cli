@@ -165,6 +165,32 @@ impl Machine {
         self.home().join(".toon").join("agent-node")
     }
 
+    /// The address segment of the TOON app `name`, as the agent node's state holds it.
+    pub fn segment(&self, name: &str) -> String {
+        let state: Value = serde_json::from_slice(
+            &std::fs::read(self.agent_node_home().join("state.json")).unwrap(),
+        )
+        .unwrap();
+        state["toon_apps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|app| app["name"] == name)
+            .and_then(|app| app["segment"].as_str())
+            .unwrap_or_else(|| panic!("no TOON app {name}"))
+            .to_owned()
+    }
+
+    /// The address of the first TOON app's relay: `g.toon.<segment>.relay`.
+    pub fn relay_prefix(&self) -> String {
+        format!("g.toon.{}.relay", self.segment("relay"))
+    }
+
+    /// The address of the relay's free ephemeral write.
+    pub fn ephemeral_prefix(&self) -> String {
+        format!("{}.ephemeral", self.relay_prefix())
+    }
+
     /// Run `toon` with `args`.
     pub fn toon(&self, args: &[&str]) -> Run {
         self.toon_with(args, |_| {})

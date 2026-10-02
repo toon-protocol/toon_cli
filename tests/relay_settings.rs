@@ -171,7 +171,8 @@ fn price_restarts_a_running_connector_only_with_yes_and_is_rendered_on_the_write
     let address = relay_address(&machine);
     assert!(
         config(&machine).contains(&format!(
-            "prefix = \"g.toon.relay\"\nhandler_url = \"http://{address}/write\"\nprice = 7\n"
+            "prefix = \"{}\"\nhandler_url = \"http://{address}/write\"\nprice = 7\n",
+            machine.relay_prefix()
         )),
         "{}",
         config(&machine)
@@ -186,7 +187,7 @@ fn price_restarts_a_running_connector_only_with_yes_and_is_rendered_on_the_write
         .as_array()
         .unwrap()
         .iter()
-        .find(|route| route["prefix"] == "g.toon.relay")
+        .find(|route| route["prefix"] == machine.relay_prefix().as_str())
         .expect("the write route");
     assert_eq!(write["price"], 7);
 }

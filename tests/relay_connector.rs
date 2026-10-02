@@ -53,7 +53,7 @@ fn the_relay_is_handed_its_connector_and_its_own_prefix() {
     assert!(url.starts_with("http://127.0.0.1:"), "{url}");
     assert!(url.ends_with("/ilp"), "{url}");
     let prefix = get(&handed, "TOON_WRITE_ILP_ADDRESS");
-    assert_eq!(prefix, "g.toon.relay");
+    assert_eq!(prefix, machine.relay_prefix());
     let description = describe(&url);
     assert!(
         description["routes"].as_array().is_some_and(|routes| routes
