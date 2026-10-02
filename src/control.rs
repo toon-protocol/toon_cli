@@ -5,6 +5,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::Shutdown;
+use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,6 +19,26 @@ const PATIENCE: Duration = Duration::from_secs(5);
 
 pub fn path(home: &Path) -> PathBuf {
     home.join("supervisor.sock")
+}
+
+/// Run `use_address` with a path to the socket that is short whatever `home` is: a Unix
+/// socket address holds at most 107 bytes, and a home can be longer. The home is opened as
+/// a directory (close-on-exec, so no child inherits it) and the socket is addressed through
+/// `/proc/self/fd`; the descriptor lives only for the call.
+fn through_short_path<T>(
+    home: &Path,
+    use_address: impl FnOnce(&Path) -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let directory = std::fs::File::open(home)?;
+    let address = PathBuf::from(format!(
+        "/proc/self/fd/{}/supervisor.sock",
+        directory.as_raw_fd()
+    ));
+    use_address(&address)
+}
+
+fn connect(home: &Path) -> std::io::Result<UnixStream> {
+    through_short_path(home, |address| UnixStream::connect(address))
 }
 
 /// Ask the supervisor of the agent node at `home` a question. `None` if no supervisor
@@ -38,7 +59,7 @@ pub fn ask_about(
     toon_app: Option<&str>,
     patience: Duration,
 ) -> Option<Value> {
-    let mut stream = UnixStream::connect(path(home)).ok()?;
+    let mut stream = connect(home).ok()?;
     stream.set_read_timeout(Some(patience)).ok()?;
     stream.set_write_timeout(Some(PATIENCE)).ok()?;
     writeln!(
@@ -54,7 +75,7 @@ pub fn ask_about(
 
 /// Whether a supervisor is answering at `home`.
 pub fn running(home: &Path) -> bool {
-    UnixStream::connect(path(home)).is_ok()
+    connect(home).is_ok()
 }
 
 /// Bind the socket. A socket left by a supervisor that is gone is replaced; one that
@@ -68,7 +89,7 @@ pub fn bind(home: &Path) -> std::io::Result<Option<UnixListener>> {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
         _ => {}
     }
-    UnixListener::bind(&socket).map(Some)
+    through_short_path(home, |address| UnixListener::bind(address)).map(Some)
 }
 
 /// Answer requests until the process ends, each connection on its own thread, so that a
