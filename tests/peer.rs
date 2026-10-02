@@ -111,10 +111,7 @@ fn one_operator_peers_alone_and_a_packet_crosses_and_is_fulfilled() {
     let report = sent.json();
     assert_eq!(report["outcome"], "fulfilled", "{report}");
     // It reached the relay, which refuses a write that carries no event.
-    assert_eq!(
-        report["response"]["body"],
-        r#"{"error":"Invalid request body"}"#
-    );
+    assert_eq!(report["response"]["body"], support::NOT_A_WRITE);
     assert_eq!(sent.exit_code, 0);
 
     // The other operator did nothing, and has nothing to forward back over.

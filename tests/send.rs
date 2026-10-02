@@ -39,10 +39,7 @@ fn a_packet_to_the_operators_own_route_is_fulfilled() {
     let report = run.json();
     assert_eq!(report["outcome"], "fulfilled", "{report}");
     assert_eq!(report["response"]["status"], 400);
-    assert_eq!(
-        report["response"]["body"],
-        r#"{"error":"Invalid request body"}"#
-    );
+    assert_eq!(report["response"]["body"], support::NOT_A_WRITE);
     assert_eq!(run.exit_code, 0);
     assert_eq!(run.stderr, "");
 }

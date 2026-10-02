@@ -17,10 +17,6 @@ use support::{Foreground, Machine};
 
 const DEPOSIT: u128 = 1_000_000;
 
-/// What a relay answers a write that carries no event: these packets are sent to see
-/// which relay they reach, and a relay answers one all the same.
-const NO_EVENT: &str = r#"{"error":"Invalid request body"}"#;
-
 fn shown(machine: &Machine) -> Value {
     machine
         .toon_with(&["wallet", "show", "--json"], |command| {
@@ -267,9 +263,8 @@ fn a_joined_agent_node_forwards_the_networks_addresses_to_the_network() {
 
     // The network's relay: fulfilled by the network's connector, not delivered locally.
     let report = send(&agent, &network, &network.machine.relay_prefix(), "1");
-    // The packet carries no event, so the relay it is delivered to refuses the write.
     assert_eq!(report["outcome"], "fulfilled", "{report}");
-    assert_eq!(report["response"]["body"], NO_EVENT);
+    assert_eq!(report["response"]["body"], support::NOT_A_WRITE);
 
     // Another address under `g.toon`: the network's app answers.
     let report = send(&agent, &network, "g.toon.elsewhere", "0");
@@ -320,6 +315,6 @@ fn two_agent_nodes_peered_with_each_other_reach_each_others_relay() {
     for (near, far) in [(&x, &y), (&y, &x)] {
         let report = send(near, far, &far.machine.relay_prefix(), "1");
         assert_eq!(report["outcome"], "fulfilled", "{report}");
-        assert_eq!(report["response"]["body"], NO_EVENT);
+        assert_eq!(report["response"]["body"], support::NOT_A_WRITE);
     }
 }
