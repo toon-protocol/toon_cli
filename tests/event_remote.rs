@@ -67,11 +67,16 @@ fn node_on(chain: &AnvilChain) -> Node {
 /// A relay's information document, served for any request, naming `far`'s connector as
 /// where a write is paid for. Returns the relay's `ws://` URL.
 fn information_document(far: &Node) -> String {
+    document_naming(&far.url())
+}
+
+/// Like `information_document`, for a relay whose connector is at `connector_url`.
+fn document_naming(connector_url: &str) -> String {
     let body = json!({
         "name": "far",
         "toon": {
             "ilp_address": "g.toon.relay.far",
-            "connector_url": far.url(),
+            "connector_url": connector_url,
             "price": PRICE,
         },
     })
@@ -177,6 +182,27 @@ fn the_price_is_shown_and_nothing_is_paid_without_yes() {
         "--json",
     ]);
     assert_eq!(query.json()["events"], json!([]));
+}
+
+#[test]
+fn a_publish_that_fails_before_a_packet_is_sent_is_not_counted() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    // The relay names a connector nothing listens on, so its identity cannot be fetched.
+    let relay = document_naming("http://127.0.0.1:1/ilp");
+    peer_and_route(&near, &far);
+    let remaining =
+        || near.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone();
+    let before = remaining();
+
+    let run = near.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--yes", "--json",
+    ]);
+
+    assert_eq!(run.json()["error"]["code"], "send_failed", "{}", run.stdout);
+    assert_eq!(run.exit_code, 1);
+    assert_eq!(remaining(), before);
 }
 
 #[test]

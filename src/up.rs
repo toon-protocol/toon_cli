@@ -203,6 +203,7 @@ pub enum Stopped {
 
 fn failed(message: String) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::ConnectorFailed,
         message,
     }
@@ -229,11 +230,13 @@ pub fn start(home: &Path) -> Result<Supervisor, Error> {
         return Err(funding::unfunded(state.network, &lacking));
     }
     let Some(listener) = control::bind(home).map_err(|error| Error {
+        nothing_sent: false,
         code: ErrorCode::Io,
         message: format!("{}: {error}.", control::path(home).display()),
     })?
     else {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::AlreadyRunning,
             message: format!(
                 "A supervisor is already running this agent node, at {}.",
@@ -267,6 +270,7 @@ fn start_app(
         // The relay's own Nostr identity is the wallet's, in hex.
         Source::Relay => {
             let identity = fs::read(&files.identity_key).map_err(|error| Error {
+                nothing_sent: false,
                 code: ErrorCode::AppFailed,
                 message: format!(
                     "The identity key of the app {} is not readable at {}: {error}.",
@@ -585,6 +589,7 @@ fn answer_all(waiting: Vec<Reload>, result: &Result<(), Unreloaded>) {
             Ok(()) => Ok(()),
             Err(unreloaded) => Err(Unreloaded {
                 error: Error {
+                    nothing_sent: unreloaded.error.nothing_sent,
                     code: unreloaded.error.code,
                     message: unreloaded.error.message.clone(),
                 },
@@ -660,6 +665,7 @@ impl Supervisor {
                 apps_checked = Instant::now();
                 if let Some(app) = self.units.iter_mut().find_map(Unit::stopped_app) {
                     stopped = Stopped::Failed(Error {
+                        nothing_sent: false,
                         code: ErrorCode::AppFailed,
                         message: format!("The app {app} stopped."),
                     });

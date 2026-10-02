@@ -72,6 +72,7 @@ pub trait RunningApp: Send {
 
 fn failed(message: String) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::AppFailed,
         message,
     }

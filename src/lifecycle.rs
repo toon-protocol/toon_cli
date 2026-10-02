@@ -37,7 +37,11 @@ pub struct Create<'a> {
 }
 
 fn failed(code: ErrorCode, message: String) -> Error {
-    Error { code, message }
+    Error {
+        code,
+        message,
+        nothing_sent: false,
+    }
 }
 
 /// Ask the supervisor to make what runs match the state.

@@ -67,7 +67,11 @@ pub struct Add<'a> {
 }
 
 fn failed(code: ErrorCode, message: String) -> Error {
-    Error { code, message }
+    Error {
+        code,
+        message,
+        nothing_sent: false,
+    }
 }
 
 fn loaded(home: &Path) -> Result<State, Error> {
