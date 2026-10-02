@@ -259,7 +259,7 @@ fn a_home_with_a_long_path_has_a_working_supervisor() {
     assert!(socket.as_os_str().len() > 107, "the socket path is long");
     machine.init_on(&chain);
     let up = machine.start(&["up", "--foreground", "--json"]);
-    up.report();
+    assert!(up.report().get("error").is_none(), "up started");
 
     let status = machine.toon(&["status", "--json"]);
     assert_eq!(status.exit_code, 0);

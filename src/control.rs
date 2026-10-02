@@ -17,8 +17,11 @@ use serde_json::{json, Value};
 /// How long either side waits on the other before it gives up on the connection.
 const PATIENCE: Duration = Duration::from_secs(5);
 
+/// The socket's file name in the agent node's home.
+const FILE_NAME: &str = "supervisor.sock";
+
 pub fn path(home: &Path) -> PathBuf {
-    home.join("supervisor.sock")
+    home.join(FILE_NAME)
 }
 
 /// Run `use_address` with a path to the socket that is short whatever `home` is: a Unix
@@ -30,10 +33,7 @@ fn through_short_path<T>(
     use_address: impl FnOnce(&Path) -> std::io::Result<T>,
 ) -> std::io::Result<T> {
     let directory = std::fs::File::open(home)?;
-    let address = PathBuf::from(format!(
-        "/proc/self/fd/{}/supervisor.sock",
-        directory.as_raw_fd()
-    ));
+    let address = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd())).join(FILE_NAME);
     use_address(&address)
 }
 
