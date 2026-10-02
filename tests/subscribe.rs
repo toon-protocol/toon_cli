@@ -558,3 +558,55 @@ fn follow_needs_a_subscription() {
     );
     assert_eq!(run.exit_code, 1);
 }
+
+#[test]
+fn a_subscription_is_sealed_to_the_published_key_and_never_dials_the_connector_url() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let hint = format!("http://{}/ilp", listener.local_addr().expect("address"));
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = seen.clone();
+    std::thread::spawn(move || {
+        for _ in listener.incoming().flatten() {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+    let identity: serde_json::Value = reqwest::blocking::get(format!("{}/identity", far.url()))
+        .and_then(|response| response.json())
+        .expect("the connector's identity");
+    relay.publish_connector(&hint, identity["publicKey"].as_str().unwrap());
+
+    let run = subscribe(
+        &near,
+        &relay,
+        &["--filter", FILTER, "--amount", "1000", "--yes"],
+    );
+
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    assert_eq!(run.json()["outcome"], "subscribed");
+    assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_relay_without_a_whole_seal_key_is_not_payable() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+
+    for key in ["", "04ab", "not hex"] {
+        relay.publish_connector(&far.url(), key);
+        let run = subscribe(
+            &near,
+            &relay,
+            &["--filter", FILTER, "--amount", "1000", "--yes"],
+        );
+        let error = run.json()["error"].clone();
+        assert_eq!(error["code"], "relay_not_payable", "{key}: {error}");
+        assert_eq!(run.exit_code, 1);
+    }
+    assert_eq!(relay.posts(), 0);
+}

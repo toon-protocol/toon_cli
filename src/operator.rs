@@ -714,15 +714,16 @@ pub fn dispatch(
     })
 }
 
-/// Send one packet like [`dispatch`] does, but with `headers` on the request and `body` in
-/// memory. The connector's `send` fixes the request's headers, so this forms, seals and
+/// Send one packet like [`dispatch`] does, but sealed to the key `public` itself, which
+/// is not fetched from anywhere, with `headers` on the request and `body` in memory. The
+/// connector's `send` fixes the request's headers, so this forms, seals and
 /// signs the packet itself, with the connector's own crates, and reads the answer the
 /// same way.
 pub fn dispatch_with_headers(
     home: &Path,
     destination: &str,
     amount: u64,
-    seal_to: &str,
+    public: &[u8; 65],
     headers: Vec<(String, String)>,
     body: Vec<u8>,
 ) -> Result<Answer, Error> {
@@ -737,22 +738,6 @@ pub fn dispatch_with_headers(
         .build()
         .map_err(|error| send_failed(error.to_string()))?;
 
-    let identity_url = format!("{}/identity", seal_to.trim_end_matches('/'));
-    let identity: Value = client
-        .get(&identity_url)
-        .send()
-        .and_then(|response| response.json())
-        .map_err(|error| {
-            send_failed(format!(
-                "{identity_url} did not give its identity: {error}."
-            ))
-        })?;
-    let public: [u8; 65] = identity["publicKey"]
-        .as_str()
-        .and_then(|key| hex::decode(key.trim_start_matches("0x")).ok())
-        .and_then(|key| key.try_into().ok())
-        .ok_or_else(|| send_failed(format!("{identity_url} has no 65-byte `publicKey`.")))?;
-
     let plaintext = EnvelopeRequest {
         method: "POST".into(),
         target: "/".into(),
@@ -760,7 +745,7 @@ pub fn dispatch_with_headers(
         body,
     }
     .encode();
-    let (data, secret) = seal_request(&plaintext, &public)
+    let (data, secret) = seal_request(&plaintext, public)
         .map_err(|error| send_failed(format!("The packet could not be sealed: {error}.")))?;
     let prepare = Prepare {
         amount,

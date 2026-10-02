@@ -152,22 +152,38 @@ pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
     write_to(home, event, node::RELAY_WRITE_PREFIX, amount, None)
 }
 
-/// Write a signed event to `destination` for `amount`, sealed to the connector at
-/// `seal_to`, or to this agent node's own.
+/// Write a signed event to `destination` for `amount`, sealed to the key `seal_to`, or to
+/// this agent node's own connector.
 fn write_to(
     home: &Path,
     event: Value,
     destination: &str,
     amount: u64,
-    seal_to: Option<&str>,
+    seal_to: Option<&[u8; 65]>,
 ) -> Result<Report, Error> {
-    let body = home.join(format!(
-        "event.{}.json",
-        hex::encode(keystore::random::<8>()?)
-    ));
-    node::write(&body, event.to_string().as_bytes(), 0o600)?;
-    let answer = operator::dispatch(home, destination, amount, seal_to, Some(&body));
-    let _ = std::fs::remove_file(&body);
+    let answer = match seal_to {
+        Some(key) => {
+            let headers = vec![("content-type".to_owned(), "application/json".to_owned())];
+            operator::dispatch_with_headers(
+                home,
+                destination,
+                amount,
+                key,
+                headers,
+                event.to_string().into_bytes(),
+            )
+        }
+        None => {
+            let body = home.join(format!(
+                "event.{}.json",
+                hex::encode(keystore::random::<8>()?)
+            ));
+            node::write(&body, event.to_string().as_bytes(), 0o600)?;
+            let answer = operator::dispatch(home, destination, amount, None, Some(&body));
+            let _ = std::fs::remove_file(&body);
+            answer
+        }
+    };
 
     let id = event["id"].as_str().unwrap_or_default().to_owned();
     Ok(match answer? {
@@ -288,10 +304,28 @@ fn set_timeouts(stream: &TcpStream) -> std::io::Result<()> {
 }
 
 /// Where another relay is paid for a write, from its information document.
-struct Edge {
-    ilp_address: String,
-    connector_url: String,
-    price: u64,
+pub struct Edge {
+    pub ilp_address: String,
+    /// A location hint: where to peer, never dialled by a write.
+    pub connector_url: String,
+    /// The connector's sealing public key, which a write is sealed to.
+    pub seal_key: [u8; 65],
+    pub price: u64,
+}
+
+/// The paid write edge in a `toon` object, if it is whole: the key is 65 bytes of hex, with
+/// or without `0x`.
+pub fn edge_fields(toon: &Value) -> Option<Edge> {
+    let text = |field: &str| toon[field].as_str().filter(|text| !text.is_empty());
+    Some(Edge {
+        ilp_address: text("ilp_address")?.to_owned(),
+        connector_url: text("connector_url")?.to_owned(),
+        seal_key: hex::decode(text("connector_seal_key")?.trim_start_matches("0x"))
+            .ok()?
+            .try_into()
+            .ok()?,
+        price: toon["price"].as_u64()?,
+    })
 }
 
 pub fn unpayable(message: String) -> Error {
@@ -338,23 +372,13 @@ pub fn information_document(relay: &str) -> Result<Value, Error> {
 /// object.
 fn edge(relay: &str) -> Result<Edge, Error> {
     let document = information_document(relay)?;
-    let toon = &document["toon"];
-    let text = |field: &str| toon[field].as_str().filter(|text| !text.is_empty());
-    match (
-        text("ilp_address"),
-        text("connector_url"),
-        toon["price"].as_u64(),
-    ) {
-        (Some(ilp_address), Some(connector_url), Some(price)) => Ok(Edge {
-            ilp_address: ilp_address.to_owned(),
-            connector_url: connector_url.to_owned(),
-            price,
-        }),
-        _ => Err(unpayable(format!(
+    edge_fields(&document["toon"]).ok_or_else(|| {
+        unpayable(format!(
             "The information document of {relay} has no `toon` object with an `ilp_address`, \
-             a `connector_url` and a `price`, so it does not say where a write is paid for."
-        ))),
-    }
+             a `connector_url`, a `connector_seal_key` of 65 bytes of hex and a `price`, so it \
+             does not say where a write is paid for."
+        ))
+    })
 }
 
 /// `toon event publish --relay`: publish to a relay this agent node does not run, paying
@@ -400,7 +424,7 @@ fn publish_to(
             event,
             &edge.ilp_address,
             edge.price,
-            Some(&edge.connector_url),
+            Some(&edge.seal_key),
         )?;
         // A fulfilled packet moved money, whatever the relay or its fulfilment said.
         let paid = report.json["outcome"] != "rejected";

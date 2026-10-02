@@ -37,8 +37,10 @@ fn usage(message: impl Into<String>) -> Error {
 
 /// What a relay says it sells its feed for, from its information document.
 struct Terms {
-    /// Where the relay's connector is reached, for sealing a packet to it.
+    /// Where the relay's connector is reached, for the peering the subscriber needs.
     connector_url: String,
+    /// The key a packet is sealed to.
+    seal_key: [u8; 65],
     /// The subscribe route.
     address: String,
     /// What one packet costs and credits.
@@ -54,22 +56,25 @@ fn terms(relay: &str) -> Result<Terms, Error> {
         value.as_str().filter(|text| !text.is_empty())
     }
     let positive = |value: &Value| value.as_u64().filter(|number| *number > 0);
+    let toon = event::edge_fields(&document["toon"]);
     match (
-        text(&document["toon"]["connector_url"]),
+        toon,
         text(&subscription["ilp_address"]),
         positive(&subscription["price"]),
         positive(&subscription["broadcast_price"]),
     ) {
-        (Some(connector_url), Some(address), Some(price), Some(broadcast_price)) => Ok(Terms {
-            connector_url: connector_url.to_owned(),
+        (Some(edge), Some(address), Some(price), Some(broadcast_price)) => Ok(Terms {
+            connector_url: edge.connector_url,
+            seal_key: edge.seal_key,
             address: address.to_owned(),
             price,
             broadcast_price,
         }),
         _ => Err(event::unpayable(format!(
             "The information document of {relay} has no `toon_subscription` with an \
-             `ilp_address`, a `price` and a `broadcast_price` above 0 beside a `toon` with a \
-             `connector_url`, so it does not sell its feed."
+             `ilp_address`, a `price` and a `broadcast_price` above 0 beside a `toon` with an \
+             `ilp_address`, a `connector_url`, a 65-byte hex `connector_seal_key` and a \
+             `price`, so it does not sell its feed."
         ))),
     }
 }
@@ -299,7 +304,7 @@ pub fn subscribe(
                 home,
                 &terms.address,
                 terms.price,
-                &terms.connector_url,
+                &terms.seal_key,
                 headers,
                 body.clone(),
             ) {

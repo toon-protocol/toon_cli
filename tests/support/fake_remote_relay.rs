@@ -33,6 +33,7 @@ pub struct Subscription {
 #[derive(Default)]
 struct State {
     connector_url: String,
+    connector_seal_key: String,
     subscriptions: HashMap<String, Subscription>,
     /// The subscriber key of every request the subscribe route accepted, in order.
     credited: Vec<String>,
@@ -96,9 +97,21 @@ impl FakeRemoteRelay {
         format!("http://{}", self.address)
     }
 
-    /// Name the connector that terminates the relay's routes.
+    /// Name the connector that terminates the relay's routes, as the relay publishes it: the
+    /// real sealing key of the connector at `url`, and `url` as the location hint.
     pub fn set_connector(&self, url: &str) {
-        self.state.lock().unwrap().connector_url = url.to_owned();
+        let identity: Value = reqwest::blocking::get(format!("{url}/identity"))
+            .and_then(|response| response.json())
+            .expect("the connector's identity");
+        let key = identity["publicKey"].as_str().expect("a publicKey");
+        self.publish_connector(url, key);
+    }
+
+    /// Publish `url` as the connector's location and `key` as its sealing key, as given.
+    pub fn publish_connector(&self, url: &str, key: &str) {
+        let mut state = self.state.lock().unwrap();
+        state.connector_url = url.to_owned();
+        state.connector_seal_key = key.to_owned();
     }
 
     pub fn subscription(&self, pubkey: &str) -> Option<Subscription> {
@@ -140,12 +153,14 @@ impl FakeRemoteRelay {
     }
 
     fn document(&self) -> Value {
+        let state = self.state.lock().unwrap();
         json!({
             "name": "far",
             "supported_nips": [1, 11, 42],
             "toon": {
                 "ilp_address": "g.toon.relay",
-                "connector_url": self.state.lock().unwrap().connector_url,
+                "connector_url": state.connector_url,
+                "connector_seal_key": state.connector_seal_key,
                 "price": 1,
             },
             "toon_subscription": {
