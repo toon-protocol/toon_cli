@@ -67,7 +67,7 @@ A failed command with `--json` prints:
 | `connector_failed` | 1 | A connector did not start, or the supervisor did not stop when `toon down` asked; the message carries the connector's own reason |
 | `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
 | `app_failed` | 1 | An app behind a connector did not start, or stopped; the message carries the reason |
-| `unfunded` | 1 | A settlement key does not hold what the connector needs, so `toon up` did not start it; the message names each address and the amount |
+| `unfunded` | 1 | A settlement key does not hold what is needed, so `toon up` did not start the connector (the token; on Solana also SOL), or a command that has a connector send a transaction did not (EVM gas: `toon join`, `toon peer add` with a deposit, `toon create` with a deposit, `toon channel open`, `fund`, `withdraw`, `land`); the message names each address and the amount |
 | `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
 | `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event) could not be sent: the connector's operator surface refused the write or could not be reached; the message carries the reason |
@@ -83,14 +83,15 @@ A failed command with `--json` prints:
 | `draft_refused` | 1 | `toon nip new` or `toon nip publish` would not write or publish a draft: the file exists already, does not name a draft or begin with its title, is not UTF-8, or the relay holds the identifier under another title and `--title-changed` was not given; the message says which |
 | `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
 | `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap (its `anon` release could not be downloaded or did not match its pinned checksum, its terms were not agreed to, or the daemon did not come up), so a hidden service was not created or started, or a command on a hidden agent node that makes a request of its own (a faucet, a chain, a relay, a connector) had no overlay to send it through; nothing falls back to clearnet |
-| `join_refused` | 1 | `toon join` named a network other than the one this agent node was initialised for, or the agent node has already joined one; nothing was spent |
-| `relay_not_payable` | 1 | `toon event publish --relay` or `toon relay subscribe` could not read the relay's information document, or it names no paid write edge (`toon`: `ilp_address`, `connector_url`, `price`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
+| `join_refused` | 1 | `toon join` named a network other than the one this agent node was initialised for, the agent node has already joined one, or it records no connector for the network (`mainnet` has none unless `init` was given `--connector-url`); nothing was spent |
+| `relay_not_payable` | 1 | `toon event publish --relay` or `toon relay subscribe` could not read the relay's information document, or it names no write edge (`toon`: `ilp_address`, `connector_url`, `connector_seal_key`, `price`; the key is 65 bytes of hex beginning `04`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
 | `peering_needed` | 1 | `toon event publish --relay` or `toon relay subscribe` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. Run `toon peer add` and `toon route add` first |
 | `not_subscribed` | 1 | `toon event follow` named a relay at which this agent node holds no subscription: `toon relay subscribe` opens one |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
 | `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
 | `funds_held` | 1 | `toon destroy` did nothing: a channel of the TOON app still holds funds, or its channels could not be read; the message names each |
 | `last_toon_app` | 1 | `toon destroy` was given the only TOON app: an agent node always has one |
+| `one_relay` | 1 | `toon create` or `toon add` was given the relay's image (any tag or digest of the repository this build pins): an agent node runs one relay, the one `toon init` created; nothing was changed |
 
 
 ## The wallet passphrase
@@ -106,9 +107,22 @@ needs no passphrase.
 
 `toon init --network` takes `devnet` (the default), `sandbox` or `mainnet`. Solana
 settlement is off unless `--solana` is given. `toon up` does not start a connector whose
-settlement key holds less than 0.0001 ETH (0.01 SOL) for gas and one whole token; it fails
-with `unfunded`. Only the devnet has a faucet: on the other networks `toon wallet fund`
+settlement key holds less than one whole token, or on Solana less than 0.01 SOL for fees; it
+fails with `unfunded`. An EVM connector starts without gas: gas is spent when it sends a
+transaction, so `toon join`, `toon peer add` with a deposit, `toon create` with a deposit (both
+keys send one) and `toon channel open`, `fund`, `withdraw` and `land` fail with `unfunded` while
+the EVM settlement key holds less than 0.0001 ETH. They refuse before the spending limit is
+charged and before anything is sent. A chain that cannot be asked is not a verdict: the
+connector answers for itself. The devnet faucet sends no ETH: the message then says Base
+Sepolia ETH comes from a public Base Sepolia faucet, to be given the address it names, and
+does not name `toon wallet fund`. `toon wallet fund` exits 0 when only gas is lacking, and says
+so. `needs` of `toon init` and `lacking` of `toon wallet fund` carry `"for"`: `"start"` or
+`"deposit"`. Only the devnet has a faucet: on the other networks `toon wallet fund`
 fails with `faucet_unavailable`, and on mainnet the operator funds the addresses themselves.
+
+`mainnet` has no TOON network to join yet: its profile names no connector and no relay, `init`
+says so, and `toon join mainnet` fails with `join_refused` until `init` is given
+`--connector-url` (and `--relay-url`). Its chain settings are unchanged.
 
 ## Hidden service and clearnet
 
@@ -160,9 +174,11 @@ passphrase; it reads from `ws://` relays only.
 
 `toon event publish --relay <ws-url>` publishes to a relay this agent node does not run. It
 reads the relay's NIP-11 information document (`GET` of the relay's URL as `http://`, with
-`Accept: application/nostr+json`) for its `toon` object: `ilp_address`, `connector_url` and
-`price`. It shows the price and publishes only with `--yes`, under the spending limit, paying
-from this agent node's own connector over a peering. If no peering of the agent node reaches
+`Accept: application/nostr+json`) for its `toon` object: `ilp_address`, `connector_url`,
+`connector_seal_key` and `price`. It seals the packet to `connector_seal_key` and makes no
+request to `connector_url`, which only appears in the `peering_needed` message. It shows the
+price and publishes only with `--yes`, under the spending limit, paying from this agent
+node's own connector over a peering. If no peering of the agent node reaches
 the relay's `ilp_address` it fails with `peering_needed` and creates nothing. The report has
 the same outcomes as a publish to the own relay, plus `relay` and `paid`: the price, or `0`
 when the packet was rejected and nothing moved. `--amount` is refused with `--relay`, and
@@ -235,7 +251,8 @@ It is peered with `<from>`, the first TOON app if `--app` is left out, in both d
 each channel opened with `--deposit`, with a forwarding route each way; `--no-peer` says not to.
 The deposits move money, so they need `--yes` and count twice against the spending limit. A
 settlement key that holds too little fails with `unfunded`, and nothing is created: the message
-names the address to fund. A running supervisor starts the connector; otherwise `toon up` does.
+names the address to fund. With a deposit, both the new app's key and `<from>`'s must hold the
+gas a deposit spends (0.0001 ETH on EVM); with `--no-peer` neither needs any. A running supervisor starts the connector; otherwise `toon up` does.
 
 `--app <name>` on any command that talks to a connector, such as `toon send`, `toon peer`,
 `toon route` and `toon channel`, says which TOON app it is about; the first TOON app is the
@@ -253,9 +270,13 @@ Every command that moves money (`toon send`, `toon peer add`, `toon join`) state
 `--max-per-command` for one command, and `--max-per-day` for the commands of one UTC day
 together, both in the token's base units, set at `toon init` (defaults 10000000 and
 100000000). A payment that was rejected is not counted, nor one that failed before it
-reached the connector or that the other side refused; any other failure may have paid, and
-stays counted. `toon limit show` prints the limits and what is left today. `toon limit set`
-changes them and reads the wallet passphrase, so an agent without it cannot raise them: the
-limits are signed with a key the wallet derives, and an unsigned or edited `limits.json`
-stops every payment. When `limits.json` is missing or was edited, `toon limit set` needs
-both `--max-per-command` and `--max-per-day`.
+reached the connector or that the other side refused. A packet that was never sent is not
+counted either: the operator key could not be read, the identity of the connector to seal to
+could not be fetched or has no usable public key, the packet could not be sealed, or the
+connector's `send` refused its arguments. These still fail with `send_failed`. Any other
+failure may have paid, and stays counted, including a refusal from the operator surface and
+an answer that was not understood. `toon limit show` prints the limits and what is left
+today. `toon limit set` changes them and reads the wallet passphrase, so an agent without it
+cannot raise them: the limits are signed with a key the wallet derives, and an unsigned or
+edited `limits.json` stops every payment. When `limits.json` is missing or was edited,
+`toon limit set` needs both `--max-per-command` and `--max-per-day`.

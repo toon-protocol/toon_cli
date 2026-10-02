@@ -31,6 +31,7 @@ const SUBSCRIPTION: &str = "toon";
 
 fn usage(message: impl Into<String>) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::Usage,
         message: message.into(),
     }
@@ -51,6 +52,7 @@ pub fn sign(
     content: &str,
 ) -> Result<Value, Error> {
     let key = SigningKey::from_bytes(secret).map_err(|_| Error {
+        nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
         message: "The agent identity is not a valid key.".into(),
     })?;
@@ -59,6 +61,7 @@ pub fn sign(
     let signature = key
         .sign_raw(&id, &keystore::random::<32>()?)
         .map_err(|_| Error {
+            nothing_sent: false,
             code: ErrorCode::Io,
             message: "The event could not be signed.".into(),
         })?;
@@ -124,6 +127,7 @@ pub fn wallet_seed(home: &Path) -> Result<zeroize::Zeroizing<[u8; 64]>, Error> {
         keystore::open(home, &passphrase)?
             .parse()
             .map_err(|_| Error {
+                nothing_sent: false,
                 code: ErrorCode::KeystoreCorrupt,
                 message: "The keystore does not hold a valid mnemonic.".into(),
             })?;
@@ -133,6 +137,7 @@ pub fn wallet_seed(home: &Path) -> Result<zeroize::Zeroizing<[u8; 64]>, Error> {
 /// The agent identity's secret, opened with the passphrase (ADR 0004).
 pub fn agent_secret(home: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> {
     derive::agent_identity_secret(&*wallet_seed(home)?).map_err(|source| Error {
+        nothing_sent: false,
         code: ErrorCode::KeystoreCorrupt,
         message: source.0,
     })
@@ -143,6 +148,7 @@ pub fn public_key(secret: &[u8; 32]) -> Result<String, Error> {
     SigningKey::from_bytes(secret)
         .map(|key| hex::encode(key.verifying_key().to_bytes()))
         .map_err(|_| Error {
+            nothing_sent: false,
             code: ErrorCode::KeystoreCorrupt,
             message: "The agent identity is not a valid key.".into(),
         })
@@ -153,22 +159,38 @@ pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
     write_to(home, event, node::RELAY_WRITE_PREFIX, amount, None)
 }
 
-/// Write a signed event to `destination` for `amount`, sealed to the connector at
-/// `seal_to`, or to this agent node's own.
+/// Write a signed event to `destination` for `amount`, sealed to the key `seal_to`, or to
+/// this agent node's own connector.
 fn write_to(
     home: &Path,
     event: Value,
     destination: &str,
     amount: u64,
-    seal_to: Option<&str>,
+    seal_to: Option<&[u8; 65]>,
 ) -> Result<Report, Error> {
-    let body = home.join(format!(
-        "event.{}.json",
-        hex::encode(keystore::random::<8>()?)
-    ));
-    node::write(&body, event.to_string().as_bytes(), 0o600)?;
-    let answer = operator::dispatch(home, destination, amount, seal_to, Some(&body));
-    let _ = std::fs::remove_file(&body);
+    let answer = match seal_to {
+        Some(key) => {
+            let headers = vec![("content-type".to_owned(), "application/json".to_owned())];
+            operator::dispatch_with_headers(
+                home,
+                destination,
+                amount,
+                key,
+                headers,
+                event.to_string().into_bytes(),
+            )
+        }
+        None => {
+            let body = home.join(format!(
+                "event.{}.json",
+                hex::encode(keystore::random::<8>()?)
+            ));
+            node::write(&body, event.to_string().as_bytes(), 0o600)?;
+            let answer = operator::dispatch(home, destination, amount, None, Some(&body));
+            let _ = std::fs::remove_file(&body);
+            answer
+        }
+    };
 
     let id = event["id"].as_str().unwrap_or_default().to_owned();
     Ok(match answer? {
@@ -233,6 +255,7 @@ pub fn query(relay: &str, filter: &str) -> Result<Report, Error> {
 /// The stored events of `relay` that match `filter`, read with a NIP-01 `REQ`.
 pub fn fetch(egress: &Egress, relay: &str, filter: &Value) -> Result<Vec<Value>, Error> {
     let failed = |message: String| Error {
+        nothing_sent: false,
         code: ErrorCode::QueryFailed,
         message,
     };
@@ -286,14 +309,45 @@ pub fn fetch(egress: &Egress, relay: &str, filter: &Value) -> Result<Vec<Value>,
 }
 
 /// Where another relay is paid for a write, from its information document.
-struct Edge {
-    ilp_address: String,
-    connector_url: String,
-    price: u64,
+pub struct Edge {
+    pub ilp_address: String,
+    /// A location hint: where to peer, never dialled by a write.
+    pub connector_url: String,
+    /// The connector's sealing public key, which a write is sealed to.
+    pub seal_key: [u8; 65],
+    pub price: u64,
+}
+
+/// The write edge in a `toon` object, or what the object is missing to be one: the
+/// key is 65 bytes of hex, uncompressed so it begins `04`, with or without `0x`.
+pub fn edge_fields(toon: &Value) -> Result<Edge, String> {
+    let text = |field: &str| {
+        toon[field]
+            .as_str()
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| format!("no `{field}`"))
+    };
+    let key = text("connector_seal_key")?;
+    let seal_key: [u8; 65] = hex::decode(key.strip_prefix("0x").unwrap_or(key))
+        .ok()
+        .and_then(|key| key.try_into().ok())
+        .filter(|key: &[u8; 65]| key[0] == 0x04)
+        .ok_or_else(|| {
+            format!("a `connector_seal_key` that is not 65 bytes of hex beginning `04`: {key}")
+        })?;
+    Ok(Edge {
+        ilp_address: text("ilp_address")?.to_owned(),
+        connector_url: text("connector_url")?.to_owned(),
+        seal_key,
+        price: toon["price"]
+            .as_u64()
+            .ok_or_else(|| "no `price`".to_owned())?,
+    })
 }
 
 pub fn unpayable(message: String) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::RelayNotPayable,
         message,
     }
@@ -328,27 +382,17 @@ pub fn information_document(egress: &Egress, relay: &str) -> Result<Value, Error
         })
 }
 
-/// The paid write edge `relay` publishes in its NIP-11 information document, the `toon`
+/// The write edge `relay` publishes in its NIP-11 information document, the `toon`
 /// object.
 fn edge(egress: &Egress, relay: &str) -> Result<Edge, Error> {
     let document = information_document(egress, relay)?;
-    let toon = &document["toon"];
-    let text = |field: &str| toon[field].as_str().filter(|text| !text.is_empty());
-    match (
-        text("ilp_address"),
-        text("connector_url"),
-        toon["price"].as_u64(),
-    ) {
-        (Some(ilp_address), Some(connector_url), Some(price)) => Ok(Edge {
-            ilp_address: ilp_address.to_owned(),
-            connector_url: connector_url.to_owned(),
-            price,
-        }),
-        _ => Err(unpayable(format!(
-            "The information document of {relay} has no `toon` object with an `ilp_address`, \
-             a `connector_url` and a `price`, so it does not say where a write is paid for."
-        ))),
-    }
+    edge_fields(&document["toon"]).map_err(|missing| {
+        unpayable(format!(
+            "The information document of {relay} does not say where a write is paid for: \
+             its `toon` object needs an `ilp_address`, a `connector_url`, a \
+             `connector_seal_key` of 65 bytes of hex and a `price`, and has {missing}."
+        ))
+    })
 }
 
 /// `toon event publish --relay`: publish to a relay this agent node does not run, paying
@@ -369,6 +413,7 @@ fn publish_to(
     let edge = edge(&Egress::of(home)?, relay)?;
     if !operator::forwards(home, &edge.ilp_address)? {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::PeeringNeeded,
             message: format!(
                 "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
@@ -379,6 +424,7 @@ fn publish_to(
     }
     if !yes {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::NotConfirmed,
             message: format!(
                 "A write to {relay} costs {} base units. Add `--yes` to say that you mean it.",
@@ -394,7 +440,7 @@ fn publish_to(
             event,
             &edge.ilp_address,
             edge.price,
-            Some(&edge.connector_url),
+            Some(&edge.seal_key),
         )?;
         // A fulfilled packet moved money, whatever the relay or its fulfilment said.
         let paid = report.json["outcome"] != "rejected";

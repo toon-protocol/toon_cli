@@ -15,13 +15,30 @@ struct Node {
 
 /// An agent node that joins a network whose connector is `network`'s, if there is one.
 fn node_on(chain: &AnvilChain, network: Option<(&str, &str)>) -> Node {
+    match network {
+        Some((connector, relay)) => node_with(
+            chain,
+            &[
+                "--network",
+                "devnet",
+                "--connector-url",
+                connector,
+                "--relay-url",
+                relay,
+            ],
+        ),
+        None => node_with(chain, &["--network", "devnet"]),
+    }
+}
+
+/// An agent node initialised with `network_args` on top of the settings for `chain`.
+fn node_with(chain: &AnvilChain, network_args: &[&str]) -> Node {
     let machine = Machine::new();
     let rpc_url = chain.rpc_url();
     let token = chain.token();
     let decimals = support::anvil_chain::TOKEN_DECIMALS.to_string();
-    let mut args = vec![
-        "--network",
-        "devnet",
+    let mut args = network_args.to_vec();
+    args.extend([
         "--clearnet",
         "toon.example.com",
         "--evm-rpc-url",
@@ -31,10 +48,7 @@ fn node_on(chain: &AnvilChain, network: Option<(&str, &str)>) -> Node {
         "--evm-decimals",
         &decimals,
         "--allow-plaintext-peers",
-    ];
-    if let Some((connector, relay)) = network {
-        args.extend(["--connector-url", connector, "--relay-url", relay]);
-    }
+    ]);
     let init = machine.init_with(&args);
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
     let shown = machine.toon_with(&["wallet", "show", "--json"], |command| {
@@ -142,4 +156,44 @@ fn join_over_the_per_command_limit_is_refused_and_spends_nothing() {
     ]);
     assert_eq!(joined.json()["error"]["code"], "spending_limit");
     assert_eq!(chain.balance(&agent.evm), DEPOSIT * 10);
+}
+
+#[test]
+fn a_network_with_a_connector_and_no_relay_is_joined_and_no_relay_is_read() {
+    let chain = AnvilChain::start();
+    let network = node_on(&chain, None);
+    let connector = format!("http://{}/ilp", network.address);
+    // The mainnet profile names no relay; the anvil token names itself as the devnet's does.
+    let agent = node_with(
+        &chain,
+        &[
+            "--network",
+            "mainnet",
+            "--connector-url",
+            &connector,
+            "--evm-asset-name",
+            "USDC",
+        ],
+    );
+
+    let joined = agent.machine.toon(&[
+        "join",
+        "mainnet",
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+        "--json",
+    ]);
+
+    assert_eq!(joined.exit_code, 0, "{}", joined.stdout);
+    assert!(joined.json()["relay"].is_null(), "{}", joined.stdout);
+    assert_eq!(chain.balance(&agent.evm), DEPOSIT * 9);
+    let peers = agent.machine.toon(&["peer", "list", "--json"]);
+    assert_eq!(peers.json()["peers"][0]["id"], "mainnet");
+    let after = agent.machine.toon(&["status", "--json"]);
+    assert_eq!(after.json()["agent_node"]["joined"], "mainnet");
+    assert_eq!(
+        after.json()["agent_node"]["reads"].as_array().map(Vec::len),
+        Some(0)
+    );
 }

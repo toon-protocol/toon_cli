@@ -190,8 +190,8 @@ fn a_hidden_agent_node_subscribes_reads_and_follows_a_relay_at_an_anyone_name() 
     peer_and_route(&near, &far, SUBSCRIBE);
     let url = "ws://relay.anyone:7100";
 
-    // The information document, the balance and the packet's identity are read through the
-    // proxy: the name is not one this machine can resolve.
+    // The information document and the balance are read through the proxy: the name is not
+    // one this machine can resolve.
     let subscribed = toon(
         &near.machine,
         &[
@@ -235,12 +235,17 @@ fn a_hidden_agent_node_subscribes_reads_and_follows_a_relay_at_an_anyone_name() 
     assert_eq!((first, second), (event(1), event(2)));
 }
 
-/// A server that answers every request with a NIP-11 document that names `connector` as
-/// where a write is paid for.
+/// A server that answers every request with a NIP-11 document that names `connector`, and
+/// its sealing key, as where a write is paid for.
 fn information_document(connector: &str) -> SocketAddr {
     let body = json!({
         "name": "far",
-        "toon": { "ilp_address": "g.toon.relay.far", "connector_url": connector, "price": 1 },
+        "toon": {
+            "ilp_address": "g.toon.relay.far",
+            "connector_url": connector,
+            "connector_seal_key": support::seal_key(connector),
+            "price": 1,
+        },
     })
     .to_string();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");

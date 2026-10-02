@@ -60,9 +60,9 @@ pub struct Options {
     /// The faucet `toon wallet fund` asks, if the network has one.
     pub faucet_url: Option<String>,
     /// The `/ilp` URL of the network's connector, which `toon join` peers toward.
-    pub connector_url: String,
+    pub connector_url: Option<String>,
     /// The websocket URL of the network's relay, which `toon join` makes one the agent reads.
-    pub relay_url: String,
+    pub relay_url: Option<String>,
     /// The spending limit, signed into `limits.json` at `init`.
     pub limits: crate::spending::Limits,
 }
@@ -220,8 +220,14 @@ impl App {
 
     fn json(&self) -> Value {
         match &self.source {
-            Source::Relay if self.price == RELAY_WRITE_PRICE => json!(self.name),
-            Source::Relay => json!({ "name": self.name, "price": self.price }),
+            Source::Relay
+                if self.price == RELAY_WRITE_PRICE && self.prefix == RELAY_WRITE_PREFIX =>
+            {
+                json!(self.name)
+            }
+            Source::Relay => {
+                json!({ "name": self.name, "price": self.price, "prefix": self.prefix })
+            }
             Source::Image(image) => json!({
                 "name": self.name, "image": image, "prefix": self.prefix, "price": self.price,
             }),
@@ -260,6 +266,10 @@ impl App {
         Some(Self {
             name,
             price,
+            prefix: value["prefix"]
+                .as_str()
+                .unwrap_or(RELAY_WRITE_PREFIX)
+                .to_owned(),
             ..Self::relay()
         })
     }
@@ -271,10 +281,10 @@ pub struct State {
     pub network: Profile,
     /// Where `toon wallet fund` asks for funds; the networks without a faucet have none.
     pub faucet_url: Option<String>,
-    /// The network's connector, as the profile or `init` names it.
-    pub connector_url: String,
-    /// The network's relay, as the profile or `init` names it.
-    pub relay_url: String,
+    /// The network's connector, as the profile or `init` names it; none if it names none.
+    pub connector_url: Option<String>,
+    /// The network's relay, as the profile or `init` names it; none if it names none.
+    pub relay_url: Option<String>,
     /// The network this agent node has joined: none until `toon join`.
     pub joined: Option<String>,
     /// The relays the agent reads: those of the networks it has joined.
@@ -284,6 +294,7 @@ pub struct State {
 
 fn io(path: &Path, source: std::io::Error) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::Io,
         message: format!("{}: {source}.", path.display()),
     }
@@ -292,6 +303,7 @@ fn io(path: &Path, source: std::io::Error) -> Error {
 /// What a command that needs an agent node says when `home` has none.
 pub fn no_agent_node(home: &Path) -> Error {
     Error {
+        nothing_sent: false,
         code: ErrorCode::NoAgentNode,
         message: format!("No agent node at {}. Run `toon init`.", home.display()),
     }
@@ -519,9 +531,11 @@ impl State {
             url => Some(url.as_str()?.to_owned()),
         };
         // A state from before `join` names the profile's own connector and relay.
-        let text = |name: &str, default: &str| match &value[name] {
-            Value::Null => Some(default.to_owned()),
-            url => url.as_str().map(str::to_owned),
+        // One that is `null` names none: a network with no connector or relay.
+        let text = |name: &str, default: Option<&str>| match value.get(name) {
+            None => Some(default.map(str::to_owned)),
+            Some(Value::Null) => Some(None),
+            Some(url) => url.as_str().map(|url| Some(url.to_owned())),
         };
         let joined = match &value["joined"] {
             Value::Null => None,
@@ -559,6 +573,7 @@ impl State {
             .and_then(|value| Self::from_json(&value))
             .map(Some)
             .ok_or_else(|| Error {
+                nothing_sent: false,
                 code: ErrorCode::Io,
                 message: format!("{} is not a state file this version reads.", file.display()),
             })
@@ -645,6 +660,7 @@ pub fn concrete(listen: &str) -> Result<String, Error> {
     let free = std::net::TcpListener::bind(listen)
         .and_then(|bound| bound.local_addr())
         .map_err(|source| Error {
+            nothing_sent: false,
             code: ErrorCode::Io,
             message: format!("{listen}: no free port: {source}."),
         })?;
@@ -670,6 +686,7 @@ pub fn render(
         (Reach::Hidden, Some(overlay)) => Some(overlay),
         (Reach::Hidden, None) => {
             return Err(Error {
+                nothing_sent: false,
                 code: ErrorCode::OverlayUnavailable,
                 message: format!(
                     "{} is a hidden service and the overlay is not there to render it with.",
@@ -791,6 +808,7 @@ pub fn render(
     fs::create_dir_all(&files.state_dir).map_err(|source| io(&files.state_dir, source))?;
     connector_cli::load_config(&["toon connector", &files.config.to_string_lossy()]).map_err(
         |error| Error {
+            nothing_sent: false,
             code: ErrorCode::ConnectorFailed,
             message: format!("The connector would not accept its config: {error}"),
         },
@@ -815,6 +833,7 @@ fn write_operator_files(home: &Path, files: &ConnectorFiles) -> Result<bool, Err
     let bytes = zeroize::Zeroizing::new(fs::read(&key).map_err(|source| io(&key, source))?);
     let secret: zeroize::Zeroizing<[u8; 32]> =
         zeroize::Zeroizing::new(bytes.as_slice().try_into().map_err(|_| Error {
+            nothing_sent: false,
             code: ErrorCode::Io,
             message: format!("{} is not a 32-byte key.", key.display()),
         })?);

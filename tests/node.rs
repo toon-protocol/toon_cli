@@ -250,3 +250,31 @@ fn up_refuses_a_state_with_no_toon_app() {
     assert_eq!(run.json()["error"]["code"], "io");
     assert_eq!(run.exit_code, 1);
 }
+
+#[test]
+fn a_home_with_a_long_path_has_a_working_supervisor() {
+    let chain = FakeChain::start();
+    let machine = Machine::with_long_home();
+    let socket = machine.agent_node_home().join("supervisor.sock");
+    assert!(socket.as_os_str().len() > 107, "the socket path is long");
+    machine.init_on(&chain);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    assert!(up.report().get("error").is_none(), "up started");
+
+    let status = machine.toon(&["status", "--json"]);
+    assert_eq!(status.exit_code, 0);
+    let status = status.json();
+    assert_eq!(status["agent_node"]["supervisor"]["running"], true);
+    assert_eq!(
+        status["agent_node"]["supervisor"]["socket"],
+        socket.to_str().unwrap()
+    );
+
+    let second = machine.toon(&["up", "--foreground", "--json"]);
+    assert_eq!(second.json()["error"]["code"], "already_running");
+    assert_eq!(second.exit_code, 1);
+
+    let down = machine.toon(&["down", "--json"]);
+    assert_eq!(down.exit_code, 0);
+    assert_eq!(down.json()["stopped"], true);
+}

@@ -79,6 +79,12 @@ edge (TOON Network spec §13):
 
 - The subscribe route is terminated by the connector the `toon` object names. A
   subscriber reads `connector_url`, `connector_seal_key` and `settlement` from `toon`.
+  It seals each packet to `toon.connector_seal_key`, a 65-byte uncompressed public key
+  in hex (it begins `04`, with or without a `0x` prefix), and does not need to reach
+  `connector_url`, which is a location hint only: a subscriber that has no peering
+  reads it to tell the operator where to peer. A `toon` object without `ilp_address`,
+  `connector_url`, `connector_seal_key` or `price`, or whose `connector_seal_key` is not
+  such a key, is no write edge, and the subscriber pays nothing.
   A relay that publishes `toon_subscription` MUST publish `toon`.
 - The relay MUST read `price` from its connector's self-description, as it does
   `toon.price`: it is the price of the route whose prefix is `ilp_address`. It MUST

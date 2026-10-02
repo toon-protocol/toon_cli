@@ -245,6 +245,7 @@ fn install(home: &Path) -> Result<Report, Error> {
     }
     if control::running(home) {
         return Err(Error {
+            nothing_sent: false,
             code: ErrorCode::AlreadyRunning,
             message: format!(
                 "A supervisor is already running this agent node, at {}.",
@@ -304,6 +305,7 @@ fn unparsed(error: clap::Error) -> Result<Report, Error> {
         .collect::<Vec<_>>()
         .join(" ");
     Err(Error {
+        nothing_sent: false,
         code: ErrorCode::Usage,
         message,
     })
