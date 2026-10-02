@@ -248,10 +248,10 @@ fn with_no_peering_the_command_says_one_is_needed_and_creates_none() {
     let error = run.json()["error"].clone();
     assert_eq!(error["code"], "peering_needed", "{error}");
     assert!(
-        error["message"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("toon peer add {}`", far.url())),
+        error["message"].as_str().unwrap().contains(&format!(
+            "toon peer add {} --deposit <amount> --yes`",
+            far.url()
+        )),
         "{error}"
     );
     assert_eq!(run.exit_code, 1);

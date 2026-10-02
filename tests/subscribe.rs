@@ -432,7 +432,10 @@ fn with_no_peering_the_command_says_one_is_needed_with_its_deposit_and_creates_n
     let message = error["message"].as_str().unwrap();
     assert!(message.contains("deposit of at least 2000"), "{message}");
     assert!(
-        message.contains(&format!("toon peer add {} --deposit", far.url())),
+        message.contains(&format!(
+            "toon peer add {} --deposit 2000 --yes`",
+            far.url()
+        )),
         "{message}"
     );
     let peers = near.toon(&["peer", "list", "--json"]).json();

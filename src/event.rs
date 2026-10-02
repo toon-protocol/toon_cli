@@ -420,8 +420,10 @@ fn publish_to(
             code: ErrorCode::PeeringNeeded,
             message: format!(
                 "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
-                 needed: run `toon peer add {}` and then `toon route add {} --peer <id>`.",
-                edge.ilp_address, edge.connector_url, edge.ilp_address
+                 needed: run `{}` and then `toon route add {} --peer <id>`.",
+                edge.ilp_address,
+                operator::peer_add_command(&edge.connector_url, "<amount>", ""),
+                edge.ilp_address
             ),
         });
     }
