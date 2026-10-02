@@ -21,12 +21,14 @@ step.
 | --- | --- | --- |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
 | 2, hold a subscription | No relay serves the subscribe route | relay #215 |
+| 3, `join` | `unfunded` asks for 0.0001 ETH, and the deposit cost 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
+| 3, `join` | The deposit lands and the `join` fails with `peer_failed`, "the chain shows no balance there"; the same command again finds the channel, and each attempt is counted against the day's spending | #102 |
 
 ## What it needs
 
 - Docker, `jq`, `curl`, and Foundry's `cast`.
 - The `infra` checkout beside this one, set up once with `make setup` in `infra/sandbox`.
-- For the last step of part 3, about 0.0001 Base Sepolia ETH from a public faucet.
+- For the last step of part 3, about 0.001 Base Sepolia ETH from a public faucet.
 
 The run never touches your own agent node: every command below runs with `HOME` set to a
 directory made for the run.
@@ -343,16 +345,27 @@ the chain through the overlay. The query returns events from the devnet's relay,
 over `wss://` through the overlay. The `join` is refused with `unfunded`, naming the
 settlement address and the ETH it needs for gas, and the day's spending is unchanged.
 
-The devnet faucet sends no ETH, and a connector pays the gas of its own deposit. Send about 0.0001 Base
-Sepolia ETH to that address from a public faucet, and join:
+The devnet faucet sends no ETH, and a connector pays the gas of its own deposit. Send
+about 0.001 Base Sepolia ETH to that address from a public faucet (the 0.0001 the message
+names is too little, #101), and join:
 
 ```sh
 $E/toon join devnet --deposit 1000000 --yes --json
 $E/toon channel list --json
+$E/toon peer list --json
+RELAY=$(jq -r .relay_url $HOME/.toon/agent-node/state.json)
+$E/toon event publish --kind 1 --content "end-to-end run" --relay $RELAY --yes --json \
+  > $E/devnet-event.json
+$E/toon event query $RELAY \
+  --filter "{\"ids\":[\"$(jq -r .event.id $E/devnet-event.json)\"]}" --json
 $E/toon down --json
 ```
 
-**Expect** a peering `devnet` with an open channel of 1000000.
+**Expect** a peering `devnet` with an open channel of 1000000, then `published` with
+`paid: 1` and the event read back from the devnet's relay: a hidden agent node paid a
+network on clearnet. If the `join` fails with "confirmed, and the chain shows no balance
+there", the deposit landed and the read after it did not see it: run the `join` again,
+and it reports the channel as `found` (#102).
 
 ## Afterwards
 
