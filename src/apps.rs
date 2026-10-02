@@ -29,6 +29,32 @@ pub enum Origin<'a> {
     Url(&'a str),
 }
 
+impl Origin<'_> {
+    /// Refuses the relay's image: an agent node runs one relay, the one `toon init` created.
+    pub fn refuse_relay(&self) -> Result<(), Error> {
+        match self {
+            Origin::Image(image) if repository(image) == repository(env!("TOON_RELAY_IMAGE")) => {
+                Err(failed(
+                    ErrorCode::OneRelay,
+                    "An agent node runs one relay, and it is the one `toon init` created: \
+                     `toon create` and `toon add` cannot start another."
+                        .into(),
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// An image reference without its digest and its tag.
+fn repository(image: &str) -> &str {
+    let image = image.split_once('@').map_or(image, |(name, _)| name);
+    match image.rsplit_once(':') {
+        Some((name, tag)) if !tag.contains('/') => name,
+        _ => image,
+    }
+}
+
 /// What `toon add` was asked for.
 pub struct Add<'a> {
     pub name: &'a str,
@@ -184,6 +210,7 @@ pub fn free(state: &State, name: &str) -> Result<(), Error> {
 
 /// `toon add`: put a new app behind the connector of the TOON app `to`.
 pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
+    add.origin.refuse_relay()?;
     let state = loaded(home)?;
     let Some(index) = state.toon_apps.iter().position(|app| app.name == add.to) else {
         return Err(unknown(&state, add.to));
