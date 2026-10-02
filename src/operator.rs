@@ -134,9 +134,10 @@ fn wait_for_next_second() {
 /// What a write refused as a replay twice says in place of the connector's own text.
 fn replayed_twice(first: &str) -> String {
     format!(
-        "{} The connector had already accepted this same write in this second, and so did \
-         the repeat. Nothing was done. Run the command again.",
-        first.trim()
+        "{}. The connector had already accepted this same write in this second, and \
+         refused it again when it was signed in the next. Nothing was done. Run the command \
+         again.",
+        first.trim().trim_end_matches('.')
     )
 }
 
@@ -158,11 +159,12 @@ fn write(
         method,
         path,
         body.map(Value::to_string).unwrap_or_default(),
+        WRITE_PATIENCE,
     )
 }
 
 /// [`write`] with the body as JSON text, which holds an amount above `u64::MAX` that a
-/// `Value` does not.
+/// `Value` does not, waiting `patience` for the connector.
 ///
 /// A signature covers the method, the path, the body, the second it was made in and the
 /// key, so the same write twice in one second has the same signature, and the connector
@@ -174,11 +176,12 @@ fn write_text(
     method: reqwest::Method,
     path: &str,
     body: String,
+    patience: Duration,
 ) -> Result<(u16, String), Error> {
     let keypair = write_keypair(&surface.write_key)?;
     let url = format!("{}{path}", surface.url);
     let client = reqwest::blocking::Client::builder()
-        .timeout(WRITE_PATIENCE)
+        .timeout(patience)
         .build()
         .map_err(|error| {
             failed(
@@ -216,7 +219,12 @@ fn write_text(
             )
         })?;
         let status = response.status().as_u16();
-        let text = response.text().unwrap_or_default();
+        let text = response.text().map_err(|error| {
+            failed(
+                ErrorCode::ConnectorFailed,
+                format!("{method} {url}: {error}."),
+            )
+        })?;
         Ok((status, text))
     };
     let (status, text) = sign_and_send()?;
@@ -655,8 +663,8 @@ fn channel_write(home: &Path, path: &str, body: String) -> Result<Value, Error> 
     let surface = surface(home)?;
     let url = format!("{}{path}", surface.url);
     let channel_failed = |message: String| failed(ErrorCode::ChannelFailed, message);
-    let (status, text) =
-        write_text(&surface, reqwest::Method::POST, path, body).map_err(|error| Error {
+    let (status, text) = write_text(&surface, reqwest::Method::POST, path, body, PATIENCE)
+        .map_err(|error| Error {
             code: match error.code {
                 ErrorCode::ConnectorFailed => ErrorCode::ChannelFailed,
                 other => other,
@@ -1253,7 +1261,7 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{before_sending, peer_add_on, PeerAdd, Surface, STALE_READ};
+    use super::{before_sending, peer_add_on, PeerAdd, Surface, REPLAYED, STALE_READ};
     use crate::outcome::ErrorCode;
     use std::io::{Read, Write};
 
@@ -1449,6 +1457,19 @@ mod tests {
         assert!(
             found,
             "the embedded connector no longer says {STALE_READ:?}"
+        );
+    }
+
+    /// The connector keeps its wording for a replayed signature in a private type, so it is
+    /// pinned through the running connector, by
+    /// `the_connectors_replay_wording_is_pinned` in `tests/peer.rs`. This keeps that test
+    /// on the wording the repeat is keyed on.
+    #[test]
+    fn the_replay_wording_pinned_is_the_one_the_repeat_is_keyed_on() {
+        let pinned = include_str!("../tests/peer.rs");
+        assert!(
+            pinned.contains(&format!("text.contains({REPLAYED:?})")),
+            "tests/peer.rs no longer pins {REPLAYED:?}"
         );
     }
 
