@@ -85,7 +85,7 @@ A failed command with `--json` prints:
 | `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap (its `anon` release could not be downloaded or did not match its pinned checksum, its terms were not agreed to, or the daemon did not come up), so a hidden service was not created or started, or a command on a hidden agent node that makes a request of its own (a faucet, a chain, a relay, a connector) had no overlay to send it through; nothing falls back to clearnet |
 | `join_refused` | 1 | `toon join` named a network other than the one this agent node was initialised for, the agent node has already joined one, or it records no connector for the network (`mainnet` has none unless `init` was given `--connector-url`); nothing was spent |
 | `relay_not_payable` | 1 | `toon event publish --relay` or `toon relay subscribe` could not read the relay's information document (or, for a `wss://` relay, its certificate did not verify), or it names no write edge (`toon`: `ilp_address`, `connector_url`, `connector_seal_key`, `price`; the key is 65 bytes of hex beginning `04`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
-| `peering_needed` | 1 | `toon event publish --relay` or `toon relay subscribe` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. Run `toon peer add` and `toon route add` first |
+| `peering_needed` | 1 | `toon event publish --relay` or `toon relay subscribe` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. The message prints the `toon peer add <connector_url> --deposit <amount> --yes` to run (for `subscribe`, with the deposit it would take in place of `<amount>`), then `toon route add` |
 | `not_subscribed` | 1 | `toon event follow` named a relay at which this agent node holds no subscription: `toon relay subscribe` opens one |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
 | `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
@@ -188,12 +188,17 @@ reads the relay's NIP-11 information document (`GET` of the relay's URL as `http
 `Accept: application/nostr+json`) for its `toon` object: `ilp_address`, `connector_url`,
 `connector_seal_key` and `price`. It seals the packet to `connector_seal_key` and makes no
 request to `connector_url`, which only appears in the `peering_needed` message. It shows the
-price and publishes only with `--yes`, under the spending limit, paying from this agent
+amount and publishes only with `--yes`, under the spending limit, paying from this agent
 node's own connector over a peering. If no peering of the agent node reaches
 the relay's `ilp_address` it fails with `peering_needed` and creates nothing. The report has
-the same outcomes as a publish to the own relay, plus `relay` and `paid`: the price, or, when
-the packet was rejected, what the agent node's outbound channels moved by across it (`0` when
-none did). `--amount` is refused with `--relay`, and `--yes` without it.
+the same outcomes as a publish to the own relay, plus `relay` and `paid`: the amount sent, or,
+when the packet was rejected, what the agent node's outbound channels moved by across it (`0`
+when none did). The amount is the relay's price unless `--amount <n>` states
+another: `toon` sends exactly `n`, never probes for the path's cost, and refuses an `--amount`
+below the relay's price with `usage` before anything is signed. A connector between this agent
+node and the relay may charge to forward the write and rejects any other amount than its
+route's price (`F03`); the text report then tells the operator to state the path's cost with
+`--amount`. `--yes` is refused without `--relay`.
 
 `toon relay subscribe <relay-url> --filter <filter> --amount <amount>` subscribes to another
 relay's paid live feed (`nips/paid-subscription.md`). It reads `toon_subscription` from the

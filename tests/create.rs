@@ -186,7 +186,8 @@ fn a_second_toon_app_is_peered_both_ways_and_a_packet_crosses_each_way() {
         "--json",
     ]);
     assert_eq!(back.json()["outcome"], "fulfilled", "{}", back.stdout);
-    assert_eq!(back.json()["response"]["body"], "stored");
+    // It reached the relay, which refuses a write that carries no event.
+    assert_eq!(back.json()["response"]["body"], support::NOT_A_WRITE);
 
     // Every other command takes the new name: its peerings are its own.
     let peers = machine
@@ -236,6 +237,29 @@ fn destroy_refuses_while_a_channel_holds_funds_and_names_it() {
         status["agent_node"]["toon_apps"].as_array().map(Vec::len),
         Some(2)
     );
+}
+
+#[test]
+fn a_peering_that_fails_after_the_create_names_the_peer_add_that_makes_the_rest() {
+    let chain = AnvilChain::start();
+    let (machine, _up) = running(&chain);
+    let deposit = (DEPOSIT * 2).to_string();
+    let refused = create_second(&machine, &["--deposit", &deposit, "--yes"]);
+    // Enough for the new connector to start, not for its deposit.
+    let address = address_in(refused.json()["error"]["message"].as_str().unwrap());
+    chain.fund(&address, DEPOSIT);
+
+    let run = create_second(&machine, &["--deposit", &deposit, "--yes"]);
+
+    let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
+    assert!(message.contains("was created"), "{message}");
+    assert!(
+        message.contains(&format!(
+            "`toon peer add <connector_url> --deposit {deposit} --yes --app <name>`"
+        )),
+        "{message}"
+    );
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
 }
 
 #[test]

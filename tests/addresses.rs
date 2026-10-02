@@ -264,7 +264,7 @@ fn a_joined_agent_node_forwards_the_networks_addresses_to_the_network() {
     // The network's relay: fulfilled by the network's connector, not delivered locally.
     let report = send(&agent, &network, &network.machine.relay_prefix(), "1");
     assert_eq!(report["outcome"], "fulfilled", "{report}");
-    assert_eq!(report["response"]["body"], "stored");
+    assert_eq!(report["response"]["body"], support::NOT_A_WRITE);
 
     // Another address under `g.toon`: the network's app answers.
     let report = send(&agent, &network, "g.toon.elsewhere", "0");
@@ -315,6 +315,6 @@ fn two_agent_nodes_peered_with_each_other_reach_each_others_relay() {
     for (near, far) in [(&x, &y), (&y, &x)] {
         let report = send(near, far, &far.machine.relay_prefix(), "1");
         assert_eq!(report["outcome"], "fulfilled", "{report}");
-        assert_eq!(report["response"]["body"], "stored");
+        assert_eq!(report["response"]["body"], support::NOT_A_WRITE);
     }
 }

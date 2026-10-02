@@ -169,7 +169,10 @@ fn the_price_is_shown_and_nothing_is_paid_without_yes() {
 
     let error = run.json()["error"].clone();
     assert_eq!(error["code"], "not_confirmed", "{error}");
-    assert!(error["message"].as_str().unwrap().contains("costs 1 base"));
+    assert!(error["message"]
+        .as_str()
+        .unwrap()
+        .contains("would send 1 base"));
     assert_eq!(run.exit_code, 1);
     let query = near.machine.toon(&[
         "event",
@@ -248,10 +251,10 @@ fn with_no_peering_the_command_says_one_is_needed_and_creates_none() {
     let error = run.json()["error"].clone();
     assert_eq!(error["code"], "peering_needed", "{error}");
     assert!(
-        error["message"]
-            .as_str()
-            .unwrap()
-            .contains(&format!("toon peer add {}`", far.url())),
+        error["message"].as_str().unwrap().contains(&format!(
+            "toon peer add {} --deposit <amount> --yes`",
+            far.url()
+        )),
         "{error}"
     );
     assert_eq!(run.exit_code, 1);
@@ -260,27 +263,199 @@ fn with_no_peering_the_command_says_one_is_needed_and_creates_none() {
 }
 
 #[test]
-fn an_amount_is_refused_with_relay_and_yes_without_it() {
+fn yes_without_relay_is_refused() {
     let machine = Machine::new();
 
-    for args in [
-        &[
-            "event",
-            "publish",
-            "--relay",
-            "ws://127.0.0.1:1",
-            "--kind",
-            "1",
-            "--amount",
-            "5",
-            "--json",
-        ][..],
-        &["event", "publish", "--kind", "1", "--yes", "--json"][..],
-    ] {
-        let run = machine.toon(args);
-        assert_eq!(run.json()["error"]["code"], "usage", "{}", run.stdout);
-        assert_eq!(run.exit_code, 2);
-    }
+    let run = machine.toon(&["event", "publish", "--kind", "1", "--yes", "--json"]);
+
+    assert_eq!(run.json()["error"]["code"], "usage", "{}", run.stdout);
+    assert_eq!(run.exit_code, 2);
+}
+
+#[test]
+fn an_amount_below_the_relays_price_is_a_usage_error_and_sends_nothing() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let relay = document(json!({
+        "ilp_address": far.machine.relay_prefix(),
+        "connector_url": far.url(),
+        "connector_seal_key": support::seal_key(&far.url()),
+        "price": 5,
+    }));
+    peer_and_route(&near, &far);
+
+    let run = near.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--amount", "4", "--yes", "--json",
+    ]);
+
+    assert_eq!(run.json()["error"]["code"], "usage", "{}", run.stdout);
+    assert_eq!(run.exit_code, 2);
+    assert_eq!(events_at(&near, &far), 0);
+}
+
+/// What `mid` charges to forward a write to `far`'s relay.
+const FORWARD: u64 = 101;
+
+/// `near` peered with `mid`, `mid` peered with `far`, and `mid` charging `FORWARD` for the
+/// route to `far`'s relay. Returns the relay's information document's URL.
+fn through_a_charging_connector(chain: &AnvilChain) -> (Node, Node, Node, String) {
+    let near = node_on(chain);
+    let mid = node_on(chain);
+    let far = node_on(chain);
+    let relay = information_document(&far);
+    let prefix = far.machine.relay_prefix();
+    let peered = |from: &Node, to: &Node, id: &str| {
+        let run = from.toon(&[
+            "peer",
+            "add",
+            &to.url(),
+            "--deposit",
+            &DEPOSIT.to_string(),
+            "--yes",
+            "--id",
+            id,
+        ]);
+        assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    };
+    peered(&near, &mid, "mid");
+    peered(&mid, &far, "far");
+    let routed = mid.toon(&[
+        "route",
+        "add",
+        &prefix,
+        "--peer",
+        "far",
+        "--price",
+        &FORWARD.to_string(),
+    ]);
+    assert_eq!(routed.exit_code, 0, "{}{}", routed.stdout, routed.stderr);
+    let routed = near.toon(&["route", "add", &prefix, "--peer", "mid"]);
+    assert_eq!(routed.exit_code, 0, "{}{}", routed.stdout, routed.stderr);
+    (near, mid, far, relay)
+}
+
+fn remaining(near: &Node) -> String {
+    near.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"]
+        .as_str()
+        .expect("remaining_today")
+        .to_owned()
+}
+
+#[test]
+fn a_stated_amount_pays_a_connector_that_charges_to_forward_and_without_it_is_rejected() {
+    let chain = AnvilChain::start();
+    let (near, _mid, far, relay) = through_a_charging_connector(&chain);
+    let before: u128 = remaining(&near).parse().expect("a number");
+    let watermark = outbound_watermark(&near);
+
+    let rejected = near.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--yes", "--json",
+    ]);
+    assert_eq!(rejected.exit_code, 1, "{}", rejected.stdout);
+    let report = rejected.json();
+    assert_eq!(report["outcome"], "rejected", "{report}");
+    assert_eq!(report["reject"]["code"], "F03", "{report}");
+    let text = near.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--yes",
+    ]);
+    assert_eq!(text.exit_code, 1, "{}", text.stdout);
+    assert!(text.stdout.contains("--amount"), "{}", text.stdout);
+    assert_eq!(events_at(&near, &far), 0);
+
+    let amount = FORWARD.to_string();
+    let published = near.toon(&[
+        "event",
+        "publish",
+        "--relay",
+        &relay,
+        "--kind",
+        "1",
+        "--content",
+        "via",
+        "--amount",
+        &amount,
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(published.exit_code, 0, "{}", published.stdout);
+    let report = published.json();
+    assert_eq!(report["outcome"], "published", "{report}");
+    assert_eq!(report["paid"], FORWARD);
+    let query = near.machine.toon(&[
+        "event",
+        "query",
+        &far.relay_url(),
+        "--filter",
+        r#"{"kinds":[1]}"#,
+        "--json",
+    ]);
+    assert_eq!(
+        query.json()["events"],
+        Value::Array(vec![report["event"].clone()]),
+        "{}",
+        query.stdout
+    );
+    // The two rejected writes are counted too, as what `mid` took of them (#93).
+    let after: u128 = remaining(&near).parse().expect("a number");
+    let moved = outbound_watermark(&near) - watermark;
+    assert!(moved > u128::from(FORWARD), "{moved}");
+    assert_eq!(before - after, moved);
+}
+
+#[test]
+fn without_yes_the_refusal_states_the_amount_and_nothing_is_paid() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let relay = information_document(&far);
+    peer_and_route(&near, &far);
+    let before = remaining(&near);
+
+    let run = near.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--amount", "101", "--json",
+    ]);
+
+    let error = run.json()["error"].clone();
+    assert_eq!(error["code"], "not_confirmed", "{error}");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("101 base"), "{message}");
+    assert!(message.contains("price is 1"), "{message}");
+    assert_eq!(run.exit_code, 1);
+    assert_eq!(remaining(&near), before);
+    assert_eq!(events_at(&near, &far), 0);
+}
+
+#[test]
+fn an_amount_over_the_spending_limit_is_refused_and_sends_nothing() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let relay = information_document(&far);
+    peer_and_route(&near, &far);
+    let set = near.toon(&[
+        "limit",
+        "set",
+        "--max-per-command",
+        "50",
+        "--max-per-day",
+        "1000",
+        "--json",
+    ]);
+    assert_eq!(set.exit_code, 0, "{}{}", set.stdout, set.stderr);
+
+    let run = near.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--amount", "51", "--yes", "--json",
+    ]);
+
+    assert_eq!(
+        run.json()["error"]["code"],
+        "spending_limit",
+        "{}",
+        run.stdout
+    );
+    assert_eq!(run.exit_code, 1);
+    assert_eq!(events_at(&near, &far), 0);
 }
 
 #[test]

@@ -395,11 +395,14 @@ pub enum EventCommand {
         /// The event's tags, as a JSON array of arrays of strings
         #[arg(long, default_value = "[]")]
         tags: String,
-        /// What the write is paid, in the token's base units
-        #[arg(long, default_value_t = 0, conflicts_with = "relay")]
-        amount: u64,
-        /// Publish to this relay instead (`ws://host:port` or `wss://host:port`), paying the
-        /// price its information document states
+        /// What the write is paid, in the token's base units. To the agent node's own relay
+        /// it defaults to 0. With `--relay` it defaults to the relay's price, and is exactly
+        /// what is sent: state it when a connector between you and the relay charges to
+        /// forward the write; below the relay's price it is refused
+        #[arg(long)]
+        amount: Option<u64>,
+        /// Publish to this relay instead (`ws://host:port` or `wss://host:port`), a write
+        /// the relay's information document says is paid at its price
         #[arg(long)]
         relay: Option<String>,
         /// Confirm that this command moves money: without it nothing is paid
