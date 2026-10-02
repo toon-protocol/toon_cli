@@ -513,12 +513,18 @@ const HIDDEN_NOTE: &str =
     "A hidden service hides where the TOON app is reachable, and not who it pays: \
      payments are on a public chain.";
 
+/// Said when the network has no connector: `mainnet`, unless `init` was given one.
+const NO_NETWORK_NOTE: &str = "There is no mainnet TOON network yet, so `toon join mainnet` is refused until `init` is given `--connector-url` (and `--relay-url`).";
+
 fn notes(state: &node::State) -> Vec<&'static str> {
+    let mut notes = Vec::new();
     if state.toon_apps.iter().any(|app| app.reach == Reach::Hidden) {
-        vec![HIDDEN_NOTE]
-    } else {
-        Vec::new()
+        notes.push(HIDDEN_NOTE);
     }
+    if state.connector_url.is_none() {
+        notes.push(NO_NETWORK_NOTE);
+    }
+    notes
 }
 
 fn toon_app_text(home: &Path, state: &node::State, created: bool) -> String {

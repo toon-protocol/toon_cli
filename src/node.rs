@@ -60,9 +60,9 @@ pub struct Options {
     /// The faucet `toon wallet fund` asks, if the network has one.
     pub faucet_url: Option<String>,
     /// The `/ilp` URL of the network's connector, which `toon join` peers toward.
-    pub connector_url: String,
+    pub connector_url: Option<String>,
     /// The websocket URL of the network's relay, which `toon join` makes one the agent reads.
-    pub relay_url: String,
+    pub relay_url: Option<String>,
     /// The spending limit, signed into `limits.json` at `init`.
     pub limits: crate::spending::Limits,
 }
@@ -271,10 +271,10 @@ pub struct State {
     pub network: Profile,
     /// Where `toon wallet fund` asks for funds; the networks without a faucet have none.
     pub faucet_url: Option<String>,
-    /// The network's connector, as the profile or `init` names it.
-    pub connector_url: String,
-    /// The network's relay, as the profile or `init` names it.
-    pub relay_url: String,
+    /// The network's connector, as the profile or `init` names it; none if it names none.
+    pub connector_url: Option<String>,
+    /// The network's relay, as the profile or `init` names it; none if it names none.
+    pub relay_url: Option<String>,
     /// The network this agent node has joined: none until `toon join`.
     pub joined: Option<String>,
     /// The relays the agent reads: those of the networks it has joined.
@@ -519,9 +519,11 @@ impl State {
             url => Some(url.as_str()?.to_owned()),
         };
         // A state from before `join` names the profile's own connector and relay.
-        let text = |name: &str, default: &str| match &value[name] {
-            Value::Null => Some(default.to_owned()),
-            url => url.as_str().map(str::to_owned),
+        // One that is `null` names none: a network with no connector or relay.
+        let text = |name: &str, default: Option<&str>| match value.get(name) {
+            None => Some(default.map(str::to_owned)),
+            Some(Value::Null) => Some(None),
+            Some(url) => url.as_str().map(|url| Some(url.to_owned())),
         };
         let joined = match &value["joined"] {
             Value::Null => None,

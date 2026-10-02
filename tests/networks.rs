@@ -336,3 +336,69 @@ fn wallet_fund_says_when_the_balances_cannot_be_read_after_asking_the_faucet() {
     assert_eq!(faucet.asked().len(), 1);
     assert!(fund.json()["lacking"].is_null(), "{}", fund.stdout);
 }
+
+fn state(machine: &Machine) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(machine.agent_node_home().join("state.json")).unwrap())
+        .expect("state.json is JSON")
+}
+
+#[test]
+fn the_devnet_profile_records_the_devnets_connector_and_relay() {
+    let machine = Machine::new();
+
+    let init = machine.init_with(&[]);
+
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let state = state(&machine);
+    assert_eq!(
+        state["connector_url"],
+        "https://proxy.relay.devnet.toonprotocol.dev/ilp"
+    );
+    assert_eq!(state["relay_url"], "wss://relay-ws.devnet.toonprotocol.dev");
+}
+
+#[test]
+fn the_mainnet_profile_records_no_connector_and_no_relay_and_join_is_refused() {
+    let machine = Machine::new();
+
+    let init = machine.init_with(&["--network", "mainnet"]);
+
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let state = state(&machine);
+    assert!(state["connector_url"].is_null(), "{state}");
+    assert!(state["relay_url"].is_null(), "{state}");
+    let notes = init.json()["notes"].to_string();
+    assert!(notes.contains("no mainnet TOON network yet"), "{notes}");
+
+    let joined = machine.toon(&["join", "mainnet", "--deposit", "1000000", "--yes", "--json"]);
+
+    assert_eq!(joined.exit_code, 1, "{}", joined.stdout);
+    assert_eq!(joined.json()["error"]["code"], "join_refused");
+    let message = joined.json()["error"]["message"].to_string();
+    assert!(message.contains("--connector-url"), "{message}");
+    assert!(message.contains("--relay-url"), "{message}");
+    let spent = fs::read_to_string(machine.agent_node_home().join("spent.json"));
+    if let Ok(spent) = spent {
+        let spent: serde_json::Value = serde_json::from_str(&spent).unwrap();
+        assert_eq!(spent["spent"], "0", "{spent}");
+    }
+}
+
+#[test]
+fn the_mainnet_profile_records_the_urls_init_is_given() {
+    let machine = Machine::new();
+
+    let init = machine.init_with(&[
+        "--network",
+        "mainnet",
+        "--connector-url",
+        "https://connector.example/ilp",
+        "--relay-url",
+        "wss://relay.example",
+    ]);
+
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let state = state(&machine);
+    assert_eq!(state["connector_url"], "https://connector.example/ilp");
+    assert_eq!(state["relay_url"], "wss://relay.example");
+}

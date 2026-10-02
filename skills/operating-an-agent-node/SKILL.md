@@ -70,6 +70,8 @@ connector is running, or fail with `confirmation_required` and change nothing.
 1. `toon init --network devnet --accept-anyone-terms` creates the wallet and the first TOON app,
    the relay TOON app, as a hidden service. The mnemonic is shown once: record it where the
    operator keeps secrets. `--network` is `devnet` (default), `sandbox` or `mainnet`.
+   `mainnet` has no network to join yet: `toon join mainnet` is refused (`join_refused`) unless `init`
+   was given `--connector-url` and `--relay-url`.
    `--clearnet <hostname>` asks for clearnet instead and needs no terms flag; the certificate and
    reverse proxy are yours to provide. If the overlay will not bootstrap, `init` fails with
    `overlay_unavailable` and never falls back to clearnet. `--max-per-command` and `--max-per-day`
