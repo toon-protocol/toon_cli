@@ -1,6 +1,7 @@
 mod support;
 
 use support::fake_chain::{FakeChain, NATIVE_BALANCE, TOKEN, TOKEN_BALANCE};
+use support::fake_solana::{self, FakeSolana};
 use support::local_chain::LocalChain;
 use support::{Foreground, Machine, Run, PASSPHRASE};
 
@@ -457,5 +458,87 @@ fn an_amount_above_u64_reaches_the_connector() {
         "{}",
         run.stderr
     );
+    assert_eq!(run.exit_code, 1);
+}
+
+fn init_on_solana(machine: &Machine, evm: &FakeChain, solana: &FakeSolana) {
+    let mut args = vec![
+        "--evm-rpc-url".to_owned(),
+        evm.rpc_url(),
+        "--evm-token".to_owned(),
+        TOKEN.to_owned(),
+        "--evm-decimals".to_owned(),
+        "6".to_owned(),
+        "--evm-transfer-method".to_owned(),
+        "permit2".to_owned(),
+        "--solana".to_owned(),
+        "--solana-rpc-url".to_owned(),
+        solana.rpc_url(),
+    ];
+    let args: Vec<&str> = args.iter_mut().map(|arg| arg.as_str()).collect();
+    assert_eq!(machine.init_with(&args).exit_code, 0);
+}
+
+#[test]
+fn balances_show_a_solana_address_native_and_token() {
+    let (evm, solana) = (FakeChain::start(), FakeSolana::start());
+    let machine = Machine::new();
+    init_on_solana(&machine, &evm, &solana);
+    let shown = with_passphrase(&machine, &["wallet", "show", "--json"]).json();
+
+    let run = with_passphrase(&machine, &["wallet", "balances", "--json"]);
+
+    let report = run.json();
+    let entry = &report["balances"][1];
+    assert_eq!(entry["chain"], "solana");
+    assert_eq!(
+        entry["address"],
+        shown["wallet"]["chains"]["solana"][0]["address"]
+    );
+    assert_eq!(entry["native"], fake_solana::NATIVE_BALANCE.to_string());
+    assert_eq!(
+        entry["token"]["balance"],
+        fake_solana::TOKEN_BALANCE.to_string()
+    );
+    assert_eq!(entry["token"]["decimals"], 6);
+    assert!(entry["token"]["address"].is_string(), "{report}");
+    let text = with_passphrase(&machine, &["wallet", "balances"]).stdout;
+    assert!(
+        text.contains(&format!(
+            "{} native, {} of token",
+            fake_solana::NATIVE_BALANCE,
+            fake_solana::TOKEN_BALANCE
+        )),
+        "{text}"
+    );
+    assert_eq!(run.exit_code, 0);
+}
+
+#[test]
+fn balances_of_a_solana_address_without_a_token_account_are_zero() {
+    let (evm, solana) = (
+        FakeChain::start(),
+        FakeSolana::start_without_token_accounts(),
+    );
+    let machine = Machine::new();
+    init_on_solana(&machine, &evm, &solana);
+
+    let run = with_passphrase(&machine, &["wallet", "balances", "--json"]);
+
+    let report = run.json();
+    assert_eq!(report["balances"][1]["token"]["balance"], "0");
+    assert_eq!(run.exit_code, 0);
+}
+
+#[test]
+fn balances_on_an_unreachable_solana_chain_say_so() {
+    let (evm, solana) = (FakeChain::start(), FakeSolana::start());
+    let machine = Machine::new();
+    init_on_solana(&machine, &evm, &solana);
+    drop(solana);
+
+    let run = with_passphrase(&machine, &["wallet", "balances", "--json"]);
+
+    assert_eq!(run.json()["error"]["code"], "chain_failed");
     assert_eq!(run.exit_code, 1);
 }
