@@ -231,7 +231,8 @@ pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
         ours.apps.iter().any(|app| {
             app.prefix == prefix
                 || (app.source == Source::Relay
-                    && prefix == node::relay_ephemeral_prefix(&ours.segment))
+                    && (prefix == node::relay_ephemeral_prefix(&ours.segment)
+                        || prefix == app.subscribe_prefix()))
         })
     };
     if taken(&prefix) {

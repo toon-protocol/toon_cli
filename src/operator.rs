@@ -14,6 +14,7 @@ use zeroize::Zeroizing;
 use crate::cli::{ChannelCommand, JoinArgs, PeerCommand, RouteCommand};
 use crate::control;
 use crate::egress::Egress;
+use crate::funding::GasRefusal;
 use crate::node::{self, ConnectorFiles, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::profile::Profile;
@@ -30,6 +31,8 @@ pub struct Surface {
     write_key: PathBuf,
     /// Whether the connector may peer toward a plain `http://` address.
     plaintext_peers: bool,
+    /// What the connector's key must hold for gas, to name when a write is refused for it.
+    gas: Option<GasRefusal>,
 }
 
 fn failed(code: ErrorCode, message: String) -> Error {
@@ -84,6 +87,7 @@ pub fn surface_of(home: &Path, name: Option<&str>) -> Result<Surface, Error> {
         bearer_token: ConnectorFiles::of(home, app.connector).bearer_token,
         write_key: node::operator_key(home),
         plaintext_peers: app.plaintext_peers,
+        gas: GasRefusal::of(home, state.network, app),
     })
 }
 
@@ -393,6 +397,22 @@ fn refused(code: ErrorCode, status: u16, text: &str) -> Error {
     }
 }
 
+impl Surface {
+    /// The `unfunded` refusal if the connector refused a write for lack of gas.
+    fn refused_for_gas(&self, status: u16, text: &str) -> Option<Error> {
+        self.gas
+            .as_ref()
+            .and_then(|gas| gas.of_answer(status, text))
+    }
+
+    /// A write the connector refused, as an error: `unfunded` when the answer is a refusal
+    /// for lack of gas, else `code`.
+    fn refused_write(&self, code: ErrorCode, status: u16, text: &str) -> Error {
+        self.refused_for_gas(status, text)
+            .unwrap_or_else(|| refused(code, status, text))
+    }
+}
+
 /// The `toon peer add` command a message tells the reader to run: it takes the deposit
 /// `peer add` requires and the `--yes` it needs to deposit it. `deposit` and `extra` are
 /// printed as given, so a placeholder in angle brackets may stand for either.
@@ -532,7 +552,7 @@ pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Peered, Error> {
                 ),
             )
         } else {
-            refused(ErrorCode::PeerFailed, status, &text)
+            surface.refused_write(ErrorCode::PeerFailed, status, &text)
         });
     }
     let peering: Value = serde_json::from_str(&text).map_err(|error| {
@@ -706,6 +726,9 @@ fn channel_write(home: &Path, path: &str, body: String) -> Result<Value, Error> 
             ..error
         })?;
     if !(200..300).contains(&status) {
+        if let Some(unfunded) = surface.refused_for_gas(status, &text) {
+            return Err(unfunded);
+        }
         return Err(Error {
             // The connector authenticates a write before it does anything.
             nothing_sent: status == 401,
@@ -1431,6 +1454,7 @@ mod tests {
             bearer_token: home.join("token"),
             write_key,
             plaintext_peers: true,
+            gas: None,
         }
     }
 
@@ -1473,6 +1497,29 @@ mod tests {
         assert_eq!(times.len(), 3);
         for pair in times.windows(2) {
             assert!(pair[1] - pair[0] >= std::time::Duration::from_secs(1));
+        }
+    }
+
+    #[test]
+    fn a_502_about_gas_is_unfunded_and_any_other_stays_peer_failed_with_its_text() {
+        let home = tempfile::tempdir().expect("a directory");
+        let gas = (502, "out of gas: gas required exceeds: 66555".to_owned());
+        let other = (502, "the peer refused the handshake".to_owned());
+        for ((status, text), code) in [(gas, ErrorCode::Unfunded), (other, ErrorCode::PeerFailed)] {
+            let (url, _) = connector(vec![(status, text.clone())]);
+            let surface = Surface {
+                gas: Some(super::GasRefusal::example()),
+                ..surface(home.path(), url)
+            };
+            let Err(error) = peer_add_on(&surface, &add()) else {
+                panic!("the peering was made");
+            };
+            assert_eq!(error.code, code, "{}", error.message);
+            if code == ErrorCode::PeerFailed {
+                assert_eq!(error.message, super::refusal(status, &text));
+            } else {
+                assert!(error.message.contains("0xabc"), "{}", error.message);
+            }
         }
     }
 

@@ -504,10 +504,18 @@ pub enum LimitCommand {
 pub enum RelayCommand {
     /// Show the relay's settings and prices, or change them and restart the relay
     Config(RelayConfigArgs),
-    /// Set the price of a write on the connector's route, which restarts the connector
+    /// Set the price of a write, and of the live feed, which restarts the connector
     Price {
         /// The price of one write, in the token's base units
-        amount: u64,
+        amount: Option<u64>,
+        /// What a subscribe packet costs, on the connector's subscribe route; it credits
+        /// exactly this. Sold together with `--broadcast`; 0 stops selling the live feed
+        #[arg(long)]
+        subscribe: Option<u64>,
+        /// What the relay debits for each event it broadcasts to a subscriber; 0 stops
+        /// selling the live feed
+        #[arg(long)]
+        broadcast: Option<u64>,
         /// Restart a running connector without asking: a restart drops the packets it holds
         #[arg(long)]
         yes: bool,
@@ -533,8 +541,13 @@ pub enum RelayCommand {
         #[arg(long)]
         yes: bool,
     },
-    /// List the balance and filter at each relay subscribed to
-    Subscriptions,
+    /// List the balance and filter at each relay subscribed to, or with `--incoming` who
+    /// subscribed to this agent node's own relay and what they have left
+    Subscriptions {
+        /// The subscribers of the agent node's own relay, which must be running
+        #[arg(long)]
+        incoming: bool,
+    },
 }
 
 #[derive(Debug, Args)]

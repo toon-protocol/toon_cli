@@ -15,7 +15,8 @@
 //! It holds no channels and accepts no transaction, so it carries a connector that
 //! nobody pays. A test that moves money needs more than this. Every address holds the
 //! same balance of gas and of the token, unless the chain was started unfunded and
-//! nobody has funded it yet, or gasless: the token and no gas.
+//! nobody has funded it yet, or gasless: the token and no gas, or unestimable: gas, and
+//! a refusal to estimate any transaction.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -57,17 +58,24 @@ pub struct FakeChain {
 impl FakeChain {
     /// A chain on which every address is funded.
     pub fn start() -> Self {
-        Self::spawn(true, true)
+        Self::spawn(true, true, true)
     }
 
     /// A chain on which every address holds the token and no gas.
     pub fn start_gasless() -> Self {
-        Self::spawn(true, false)
+        Self::spawn(true, false, true)
     }
 
     /// A chain on which every address holds nothing until `fund` is called.
     pub fn start_unfunded() -> Self {
-        Self::spawn(false, true)
+        Self::spawn(false, true, true)
+    }
+
+    /// A chain on which every address holds gas and the token, and which refuses to estimate
+    /// any transaction as a node does for a key that holds too little ETH: the balance
+    /// the key is checked against is not what the chain then says.
+    pub fn start_unestimable() -> Self {
+        Self::spawn(true, true, false)
     }
 
     /// What a faucet does: from now on every address holds gas and the token.
@@ -75,7 +83,7 @@ impl FakeChain {
         Arc::clone(&self.funded)
     }
 
-    fn spawn(funded: bool, gas: bool) -> Self {
+    fn spawn(funded: bool, gas: bool, estimates: bool) -> Self {
         let funded = Arc::new(AtomicBool::new(funded));
         let held = Arc::clone(&funded);
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -84,7 +92,7 @@ impl FakeChain {
             .build()
             .expect("a runtime for the fake chain");
         let rpc = runtime.block_on(FakeRpc::spawn(move |call: &RpcCall| {
-            answer(call, held.load(Ordering::SeqCst), gas)
+            answer(call, held.load(Ordering::SeqCst), gas, estimates)
         }));
         Self {
             rpc,
@@ -103,7 +111,7 @@ impl FakeChain {
     }
 }
 
-fn answer(call: &RpcCall, funded: bool, gas: bool) -> RpcReply {
+fn answer(call: &RpcCall, funded: bool, gas: bool, estimates: bool) -> RpcReply {
     match call.method.as_str() {
         "eth_chainId" => RpcReply::Result(json!(format!("{CHAIN_ID:#x}"))),
         "eth_blockNumber" => RpcReply::Result(json!("0x1")),
@@ -114,12 +122,13 @@ fn answer(call: &RpcCall, funded: bool, gas: bool) -> RpcReply {
         } else {
             "0x0".into()
         })),
-        "eth_call" => eth_call(call, funded),
+        "eth_call" => eth_call(call, funded, estimates),
+        "eth_estimateGas" if !estimates => out_of_gas(),
         other => not_served(other),
     }
 }
 
-fn eth_call(call: &RpcCall, funded: bool) -> RpcReply {
+fn eth_call(call: &RpcCall, funded: bool, estimates: bool) -> RpcReply {
     let request = &call.params[0];
     let data = request["data"]
         .as_str()
@@ -159,10 +168,22 @@ fn eth_call(call: &RpcCall, funded: bool) -> RpcReply {
         let id = evm_batch_channel_id(&BatchSettlementDomain::x402(CHAIN_ID), &config);
         return RpcReply::Result(json!(format!("0x{}", hex(&id))));
     }
+    // A node that simulates a transaction from a key with too little ETH.
+    if !estimates {
+        return out_of_gas();
+    }
     // What a contract does with a call it has no function for.
     RpcReply::Error {
         code: 3,
         message: format!("execution reverted: no function {selector}"),
+    }
+}
+
+/// What a node answers when a transaction needs more gas than its sender holds.
+fn out_of_gas() -> RpcReply {
+    RpcReply::Error {
+        code: -32003,
+        message: "out of gas: gas required exceeds: 66555".into(),
     }
 }
 

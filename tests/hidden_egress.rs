@@ -556,6 +556,56 @@ fn a_hidden_agent_node_reads_a_wss_relay_at_an_anyone_name_through_the_proxy() {
 }
 
 #[test]
+fn a_hidden_agent_node_holds_a_subscription_at_a_relay_on_this_machine_directly() {
+    let chain = AnvilChain::start();
+    let far = far_on(&chain);
+    let relay = selling(&far);
+    // The stand-in's proxy refuses loopback, as the real daemon does, so a feed that is
+    // dialled through it reaches nothing.
+    let near = hidden_near(&chain, "");
+    peer_and_route(&near, &far, SUBSCRIBE);
+    let url = relay.url();
+    assert!(url.starts_with("ws://127.0.0.1:"), "{url}");
+
+    let subscribed = toon(
+        &near.machine,
+        &[
+            "relay",
+            "subscribe",
+            &url,
+            "--filter",
+            FILTER,
+            "--amount",
+            "1000",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        subscribed.exit_code, 0,
+        "{}{}",
+        subscribed.stdout, subscribed.stderr
+    );
+    eventually(|| relay.open_feeds() == 1);
+    relay.broadcast(event(1));
+
+    let status = toon(&near.machine, &["status", "--json"]).json();
+    let own = format!(
+        "ws://{}",
+        status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the relay has no address: {status}"))
+    );
+    eventually(|| {
+        let query = toon(
+            &near.machine,
+            &["event", "query", &own, "--filter", FILTER, "--json"],
+        );
+        query.json()["events"] == json!([event(1)])
+    });
+}
+
+#[test]
 fn a_hidden_sandbox_agent_node_joins_through_the_hub_it_is_told_at_an_anyone_name() {
     let chain = AnvilChain::start();
     let far = far_on(&chain);

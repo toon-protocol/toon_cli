@@ -214,7 +214,7 @@ fn init_says_which_address_needs_how_much_and_how_to_fund_it() {
     let needs = report["needs"].as_array().unwrap();
     assert_eq!(needs.len(), 2);
     assert!(needs.iter().all(|need| need["address"] == address));
-    assert_eq!(needs[0]["amount"], "100000000000000");
+    assert_eq!(needs[0]["amount"], "1000000000000000");
     assert_eq!(needs[1]["amount"], "1000000");
     assert_eq!(needs[0]["for"], "deposit");
     assert_eq!(needs[1]["for"], "start");
@@ -224,7 +224,7 @@ fn init_says_which_address_needs_how_much_and_how_to_fund_it() {
         .expect("the text says separately what a deposit needs");
     assert!(!start.contains("ETH"), "{text}");
     assert!(start.contains("toon wallet fund"), "{text}");
-    assert!(deposit.contains("0.0001 ETH"), "{text}");
+    assert!(deposit.contains("0.001 ETH"), "{text}");
     assert!(deposit.contains("sends no ETH"), "{text}");
     assert!(deposit.contains("Base Sepolia"), "{text}");
 }
