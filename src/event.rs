@@ -260,23 +260,21 @@ fn write_to(
 /// signed, read from the agent node's own relay, which must be running.
 pub fn followed_keys(home: &Path) -> Result<Vec<String>, Error> {
     let state = node::State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
-    let app = state
-        .toon_apps
-        .iter()
-        .find(|app| app.apps.iter().any(|behind| behind.name == node::RELAY))
-        .ok_or_else(|| Error {
-            nothing_sent: false,
-            unanswered: None,
-            code: ErrorCode::UnknownName,
-            message: "No TOON app of this agent node has a relay.".into(),
-        })?;
+    let app = crate::subscribe::own_relay_app(&state)?;
     let address = crate::subscribe::own_relay_address(home, &app.name)?;
     let identity = public_key(&*agent_secret(home)?)?;
     let filter = json!({ "kinds": [3], "authors": [identity] });
     let events = fetch(&Egress::of(home)?, &format!("ws://{address}"), &filter)?;
     let mut keys: Vec<String> = events
         .iter()
-        .max_by_key(|event| event["created_at"].as_u64().unwrap_or(0))
+        // The newest; of two at the same second, the lower id, as NIP-01 keeps.
+        .max_by(|one, other| {
+            let at = |event: &Value| event["created_at"].as_u64().unwrap_or(0);
+            let id = |event: &Value| event["id"].as_str().unwrap_or("").to_owned();
+            at(one)
+                .cmp(&at(other))
+                .then_with(|| id(other).cmp(&id(one)))
+        })
         .and_then(|event| event["tags"].as_array())
         .into_iter()
         .flatten()
@@ -323,17 +321,12 @@ pub fn parse_filter(text: &str) -> Result<Value, Error> {
         .ok_or_else(|| usage("--filter must be one JSON object, like {\"kinds\":[1]}."))
 }
 
-/// `toon event query`: the stored events of `relay` that match `filter`, or the keys the
-/// agent follows with `follow`.
-pub fn query(
-    home: &Path,
-    relay: &str,
-    filter: Option<&str>,
-    follow: bool,
-) -> Result<Report, Error> {
+/// `toon event query`: the stored events of `relay` that match `filter`, with `authors`
+/// set to the keys the agent follows when `following`.
+pub fn query(relay: &str, filter: Option<&str>, following: bool) -> Result<Report, Error> {
     let filter = filter.map(parse_filter).transpose()?;
-    let filter = if follow {
-        following(home, filter)?.0
+    let filter = if following {
+        self::following(&home::resolve()?, filter)?.0
     } else {
         filter.ok_or_else(|| usage("A query needs --filter or --following."))?
     };
@@ -619,7 +612,7 @@ pub fn run(command: EventCommand) -> Result<Report, Error> {
             relay,
             filter,
             following,
-        } => query(&home::resolve()?, &relay, filter.as_deref(), following),
+        } => query(&relay, filter.as_deref(), following),
         EventCommand::Follow { relay } => crate::subscribe::follow(&home::resolve()?, &relay),
     }
 }

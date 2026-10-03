@@ -1051,3 +1051,47 @@ fn following_subscribes_with_the_keys_of_the_follow_list_as_a_snapshot() {
         2
     );
 }
+
+#[test]
+fn following_is_refused_before_anything_is_sent_or_counted() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    let before = remaining(&near);
+
+    let none = subscribe(&near, &relay, &["--following", "--amount", "1000", "--yes"]);
+    assert_eq!(
+        none.json()["error"]["code"],
+        "no_follow_list",
+        "{}",
+        none.stdout
+    );
+    assert_eq!(none.exit_code, 1);
+
+    let tags = json!([["p", "cd".repeat(32)]]).to_string();
+    let published = near.toon(&["event", "publish", "--kind", "3", "--tags", &tags, "--json"]);
+    assert_eq!(published.exit_code, 0, "{}", published.stdout);
+    let with_authors = subscribe(
+        &near,
+        &relay,
+        &[
+            "--following",
+            "--filter",
+            r#"{"authors":["ab"]}"#,
+            "--amount",
+            "1000",
+            "--yes",
+        ],
+    );
+    assert_eq!(
+        with_authors.json()["error"]["code"],
+        "usage",
+        "{}",
+        with_authors.stdout
+    );
+    assert_eq!(with_authors.exit_code, 2);
+
+    assert_eq!(relay.posts(), 0);
+    assert_eq!(remaining(&near), before);
+}

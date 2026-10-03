@@ -245,11 +245,10 @@ pub fn subscribe(
     // The keys followed now, fixed in the filter until the command is run again.
     let (filter, followed) = if following {
         let (filter, count) = event::following(home, filter)?;
-        (filter, Some(count))
+        (Some(filter), Some(count))
     } else {
-        (filter.unwrap_or(Value::Null), None)
+        (filter, None)
     };
-    let filter = (!filter.is_null()).then_some(filter);
     let terms = terms(&Egress::of(home)?, relay)?;
     // A top-up sends the filter last kept again: the relay may have forgotten an exhausted
     // subscription, and the draft says to send `filter` when that may be so.
@@ -677,6 +676,24 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
     })
 }
 
+/// The TOON app of this agent node that runs its own relay. None is `unknown_name`.
+pub fn own_relay_app(state: &node::State) -> Result<&node::ToonApp, Error> {
+    state
+        .toon_apps
+        .iter()
+        .find(|app| {
+            app.apps
+                .iter()
+                .any(|behind| behind.name == node::RELAY && behind.source == node::Source::Relay)
+        })
+        .ok_or_else(|| Error {
+            nothing_sent: false,
+            unanswered: None,
+            code: ErrorCode::UnknownName,
+            message: "No TOON app of this agent node has a relay.".into(),
+        })
+}
+
 /// Where the running relay of the TOON app `app` listens, `host:port`, as the agent node's
 /// supervisor reports it. The relay not running is `not_running`.
 pub fn own_relay_address(home: &Path, app: &str) -> Result<String, Error> {
@@ -713,16 +730,7 @@ pub fn incoming(home: &Path) -> Result<Report, Error> {
         code,
         message,
     };
-    let Some(app) = state.toon_apps.iter().find(|app| {
-        app.apps
-            .iter()
-            .any(|behind| behind.name == node::RELAY && behind.source == node::Source::Relay)
-    }) else {
-        return Err(failed(
-            ErrorCode::UnknownName,
-            "No TOON app of this agent node has a relay.".into(),
-        ));
-    };
+    let app = own_relay_app(&state)?;
     if app.relay.selling().is_none() {
         return Err(failed(
             ErrorCode::QueryFailed,
@@ -731,7 +739,11 @@ pub fn incoming(home: &Path) -> Result<Report, Error> {
                 .into(),
         ));
     }
-    let address = own_relay_address(home, &app.name)?;
+    let address = own_relay_address(home, &app.name).map_err(|mut error| {
+        error.message =
+            "The relay is not running: `toon up` starts it, and it lists its subscribers.".into();
+        error
+    })?;
     let url = format!("http://{address}/subscribers");
     let unreadable = |why: String| {
         failed(
