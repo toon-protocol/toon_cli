@@ -92,5 +92,6 @@ Change it with `toon` commands, not by hand. An edited `limits.json` stops every
 | `spending_limit` | Report it, or have the passphrase holder run `toon limit set` |
 | `peering_needed` | Run the `peer add` and `route add` the message prints |
 | `overlay_unavailable` | The Anyone network did not carry: try again later |
+| `describe_failed` | The connector at that `/ilp` URL gave no self-description: check the URL, or try again later |
 | `connector_failed`, `app_failed` | `toon logs <name>` |
 | `systemd_failed` | `systemctl --user status toon-agent-node` |

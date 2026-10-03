@@ -338,6 +338,10 @@ fn subscriptions_lists_the_balance_and_filter_at_each_relay() {
     peer_and_route(&near, &far);
     let empty = near.toon(&["relay", "subscriptions", "--json"]);
     assert_eq!(empty.json()["subscriptions"], json!([]));
+    assert_eq!(
+        empty.json()["totals"],
+        json!({ "active": 0, "exhausted": 0 })
+    );
     let paid = subscribe(
         &near,
         &relay,
@@ -361,6 +365,19 @@ fn subscriptions_lists_the_balance_and_filter_at_each_relay() {
             "current": true,
             "exhausted": false,
         }])
+    );
+    assert_eq!(
+        listed.json()["totals"],
+        json!({ "active": 1, "exhausted": 0 })
+    );
+    assert!(near
+        .toon(&["relay", "subscriptions"])
+        .stdout
+        .contains("1 with a balance, 0 exhausted."));
+    let status = near.machine.toon(&["status", "--json"]).json();
+    assert_eq!(
+        status["agent_node"]["totals"]["subscriptions"],
+        json!({ "active": 1, "exhausted": 0 })
     );
 }
 
@@ -568,6 +585,10 @@ fn a_subscription_that_runs_out_is_said_so_and_resumes_when_it_is_topped_up() {
     let listed = near.toon(&["relay", "subscriptions", "--json"]);
     assert_eq!(listed.json()["subscriptions"][0]["exhausted"], true);
     assert_eq!(listed.json()["subscriptions"][0]["balance"], 400);
+    assert_eq!(
+        listed.json()["totals"],
+        json!({ "active": 0, "exhausted": 1 })
+    );
     let text = near.toon(&["relay", "subscriptions"]);
     assert!(text.stdout.contains("exhausted"), "{}", text.stdout);
     assert_eq!(near.stored(), vec![event(4, 1)["id"].as_str().unwrap()]);

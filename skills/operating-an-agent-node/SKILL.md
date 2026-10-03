@@ -46,6 +46,7 @@ These commands spend, and each one needs an explicit amount and `--yes`:
 - `toon join <network> --deposit <n> --yes`
 - `toon create <name> --deposit <n> --yes` (the two channels count twice against the limit)
 - `toon event publish --relay <ws-url> --yes` (pays the price the relay states; add `--amount <n>` when a connector in between charges to forward)
+- `toon relay subscribe <ws-url> --filter <json> --amount <n> --yes` (prepays a subscription at another relay: the balance its live feed draws down; `--packet-amount <n>` when a connector in between charges to forward)
 
 Without `--yes` nothing moves and the command fails with `not_confirmed`. Never add `--yes` to
 see what a command would do: run it without, or read the price first.
@@ -156,6 +157,10 @@ back only if its operator creates a peering in return.
 - `toon peer add <address> --deposit <n> --yes` peers toward the `/ilp` URL of another connector.
   `--id` labels it, `--fee` is what you keep of each packet forwarded, `--max-packet-amount` caps
   one packet. `peer_not_peerable` means the refusal is on the other side.
+- `toon describe [<ilp-url>]` prints what a connector offers before you pay it: its addresses,
+  settlement terms, and each route with its price and whether it states a `request`. With
+  `--json` the self-description is unaltered under `description`. Without a URL it describes your
+  own connector (`--app` chooses which). It pays nothing, and fails with `describe_failed`.
 - `toon peer list` shows the peerings and their labels; `toon peer remove <id>` removes one.
 - `toon join <network> --deposit <n> --yes` peers toward the network's own connector and reads
   its relay. The network must be the one `init` was given; it is done once.
@@ -187,7 +192,9 @@ To sell the relay's live feed (ADR 0005), `toon relay price --subscribe <amount>
 sets what a subscribe packet costs and credits, on a new route of the connector, and what the relay
 debits for each event it broadcasts to a subscriber. The two come together, and a price of `0` stops
 selling. `toon relay subscriptions --incoming` asks the running relay who subscribed and what each
-has left.
+has left. The counts are in `toon status` (subscriptions held with a balance and exhausted, and subscriber
+keys of its own relay with a balance, or unknown while the relay does not answer), and in `totals` of
+`toon relay subscriptions` and of `toon relay subscriptions --incoming` with `--json`.
 
 ## Sending
 
@@ -203,7 +210,12 @@ to someone else's relay is `toon event publish --relay <ws-url> --yes` and needs
 reaches that relay's connector, or it fails with `peering_needed` and pays nothing. It sends
 the relay's price; if a connector in between charges to forward and rejects the write with
 `F03`, state the path's whole cost with `--amount <n>` (below the relay's price is refused).
-`toon relay subscribe` is the same: if a connector in between rejects its packets with `F03`,
+`toon relay subscribe <ws-url> --filter <json> --amount <n> --yes` buys the live feed of another
+relay: a prepaid balance at that relay, with one filter, drawn down for each event it sends.
+The supervisor writes those events into your own relay (ADR 0005). It needs a peering too, and
+without `--yes` it fails with `not_confirmed` and says what the relay charges. `toon relay
+subscriptions` shows the balance. It is not the follow list, which is an event you publish. It is
+the same as publishing in one way: if a connector in between rejects its packets with `F03`,
 state what one packet costs along the path with `--packet-amount <n>`; `--amount` stays the total,
 paid as whole packets of that amount, and each packet still credits only the subscribe price.
 
