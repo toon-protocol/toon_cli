@@ -330,8 +330,8 @@ outbound watermark in `toon channel list` shows the same). If the watermarks can
 the packet's full amount stays counted. Nor is a payment counted that failed before it reached
 the connector or that the other side refused. A peering the connector refused because both
 connectors settle on more than one chain and no `--chain` named one (`peer_failed`, before any
-channel is opened) is not counted either, for `peer add`, `join` and `create --deposit`. A packet that was never sent is not counted
-either: the operator key or the `--body` file of `toon send` could not be read, the identity
+channel is opened) is not counted either, for `peer add`, `join` and `create --deposit`. A
+packet that was never sent is not counted either: the operator key or the `--body` file of `toon send` could not be read, the identity
 of the connector to seal to could not be fetched or has no usable public key, the packet could not be sealed, or the
 connector's `send` refused its arguments. These still fail with `send_failed`. Any other
 failure may have paid, and stays counted, including a refusal from the operator surface and

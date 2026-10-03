@@ -508,14 +508,13 @@ pub fn peer_add(home: &Path, add: &PeerAdd) -> Result<Peered, Error> {
 pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Peered, Error> {
     let id = add.id.map_or_else(|| label(add.address), str::to_owned);
     segment(ErrorCode::PeerFailed, "The peering's label", &id)?;
-    let body = json!({
+    let mut body = json!({
         "id": id,
         "url": add.address,
         "fee": add.fee,
         "max_packet_amount": add.max_packet_amount,
         "deposit": add.deposit,
     });
-    let mut body = body;
     if let (Some(chain), Some(members)) = (add.chain, body.as_object_mut()) {
         members.insert("chain".into(), json!(chain.name()));
     }
@@ -564,11 +563,6 @@ pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Peered, Error> {
         return Err(unpeered(&refusal(status, &text)));
     }
     if status != 200 {
-        // The connector reads the other side's self-description first, and a connector
-        // that is not peerable publishes none a peer can use. A connector that does not
-        // peer over plain `http://` refuses such an address, and finds no endpoint it
-        // can dial in a description that publishes only those: then the refusal is
-        // this side's.
         if status == 400 {
             if let Some(chains) = ambiguous_chains(&text) {
                 // Refused before any channel was opened: nothing was deposited.
@@ -578,13 +572,18 @@ pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Peered, Error> {
                         ErrorCode::PeerFailed,
                         format!(
                             "This connector and the other settle on more than one chain \
-                             ({chains}). Run the command again with `--chain` naming one. {}",
+                             ({chains}). Make the peering again with `--chain` naming one. {}",
                             refusal(status, &text)
                         ),
                     )
                 });
             }
         }
+        // The connector reads the other side's self-description first, and a connector
+        // that is not peerable publishes none a peer can use. A connector that does not
+        // peer over plain `http://` refuses such an address, and finds no endpoint it
+        // can dial in a description that publishes only those: then the refusal is
+        // this side's.
         let no_endpoint = status == 502 && text.contains("publishes no endpoint");
         let no_client_edge = status == 502 && text.contains("publishes no httpEndpoint");
         let plaintext = status == 502 && text.contains("peer_allow_plaintext_endpoints");

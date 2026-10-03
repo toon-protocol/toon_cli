@@ -259,34 +259,47 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
             }
             Ok(())
         })();
-        let both = peerings.len() == 2;
+        let moved = peerings_moved(deposit, deposits, outcome.as_ref().err());
+        let chain = create
+            .chain
+            .map(|chain| format!(" --chain {}", chain.name()))
+            .unwrap_or_default();
         Ok((
             match outcome {
                 Ok(()) => Ok(created(home, &new, &from, restarted, peerings)),
-                Err(error) => Err(failed(
-                    error.code,
-                    format!(
-                        "The TOON app {} was created, and {} of its 2 peerings were: {} \
-                         `{}` and `toon route add --app` make the rest.",
-                        new.name,
-                        peerings.len(),
-                        error.message,
-                        operator::peer_add_command(
-                            "<connector_url>",
-                            &deposit.to_string(),
-                            " --app <name>"
-                        )
-                    ),
-                )),
+                Err(error) => Err(Error {
+                    nothing_sent: error.nothing_sent,
+                    ..failed(
+                        error.code,
+                        format!(
+                            "The TOON app {} was created, and {} of its 2 peerings were: {} \
+                             `{}` and `toon route add --app` make the rest.",
+                            new.name,
+                            peerings.len(),
+                            error.message,
+                            operator::peer_add_command(
+                                "<connector_url>",
+                                &deposit.to_string(),
+                                &format!(" --app <name>{chain}")
+                            )
+                        ),
+                    )
+                }),
             },
-            // A failed peering may have deposited, so then both stay counted.
-            if both {
-                spending::Moved::Amount(deposit.saturating_mul(deposits))
-            } else {
-                spending::Moved::All
-            },
+            moved,
         ))
     })?
+}
+
+/// What moved of the two deposits `create --deposit` was counted for, when `deposits` of
+/// its peerings say they deposited one and `failure` is what stopped the rest, if anything.
+/// A failed peering may have deposited, so then both stay counted, unless it certainly
+/// failed before paying.
+fn peerings_moved(deposit: u128, deposits: u128, failure: Option<&Error>) -> spending::Moved {
+    match failure {
+        Some(error) if !spending::failed_before_paying(error) => spending::Moved::All,
+        _ => spending::Moved::Amount(deposit.saturating_mul(deposits)),
+    }
 }
 
 /// Write the new TOON app's keys, record it, and start its connector if the agent node
@@ -456,4 +469,35 @@ pub fn destroy(home: &Path, name: &str) -> Result<Report, Error> {
             "Destroyed the TOON app {name}: its connector stopped and its files are gone."
         ),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{failed, peerings_moved};
+    use crate::outcome::{Error, ErrorCode};
+    use crate::spending::Moved;
+
+    #[test]
+    fn a_peering_refused_before_paying_gives_back_what_it_was_counted_for() {
+        let refused = Error {
+            nothing_sent: true,
+            ..failed(ErrorCode::PeerFailed, "refused".into())
+        };
+        assert_eq!(peerings_moved(5, 0, Some(&refused)), Moved::Amount(0));
+        assert_eq!(peerings_moved(5, 1, Some(&refused)), Moved::Amount(5));
+    }
+
+    #[test]
+    fn any_other_failed_peering_stays_counted() {
+        let failure = failed(
+            ErrorCode::PeerFailed,
+            "the deposit is below the minimum".into(),
+        );
+        assert_eq!(peerings_moved(5, 0, Some(&failure)), Moved::All);
+    }
+
+    #[test]
+    fn two_peerings_keep_what_they_deposited() {
+        assert_eq!(peerings_moved(5, 2, None), Moved::Amount(10));
+    }
 }
