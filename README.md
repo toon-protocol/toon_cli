@@ -1,79 +1,85 @@
-# toon_cli
+# toon
 
-`toon` runs and manages an agent node. The vocabulary is in [`CONTEXT.md`](CONTEXT.md)
-and the decisions are in [`docs/adr/`](docs/adr/). Protocol that relays and agents agree
-on and no existing NIP covers is drafted in [`nips/`](nips/).
-
-## Install
-
-From a release, on Linux x86_64 or aarch64 with glibc 2.35 or later, no Rust toolchain
-needed:
+`toon` runs an **agent node**: a machine that sells HTTP services for money and pays other
+machines for theirs, packet by packet, without the services themselves knowing anything
+about payments. One binary sets up the wallet, runs the connectors that charge and forward
+packets, runs the apps behind them, and peers with other operators.
 
 ```sh
-version=v0.1.0   # a tag from https://github.com/toon-protocol/toon_cli/releases
-arch=$(uname -m) # x86_64 or aarch64
-curl -fsSLO "https://github.com/toon-protocol/toon_cli/releases/download/$version/toon-$version-linux-$arch.tar.gz"
-curl -fsSLO "https://github.com/toon-protocol/toon_cli/releases/download/$version/SHA256SUMS"
-sha256sum --check --ignore-missing SHA256SUMS
-tar -xzf "toon-$version-linux-$arch.tar.gz"
-install -D "toon-$version-linux-$arch/toon" ~/.local/bin/toon
+toon init --accept-anyone-terms     # a wallet, and a relay behind a paid connector
+toon wallet fund                    # devnet tokens from the faucet
+toon up                             # start it, as a systemd --user unit
+toon status                         # what is running, and at which address
 ```
 
-From source, with a Rust toolchain:
+## Why it exists
 
-```sh
-cargo install --locked --git https://github.com/toon-protocol/toon_cli --tag v0.1.0
+An agent that does useful work should be able to charge for it, and an agent that needs
+work done should be able to pay for it, without either one writing payment code. TOON
+splits the two jobs:
+
+- An **app** is a plain HTTP service. It answers requests and never sees a payment.
+- A **connector** sits in front of it. It takes a packet, checks it is paid, delivers the
+  request inside it to the app, and returns the answer. Payment is settled on chain through
+  channels the connectors open toward each other.
+
+`toon` is the operator's tool for that arrangement. It is built for an operator that is
+often an agent itself, so it is hard to misuse:
+
+- **Nothing moves money by accident.** Every command that pays states its amount, needs
+  `--yes`, and is refused past a spending limit that only the wallet passphrase can raise.
+- **Nothing is published by accident.** A new connector is a hidden service on the Anyone
+  overlay. If the overlay will not come up, `toon` fails instead of falling back to a public
+  address.
+- **Nothing is interrupted by accident.** A command that restarts a running connector needs
+  `--yes`, and a TOON app whose channels hold funds cannot be destroyed.
+- **Nothing needs a human at the keyboard.** No command prompts. Every command takes
+  `--json` and prints exactly one JSON document, and exit codes and error codes are stable
+  ([`docs/exit-codes.md`](docs/exit-codes.md)).
+
+## How it fits together
+
+```
+ agent node: one machine, one wallet, one supervisor
+ ┌────────────────────────────────────────────────────────────────┐
+ │  TOON app "relay"                                              │
+ │    connector  g.toon.<segment-a>  ──►  app "relay" (Nostr)     │
+ │                                                                │
+ │  TOON app "search"                                             │
+ │    connector  g.toon.<segment-b>  ──►  app "search"            │
+ │                                   └─►  app "notes"             │
+ └───────────────▲──────────────────────────────┬─────────────────┘
+                 │       peerings: paid         │
+                 │       channels between       ▼
+            other operators' connectors, and the network's hub
 ```
 
-Pushing a tag `v<version>` (the version in `Cargo.toml`) publishes a release
-(`.github/workflows/release.yml`).
+A **TOON app** is one connector and the apps behind it. Every agent node starts with one,
+whose only app is a Nostr relay. Read [Concepts](docs/guide/concepts.md) for the rest of
+the vocabulary; [`CONTEXT.md`](CONTEXT.md) is the full glossary.
 
-## Build
+## Guides
 
-```sh
-cargo build
-./target/debug/toon status --json
-```
+| Guide | What it walks through |
+| --- | --- |
+| [Concepts](docs/guide/concepts.md) | Agent node, TOON app, connector, app, peering, ILP address, and why each exists |
+| [Install](docs/guide/install.md) | A release binary or a build from source, upgrading, and the agent skills |
+| [Your first agent node](docs/guide/first-agent-node.md) | `init`, fund, `up`, publish an event to your own relay, read it back |
+| [Money: wallet, limits and channels](docs/guide/money.md) | Funding, balances, the spending limit, `--yes`, and managing channels |
+| [Peering](docs/guide/peering.md) | Joining a network, peering with another operator, routes, and sending a packet |
+| [Adding an app to a connector](docs/guide/adding-an-app.md) | Writing an app, `toon add`, prices, and taking an app away |
+| [Creating a TOON app](docs/guide/creating-a-toon-app.md) | A second connector with its own keys: `toon create`, `toon destroy` |
+| [The relay](docs/guide/relay.md) | Publishing and reading events, relay settings and prices, selling and buying a live feed |
+| [Networks and reachability](docs/guide/networks-and-reachability.md) | devnet, sandbox and mainnet; hidden service or clearnet |
+| [Running it day to day](docs/guide/operations.md) | `up`, `down`, `status`, `logs`, scripting with `--json`, and what an error code means |
+| [Backup and restore](docs/guide/backup-and-restore.md) | Sealing the wallet, restoring it, and what a mnemonic alone does not keep |
 
-`toon` is also the connector (ADR 0001). It depends on the connector's crates at one
-pinned revision, which `toon --version` reports together with the pinned relay image
-(`relay_image` in `Cargo.toml`), and `toon up` runs a connector as a
-child process of the same binary:
+## Reference
 
-```sh
-./target/debug/toon --version
-./target/debug/toon up --json
-```
-
-`toon up` writes a `systemd --user` unit (`~/.config/systemd/user/toon-agent-node.service`)
-that runs `toon up --foreground`, the supervisor, and starts it, so the agent node
-outlives the session that started it. The supervisor restarts a connector that exits,
-`toon status` shows how often, `toon logs <name>` shows the log of a TOON app or an app,
-and `toon down` stops the supervisor and the unit. `toon up --foreground` runs the
-supervisor in this process instead, and prints the connector's address once it is
-listening.
-
-The supervisor starts the relay from the pinned image as a container with `docker`, its
-write port published on loopback only, then starts the connector from the config it
-renders, with the relay's write route and its free ephemeral route. If the relay stops,
-the supervisor stops with it and exits 1. `TOON_APP_COMMAND=<program>` runs every app as
-a local process of that program instead of a container; the tests use it with
-`examples/fake_relay.rs`.
-
-Every command is non-interactive and accepts `--json`, which prints exactly one JSON
-document. Exit codes and error codes are stable and listed in
-[`docs/exit-codes.md`](docs/exit-codes.md).
-
-## Checks
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --all-targets --locked -- -D warnings
-cargo test --locked
-```
-
-These are the steps of the `gate` job in `.github/workflows/ci.yml`.
-
-The gate runs on loopback with a stand-in for the overlay, for the relay's container, for
-the chain and for another operator's relay. [`docs/end-to-end.md`](docs/end-to-end.md)
-is the run that uses the real ones, by hand, against the `infra` sandbox.
+- `toon --help` and `toon <command> --help`: the commands of the binary you have.
+- [`docs/exit-codes.md`](docs/exit-codes.md): output rules, exit codes, every error code.
+- [`docs/adr/`](docs/adr/): the decisions behind the design, and why.
+- [`nips/`](nips/): the protocol drafts that ship with the CLI, such as the paid
+  subscription.
+- [`docs/development.md`](docs/development.md): building, the checks, releasing, and the
+  end-to-end run.
