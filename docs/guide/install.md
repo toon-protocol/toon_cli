@@ -7,7 +7,18 @@
 - `systemd --user`, for `toon up` to keep the agent node running after you log out.
   `toon up --foreground` works without it.
 
-## From a release
+## With the install script
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/toon-protocol/toon_cli/main/install.sh | sh
+```
+
+[`install.sh`](../../install.sh) downloads the latest release for this machine, checks it
+against the release's `SHA256SUMS`, and puts `toon` in `~/.local/bin`. It refuses a
+machine without glibc 2.35 or later. `TOON_VERSION=v0.1.0` installs that release instead,
+and `TOON_INSTALL_DIR` puts `toon` somewhere else. Run it again to upgrade.
+
+## From a release, by hand
 
 No Rust toolchain needed. Pick a tag from the
 [releases page](https://github.com/toon-protocol/toon_cli/releases):
