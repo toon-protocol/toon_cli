@@ -1,6 +1,6 @@
 ---
 name: operating-an-agent-node
-description: Operate an agent node with the `toon` CLI: set up the wallet, fund it, add and create TOON apps, peer, set routes and prices, manage channels, configure the relay, send packets, back up and restore. Use when asked to run, change or inspect an agent node, or to pay anything through it.
+description: "Operate an agent node with the `toon` CLI: set up the wallet, fund it, add and create TOON apps, peer, set routes and prices, manage channels, configure the relay, send packets, back up and restore. Use when asked to run, change or inspect an agent node, or to pay anything through it."
 ---
 
 # Operating an agent node

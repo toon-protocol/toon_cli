@@ -287,3 +287,33 @@ fn the_social_skill_states_cost_gaps_and_omissions() {
         .expect("a section on what is left out");
     assert!(omitted.contains("Lightning") && omitted.contains("clearnet domain"));
 }
+
+/// `npx skills add` reads a `SKILL.md`'s frontmatter as YAML and skips a skill it cannot
+/// parse. A plain description holding `: ` is not YAML, so each description is quoted.
+#[test]
+fn every_skill_has_frontmatter_a_skills_installer_can_read() {
+    for (name, file) in shipped_skills() {
+        let text = fs::read_to_string(&file).expect("read a skill");
+        let frontmatter = text
+            .strip_prefix("---\n")
+            .and_then(|rest| rest.split_once("\n---\n"))
+            .map(|(frontmatter, _)| frontmatter)
+            .unwrap_or_else(|| panic!("{name}: SKILL.md does not start with frontmatter"));
+        let field = |key: &str| {
+            frontmatter
+                .lines()
+                .find_map(|line| line.strip_prefix(key)?.strip_prefix(": "))
+                .unwrap_or_else(|| panic!("{name}: the frontmatter has no {key}"))
+        };
+        assert_eq!(field("name"), name, "the skill's name is its directory's");
+        let description = field("description");
+        let quoted = description
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .unwrap_or_else(|| panic!("{name}: the description is not a quoted string"));
+        assert!(
+            !quoted.is_empty() && !quoted.contains(['"', '\\']),
+            "{name}: the description holds a character the quotes would need escaped"
+        );
+    }
+}

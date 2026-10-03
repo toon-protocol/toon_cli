@@ -7,7 +7,18 @@
 - `systemd --user`, for `toon up` to keep the agent node running after you log out.
   `toon up --foreground` works without it.
 
-## From a release
+## With the install script
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/toon-protocol/toon_cli/main/install.sh | sh
+```
+
+[`install.sh`](../../install.sh) downloads the latest release for this machine, checks it
+against the release's `SHA256SUMS`, and puts `toon` in `~/.local/bin`. It refuses a
+machine without glibc 2.35 or later. `TOON_VERSION=v0.1.0` installs that release instead,
+and `TOON_INSTALL_DIR` puts `toon` somewhere else. Run it again to upgrade.
+
+## From a release, by hand
 
 No Rust toolchain needed. Pick a tag from the
 [releases page](https://github.com/toon-protocol/toon_cli/releases):
@@ -58,9 +69,16 @@ Your wallet and TOON apps live in `~/.toon/agent-node` and are kept.
 
 ## The agent skills
 
-`toon` ships skills that teach an agent harness its commands: operating an agent node,
-authoring a NIP, and social posting over Nostr. Install them, and again after every upgrade
-so they match the binary:
+`toon`'s skills teach an agent harness its commands: operating an agent node, authoring a
+NIP, and social posting over Nostr. Install them with the [skills CLI](https://skills.sh/),
+which asks which skills and which agents, and `npx skills update` keeps them current:
+
+```sh
+npx skills add toon-protocol/toon_cli
+```
+
+The binary also ships them, matched to its own version. This needs no Node; run it again
+after every upgrade:
 
 ```sh
 toon skill install                    # into ~/.claude/skills
