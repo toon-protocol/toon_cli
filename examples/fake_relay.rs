@@ -6,12 +6,13 @@
 //! to `/`, `/write` or `/write-ephemeral`. As the relay does, it answers a write with 200
 //! only if the body is `{"event": ...}`, and with 400 otherwise; a `POST` to `/`, where
 //! it stands in for any other app, is always answered with 200. It writes the secret key
-//! it was handed to `environment` there, the `TOON_RELAY_*` settings it was handed but
-//! the read port, one `NAME=value` per line, to `settings`, and `TOON_CONNECTOR_URL` and
-//! `TOON_WRITE_ILP_ADDRESS`, `TOON_SUBSCRIBE_ILP_ADDRESS`, `TOON_BROADCAST_PRICE` and
-//! `TOON_RELAY_URL` to `connector`. It answers `GET /subscribers` with `subscribers.json` of
-//! its data directory, if there is one. It exits when its standard input closes, as
-//! a supervisor's apps do.
+//! it was handed to `environment` there, `TOON_ENFORCE_EXPIRATION` and the `TOON_RELAY_*`
+//! settings it was handed but the read port, one `NAME=value` per line, to `settings`, and
+//! `TOON_CONNECTOR_URL`, `TOON_WRITE_ILP_ADDRESS`, `TOON_SUBSCRIBE_ILP_ADDRESS`,
+//! `TOON_BROADCAST_PRICE` and `TOON_RELAY_URL` to `connector`. Every `TOON_` name it was
+//! handed, one per line, goes to `names`. It answers `GET /subscribers` with
+//! `subscribers.json` of its data directory, if there is one. It exits when its standard
+//! input closes, as a supervisor's apps do.
 //!
 //! The event of a write, or a JSON body posted to `/`, is also stored in `events.log`,
 //! one per line, and a websocket client on the same port reads them back with a NIP-01
@@ -55,11 +56,21 @@ fn main() {
     )
     .expect("write");
     let mut settings: Vec<String> = env::vars()
-        .filter(|(name, _)| name.starts_with("TOON_RELAY_") && name != "TOON_RELAY_PORT")
+        .filter(|(name, _)| {
+            (name.starts_with("TOON_RELAY_") && name != "TOON_RELAY_PORT")
+                || name == "TOON_ENFORCE_EXPIRATION"
+        })
         .map(|(name, value)| format!("{name}={value}\n"))
         .collect();
     settings.sort();
     fs::write(data.join("settings"), settings.concat()).expect("write");
+    let mut names: Vec<String> = env::vars()
+        .map(|(name, _)| name)
+        .filter(|name| name.starts_with("TOON_"))
+        .map(|name| format!("{name}\n"))
+        .collect();
+    names.sort();
+    fs::write(data.join("names"), names.concat()).expect("write");
     // What it was told of its connector, to `connector`, in the same form.
     let connector: String = [
         "TOON_CONNECTOR_URL",
