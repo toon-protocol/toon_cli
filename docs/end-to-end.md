@@ -20,7 +20,6 @@ step.
 | --- | --- | --- |
 | 1, the sandbox | Its relays do not sell their feed, hence `feed.yml` and the routes added by hand | infra #53 |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
-| 2, hold a subscription | Nothing from `relay2`'s feed reaches the agent node's own relay, and its balance does not move: the supervisor dials `ws://localhost:7110` through the overlay, which refuses it | #113 |
 | 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
 
 ## What it needs
@@ -382,25 +381,21 @@ $E/toon relay subscriptions --json
 **Expect** the live event in the agent node's own relay within seconds (asked at once, it
 may not be there yet: ask again), read from the hub's feed through the overlay, and the
 hub's balance at 9: stored events are free and a live one is debited at the broadcast
-price. The event written to `relay2` earlier should be there too, but is not (#113), and
-`relay2`'s balance stays at 10.
+price. The event written to `relay2` earlier is there too, read from `relay2`'s feed,
+which the supervisor dials directly since `relay2` is on this machine, and `relay2`'s
+balance stays at 10.
 
-Until #113 is fixed, read `relay2`'s feed with the command line, which dials it directly.
-Follow it in another terminal, with the same `HOME` and `TOON_PASSPHRASE_FILE`, and stop it
-with ctrl-c once the live event has arrived:
-
-```sh
-$E/toon event follow ws://localhost:7110 --json
-```
+Then a live event at `relay2`:
 
 ```sh
 $E/toon event publish --kind 1 --content "live, relay2" --relay ws://localhost:7110 \
-  --amount 101 --yes --json
+  --amount 101 --yes --json > $E/live2.json
+$E/toon event query ws://$READ --filter "{\"ids\":[\"$(jq -r .event.id $E/live2.json)\"]}" --json
 $E/toon relay subscriptions --json
 ```
 
-**Expect** `follow` to print `relay2`'s stored events and then the live one, and
-`relay2`'s balance at 9.
+**Expect** the live event in the agent node's own relay within seconds, and `relay2`'s
+balance at 9.
 
 Run the hub's subscription out with nine more writes to its relay, and top it up:
 
