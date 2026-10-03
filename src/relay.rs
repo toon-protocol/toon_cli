@@ -25,9 +25,9 @@ pub struct Change {
     pub name: Option<String>,
     pub description: Option<String>,
     pub expiry: Option<Expiry>,
-    /// Keys to add to the blocklist.
+    /// Event ids to add to the blocklist.
     pub block: Vec<String>,
-    /// Keys to remove from it.
+    /// Event ids to remove from it.
     pub unblock: Vec<String>,
 }
 
@@ -41,12 +41,12 @@ impl Change {
     }
 }
 
-/// A Nostr public key as the blocklist holds it: 64 hex digits, in lower case.
-pub fn public_key(text: &str) -> Result<String, String> {
+/// An event id as the blocklist holds it: 64 hex digits, in lower case.
+pub fn event_id(text: &str) -> Result<String, String> {
     if text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         Ok(text.to_ascii_lowercase())
     } else {
-        Err(format!("{text:?} is not a public key: 64 hex digits"))
+        Err(format!("{text:?} is not an event id: 64 hex digits"))
     }
 }
 
@@ -165,15 +165,13 @@ pub fn config(home: &Path, change: &Change, yes: bool) -> Result<Report, Error> 
     if let Some(expiry) = change.expiry {
         settings.expiry = expiry;
     }
-    for key in &change.block {
-        if !settings.blocklist.contains(key) {
-            settings.blocklist.push(key.clone());
+    for id in &change.block {
+        if !settings.blocklist.contains(id) {
+            settings.blocklist.push(id.clone());
         }
     }
     // Unblocking wins when one command does both.
-    settings
-        .blocklist
-        .retain(|key| !change.unblock.contains(key));
+    settings.blocklist.retain(|id| !change.unblock.contains(id));
     let price = write_price(app);
     let settings = app.relay.clone();
     let restarted = apps::apply(home, &before, &state, &toon_app)?;

@@ -91,7 +91,7 @@ fn config_is_recorded_when_no_agent_node_is_running_and_the_relay_gets_it_at_up(
     assert_eq!(
         settings(&machine),
         format!(
-            "TOON_ENFORCE_EXPIRATION=false\nTOON_RELAY_BLOCKLIST={KEY}\n\
+            "TOON_BLOCKED_EVENT_IDS={KEY}\nTOON_ENFORCE_EXPIRATION=false\n\
              TOON_RELAY_DESCRIPTION=A small one\nTOON_RELAY_NAME=Corner relay\n"
         )
     );
@@ -123,7 +123,7 @@ fn config_restarts_a_running_relay_with_the_new_settings_only_with_yes() {
     assert_eq!(run.json()["restarted"], true);
     assert_eq!(
         settings(&machine),
-        format!("TOON_RELAY_BLOCKLIST={KEY}\nTOON_RELAY_NAME=Renamed\n")
+        format!("TOON_BLOCKED_EVENT_IDS={KEY}\nTOON_RELAY_NAME=Renamed\n")
     );
     // The connector routes to the relay that is running now.
     let after = relay_address(&machine);
@@ -198,7 +198,7 @@ fn price_restarts_a_running_connector_only_with_yes_and_is_rendered_on_the_write
 }
 
 #[test]
-fn a_blocklist_entry_that_is_not_a_key_is_a_usage_error() {
+fn a_blocklist_entry_that_is_not_an_event_id_is_a_usage_error() {
     let machine = Machine::new();
     machine.init_with(&[]);
 
@@ -206,6 +206,82 @@ fn a_blocklist_entry_that_is_not_a_key_is_a_usage_error() {
 
     assert_eq!(run.exit_code, 2);
     assert_eq!(run.json()["error"]["code"], "usage");
+    assert!(
+        run.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("event id"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[test]
+fn an_event_id_in_upper_case_is_stored_and_passed_in_lower_case() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+
+    let upper = KEY.to_ascii_uppercase();
+    let run = machine.toon(&["relay", "config", "--block", &upper, "--json"]);
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+
+    let shown = machine.toon(&["relay", "config", "--json"]).json();
+    assert_eq!(shown["relay"]["blocklist"], json!([KEY]));
+    machine.start(&["up", "--foreground", "--json"]).report();
+    assert_eq!(
+        settings(&machine),
+        format!("TOON_BLOCKED_EVENT_IDS={KEY}\n")
+    );
+}
+
+#[test]
+fn two_blocked_ids_are_passed_together_and_none_passes_nothing() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let run = machine.toon(&[
+        "relay",
+        "config",
+        "--block",
+        KEY,
+        "--block",
+        OTHER,
+        "--unblock",
+        KEY,
+        "--json",
+    ]);
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let run = machine.toon(&["relay", "config", "--block", KEY, "--json"]);
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let shown = machine.toon(&["relay", "config", "--json"]).json();
+    assert_eq!(shown["relay"]["blocklist"], json!([OTHER, KEY]));
+    machine.start(&["up", "--foreground", "--json"]).report();
+    assert_eq!(
+        settings(&machine),
+        format!("TOON_BLOCKED_EVENT_IDS={OTHER},{KEY}\n")
+    );
+}
+
+#[test]
+fn a_public_key_blocked_before_event_ids_is_not_handed_to_the_relay() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let path = machine.agent_node_home().join("state.json");
+    let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    // A state written when the blocklist held public keys.
+    state["toon_apps"][0]["relay"]["blocklist"] = json!([KEY]);
+    state["toon_apps"][0]["relay"]
+        .as_object_mut()
+        .unwrap()
+        .remove("blocked_event_ids");
+    fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+
+    let shown = machine.toon(&["relay", "config", "--json"]).json();
+    assert_eq!(shown["relay"]["blocklist"], json!([]));
+    machine.start(&["up", "--foreground", "--json"]).report();
+    assert_eq!(settings(&machine), "");
 }
 
 #[test]
@@ -487,8 +563,6 @@ fn the_relay_is_started_only_with_names_it_reads() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
-    // No blocklist entry: `TOON_RELAY_BLOCKLIST` is not a name the relay reads either,
-    // which is the other ticket under #164.
     let run = machine.toon(&[
         "relay",
         "config",
@@ -498,6 +572,8 @@ fn the_relay_is_started_only_with_names_it_reads() {
         "A small one",
         "--expiry",
         "ignore",
+        "--block",
+        KEY,
         "--json",
     ]);
     assert_eq!(run.exit_code, 0, "{}", run.stdout);
@@ -529,6 +605,7 @@ fn the_relay_is_started_only_with_names_it_reads() {
         "TOON_RELAY_DESCRIPTION",
         "TOON_SUBSCRIBE_ILP_ADDRESS",
         "TOON_BROADCAST_PRICE",
+        "TOON_BLOCKED_EVENT_IDS",
     ] {
         assert!(names.lines().any(|name| name == read), "{read} in {names}");
     }

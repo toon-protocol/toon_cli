@@ -681,11 +681,11 @@ pub struct RelayConfigArgs {
     /// Whether the relay drops an event once it has expired (`honour`) or keeps it (`ignore`)
     #[arg(long, value_parser = parse_expiry)]
     pub expiry: Option<Expiry>,
-    /// Refuse events from this public key, in hex; repeat it for several
-    #[arg(long, value_parser = relay::public_key)]
+    /// Refuse the event with this id, in hex; repeat it for several
+    #[arg(long, value_parser = relay::event_id)]
     pub block: Vec<String>,
-    /// Stop refusing events from this public key; repeat it for several
-    #[arg(long, value_parser = relay::public_key)]
+    /// Stop refusing the event with this id; repeat it for several
+    #[arg(long, value_parser = relay::event_id)]
     pub unblock: Vec<String>,
     /// Restart a running relay and its connector without asking: a restart drops the
     /// packets the connector holds
