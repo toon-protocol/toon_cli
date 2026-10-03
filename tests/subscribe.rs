@@ -896,9 +896,8 @@ fn a_direct_subscription_reports_the_packet_amount_as_the_price() {
 fn a_rejected_packet_leaves_nothing_behind_for_the_next_run() {
     let chain = AnvilChain::start();
     let (near, _mid, _far, relay) = through_a_charging_connector(&chain);
-    // A packet the next hop rejected is not paid for (connector#1446): the next run's
-    // first packet is short of the price again, where it once got through on what the
-    // rejected one left.
+    // A packet the next hop rejected is not paid for (connector#1446), so it leaves no
+    // value behind: the next run's first packet is short of the price again.
     let first = subscribe(
         &near,
         &relay,
