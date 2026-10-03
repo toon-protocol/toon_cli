@@ -86,8 +86,8 @@ fn config_is_recorded_when_no_agent_node_is_running_and_the_relay_gets_it_at_up(
     assert_eq!(
         settings(&machine),
         format!(
-            "TOON_RELAY_BLOCKLIST={KEY}\nTOON_RELAY_DESCRIPTION=A small one\n\
-             TOON_RELAY_EXPIRY=ignore\nTOON_RELAY_NAME=Corner relay\n"
+            "TOON_ENFORCE_EXPIRATION=false\nTOON_RELAY_BLOCKLIST={KEY}\n\
+             TOON_RELAY_DESCRIPTION=A small one\nTOON_RELAY_NAME=Corner relay\n"
         )
     );
 }
@@ -99,7 +99,7 @@ fn config_restarts_a_running_relay_with_the_new_settings_only_with_yes() {
     machine.init_on(&chain);
     let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
-    assert_eq!(settings(&machine), "TOON_RELAY_EXPIRY=honour\n");
+    assert_eq!(settings(&machine), "");
 
     let refused = machine.toon(&["relay", "config", "--name", "Renamed", "--json"]);
 
@@ -118,7 +118,7 @@ fn config_restarts_a_running_relay_with_the_new_settings_only_with_yes() {
     assert_eq!(run.json()["restarted"], true);
     assert_eq!(
         settings(&machine),
-        format!("TOON_RELAY_BLOCKLIST={KEY}\nTOON_RELAY_EXPIRY=honour\nTOON_RELAY_NAME=Renamed\n")
+        format!("TOON_RELAY_BLOCKLIST={KEY}\nTOON_RELAY_NAME=Renamed\n")
     );
     // The connector routes to the relay that is running now.
     let after = relay_address(&machine);
@@ -435,4 +435,101 @@ fn status_counts_both_directions_and_says_unknown_while_the_relay_is_stopped() {
     let running = machine.toon(&["status", "--json"]);
     assert_eq!(running.exit_code, 0, "{}", running.stdout);
     assert_eq!(running.json()["agent_node"]["totals"]["subscribers"], 0);
+}
+
+/// The `TOON_` names the relay reads, taken from the image `relay_image` in `Cargo.toml`
+/// pins (`rust-sha-c56b435`). Take them again when that pin moves.
+const RELAY_READS: &[&str] = &[
+    "TOON_MNEMONIC",
+    "TOON_SECRET_KEY",
+    "TOON_BLS_PORT",
+    "TOON_WRITE_HOST",
+    "TOON_RELAY_PORT",
+    "TOON_HOST",
+    "TOON_DATA_DIR",
+    "TOON_DEV_MODE",
+    "TOON_VERIFY_EPHEMERAL",
+    "TOON_VERIFY_WORKERS",
+    "TOON_MAX_CONNECTIONS",
+    "TOON_EPHEMERAL_RATE_LIMIT",
+    "TOON_EPHEMERAL_RATE_WINDOW_MS",
+    "TOON_EPHEMERAL_MAX_BODY_BYTES",
+    "TOON_READ_RATE_LIMIT",
+    "TOON_READ_SOURCE_RATE_LIMIT",
+    "TOON_CONNECTOR_URL",
+    "TOON_WRITE_ILP_ADDRESS",
+    "TOON_WRITE_CARRIAGE",
+    "TOON_RELAY_NAME",
+    "TOON_RELAY_DESCRIPTION",
+    "TOON_RELAY_CONTACT",
+    "TOON_LOG_WRITES",
+    "TOON_ENFORCE_EXPIRATION",
+    "TOON_EXPIRATION_REAP_GRACE_SECONDS",
+    "TOON_EXPIRATION_REAP_INTERVAL_SECONDS",
+    "TOON_SUBSCRIBE_ILP_ADDRESS",
+    "TOON_BROADCAST_PRICE",
+    "TOON_RELAY_URL",
+    "TOON_OPERATOR_PUBKEYS",
+    "TOON_NIP42_AUTH",
+    "TOON_AUTH_REQUIRED_KINDS",
+    "TOON_NIP29_GROUPS",
+    "TOON_BLOCKED_EVENT_IDS",
+];
+
+#[test]
+fn the_relay_is_started_only_with_names_it_reads() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    // No blocklist entry: `TOON_RELAY_BLOCKLIST` is not a name the relay reads, which is
+    // for another ticket.
+    let run = machine.toon(&[
+        "relay",
+        "config",
+        "--name",
+        "Corner relay",
+        "--description",
+        "A small one",
+        "--expiry",
+        "ignore",
+        "--json",
+    ]);
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let run = machine.toon(&[
+        "relay",
+        "price",
+        "--subscribe",
+        "1000",
+        "--broadcast",
+        "10",
+        "--json",
+    ]);
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+
+    machine.start(&["up", "--foreground", "--json"]).report();
+
+    let names =
+        fs::read_to_string(machine.agent_node_home().join("apps/relay/data/names")).unwrap();
+    let unknown: Vec<&str> = names
+        .lines()
+        .filter(|name| !RELAY_READS.contains(name))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "the relay was started with names it does not read: {unknown:?}"
+    );
+    for read in [
+        "TOON_ENFORCE_EXPIRATION",
+        "TOON_RELAY_NAME",
+        "TOON_RELAY_DESCRIPTION",
+        "TOON_BROADCAST_PRICE",
+    ] {
+        assert!(names.lines().any(|name| name == read), "{read} in {names}");
+    }
+    assert_eq!(
+        settings(&machine)
+            .lines()
+            .find(|l| l.starts_with("TOON_ENFORCE")),
+        Some("TOON_ENFORCE_EXPIRATION=false")
+    );
 }

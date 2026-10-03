@@ -176,7 +176,10 @@ impl RelaySettings {
         if let Some(description) = &self.description {
             env.push(("TOON_RELAY_DESCRIPTION".into(), description.clone()));
         }
-        env.push(("TOON_RELAY_EXPIRY".into(), self.expiry.as_str().into()));
+        // The relay enforces expiry unless this is exactly `false`.
+        if self.expiry == Expiry::Ignore {
+            env.push(("TOON_ENFORCE_EXPIRATION".into(), "false".into()));
+        }
         if !self.blocklist.is_empty() {
             env.push(("TOON_RELAY_BLOCKLIST".into(), self.blocklist.join(",")));
         }
