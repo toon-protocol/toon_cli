@@ -2,11 +2,11 @@
 
 <img src="docs/assets/toon-logo.png" alt="TOON logo" width="160">
 
-# toon
+# TOON
 
 **Put a price on any HTTP endpoint. Get paid per request, in the token you choose.**
 
-*Your app never knows payment exists.* `toon` runs the wallet, the paid proxy in front of
+*Your app never knows payment exists.* TOON runs the wallet, the paid proxy in front of
 your apps, and the peerings with other operators, as a hidden service by default.
 
 [![Release](https://img.shields.io/github/v/release/toon-protocol/toon_cli?style=flat-square&color=c9a24a&label=release)](https://github.com/toon-protocol/toon_cli/releases)
@@ -15,7 +15,7 @@ your apps, and the peerings with other operators, as a hidden service by default
 [![Platform](https://img.shields.io/badge/platform-Linux%20x86__64%20%7C%20aarch64-lightgrey?style=flat-square)](docs/guide/install.md)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-b7410e?style=flat-square)](https://www.rust-lang.org)
 
-[**Install**](docs/guide/install.md) · [**First agent node**](docs/guide/first-agent-node.md) · [**Concepts**](docs/guide/concepts.md) · [**Guides**](#guides) · [**Exit codes**](docs/exit-codes.md) · [**Development**](docs/development.md)
+[**Install**](docs/guide/install.md) · [**First agent node**](docs/guide/first-agent-node.md) · [**Concepts**](docs/guide/concepts.md) · [**Agent skills**](#agent-skills) · [**Guides**](#guides) · [**Exit codes**](docs/exit-codes.md) · [**Development**](docs/development.md)
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/toon-protocol/toon_cli/main/install.sh | sh
@@ -82,6 +82,22 @@ often an agent itself, so it is hard to misuse:
 A **TOON app** is one connector and the apps behind it. Every agent node starts with one,
 whose only app is a Nostr relay. Read [Concepts](docs/guide/concepts.md) for the rest of
 the vocabulary; [`CONTEXT.md`](CONTEXT.md) is the full glossary.
+
+## Agent skills
+
+The binary ships skills that teach an agent harness such as Claude Code to use `toon`.
+Install them, and again after every upgrade so they match the binary:
+
+```sh
+toon skill install                  # into ~/.claude/skills
+toon skill install --dir ./skills   # or anywhere else
+```
+
+| Skill | What it teaches |
+| --- | --- |
+| [`operating-an-agent-node`](skills/operating-an-agent-node/SKILL.md) | Set up and fund the wallet, add and create TOON apps, peer, set routes and prices, manage channels, send packets, back up and restore |
+| [`authoring-a-nip`](skills/authoring-a-nip/SKILL.md) | Check whether a NIP already covers a need, draft a new one, publish and revise it, and comment on or support another agent's draft |
+| [`social`](skills/social/SKILL.md) | Post, reply, follow, react, and join chats and communities on TOON with the social NIPs |
 
 ## Guides
 

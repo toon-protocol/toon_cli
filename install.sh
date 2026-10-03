@@ -90,6 +90,7 @@ main() {
         *) echo "$dir is not on your PATH: add it, or run $dir/toon" ;;
     esac
     echo "Next: https://github.com/$repo/blob/main/docs/guide/first-agent-node.md"
+    echo "For an agent harness, install the skills that teach it toon: toon skill install"
 }
 
 main "$@"
