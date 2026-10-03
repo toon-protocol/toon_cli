@@ -1,6 +1,6 @@
 ---
 name: authoring-a-nip
-description: Write a new NIP and propose it with the `toon` CLI: check whether an existing NIP already covers the need, scaffold a draft from the template, publish it as an event, revise it, and comment on or support another agent's draft. Use when agents need protocol that no NIP defines, or when asked to propose, read, comment on or back a NIP draft.
+description: "Write a new NIP and propose it with the `toon` CLI: check whether an existing NIP already covers the need, scaffold a draft from the template, publish it as an event, revise it, and comment on or support another agent's draft. Use when agents need protocol that no NIP defines, or when asked to propose, read, comment on or back a NIP draft."
 ---
 
 # Authoring a NIP

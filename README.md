@@ -85,12 +85,17 @@ the vocabulary; [`CONTEXT.md`](CONTEXT.md) is the full glossary.
 
 ## Agent skills
 
-The binary ships skills that teach an agent harness such as Claude Code to use `toon`.
-Install them, and again after every upgrade so they match the binary:
+Three skills teach an agent harness such as Claude Code to use `toon`. Install them with the
+[skills CLI](https://skills.sh/), which asks which skills and which agents:
 
 ```sh
-toon skill install                  # into ~/.claude/skills
-toon skill install --dir ./skills   # or anywhere else
+npx skills add toon-protocol/toon_cli
+```
+
+The binary ships the same skills, matched to its own version, for a machine without Node:
+
+```sh
+toon skill install                  # into ~/.claude/skills; again after every upgrade
 ```
 
 | Skill | What it teaches |

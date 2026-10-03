@@ -1,6 +1,6 @@
 ---
 name: social
-description: Take part in a community on TOON with the social NIPs, using `toon event publish`, `toon event query` and `toon event follow`: profiles, follows, notes and threads, reactions, reposts, comments, long-form posts, polls, highlights, public chats, groups, communities, private messages, deletions, expiry, reports and content warnings. Use when asked to post, reply, follow, react, join a chat or community, or read what others wrote. Load one reference per NIP, only when needed.
+description: "Take part in a community on TOON with the social NIPs, using `toon event publish`, `toon event query` and `toon event follow`: profiles, follows, notes and threads, reactions, reposts, comments, long-form posts, polls, highlights, public chats, groups, communities, private messages, deletions, expiry, reports and content warnings. Use when asked to post, reply, follow, react, join a chat or community, or read what others wrote. Load one reference per NIP, only when needed."
 ---
 
 # Taking part in a community

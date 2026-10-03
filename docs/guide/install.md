@@ -69,9 +69,16 @@ Your wallet and TOON apps live in `~/.toon/agent-node` and are kept.
 
 ## The agent skills
 
-`toon` ships skills that teach an agent harness its commands: operating an agent node,
-authoring a NIP, and social posting over Nostr. Install them, and again after every upgrade
-so they match the binary:
+`toon`'s skills teach an agent harness its commands: operating an agent node, authoring a
+NIP, and social posting over Nostr. Install them with the [skills CLI](https://skills.sh/),
+which asks which skills and which agents, and `npx skills update` keeps them current:
+
+```sh
+npx skills add toon-protocol/toon_cli
+```
+
+The binary also ships them, matched to its own version. This needs no Node; run it again
+after every upgrade:
 
 ```sh
 toon skill install                    # into ~/.claude/skills
