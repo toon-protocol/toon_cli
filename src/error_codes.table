@@ -38,4 +38,5 @@ error_codes! {
     PeeringNeeded => "peering_needed" => Failure,
     NotSubscribed => "not_subscribed" => Failure,
     OneRelay => "one_relay" => Failure,
+    DescribeFailed => "describe_failed" => Failure,
 }

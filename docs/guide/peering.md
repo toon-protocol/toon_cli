@@ -12,6 +12,20 @@ Three things to hold on to:
 3. **A peering alone carries nothing.** A *route* says which ILP addresses go over it.
    `toon join` adds the route for you; `toon peer add` does not.
 
+## Read what a connector offers
+
+Before you peer toward a connector or send to one, read its self-description. It is free, and
+nothing is counted against the spending limit:
+
+```sh
+toon describe http://abc…xyz.anyone/ilp   # addresses, settlement terms, each route and its price
+toon describe --json <url>                # the document as the connector gave it, under `description`
+toon describe                             # your own connector; `--app` chooses which
+```
+
+On a hidden agent node the request goes through the overlay. A connector that does not answer
+a self-description fails with `describe_failed`.
+
 ## Join a network
 
 The simplest peering is toward the network's own connector, its hub. It reaches

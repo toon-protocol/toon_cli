@@ -11,6 +11,7 @@ mod cli;
 mod connector;
 mod control;
 mod derive;
+mod describe;
 mod egress;
 mod event;
 mod feed;
@@ -186,6 +187,15 @@ fn run() -> ExitCode {
         .into(),
         Command::Peer { command } => render(
             home::resolve().and_then(|home| operator::peer(&home, &command)),
+            json,
+        )
+        .into(),
+        Command::Describe { url } => render(
+            match url {
+                Some(_) => describe::run(home::resolve().ok().as_deref(), url.as_deref(), None),
+                None => home::resolve()
+                    .and_then(|home| describe::run(Some(&home), None, app.as_deref())),
+            },
             json,
         )
         .into(),
