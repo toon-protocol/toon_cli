@@ -15,6 +15,11 @@ fn settings(machine: &Machine) -> String {
     fs::read_to_string(machine.agent_node_home().join("apps/relay/data/settings")).unwrap()
 }
 
+/// Every `TOON_` name the relay was handed, one per line.
+fn names(machine: &Machine) -> String {
+    fs::read_to_string(machine.agent_node_home().join("apps/relay/data/names")).unwrap()
+}
+
 fn config(machine: &Machine) -> String {
     fs::read_to_string(
         machine
@@ -481,8 +486,8 @@ fn the_relay_is_started_only_with_names_it_reads() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
-    // No blocklist entry: `TOON_RELAY_BLOCKLIST` is not a name the relay reads, which is
-    // for another ticket.
+    // No blocklist entry: `TOON_RELAY_BLOCKLIST` is not a name the relay reads either,
+    // which is the other ticket under #164.
     let run = machine.toon(&[
         "relay",
         "config",
@@ -508,8 +513,7 @@ fn the_relay_is_started_only_with_names_it_reads() {
 
     machine.start(&["up", "--foreground", "--json"]).report();
 
-    let names =
-        fs::read_to_string(machine.agent_node_home().join("apps/relay/data/names")).unwrap();
+    let names = names(&machine);
     let unknown: Vec<&str> = names
         .lines()
         .filter(|name| !RELAY_READS.contains(name))
@@ -522,14 +526,36 @@ fn the_relay_is_started_only_with_names_it_reads() {
         "TOON_ENFORCE_EXPIRATION",
         "TOON_RELAY_NAME",
         "TOON_RELAY_DESCRIPTION",
+        "TOON_SUBSCRIBE_ILP_ADDRESS",
         "TOON_BROADCAST_PRICE",
     ] {
         assert!(names.lines().any(|name| name == read), "{read} in {names}");
     }
-    assert_eq!(
+    assert!(
         settings(&machine)
             .lines()
-            .find(|l| l.starts_with("TOON_ENFORCE")),
-        Some("TOON_ENFORCE_EXPIRATION=false")
+            .any(|name| name == "TOON_ENFORCE_EXPIRATION=false"),
+        "{}",
+        settings(&machine)
     );
+}
+
+#[test]
+fn expiry_set_back_to_honour_passes_nothing_for_expiry() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let run = machine.toon(&["relay", "config", "--expiry", "ignore", "--json"]);
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+
+    let run = machine.toon(&["relay", "config", "--expiry", "honour", "--json"]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let shown = machine.toon(&["relay", "config", "--json"]).json();
+    assert_eq!(shown["relay"]["expiry"], "honour");
+    machine.start(&["up", "--foreground", "--json"]).report();
+    let names = names(&machine);
+    for name in ["TOON_ENFORCE_EXPIRATION", "TOON_RELAY_EXPIRY"] {
+        assert!(!names.lines().any(|n| n == name), "{name} in {names}");
+    }
 }
