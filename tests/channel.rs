@@ -61,6 +61,7 @@ fn balances_show_every_address_by_toon_app_and_chain() {
         shown["wallet"]["chains"]["solana"][0]["address"]
     );
     assert_eq!(solana["native"], serde_json::Value::Null);
+    assert_eq!(solana["token"], serde_json::Value::Null);
     assert_eq!(run.exit_code, 0);
     assert_eq!(run.stderr, "");
 }
@@ -462,7 +463,7 @@ fn an_amount_above_u64_reaches_the_connector() {
 }
 
 fn init_on_solana(machine: &Machine, evm: &FakeChain, solana: &FakeSolana) {
-    let mut args = vec![
+    let args = [
         "--evm-rpc-url".to_owned(),
         evm.rpc_url(),
         "--evm-token".to_owned(),
@@ -475,7 +476,7 @@ fn init_on_solana(machine: &Machine, evm: &FakeChain, solana: &FakeSolana) {
         "--solana-rpc-url".to_owned(),
         solana.rpc_url(),
     ];
-    let args: Vec<&str> = args.iter_mut().map(|arg| arg.as_str()).collect();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
     assert_eq!(machine.init_with(&args).exit_code, 0);
 }
 

@@ -697,6 +697,7 @@ fn call(egress: &Egress, rpc_url: &str, method: &str, params: Value) -> Result<V
         .ok_or_else(|| chain_failed(rpc_url, method, "the answer has no result".into()))
 }
 
+/// `method` to `rpc_url` failed, or answered something this cannot read.
 fn chain_failed(rpc_url: &str, method: &str, message: String) -> Error {
     Error {
         nothing_sent: false,
@@ -711,7 +712,7 @@ fn quantity(egress: &Egress, rpc_url: &str, method: &str, params: Value) -> Resu
     let reply = call(egress, rpc_url, method, params)?;
     let result = reply
         .as_str()
-        .ok_or_else(|| chain_failed(rpc_url, method, "the answer has no result".into()))?;
+        .ok_or_else(|| chain_failed(rpc_url, method, "the answer is not a quantity".into()))?;
     // A 32-byte word. A balance that does not fit its low 16 bytes is refused, not cut.
     let digits = result.trim_start_matches("0x").trim_start_matches('0');
     if digits.is_empty() {
@@ -747,17 +748,21 @@ fn solana_balances(
         "getTokenAccountsByOwner",
         json!([address, { "mint": solana.token }, { "encoding": "jsonParsed" }]),
     )?;
-    let token = accounts["value"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|account| {
-            account["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]
-                .as_str()?
-                .parse::<u128>()
-                .ok()
-        })
-        .sum();
+    let unreadable = || {
+        chain_failed(
+            &solana.rpc_url,
+            "getTokenAccountsByOwner",
+            "the answer has no token balance".into(),
+        )
+    };
+    let mut token: u128 = 0;
+    for account in accounts["value"].as_array().ok_or_else(unreadable)? {
+        let amount = account["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]
+            .as_str()
+            .and_then(|amount| amount.parse::<u128>().ok())
+            .ok_or_else(unreadable)?;
+        token = token.checked_add(amount).ok_or_else(unreadable)?;
+    }
     Ok((native, token))
 }
 
