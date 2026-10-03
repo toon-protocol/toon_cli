@@ -12,9 +12,9 @@ connector, or its own peerings. Then [create a TOON app](creating-a-toon-app.md)
 An app is a plain HTTP service. The connector unseals each paid packet and makes the HTTP
 request inside it (method, path and body) to the app, then returns the app's answer to the
 payer. The app never sees a payment, so any HTTP service can be one. For full examples, see
-[`store`](https://github.com/toon-protocol/store), a worked example of putting an app behind a connector,
-[`gas-station`](https://github.com/toon-protocol/gas-station), and [`anytoon`](https://github.com/toon-protocol/anytoon), which runs a published
-image unchanged.
+[`gas-station`](https://github.com/toon-protocol/gas-station) and
+[`anytoon`](https://github.com/toon-protocol/anytoon). The minimal app below is the one image
+this guide shows running under `toon add --image`.
 
 Given as a container image, an app must:
 
@@ -22,6 +22,9 @@ Given as a container image, an app must:
 - answer `GET /health` with `200` within two minutes of starting,
 - keep anything it must not lose under **`/data`** (`TOON_DATA_DIR`), which is a directory in
   the agent node's home that survives restarts.
+
+The app is given no environment beyond `TOON_BLS_PORT` and `TOON_DATA_DIR`. An image that
+needs a secret or another variable to start fails with `app_failed`; `toon logs <app>` says why.
 
 `toon` runs it with `docker`, its port published on loopback only: nothing reaches the app
 except through its connector.
