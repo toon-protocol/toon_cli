@@ -46,6 +46,7 @@ These commands spend, and each one needs an explicit amount and `--yes`:
 - `toon join <network> --deposit <n> --yes`
 - `toon create <name> --deposit <n> --yes` (the two channels count twice against the limit)
 - `toon event publish --relay <ws-url> --yes` (pays the price the relay states; add `--amount <n>` when a connector in between charges to forward)
+- `toon relay subscribe <ws-url> --filter <json> --amount <n> --yes` (prepays a subscription at another relay: the balance its live feed draws down; `--packet-amount <n>` when a connector in between charges to forward)
 
 Without `--yes` nothing moves and the command fails with `not_confirmed`. Never add `--yes` to
 see what a command would do: run it without, or read the price first.
@@ -189,7 +190,12 @@ to someone else's relay is `toon event publish --relay <ws-url> --yes` and needs
 reaches that relay's connector, or it fails with `peering_needed` and pays nothing. It sends
 the relay's price; if a connector in between charges to forward and rejects the write with
 `F03`, state the path's whole cost with `--amount <n>` (below the relay's price is refused).
-`toon relay subscribe` is the same: if a connector in between rejects its packets with `F03`,
+`toon relay subscribe <ws-url> --filter <json> --amount <n> --yes` buys the live feed of another
+relay: a prepaid balance at that relay, with one filter, drawn down for each event it sends.
+The supervisor writes those events into your own relay (ADR 0005). It needs a peering too, and
+without `--yes` it fails with `not_confirmed` and says what the relay charges. `toon relay
+subscriptions` shows the balance. It is not the follow list, which is an event you publish. It is
+the same as publishing in one way: if a connector in between rejects its packets with `F03`,
 state what one packet costs along the path with `--packet-amount <n>`; `--amount` stays the total,
 paid as whole packets of that amount, and each packet still credits only the subscribe price.
 
