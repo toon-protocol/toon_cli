@@ -68,7 +68,7 @@ A failed command with `--json` prints:
 | `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
 | `app_failed` | 1 | An app behind a connector did not start, or stopped; the message carries the reason |
 | `unfunded` | 1 | A settlement key does not hold what is needed, so `toon up` did not start the connector (the token; on Solana also SOL), or a command that has a connector send a transaction did not (EVM gas, 0.001 ETH, whether the check finds too little or the connector reports the chain refused to estimate for lack of it: `toon join`, `toon peer add` with a deposit, `toon create` with a deposit, `toon channel open`, `fund`, `withdraw`, `land`); the message names each address and the amount |
-| `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused |
+| `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused every address (one refusal does not fail the command while another address is funded) |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
 | `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event) could not be sent: the connector's operator surface refused the write, could not be reached, or did not answer within the wait (the packet's 30-second expiry and five seconds more); the message carries the reason. A packet that went unanswered has expired and will not be delivered, so the command can be run again; the failure's JSON carries `paid` and, for `toon event publish --relay`, the `event` with its id (see Spending limit) |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
@@ -87,11 +87,13 @@ A failed command with `--json` prints:
 | `relay_not_payable` | 1 | `toon event publish --relay` or `toon relay subscribe` could not read the relay's information document (or, for a `wss://` relay, its certificate did not verify), or it names no write edge (`toon`: `ilp_address`, `connector_url`, `connector_seal_key`, `price`; the key is 65 bytes of hex beginning `04`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
 | `peering_needed` | 1 | `toon event publish --relay` or `toon relay subscribe` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. The message prints the `toon peer add <connector_url> --deposit <amount> --yes` to run (for `subscribe`, with the deposit it would take in place of `<amount>`), then `toon route add` |
 | `not_subscribed` | 1 | `toon event follow` named a relay at which this agent node holds no subscription: `toon relay subscribe` opens one |
+| `no_follow_list` | 1 | `toon event query --following` or `toon relay subscribe --following` found no follow list of the agent identity on the agent node's own relay, or one with no keys; nothing was sent or paid |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
 | `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
 | `funds_held` | 1 | `toon destroy` did nothing: a channel of the TOON app still holds funds, or its channels could not be read; the message names each |
 | `last_toon_app` | 1 | `toon destroy` was given the only TOON app: an agent node always has one |
 | `one_relay` | 1 | `toon create` or `toon add` was given the relay's image (any tag or digest of the repository this build pins): an agent node runs one relay, the one `toon init` created; nothing was changed |
+| `describe_failed` | 1 | `toon describe` got no self-description from the connector's `/ilp` URL: it did not answer, answered an error status, or answered something that is not a self-description (a JSON object with `routes`); nothing was paid |
 
 
 ## The wallet passphrase
@@ -250,6 +252,15 @@ over loopback, through the overlay's proxy when the agent node has one. It reads
 resumes, a top-up resumes one that ran out, and a feed that drops is dialled again. When the
 relay closes a feed with `payment-required` the subscription is marked exhausted until it is
 topped up.
+
+`--following`, on `toon event query` and `toon relay subscribe`, sets the `authors` of the filter
+to the keys in the `p` tags of the newest kind 3 event the agent identity signed, read from the
+agent node's own relay (which must be running, else `not_running`). `--filter` is then optional
+and keeps its other fields; one that already has `authors` is `usage`, and no follow list, or
+one without keys, is `no_follow_list`, each before anything is sent or paid. The filter a
+subscription is given is a snapshot: following someone later does not change it, and the
+report of `relay subscribe --following` says how many keys it holds and that it stays fixed
+until the command is run again. The command needs the passphrase, to name the agent identity.
 
 `toon event follow <relay-url>` prints the events of the live feed of a relay this agent node
 subscribed to, one JSON document to a line, as they arrive, with or without `--json`. A feed

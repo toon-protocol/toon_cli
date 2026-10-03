@@ -12,9 +12,9 @@ connector, or its own peerings. Then [create a TOON app](creating-a-toon-app.md)
 An app is a plain HTTP service. The connector unseals each paid packet and makes the HTTP
 request inside it (method, path and body) to the app, then returns the app's answer to the
 payer. The app never sees a payment, so any HTTP service can be one. For full examples, see
-[`store`](https://github.com/toon-protocol/store), a worked example of putting an app behind a connector,
-[`gas-station`](https://github.com/toon-protocol/gas-station), and [`anytoon`](https://github.com/toon-protocol/anytoon), which runs a published
-image unchanged.
+[`gas-station`](https://github.com/toon-protocol/gas-station) and
+[`anytoon`](https://github.com/toon-protocol/anytoon). The minimal app below is the one image
+this guide shows running under `toon add --image`.
 
 Given as a container image, an app must:
 
@@ -22,6 +22,9 @@ Given as a container image, an app must:
 - answer `GET /health` with `200` within two minutes of starting,
 - keep anything it must not lose under **`/data`** (`TOON_DATA_DIR`), which is a directory in
   the agent node's home that survives restarts.
+
+The app is given no environment beyond `TOON_BLS_PORT` and `TOON_DATA_DIR`. An image that
+needs a secret or another variable to start fails with `app_failed`; `toon logs <app>` says why.
 
 `toon` runs it with `docker`, its port published on loopback only: nothing reaches the app
 except through its connector.
@@ -126,6 +129,25 @@ under `g.toon.<segment>`: that is where every address the connector answers to s
 ```sh
 toon add search-v2 --to relay --image search:2 --address g.toon.fb0e007c71750599.search.v2 --yes
 ```
+
+## Say what a client should send
+
+`--request <file>` takes a file holding one JSON object that states what a client should send
+the app. The connector publishes it on the route, in `routes[]` of `GET <connector>/ilp` and
+on the answer to an unpaid packet, and never reads it, so its content is yours to define.
+
+```sh
+cat > request.json <<'EOF'
+{ "protocol": "http", "method": "POST", "path": "/echo", "params": { "text": "a string" } }
+EOF
+toon add echo --to relay --image echo-app --request request.json --yes
+toon route list --json | jq '.routes[] | {prefix, request}'
+```
+
+`toon` checks only that the file is one JSON object a TOML table can carry: a file that is
+anything else, or holds a `null`, is refused with `usage` before anything changes. An app added
+without `--request` is published with no `request`. The request stays with the app across
+`toon down` and `toon up` and across restarts. To change it, remove the app and add it again.
 
 ## Change the price
 

@@ -249,13 +249,33 @@ fn write_text(
 /// terminates, then the routes it forwards.
 pub fn route_list(home: &Path) -> Result<Report, Error> {
     let surface = surface(home)?;
-    let routes = read(&surface, "/routes")?;
+    let mut routes = read(&surface, "/routes")?;
     let forwarding = read(&surface, "/routes/peers")?;
+    // The operator surface lists a route without its `request`, which the state keeps.
+    if let Some(state) = State::load(home)? {
+        let toon_app = crate::apps::toon_app(&state, TARGET.get().map(String::as_str))?;
+        for route in routes
+            .iter_mut()
+            .filter(|route| route.get("request").is_none())
+        {
+            let request = toon_app
+                .apps
+                .iter()
+                .find(|app| route["prefix"].as_str() == Some(app.prefix.as_str()))
+                .and_then(|app| app.request.clone());
+            if let Some(request) = request {
+                route["request"] = request;
+            }
+        }
+    }
     let mut lines: Vec<String> = routes
         .iter()
         .map(|route| {
+            let request = route
+                .get("request")
+                .map_or(String::new(), |request| format!(", request {request}"));
             format!(
-                "{} -> {} (price {})",
+                "{} -> {} (price {}{request})",
                 route["prefix"].as_str().unwrap_or_default(),
                 route["handler_url"].as_str().unwrap_or_default(),
                 route["price"]

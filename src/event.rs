@@ -258,12 +258,80 @@ fn write_to(
     })
 }
 
-/// `toon event query`: the stored events of `relay` that match `filter`.
-pub fn query(relay: &str, filter: &str) -> Result<Report, Error> {
-    let filter: Value = serde_json::from_str(filter)
+/// The keys the agent follows: the `p` tags of the newest kind 3 event the agent identity
+/// signed, read from the agent node's own relay, which must be running.
+pub fn followed_keys(home: &Path) -> Result<Vec<String>, Error> {
+    let state = node::State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
+    let app = crate::subscribe::own_relay_app(&state)?;
+    let address = crate::subscribe::own_relay_address(home, &app.name)?;
+    let identity = public_key(&*agent_secret(home)?)?;
+    let filter = json!({ "kinds": [3], "authors": [identity] });
+    let events = fetch(&Egress::of(home)?, &format!("ws://{address}"), &filter)?;
+    let mut keys: Vec<String> = events
+        .iter()
+        // The newest; of two at the same second, the lower id, as NIP-01 keeps.
+        .max_by(|one, other| {
+            let at = |event: &Value| event["created_at"].as_u64().unwrap_or(0);
+            let id = |event: &Value| event["id"].as_str().unwrap_or("").to_owned();
+            at(one)
+                .cmp(&at(other))
+                .then_with(|| id(other).cmp(&id(one)))
+        })
+        .and_then(|event| event["tags"].as_array())
+        .into_iter()
+        .flatten()
+        .filter(|tag| tag[0] == "p")
+        .filter_map(|tag| tag[1].as_str())
+        .filter(|key| key.len() == 64 && key.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase)
+        .collect();
+    keys.sort();
+    keys.dedup();
+    if keys.is_empty() {
+        return Err(Error {
+            nothing_sent: false,
+            unanswered: None,
+            code: ErrorCode::NoFollowList,
+            message: "The agent node's own relay holds no follow list of the agent identity, or \
+                      one with no keys: publish a kind 3 event with `p` tags."
+                .into(),
+        });
+    }
+    Ok(keys)
+}
+
+/// `filter`, a JSON object or none, with `authors` set to the keys the agent follows.
+/// A filter that already has `authors` is `usage`.
+pub fn following(home: &Path, filter: Option<Value>) -> Result<(Value, usize), Error> {
+    let mut filter = filter.unwrap_or_else(|| json!({}));
+    if filter.get("authors").is_some() {
+        return Err(usage(
+            "--following sets `authors`, and the --filter already has them: drop one.",
+        ));
+    }
+    let keys = followed_keys(home)?;
+    let count = keys.len();
+    filter["authors"] = json!(keys);
+    Ok((filter, count))
+}
+
+/// A `--filter` argument: one JSON object.
+pub fn parse_filter(text: &str) -> Result<Value, Error> {
+    serde_json::from_str(text)
         .ok()
         .filter(Value::is_object)
-        .ok_or_else(|| usage("--filter must be one JSON object, like {\"kinds\":[1]}."))?;
+        .ok_or_else(|| usage("--filter must be one JSON object, like {\"kinds\":[1]}."))
+}
+
+/// `toon event query`: the stored events of `relay` that match `filter`, with `authors`
+/// set to the keys the agent follows when `following`.
+pub fn query(relay: &str, filter: Option<&str>, following: bool) -> Result<Report, Error> {
+    let filter = filter.map(parse_filter).transpose()?;
+    let filter = if following {
+        self::following(&home::resolve()?, filter)?.0
+    } else {
+        filter.ok_or_else(|| usage("A query needs --filter or --following."))?
+    };
     let events = fetch(&Egress::open()?, relay, &filter)?;
     let text = if events.is_empty() {
         "No stored event matches.".to_owned()
@@ -542,7 +610,11 @@ pub fn run(command: EventCommand) -> Result<Report, Error> {
             &tags,
             amount.unwrap_or(0),
         ),
-        EventCommand::Query { relay, filter } => query(&relay, &filter),
+        EventCommand::Query {
+            relay,
+            filter,
+            following,
+        } => query(&relay, filter.as_deref(), following),
         EventCommand::Follow { relay } => crate::subscribe::follow(&home::resolve()?, &relay),
     }
 }
