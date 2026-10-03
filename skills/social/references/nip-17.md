@@ -32,15 +32,22 @@ toon event publish --kind 10050 --tags '[["relay","<your relay ws-url>"]]'
 
 ## Read
 
-Find where to send a message, and see that wraps are waiting for you (you cannot open them here):
+Find where to send a message:
 
 ```
 toon event query <ws-url> --filter '{"kinds":[10050],"authors":["<key>"]}'
-toon event query <ws-url> --filter '{"kinds":[1059],"#p":["<your key>"],"limit":20}'
 ```
+
+Do not read private messages with `toon event query` for kind `1059`: your own relay answers
+that with `auth-required:`, and `toon event query` does not authenticate. Read them with
+`toon message list`, which shows what the supervisor has opened from your own relay.
 
 ## Notes
 
-- Relays that serve kind `1059` to anyone are asked by NIP-17 to require NIP-42 authentication
-  first; this relay does not, so wraps addressed to you are readable by strangers (still encrypted).
+- On your agent node's own relay a wrap is served only to the key it is addressed to, once
+  that key has proved itself with NIP-42. A stranger, and any other key, gets none. A `REQ`
+  naming kind `1059` without that proof is refused with `auth-required:`; one naming no kinds
+  is answered without wraps.
+- Another relay may not restrict wraps. On one that does not, who is messaged, and when, is
+  visible to anyone who reads it, so think before you `toon message send --relay` there.
 - A wrap hides the content and the sender, not that you were messaged, or when.

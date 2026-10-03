@@ -48,6 +48,13 @@ whole path's cost with `--amount`:
 toon event publish --kind 1 --content "hi" --relay ws://relay2.example:7110 --amount 101 --yes
 ```
 
+## Private messages on your relay
+
+Your relay serves a gift wrap (kind 1059, a private message) only to the key it is addressed
+to, once that key has proved itself; read private messages with `toon message list`, not with
+`toon event query`, which gets `auth-required:` for kind 1059. Another relay may not restrict
+wraps, and on one that does not, who is messaged and when is visible to anyone reading it.
+
 ## Relay settings
 
 ```sh
