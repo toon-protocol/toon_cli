@@ -83,6 +83,16 @@ fn serve(mut stream: TcpStream, answer: Answer) {
     }
 }
 
+/// An address nothing listens on, which no other test can bind while the streams returned
+/// are kept: the local end of a connection. A listener dropped to free its port would not
+/// do, since a test running alongside may be given the same port for an endpoint of its own.
+fn closed_port() -> (SocketAddr, (TcpStream, TcpStream)) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let client = TcpStream::connect(listener.local_addr().expect("address")).expect("connect");
+    let (server, _) = listener.accept().expect("accept");
+    (client.local_addr().expect("address"), (client, server))
+}
+
 fn declared(address: SocketAddr) -> String {
     format!("{NAME}:{PORT}={address}")
 }
@@ -236,10 +246,7 @@ fn a_refusal_that_is_not_a_timeout_is_attempted_once() {
 #[test]
 fn a_refused_connection_is_attempted_once() {
     let chain = FakeChain::start();
-    let closed = TcpListener::bind("127.0.0.1:0")
-        .expect("bind")
-        .local_addr()
-        .expect("address");
+    let (closed, _held) = closed_port();
     let machine = Machine::new();
     let init = machine.init_on(&chain);
     let _up = hidden_near(&machine, init, &declared(closed));

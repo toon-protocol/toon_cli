@@ -27,13 +27,13 @@ sha2 = "0.10"
 sha3 = "0.10"
 zeroize = "1"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
-connector-cli = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
-connector-operator = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+connector-cli = { git = "https://github.com/toon-protocol/connector", rev = "5adad81879b1d57ced36ee3a2093245777586063" }
+connector-operator = { git = "https://github.com/toon-protocol/connector", rev = "5adad81879b1d57ced36ee3a2093245777586063" }
 # What `operator::dispatch_with_headers` forms and opens a packet with (and what the tests
 # send a packet with): the connector's
 # `send` cannot carry a header, which a subscribe request needs (NIP-98).
-connector-domain = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
-connector-signer = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705" }
+connector-domain = { git = "https://github.com/toon-protocol/connector", rev = "5adad81879b1d57ced36ee3a2093245777586063" }
+connector-signer = { git = "https://github.com/toon-protocol/connector", rev = "5adad81879b1d57ced36ee3a2093245777586063" }
 chrono = "0.4"
 # The version `connector-operator` signs with: its `sign_request` takes this one's keypair.
 ed25519-dalek-v1 = { package = "ed25519-dalek", version = "1" }
@@ -55,10 +55,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 [dev-dependencies]
 tempfile = "3"
 # The connector's own fake chain RPC, and the channel-id arithmetic the fake answers with.
-connector-chain-rpc = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705", features = ["test-support"] }
+connector-chain-rpc = { git = "https://github.com/toon-protocol/connector", rev = "5adad81879b1d57ced36ee3a2093245777586063", features = ["test-support"] }
 # The connector's fixtures for a real local chain: x402's contracts and a USDC on an
 # `anvil`, which tests that move money run on (the spike's finding, on #2).
-connector-settlement-evm = { git = "https://github.com/toon-protocol/connector", rev = "48a9db380e83c3692e81e83e3996fe39fd2f2705", features = ["test-util"] }
+connector-settlement-evm = { git = "https://github.com/toon-protocol/connector", rev = "5adad81879b1d57ced36ee3a2093245777586063", features = ["test-util"] }
 ethers = { version = "2", default-features = false }
 # The fake remote relay's TLS: a certificate generated for the test, and a front that terminates it.
 rcgen = "0.11"
@@ -68,7 +68,7 @@ tokio-rustls = "0.24"
 # The relay image `toon` runs as a container (ADR 0001), pinned by digest. `build.rs`
 # hands it to `toon --version`.
 [package.metadata.toon]
-relay_image = "ghcr.io/toon-protocol/relay:sha-1ca0bde@sha256:fd13b22a20cd5ffed08ffdca715b232e1537be1e61af969b10485f214b077f6d"
+relay_image = "ghcr.io/toon-protocol/relay:rust-sha-c56b435@sha256:f2e94e1fde1074691d58cf33f086e86f72f90b9834dcb36ef7df71adff04f761"
 
 [lints.rust]
 unsafe_code = "forbid"

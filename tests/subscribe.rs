@@ -722,9 +722,7 @@ fn a_connector_that_charges_to_forward_rejects_the_price_and_the_text_names_the_
     let chain = AnvilChain::start();
     let (near, _mid, _far, relay) = through_a_charging_connector(&chain);
     let before = remaining(&near);
-
-    // The text report: a rejected packet's claim leaves value behind that a second run
-    // would use, so each way of looking at the rejection has an arrangement of its own.
+    // The text report, then the JSON one: each way of looking at the rejection has its own run.
     let url = relay.url();
     let run = near.toon(&[
         "relay",
@@ -895,11 +893,11 @@ fn a_direct_subscription_reports_the_packet_amount_as_the_price() {
 }
 
 #[test]
-fn a_later_packet_that_is_rejected_is_counted_beside_the_packets_fulfilled() {
+fn a_rejected_packet_leaves_nothing_behind_for_the_next_run() {
     let chain = AnvilChain::start();
     let (near, _mid, _far, relay) = through_a_charging_connector(&chain);
-    // A rejected packet's claim leaves value behind, enough for the next run's first
-    // packet to get through at the price and not for its second.
+    // A packet the next hop rejected is not paid for (connector#1446), so it leaves no
+    // value behind: the next run's first packet is short of the price again.
     let first = subscribe(
         &near,
         &relay,
@@ -917,11 +915,10 @@ fn a_later_packet_that_is_rejected_is_counted_beside_the_packets_fulfilled() {
     assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
     let report = run.json();
     assert_eq!(report["outcome"], "rejected", "{report}");
-    assert_eq!(report["packets"], 2);
-    // One packet fulfilled and credited, one rejected that still moved the channel.
-    assert_eq!(report["credited"], 1000);
-    assert_eq!(report["paid"], 2000);
-    assert_eq!(remaining(&near), before - 2000);
+    assert_eq!(report["response"]["code"], "F03", "{report}");
+    assert_eq!(report["credited"], 0, "{report}");
+    assert_eq!(report["paid"], 0, "{report}");
+    assert_eq!(remaining(&near), before);
 }
 
 #[test]

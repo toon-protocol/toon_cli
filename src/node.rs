@@ -48,6 +48,12 @@ pub fn relay_write_prefix(segment: &str) -> String {
     app_address(segment, RELAY)
 }
 
+/// The connector's route to the relay's subscribe endpoint, beside the write route at
+/// `write_prefix`.
+pub fn relay_subscribe_prefix(write_prefix: &str) -> String {
+    format!("{write_prefix}.subscribe")
+}
+
 /// The connector's route to the relay's free ephemeral write endpoint.
 pub fn relay_ephemeral_prefix(segment: &str) -> String {
     format!("{}.ephemeral", relay_write_prefix(segment))
@@ -144,12 +150,25 @@ pub struct RelaySettings {
     pub expiry: Expiry,
     /// Nostr public keys, in hex, whose events the relay refuses.
     pub blocklist: Vec<String>,
+    /// What the connector's subscribe route charges for a packet, which is what a packet
+    /// credits (ADR 0005). Set together with `broadcast_price`, or not at all: the relay
+    /// sells its live feed when it has both.
+    pub subscribe_price: Option<u64>,
+    /// What the relay debits for each event it broadcasts to a subscriber.
+    pub broadcast_price: Option<u64>,
 }
 
 impl RelaySettings {
+    /// The subscribe price and the broadcast price, when the relay sells its live feed.
+    pub fn selling(&self) -> Option<(u64, u64)> {
+        self.subscribe_price.zip(self.broadcast_price)
+    }
+
     /// The environment the relay is started with, besides its identity key. A setting
     /// the operator never made is not passed, so the relay keeps its own default.
-    pub fn env(&self) -> Vec<(String, String)> {
+    /// `subscribe_address` is where the connector's subscribe route is, passed when the
+    /// relay sells its feed.
+    pub fn env(&self, subscribe_address: &str) -> Vec<(String, String)> {
         let mut env = Vec::new();
         if let Some(name) = &self.name {
             env.push(("TOON_RELAY_NAME".into(), name.clone()));
@@ -161,6 +180,13 @@ impl RelaySettings {
         if !self.blocklist.is_empty() {
             env.push(("TOON_RELAY_BLOCKLIST".into(), self.blocklist.join(",")));
         }
+        if let Some((_, broadcast)) = self.selling() {
+            env.push((
+                "TOON_SUBSCRIBE_ILP_ADDRESS".into(),
+                subscribe_address.into(),
+            ));
+            env.push(("TOON_BROADCAST_PRICE".into(), broadcast.to_string()));
+        }
         env
     }
 
@@ -170,6 +196,8 @@ impl RelaySettings {
             "description": self.description,
             "expiry": self.expiry.as_str(),
             "blocklist": self.blocklist,
+            "subscribe_price": self.subscribe_price,
+            "broadcast_price": self.broadcast_price,
         })
     }
 
@@ -187,6 +215,9 @@ impl RelaySettings {
                 .iter()
                 .map(|key| key.as_str().map(str::to_owned))
                 .collect::<Option<_>>()?,
+            // Absent in a state written before the live feed could be sold.
+            subscribe_price: value["subscribe_price"].as_u64(),
+            broadcast_price: value["broadcast_price"].as_u64(),
         })
     }
 }
@@ -261,6 +292,11 @@ impl App {
             prefix: relay_write_prefix(segment),
             price: RELAY_WRITE_PRICE,
         }
+    }
+
+    /// The prefix of the route that delivers to the relay's subscribe endpoint.
+    pub fn subscribe_prefix(&self) -> String {
+        relay_subscribe_prefix(&self.prefix)
     }
 
     fn json(&self) -> Value {
@@ -796,6 +832,17 @@ pub fn render(
                 "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = 0\n",
                 string(&relay_ephemeral_prefix(&app.segment)),
                 string(&ephemeral),
+            ));
+        }
+        // A relay that sells its live feed has a third route, at a flat price: one packet
+        // credits exactly that.
+        if let (Source::Relay, Some((price, _)), Some(relay)) =
+            (&behind.source, app.relay.selling(), reached)
+        {
+            config.push_str(&format!(
+                "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = {price}\n",
+                string(&behind.subscribe_prefix()),
+                string(&format!("http://{relay}/subscribe")),
             ));
         }
     }

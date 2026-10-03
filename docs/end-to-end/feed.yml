@@ -1,0 +1,21 @@
+# A compose override for the `infra` sandbox: its two relays on a relay image that sells
+# its live feed (toon-protocol/relay#215), with the feed's settings, for the subscription
+# step of docs/end-to-end.md. It goes when the sandbox sells the feed itself
+# (toon-protocol/infra#53).
+#
+# FEED_RELAY_IMAGE is that image. HUB_RELAY_URL is the hub's relay at its `.anyone`
+# address, which is known only once the sandbox is up, so `relay` is recreated with it
+# then: a relay checks NIP-98 and NIP-42 against the host and port it is reached at.
+services:
+  relay:
+    image: ${FEED_RELAY_IMAGE:?set FEED_RELAY_IMAGE to a relay image that sells its feed}
+    environment:
+      TOON_SUBSCRIBE_ILP_ADDRESS: g.toon.relay.subscribe
+      TOON_BROADCAST_PRICE: '1'
+      TOON_RELAY_URL: ${HUB_RELAY_URL:-ws://hub.invalid:7100}
+  relay2:
+    image: ${FEED_RELAY_IMAGE:?set FEED_RELAY_IMAGE to a relay image that sells its feed}
+    environment:
+      TOON_SUBSCRIBE_ILP_ADDRESS: g.toon.relay2.subscribe
+      TOON_BROADCAST_PRICE: '1'
+      TOON_RELAY_URL: ws://localhost:7110

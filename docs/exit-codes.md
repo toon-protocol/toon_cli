@@ -79,7 +79,7 @@ A failed command with `--json` prints:
 | `chain_failed` | 1 | A chain's JSON-RPC endpoint could not be reached or did not answer a read as expected; the message carries the reason |
 | `channel_failed` | 1 | A channel write was refused by the connector or could not be sent, the channel id is not one, or the terms file was unreadable; the message carries the reason |
 | `name_taken` | 1 | `toon add` or `toon create` was given a name that is not usable, or that a TOON app or an app of this agent node already has |
-| `query_failed` | 1 | `toon event query`, or `toon nip publish` asking for a draft's current revision, could not read events from the relay: it did not answer, is not a `ws://` or `wss://` relay (or its certificate did not verify), or closed the subscription with a reason the message carries |
+| `query_failed` | 1 | `toon event query`, or `toon nip publish` asking for a draft's current revision, could not read events from the relay: it did not answer, is not a `ws://` or `wss://` relay (or its certificate did not verify), or closed the subscription with a reason the message carries; or `toon relay subscriptions --incoming` could not read the running relay's list of subscribers, or the agent node's relay does not sell its live feed |
 | `draft_refused` | 1 | `toon nip new` or `toon nip publish` would not write or publish a draft: the file exists already, does not name a draft or begin with its title, is not UTF-8, or the relay holds the identifier under another title and `--title-changed` was not given; the message says which |
 | `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
 | `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap (its `anon` release could not be downloaded or did not match its pinned checksum, its terms were not agreed to, or the daemon did not come up), so a hidden service was not created or started, or a command on a hidden agent node that makes a request of its own (a faucet, a chain, a relay, a connector) had no overlay to send it through; nothing falls back to clearnet |
@@ -317,8 +317,12 @@ connector's `send` refused its arguments. These still fail with `send_failed`. A
 failure may have paid, and stays counted, including a refusal from the operator surface and
 an answer that was not understood. A packet the connector did not answer within the wait,
 which is longer than the packet's 30-second expiry so that the connector's own reject is
-what is normally reported, fails with `send_failed` and is counted by what the watermarks
-moved by, like a rejected packet (the whole amount, if they cannot be read). The failure's
+what is normally reported (a connector forwarding it answers `R00` at the packet's outgoing
+expiry, a little before its own, and signs nothing for a packet that has run out of time), fails with `send_failed` and is
+counted by what the watermarks moved by, like a rejected packet (the whole amount, if they
+cannot be read). A packet the next hop never carried is not paid for on a batch-settlement
+channel when the next hop can be asked where it stands: the next forward signs from what it
+reports, so the count can be above what the packet finally costs. The failure's
 JSON is `{"error": {"code", "message"}, "paid"}` with the `event` for `toon event publish
 --relay`; the text says that the packet has expired, names the event's id so that
 `toon event query` can ask the relay for it, and gives the "It cost N base units." sentence
