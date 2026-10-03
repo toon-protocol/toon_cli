@@ -109,7 +109,11 @@ write because the chain would not estimate it for lack of gas is reported as `un
 sent and nothing is counted.
 
 - On the devnet, `toon wallet fund` asks the faucet. It sends the token and no ETH: Base Sepolia
-  ETH comes from a public Base Sepolia faucet, which you cannot use, so say so and stop.
+  ETH comes from a public Base Sepolia faucet, which you cannot use, so say so and stop. It asks for
+  every address whatever the faucet answers for the others: a refusal for one address (an EVM
+  cooldown, say) does not stop the rest. The report lists each as funded or refused with the
+  faucet's reason; the command succeeds if any was funded, and fails with `faucet_unavailable`
+  naming each address when none was.
 - On `sandbox` and `mainnet` there is no faucet (`faucet_unavailable`): the operator sends funds
   to the addresses `toon wallet show` lists. You cannot do that, so say so and stop.
 - `toon wallet balances` shows the balance of every address by TOON app and chain.
