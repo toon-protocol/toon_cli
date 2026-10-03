@@ -97,7 +97,14 @@ packets it holds in flight. While the connector is running, that needs `--yes`; 
 toon status
 toon logs echo
 toon send "$(jq -r .address add.json)" --amount 2 --yes
+echo '{"text":"hello"}' > body.json
+toon send "$(jq -r .address add.json)" --amount 2 \
+  --method POST --path '/say?loud=1' --body body.json --yes
 ```
+
+`--method` and `--path` are the request the app receives, and `--body` is a file sent as its
+`application/json` body; without them the request is an empty `POST /`. This, not the app's
+loopback address, is how you use it: a call to the loopback address is not paid.
 
 A packet to an app behind your own connector needs no `--seal-to`. Others reach it over a
 peering toward your connector, with `--seal-to` set to your connector's `/ilp` URL.

@@ -198,6 +198,7 @@ fn write_to(
                 destination,
                 amount,
                 key,
+                ("POST", "/"),
                 headers,
                 write_body(&event).into_bytes(),
             )
@@ -208,7 +209,8 @@ fn write_to(
                 hex::encode(keystore::random::<8>()?)
             ));
             node::write(&body, write_body(&event).as_bytes(), 0o600)?;
-            let answer = operator::dispatch(home, destination, amount, None, Some(&body));
+            let answer =
+                operator::dispatch(home, destination, amount, None, "POST", "/", Some(&body));
             let _ = std::fs::remove_file(&body);
             answer
         }

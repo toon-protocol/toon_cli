@@ -228,6 +228,15 @@ the same as publishing in one way: if a connector in between rejects its packets
 state what one packet costs along the path with `--packet-amount <n>`; `--amount` stays the total,
 paid as whole packets of that amount, and each packet still credits only the subscribe price.
 
+### Paying an app
+
+An app you added is used by paying it, not by calling its loopback address, which does the work
+unpaid. `toon send <app address> --amount <n> --method <method> --path <path> --body <file> --yes`
+carries one request in one paid packet: `--method` is `POST` and `--path` is `/` when absent, and
+`--path` is the path and query the app receives. `--body` is a file whose bytes are the body, sent as
+`application/json`; with none, there is no body. The report's `response` has the app's status and
+body. A body file that cannot be read fails before anything is sent and costs nothing.
+
 ## Backup and restore
 
 - `toon wallet backup --out <file>` seals the mnemonic and every onion endpoint's address key under

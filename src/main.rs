@@ -104,9 +104,16 @@ fn run() -> ExitCode {
             home::resolve().and_then(|home| {
                 let amount: u128 = args.amount.into();
                 spending::spend_packets(&home, amount, args.yes, |packets| {
-                    let mut report =
-                        operator::send(&home, &args.address, args.amount, args.seal_to.as_deref())
-                            .map_err(|error| operator::repriced(error, packets.moved(amount)))?;
+                    let mut report = operator::send(
+                        &home,
+                        &args.address,
+                        args.amount,
+                        args.seal_to.as_deref(),
+                        &args.method,
+                        &args.path,
+                        args.body.as_deref(),
+                    )
+                    .map_err(|error| operator::repriced(error, packets.moved(amount)))?;
                     // A packet that was rejected, or fulfilled wrongly, moved what its
                     // channels moved by, which is nothing when the agent node's own
                     // connector refused it.

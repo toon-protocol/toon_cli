@@ -347,6 +347,7 @@ pub fn subscribe(
                 &terms.address,
                 packet_amount,
                 &terms.seal_key,
+                ("POST", "/"),
                 headers,
                 body.clone(),
             ) {
