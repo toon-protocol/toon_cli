@@ -437,7 +437,8 @@ fn websocket(stream: TcpStream, data: &Path) {
                     if selling && gate.proven.last() != Some(&key) {
                         open.clear();
                     }
-                    gate.operator = key == own_key();
+                    // A relay that sells nothing feeds every reader live.
+                    gate.operator = !selling || key == own_key();
                     gate.proven.push(key);
                 }
                 let _ = socket.send(tungstenite::Message::text(
