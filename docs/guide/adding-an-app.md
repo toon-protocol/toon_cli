@@ -120,6 +120,25 @@ under `g.toon.<segment>`: that is where every address the connector answers to s
 toon add search-v2 --to relay --image search:2 --address g.toon.fb0e007c71750599.search.v2 --yes
 ```
 
+## Say what a client should send
+
+`--request <file>` takes a file holding one JSON object that states what a client should send
+the app. The connector publishes it on the route, in `routes[]` of `GET <connector>/ilp` and
+on the answer to an unpaid packet, and never reads it, so its content is yours to define.
+
+```sh
+cat > request.json <<'EOF'
+{ "protocol": "http", "method": "POST", "path": "/echo", "params": { "text": "a string" } }
+EOF
+toon add echo --to relay --image echo-app --request request.json --yes
+toon route list --json | jq '.routes[] | {prefix, request}'
+```
+
+`toon` checks only that the file is one JSON object a TOML table can carry: a file that is
+anything else, or holds a `null`, is refused with `usage` before anything changes. An app added
+without `--request` is published with no `request`. The request stays with the app across
+`toon down` and `toon up` and across restarts. To change it, remove the app and add it again.
+
 ## Change the price
 
 ```sh

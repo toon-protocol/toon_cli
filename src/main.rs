@@ -138,6 +138,7 @@ fn run() -> ExitCode {
                         },
                         address: args.address.as_deref(),
                         price: args.price,
+                        request: args.request.as_deref(),
                         yes: args.yes,
                     },
                 )
