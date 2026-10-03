@@ -8,7 +8,9 @@
 //! it stands in for any other app, is always answered with 200. It writes the secret key
 //! it was handed to `environment` there, the `TOON_RELAY_*` settings it was handed but
 //! the read port, one `NAME=value` per line, to `settings`, and `TOON_CONNECTOR_URL` and
-//! `TOON_WRITE_ILP_ADDRESS` to `connector`. It exits when its standard input closes, as
+//! `TOON_WRITE_ILP_ADDRESS`, `TOON_SUBSCRIBE_ILP_ADDRESS`, `TOON_BROADCAST_PRICE` and
+//! `TOON_RELAY_URL` to `connector`. It answers `GET /subscribers` with `subscribers.json` of
+//! its data directory, if there is one. It exits when its standard input closes, as
 //! a supervisor's apps do.
 //!
 //! The event of a write, or a JSON body posted to `/`, is also stored in `events.log`,
@@ -52,10 +54,16 @@ fn main() {
     settings.sort();
     fs::write(data.join("settings"), settings.concat()).expect("write");
     // What it was told of its connector, to `connector`, in the same form.
-    let connector: String = ["TOON_CONNECTOR_URL", "TOON_WRITE_ILP_ADDRESS"]
-        .iter()
-        .filter_map(|name| env::var(name).ok().map(|value| format!("{name}={value}\n")))
-        .collect();
+    let connector: String = [
+        "TOON_CONNECTOR_URL",
+        "TOON_WRITE_ILP_ADDRESS",
+        "TOON_SUBSCRIBE_ILP_ADDRESS",
+        "TOON_BROADCAST_PRICE",
+        "TOON_RELAY_URL",
+    ]
+    .iter()
+    .filter_map(|name| env::var(name).ok().map(|value| format!("{name}={value}\n")))
+    .collect();
     fs::write(data.join("connector"), connector).expect("write");
 
     thread::spawn(|| {
@@ -144,8 +152,11 @@ fn serve(stream: TcpStream, data: &Path) {
     // stands in for any other app, is taken.
     let to_relay = posted && path != "/";
     let json = serde_json::from_slice::<serde_json::Value>(&body);
+    let subscribers = fs::read_to_string(data.join("subscribers.json"));
     let (status, answer) = if method == "GET" && path == "/health" {
         ("200 OK", "ok")
+    } else if method == "GET" && path == "/subscribers" && subscribers.is_ok() {
+        ("200 OK", subscribers.as_deref().unwrap_or_default())
     } else if !posted {
         ("404 Not Found", "not found")
     } else if to_relay && json.is_err() {

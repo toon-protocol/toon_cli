@@ -324,6 +324,32 @@ refuses a request it has already accepted in the same clock second, so the later
 pair may take up to a second longer: the command line signs it again once the second has
 turned. The first agent node's inbound channel from the other one is at watermark 1.
 
+### Another agent node subscribes to this one's relay
+
+The first agent node sells its relay's live feed, and the other one pays for it:
+
+```sh
+$E/toon relay price --subscribe 100 --broadcast 1 --yes --json
+$E/toon route list --json
+```
+
+Start the other agent node again in the third terminal, with `HOME=$E/other`, then:
+
+```sh
+HOME=$E/other $E/toon relay subscribe ws://$ME:7100 --filter '{"kinds":[1]}' \
+  --amount 1000 --yes --json
+$E/toon event publish --kind 1 --content "to a subscriber" --json
+$E/toon relay subscriptions --incoming --json
+HOME=$E/other $E/toon relay subscriptions --json
+HOME=$E/other $E/toon down --json
+```
+
+**Expect** `restarted: true` from `relay price`, and the connector's `route list` showing
+the relay's subscribe route at 100. The subscribe pays ten packets of 100 over the
+peering the publish above used, and `--incoming` lists the other agent node's subscriber
+key with a balance of 1000, less 1 for each event the relay has broadcast to it since;
+`relay subscriptions` on the other agent node shows the same balance at `ws://$ME:7100`.
+
 ### Hold a subscription
 
 ```sh
