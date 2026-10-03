@@ -81,6 +81,8 @@ fn a_clearnet_sandbox_agent_node_records_the_sandboxs_hub_and_relay_and_no_notic
     let init = machine.init_with(&["--network", "sandbox", "--clearnet", "toon.example.com"]);
 
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    assert!(config(&machine)
+        .contains(r#"token_address = "0x0A867CA0442383c2A89951244B955AA19b615b58""#));
     let state = state(&machine);
     assert_eq!(state["connector_url"], "http://localhost:3200/ilp");
     assert_eq!(state["relay_url"], "ws://localhost:7100");

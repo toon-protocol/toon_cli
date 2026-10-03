@@ -1323,10 +1323,7 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
         if state.network == Profile::Sandbox {
             return Err(failed(
                 ErrorCode::JoinRefused,
-                "A hidden agent node cannot reach the sandbox's hub on `localhost`, and this one records no connector. \
-                 Name the hub with `--connector-url http://<hub>.anyone:3200/ilp` (and `--relay-url ws://<hub>.anyone:7100`) on `init`, \
-                 or run the agent node with `--clearnet`."
-                    .to_owned(),
+                crate::wallet::SANDBOX_HUB_NOTE.to_owned(),
             ));
         }
         return Err(failed(
