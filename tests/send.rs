@@ -71,6 +71,12 @@ fn a_rejected_packet_says_why_and_exits_non_zero() {
     let report = run.json();
     assert_eq!(report["outcome"], "rejected", "{report}");
     assert_eq!(report["reject"]["code"], "F02");
+    // A cost of 0 is left out.
+    assert!(report.get("cost").is_none() && report.get("complete").is_none());
+    assert_eq!(
+        report["reject"]["message"], "no route to destination 'g.nobody.here'",
+        "{report}"
+    );
     assert_eq!(run.exit_code, 1);
     assert_eq!(run.stderr, "");
 }
@@ -89,6 +95,7 @@ fn a_rejected_packet_is_readable_text_without_json() {
         "{}",
         run.stdout
     );
+    assert!(!run.stdout.contains("accumulated cost"), "{}", run.stdout);
     assert_eq!(run.exit_code, 1);
 }
 

@@ -42,7 +42,8 @@ toon event query <ws-url> --filter '{"kinds":[30000],"authors":["<key>"],"#d":["
 ## Notes
 
 - A list is replaced whole: query it, copy, add, publish all.
-- The standard also lets a list hold private items, NIP-44 encrypted in `content`. `toon` cannot
-  encrypt (see `nip-17.md`), so keep to public tags and treat a non-empty `content` you read as
-  private items you cannot open.
+- The standard also lets a list hold private items, NIP-44 encrypted in `content`. `toon` does not
+  support them: `toon event publish` does not encrypt and no command opens list items (only
+  private messages are sealed, see `nip-17.md`), so keep to public tags and treat a non-empty
+  `content` you read as private items you cannot open.
 - Do not put something in a public list you would not publish.

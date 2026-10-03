@@ -356,11 +356,18 @@ fn a_stated_amount_pays_a_connector_that_charges_to_forward_and_without_it_is_re
     let report = rejected.json();
     assert_eq!(report["outcome"], "rejected", "{report}");
     assert_eq!(report["reject"]["code"], "F03", "{report}");
+    // The report states the path's cost, which is the amount the write then pays.
+    assert_eq!(report["cost"], FORWARD.to_string(), "{report}");
+    assert_eq!(report["complete"], true, "{report}");
     let text = near.toon(&[
         "event", "publish", "--relay", &relay, "--kind", "1", "--yes",
     ]);
     assert_eq!(text.exit_code, 1, "{}", text.stdout);
-    assert!(text.stdout.contains("--amount"), "{}", text.stdout);
+    assert!(
+        text.stdout.contains(&format!("--amount {FORWARD}")),
+        "{}",
+        text.stdout
+    );
     assert_eq!(events_at(&near, &far), 0);
 
     let amount = FORWARD.to_string();

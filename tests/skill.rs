@@ -264,6 +264,53 @@ fn the_social_skill_has_one_reference_per_nip_in_the_set() {
     }
     let private = fs::read_to_string(social_dir().join("references/nip-17.md")).unwrap();
     assert!(private.contains("NIP-44") && private.contains("NIP-59"));
+    for needed in [
+        "toon message send",
+        "toon message list",
+        "--reply-to",
+        "--subject",
+        "--relay",
+        "--yes",
+        "--with",
+        "--since",
+        "--limit",
+        "agent_key_not_kept",
+        "ADR 0008",
+        "does not read a recipient's kind `10050`",
+    ] {
+        assert!(private.contains(needed), "NIP-17 lacks {needed}");
+    }
+    assert!(!private.contains("cannot send") && !private.contains("this build cannot"));
+}
+
+#[test]
+fn no_skill_says_the_relay_lacks_nip_42_or_names_a_private_message_a_dm_or_a_chat() {
+    for (name, file) in shipped_skills() {
+        let dir = file.parent().unwrap().to_path_buf();
+        let mut files = vec![file];
+        if let Ok(references) = fs::read_dir(dir.join("references")) {
+            files.extend(references.map(|entry| entry.unwrap().path()));
+        }
+        for path in files {
+            let text = fs::read_to_string(&path).unwrap().replace('\n', " ");
+            for stale in ["not implemented by the relay", "does not implement NIP-42"] {
+                assert!(
+                    !text.contains(stale),
+                    "{name}: {} says {stale}",
+                    path.display()
+                );
+            }
+        }
+    }
+    let social = skill_text("social");
+    assert!(social.contains("the relay implements it"));
+    let private = fs::read_to_string(social_dir().join("references/nip-17.md")).unwrap();
+    let body = private.split_once('\n').unwrap().1;
+    for avoided in ["DM", "direct message", "chat"] {
+        assert!(!body.contains(avoided), "NIP-17 says {avoided}");
+    }
+    let operating = skill_text("operating-an-agent-node");
+    assert!(operating.contains("`toon message list`") && operating.contains("`toon message send"));
 }
 
 #[test]
