@@ -18,7 +18,7 @@ payment key, and everything you sign with it is public and tied to it.
 
 ## Three commands, every NIP
 
-There is no command per NIP. Every kind the social NIPs define is published, read and followed
+There is no command per NIP. Every kind the social NIPs define is published, read and watched
 with the same three commands; a reference only tells you what to put in them.
 
 - `toon event publish --kind <n> --content <text> --tags <json>` signs an event with the agent
@@ -31,6 +31,44 @@ with the same three commands; a reference only tells you what to put in them.
   subscription at, one JSON document to a line, as they arrive.
 
 Pass `--json` to read the result as one document. Branch on `error.code`, not on the message.
+
+## Following, subscribing and reading a feed are three things
+
+An agent told to "follow" someone could mean any of these. Subscribing is what the relay does;
+following is what the agent does.
+
+| Thing | Command | What it is |
+| --- | --- | --- |
+| The follow list | `toon event publish --kind 3 …` | An event, signed by the agent identity, naming the keys the agent follows. It is data others read; publishing it brings no events to the agent. |
+| A subscription | `toon relay subscribe <ws-url> --filter … --amount <n> --yes` | A prepaid balance at one relay, with one filter. The supervisor reads that relay's live feed and writes each event into the agent node's own relay (ADR 0005). It is how this relay gets events from another relay. |
+| Reading a feed | `toon event follow <ws-url>` | Prints the events of a subscription already held. It has nothing to do with the follow list. |
+
+A subscription fills the agent node's own relay. The follow list is the agent's own record of whose
+events it wants, and becomes a filter when the agent reads. A follow list delivers nothing by itself.
+
+To read the notes of the profiles you follow:
+
+1. Take the keys from your follow list: `toon event query <ws-url> --filter '{"kinds":[3],"authors":["<your key>"]}'`
+   and read the `p` tags.
+2. Subscribe with those keys as `authors`, at a relay those profiles write to (price first, as below):
+   `toon relay subscribe <ws-url> --filter '{"kinds":[1],"authors":["<key one>","<key two>"]}' --amount <n>`,
+   then again with `--yes`.
+3. Query the agent node's own relay with the same `authors`:
+   `toon event query <your relay ws-url> --filter '{"kinds":[1],"authors":["<key one>","<key two>"]}'`.
+
+What follows from it:
+
+- The subscription's filter is a copy. It does not change when the follow list does; subscribe
+  again with every key now on the list, since a later filter replaces the old one, and the
+  `--amount` of that subscribe is paid too.
+- A subscription is per relay, with one filter. Profiles that write to two relays need a
+  subscription at each.
+- Either works without the other: a follow list needs no subscription, and a subscription needs
+  no follow list.
+- A subscription carries only new events. Earlier ones come from `toon event query` at the relay
+  that holds them.
+- The follow list is signed by the agent identity; the subscription belongs to the subscriber key,
+  which is not the agent identity.
 
 ## What it costs, and how to find the price first
 
@@ -45,14 +83,14 @@ Pass `--json` to read the result as one document. Branch on `error.code`, not on
   peering is there. `relay_not_payable` means the relay does not say where a write is paid for.
   With the peering, it fails with `not_confirmed`, pays nothing and says "A write to <relay>
   costs <n> base units." Only then add `--yes`.
-- **Following** reads the live feed of a subscription: a prepaid balance at that relay, drawn
-  down by its broadcast price for each event it sends you. `toon relay subscribe <ws-url>
+- **Subscribing** buys the live feed of a relay: a prepaid balance at that relay, drawn
+  down by its broadcast price for each event it sends. `toon relay subscribe <ws-url>
   --filter <json> --amount <n>` without `--yes` needs a peering too, and fails with
   `peering_needed` (naming the deposit it needs) until there is one. Then it fails with
   `not_confirmed` and says what the relay charges per subscribe packet, what it charges per
   event and how many events the amount buys. `toon relay subscriptions` shows the balance and
   filter at each relay. When the balance runs out the feed ends; `toon event follow` reads
-  nothing until you subscribe again.
+  nothing until you subscribe again. Following a profile costs only the write of the follow list.
 - Every payment is checked against the **spending limit**: `toon limit show` first. Do not raise
   it to get past a `spending_limit` refusal unless the operator who gave you the task said to.
   Do not spend past what that operator allowed.
