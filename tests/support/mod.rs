@@ -406,6 +406,11 @@ impl Foreground {
             .unwrap_or_else(|_| panic!("toon printed nothing; stderr:\n{}", self.stderr()))
     }
 
+    /// The next line of standard output, if one comes within `wait`.
+    pub fn try_line(&self, wait: Duration) -> Option<String> {
+        self.lines.recv_timeout(wait).ok()
+    }
+
     /// Wait for it to exit by itself, and return its exit code.
     pub fn exit_code(&mut self) -> i32 {
         let deadline = Instant::now() + TIMEOUT;

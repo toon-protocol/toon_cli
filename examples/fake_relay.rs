@@ -6,18 +6,26 @@
 //! to `/`, `/write` or `/write-ephemeral`. As the relay does, it answers a write with 200
 //! only if the body is `{"event": ...}`, and with 400 otherwise; a `POST` to `/`, where
 //! it stands in for any other app, is always answered with 200. It writes the secret key
-//! it was handed to `environment` there, the `TOON_RELAY_*` settings it was handed but
-//! the read port, one `NAME=value` per line, to `settings`, and `TOON_CONNECTOR_URL` and
-//! `TOON_WRITE_ILP_ADDRESS`, `TOON_SUBSCRIBE_ILP_ADDRESS`, `TOON_BROADCAST_PRICE` and
-//! `TOON_RELAY_URL` to `connector`. It answers `GET /subscribers` with `subscribers.json` of
-//! its data directory, if there is one. It exits when its standard input closes, as
-//! a supervisor's apps do.
+//! it was handed to `environment` there, `TOON_ENFORCE_EXPIRATION` and the `TOON_RELAY_*`
+//! settings it was handed but the read port, one `NAME=value` per line, to `settings`, and
+//! `TOON_CONNECTOR_URL`, `TOON_WRITE_ILP_ADDRESS`, `TOON_SUBSCRIBE_ILP_ADDRESS`,
+//! `TOON_BROADCAST_PRICE` and `TOON_RELAY_URL` to `connector`. Every `TOON_` name it was
+//! handed, one per line, goes to `names`. It answers `GET /subscribers` with
+//! `subscribers.json` of its data directory, if there is one. It exits when its standard
+//! input closes, as a supervisor's apps do.
 //!
 //! The event of a write, or a JSON body posted to `/`, is also stored in `events.log`,
 //! one per line, and a websocket client on the same port reads them back with a NIP-01
 //! `REQ` (`ids`, `authors`, `kinds`, `#<letter>` tags and `limit` are honoured) and gets
 //! `EOSE` after the stored events. An addressable event replaces the earlier one at its
 //! address.
+//!
+//! The websocket also keeps a `REQ` open after `EOSE` and sends the events written
+//! afterwards. A relay told a broadcast price (`TOON_BROADCAST_PRICE`) sells its feed: it
+//! greets a connection with an `AUTH` challenge, and keeps the `REQ` open only for the
+//! connection that answers it with its own identity key (`NOSTR_SECRET_KEY`) and a `relay`
+//! tag naming the host of `TOON_RELAY_URL`, as the Rust relay does. For anyone else it
+//! sends `CLOSED` with `payment-required:` after `EOSE`.
 
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -48,11 +56,21 @@ fn main() {
     )
     .expect("write");
     let mut settings: Vec<String> = env::vars()
-        .filter(|(name, _)| name.starts_with("TOON_RELAY_") && name != "TOON_RELAY_PORT")
+        .filter(|(name, _)| {
+            (name.starts_with("TOON_RELAY_") && name != "TOON_RELAY_PORT")
+                || name == "TOON_ENFORCE_EXPIRATION"
+        })
         .map(|(name, value)| format!("{name}={value}\n"))
         .collect();
     settings.sort();
     fs::write(data.join("settings"), settings.concat()).expect("write");
+    let mut names: Vec<String> = env::vars()
+        .map(|(name, _)| name)
+        .filter(|name| name.starts_with("TOON_"))
+        .map(|name| format!("{name}\n"))
+        .collect();
+    names.sort();
+    fs::write(data.join("names"), names.concat()).expect("write");
     // What it was told of its connector, to `connector`, in the same form.
     let connector: String = [
         "TOON_CONNECTOR_URL",
@@ -249,103 +267,150 @@ fn matches(filter: &serde_json::Value, event: &serde_json::Value) -> bool {
     fields && tags
 }
 
-/// A relay that sells its feed sends `AUTH` and keeps a read open only for a connection that
-/// proves the relay's own identity key; a free one gets `CLOSED` after the stored events, with
-/// `auth-required` before an answer and `payment-required` after one, as the draft says.
-fn selling() -> bool {
-    env::var_os("TOON_BROADCAST_PRICE").is_some()
+/// What a client's websocket is told, and by whom it is allowed a live read.
+struct Gate {
+    /// The challenge sent to the connection, if the relay sells its feed.
+    challenge: Option<String>,
+    /// Whether the connection answered it as the relay's operator.
+    operator: bool,
 }
 
-/// The relay's own public key, in hex, from the secret it was handed.
-fn identity() -> String {
+/// The host of a URL: what stands between `://` and the next `/` or `:`.
+fn host(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.split(['/', ':']).next().unwrap_or_default()
+}
+
+/// The reason an `AUTH` event is not the relay's own identity key answering `challenge`,
+/// naming the host the relay is reached at, as the relay checks it (`docs/paid-feed.md`,
+/// "The operator"), or none if it is.
+fn refused(event: &serde_json::Value, challenge: &str) -> Option<&'static str> {
+    use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
+    use sha2::{Digest, Sha256};
+
     let secret = hex::decode(env::var("NOSTR_SECRET_KEY").unwrap_or_default()).unwrap_or_default();
-    k256::schnorr::SigningKey::from_bytes(&secret)
+    let own = k256::schnorr::SigningKey::from_bytes(&secret)
         .map(|key| hex::encode(key.verifying_key().to_bytes()))
-        .unwrap_or_default()
-}
-
-fn stored_events(data: &Path) -> Vec<serde_json::Value> {
-    fs::read_to_string(data.join("events.log"))
-        .unwrap_or_default()
-        .lines()
-        .filter_map(|line| serde_json::from_str(line).ok())
-        .collect()
+        .unwrap_or_default();
+    let tag = |name: &str| {
+        event["tags"]
+            .as_array()
+            .and_then(|tags| tags.iter().find(|tag| tag[0] == name))
+            .and_then(|tag| tag[1].as_str())
+    };
+    let serialized = serde_json::json!([
+        0,
+        event["pubkey"],
+        event["created_at"],
+        event["kind"],
+        event["tags"],
+        event["content"]
+    ])
+    .to_string();
+    let id = Sha256::digest(serialized.as_bytes());
+    let signed = hex::decode(event["sig"].as_str().unwrap_or_default())
+        .ok()
+        .and_then(|sig| Signature::try_from(sig.as_slice()).ok())
+        .zip(
+            hex::decode(event["pubkey"].as_str().unwrap_or_default())
+                .ok()
+                .and_then(|key| VerifyingKey::from_bytes(&key).ok()),
+        )
+        .is_some_and(|(sig, key)| key.verify_prehash(&id, &sig).is_ok());
+    let reached = env::var("TOON_RELAY_URL").unwrap_or_default();
+    if event["kind"] != 22242 || hex::encode(id) != event["id"].as_str().unwrap_or_default() {
+        Some("invalid: not an AUTH event")
+    } else if !signed {
+        Some("invalid: bad signature")
+    } else if tag("challenge") != Some(challenge) {
+        Some("invalid: wrong challenge")
+    } else if tag("relay").map(host) != Some(host(&reached)) {
+        Some("invalid: the relay tag does not name the host this relay is reached at")
+    } else if event["pubkey"] != own.as_str() {
+        Some("restricted: not the operator")
+    } else {
+        None
+    }
 }
 
 fn websocket(stream: TcpStream, data: &Path) {
     let Ok(mut socket) = tungstenite::accept(stream) else {
         return;
     };
+    // A relay that sells its feed (it was told a broadcast price) greets with a challenge
+    // and keeps a `REQ` open after `EOSE` only for its operator. Any other relay keeps
+    // it open for every reader.
+    let selling = env::var_os("TOON_BROADCAST_PRICE").is_some();
+    let mut gate = Gate {
+        challenge: selling.then(|| hex::encode(rand_bytes())),
+        operator: !selling,
+    };
+    if let Some(challenge) = &gate.challenge {
+        let _ = socket.send(tungstenite::Message::text(
+            serde_json::json!(["AUTH", challenge]).to_string(),
+        ));
+    }
+    // Reads give up every tick, so that an open `REQ` notices the events written meanwhile.
     let _ = socket
         .get_ref()
-        .set_read_timeout(Some(Duration::from_millis(100)));
-    let send = |socket: &mut tungstenite::WebSocket<TcpStream>, frame: serde_json::Value| {
-        socket
-            .send(tungstenite::Message::text(frame.to_string()))
-            .is_ok()
-    };
-    let challenge = format!("challenge-{:x}", std::process::id());
-    let selling = selling();
-    // Whether the connection answered the challenge, and with the relay's own key.
-    let (mut authed, mut operator) = (false, false);
-    if selling && !send(&mut socket, serde_json::json!(["AUTH", challenge])) {
-        return;
-    }
-    // The reads kept open: a subscription's id, its filters and the ids already sent on it.
-    let mut live: Vec<(serde_json::Value, Vec<serde_json::Value>, Vec<String>)> = Vec::new();
+        .set_read_timeout(Some(Duration::from_millis(50)));
+    // The open `REQ`s: id, filters, and the events already sent for it.
+    let mut open: Vec<(
+        serde_json::Value,
+        Vec<serde_json::Value>,
+        Vec<serde_json::Value>,
+    )> = Vec::new();
     loop {
+        for (subscription, filters, sent) in &mut open {
+            for event in stored(data) {
+                if !sent.contains(&event["id"]) && filters.iter().any(|f| matches(f, &event)) {
+                    sent.push(event["id"].clone());
+                    let _ = socket.send(tungstenite::Message::text(
+                        serde_json::json!(["EVENT", subscription, event]).to_string(),
+                    ));
+                }
+            }
+        }
         let message = match socket.read() {
-            Ok(message) => Some(message),
+            Ok(message) => message,
             Err(tungstenite::Error::Io(error))
                 if matches!(
                     error.kind(),
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
-                None
+                continue
             }
             Err(_) => return,
         };
-        let Some(tungstenite::Message::Text(text)) = message else {
-            // Idle: what was stored since goes to every read that is kept open.
-            if message.is_none() {
-                let events = stored_events(data);
-                for (id, filters, sent) in &mut live {
-                    for event in &events {
-                        let event_id = event["id"].as_str().unwrap_or_default().to_owned();
-                        if !sent.contains(&event_id)
-                            && filters.iter().any(|filter| matches(filter, event))
-                        {
-                            sent.push(event_id);
-                            if !send(&mut socket, serde_json::json!(["EVENT", id, event])) {
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
+        let tungstenite::Message::Text(text) = message else {
             continue;
         };
         let Ok(serde_json::Value::Array(frame)) = serde_json::from_str(&text) else {
             continue;
         };
         match frame.first().and_then(|kind| kind.as_str()) {
-            Some("AUTH") if frame.len() > 1 => {
-                let event = &frame[1];
-                let tag = |name: &str| {
-                    event["tags"].as_array().and_then(|tags| {
-                        tags.iter()
-                            .find(|tag| tag[0] == name)
-                            .and_then(|tag| tag[1].as_str())
-                    })
+            Some("AUTH") if frame.len() == 2 => {
+                let reason = match &gate.challenge {
+                    Some(challenge) => refused(&frame[1], challenge),
+                    None => Some("invalid: no challenge was sent"),
                 };
-                authed = event["kind"] == 22242 && tag("challenge") == Some(challenge.as_str());
-                operator = authed && event["pubkey"] == identity().as_str();
+                gate.operator = reason.is_none();
+                let _ = socket.send(tungstenite::Message::text(
+                    serde_json::json!([
+                        "OK",
+                        frame[1]["id"],
+                        reason.is_none(),
+                        reason.unwrap_or("")
+                    ])
+                    .to_string(),
+                ));
             }
-            Some("CLOSE") if frame.len() > 1 => live.retain(|(id, _, _)| *id != frame[1]),
+            Some("CLOSE") if frame.len() == 2 => open.retain(|(id, _, _)| *id != frame[1]),
             Some("REQ") if frame.len() >= 3 => {
                 let subscription = frame[1].clone();
-                let events = stored_events(data);
+                open.retain(|(id, _, _)| *id != subscription);
+                let events = stored(data);
                 let mut found: Vec<&serde_json::Value> = Vec::new();
                 for filter in &frame[2..] {
                     // A filter's `limit` keeps its newest matches: the log holds them oldest first.
@@ -362,33 +427,47 @@ fn websocket(stream: TcpStream, data: &Path) {
                         }
                     }
                 }
-                let sent: Vec<String> = found
-                    .iter()
-                    .map(|event| event["id"].as_str().unwrap_or_default().to_owned())
-                    .collect();
+                let mut sent = Vec::new();
                 for event in found {
-                    let _ = send(
-                        &mut socket,
-                        serde_json::json!(["EVENT", subscription, event]),
-                    );
+                    sent.push(event["id"].clone());
+                    let _ = socket.send(tungstenite::Message::text(
+                        serde_json::json!(["EVENT", subscription, event]).to_string(),
+                    ));
                 }
-                let _ = send(&mut socket, serde_json::json!(["EOSE", subscription]));
-                live.retain(|(id, _, _)| *id != subscription);
-                if selling && !operator {
-                    let reason = if authed {
-                        "payment-required: this feed is sold"
-                    } else {
-                        "auth-required: this feed is sold"
-                    };
-                    let _ = send(
-                        &mut socket,
-                        serde_json::json!(["CLOSED", subscription, reason]),
-                    );
+                let _ = socket.send(tungstenite::Message::text(
+                    serde_json::json!(["EOSE", subscription]).to_string(),
+                ));
+                if gate.operator {
+                    // Everything already stored counts as sent; later writes follow.
+                    sent.extend(events.iter().map(|event| event["id"].clone()));
+                    open.push((subscription, frame[2..].to_vec(), sent));
                 } else {
-                    live.push((subscription, frame[2..].to_vec(), sent));
+                    let _ = socket.send(tungstenite::Message::text(
+                        serde_json::json!([
+                            "CLOSED",
+                            subscription,
+                            "payment-required: this feed is for a subscriber with a balance"
+                        ])
+                        .to_string(),
+                    ));
                 }
             }
             _ => {}
         }
     }
+}
+
+/// The events of the event log, oldest first.
+fn stored(data: &Path) -> Vec<serde_json::Value> {
+    fs::read_to_string(data.join("events.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
+fn rand_bytes() -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    let _ = fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut bytes));
+    bytes
 }

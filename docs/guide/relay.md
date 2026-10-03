@@ -100,11 +100,14 @@ and resumes it after a restart. When the balance runs out the subscription is ma
 toon relay subscribe ws://bob…anyone:7100 --amount 500 --yes
 ```
 
-To watch the feed yourself, one event per line:
+To watch what arrives, one event per line, read your own relay, which the subscription fills:
 
 ```sh
-toon event follow ws://bob…anyone:7100
+toon event watch
 ```
+
+It prints only the events that arrive after it starts, needs no subscription of its own and
+pays nothing. Subscribe to fill your relay, watch your own relay.
 
 When a connector on the way charges to forward, state what one packet costs along the path
 with `--packet-amount`; `--amount` stays the total, and each packet still credits only the

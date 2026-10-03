@@ -36,7 +36,6 @@ error_codes! {
     JoinRefused => "join_refused" => Failure,
     RelayNotPayable => "relay_not_payable" => Failure,
     PeeringNeeded => "peering_needed" => Failure,
-    NotSubscribed => "not_subscribed" => Failure,
     OneRelay => "one_relay" => Failure,
     NoFollowList => "no_follow_list" => Failure,
     DescribeFailed => "describe_failed" => Failure,

@@ -45,7 +45,7 @@ docker build -t toon-e2e-app docs/end-to-end/app
 
 ```sh
 export COMPOSE_FILE=docker-compose.yml:$PWD/docs/end-to-end/feed.yml
-export FEED_RELAY_IMAGE=ghcr.io/toon-protocol/relay:rust-sha-c56b435
+export FEED_RELAY_IMAGE=ghcr.io/toon-protocol/relay:rust-sha-f574257
 make -C ../infra/sandbox clean
 make -C ../infra/sandbox up-topology NODES="relay relay2" CHAINS=evm HS=relay
 ```

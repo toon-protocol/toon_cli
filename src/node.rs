@@ -176,7 +176,10 @@ impl RelaySettings {
         if let Some(description) = &self.description {
             env.push(("TOON_RELAY_DESCRIPTION".into(), description.clone()));
         }
-        env.push(("TOON_RELAY_EXPIRY".into(), self.expiry.as_str().into()));
+        // The relay enforces expiry unless this is exactly `false`.
+        if self.expiry == Expiry::Ignore {
+            env.push(("TOON_ENFORCE_EXPIRATION".into(), "false".into()));
+        }
         if !self.blocklist.is_empty() {
             env.push(("TOON_RELAY_BLOCKLIST".into(), self.blocklist.join(",")));
         }
@@ -765,6 +768,17 @@ pub fn onion_endpoint(home: &Path, app: &ToonApp) -> Option<String> {
     }
     let key = fs::read(ConnectorFiles::of(home, app.connector).onion_key).ok()?;
     Some(overlay::address_of(key.as_slice().try_into().ok()?))
+}
+
+/// The URL clients reach a relay at, which a relay that sells its feed checks the `relay`
+/// tag of an `AUTH` against: the public hostname, or the onion endpoint of a hidden
+/// service. None for a hidden service whose endpoint is not known.
+pub fn reached_at(reach: &Reach, onion: Option<&str>) -> Option<String> {
+    match (reach, onion) {
+        (Reach::Clearnet { hostname }, _) => Some(format!("wss://{hostname}")),
+        (Reach::Hidden, Some(endpoint)) => Some(format!("ws://{endpoint}")),
+        (Reach::Hidden, None) => None,
+    }
 }
 
 /// What a hidden service's connector is told about the overlay.

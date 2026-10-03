@@ -601,28 +601,39 @@ fn a_subscription_that_runs_out_is_said_so_and_resumes_when_it_is_topped_up() {
 }
 
 #[test]
-fn follow_prints_each_event_as_it_arrives_one_json_document_to_a_line() {
+fn watch_prints_what_the_supervisor_writes_into_the_own_relay_and_opens_no_second_feed() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);
     let (far, relay) = remote(&chain);
     peer_and_route(&near, &far);
     subscribed(&near, &relay, "1000");
-    // The supervisor's feed is one; the one `follow` opens is the other.
     eventually(|| relay.open_feeds() == 1);
-    let url = relay.url();
-    let follow = near.machine.start(&["event", "follow", &url, "--json"]);
-    eventually(|| relay.open_feeds() == 2);
+    let watch = near.machine.start_with(
+        &["event", "watch", "--filter", r#"{"kinds":[1]}"#],
+        |command| {
+            command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+        },
+    );
 
-    relay.broadcast(event(7, 1));
-    relay.broadcast(event(8, 1));
-
-    let first: serde_json::Value = serde_json::from_str(&follow.line()).expect("one document");
-    let second: serde_json::Value = serde_json::from_str(&follow.line()).expect("one document");
-    assert_eq!((first, second), (event(7, 1), event(8, 1)));
+    // A watch prints only what arrives after it is connected, and says nothing of being
+    // ready: broadcast until it prints one.
+    let mut number = 100;
+    let printed = loop {
+        assert!(number < 160, "the watch printed nothing");
+        number += 1;
+        relay.broadcast(event(number, 1));
+        if let Some(line) = watch.try_line(std::time::Duration::from_millis(250)) {
+            break line;
+        }
+    };
+    let printed: serde_json::Value = serde_json::from_str(&printed).expect("one document");
+    assert_eq!(printed["kind"], 1);
+    assert!(printed["content"].is_string(), "{printed}");
+    assert_eq!(relay.open_feeds(), 1, "only the supervisor reads the feed");
 }
 
 #[test]
-fn follow_needs_a_subscription() {
+fn follow_is_gone_and_names_watch() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);
     let (_far, relay) = remote(&chain);
@@ -631,13 +642,17 @@ fn follow_needs_a_subscription() {
         .machine
         .toon(&["event", "follow", &relay.url(), "--json"]);
 
-    assert_eq!(
-        run.json()["error"]["code"],
-        "not_subscribed",
+    assert_eq!(run.json()["error"]["code"], "usage", "{}", run.stdout);
+    assert!(
+        run.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("toon event watch"),
         "{}",
         run.stdout
     );
-    assert_eq!(run.exit_code, 1);
+    assert_eq!(run.exit_code, 2);
+    assert_eq!(relay.open_feeds(), 0);
 }
 
 #[test]

@@ -17,6 +17,10 @@ differ and hands the value to `toon --version`, together with the pinned relay i
 (`relay_image` in `Cargo.toml`). `toon up` runs each connector as `toon connector <config>`,
 a hidden command of the same binary.
 
+`tests/relay_settings.rs` holds the `TOON_` names the pinned relay image reads
+(`RELAY_READS`) and fails when the relay is started with another. Take the list again when
+`relay_image` moves.
+
 ## Checks
 
 ```sh

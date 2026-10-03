@@ -144,6 +144,7 @@ fn run(home: &Path, surroundings: &dyn Surroundings, stop: &AtomicBool) {
         let Some(identity_key) = relay_identity(home) else {
             continue;
         };
+        let url = reached_at(home).unwrap_or_else(|| format!("ws://{address}"));
         let Ok(identity) = event::public_key(&secret) else {
             continue;
         };
@@ -151,6 +152,7 @@ fn run(home: &Path, surroundings: &dyn Surroundings, stop: &AtomicBool) {
         read(
             home,
             address,
+            &url,
             &identity_key,
             &secret,
             &identity,
@@ -174,10 +176,21 @@ fn relay_identity(home: &Path) -> Option<[u8; 32]> {
         .ok()
 }
 
-/// Read the wraps of `identity` at the relay at `address` until the read ends.
+/// Where the agent node's own relay is reached, which its operator's answer to a challenge
+/// names, if the agent node says.
+fn reached_at(home: &Path) -> Option<String> {
+    let state = node::State::load(home).ok()??;
+    let app = crate::subscribe::own_relay_app(&state).ok()?;
+    node::reached_at(&app.reach, node::onion_endpoint(home, app).as_deref())
+}
+
+/// Read the wraps of `identity` at the relay at `address`, reached at `url`, until the read
+/// ends.
+#[allow(clippy::too_many_arguments)]
 fn read(
     home: &Path,
     address: SocketAddr,
+    url: &str,
     identity_key: &[u8; 32],
     secret: &[u8; 32],
     identity: &str,
@@ -187,6 +200,7 @@ fn read(
     let filter = json!({ "kinds": [gift_wrap::WRAP], "#p": [identity] });
     let ended = feed::read_own(
         &format!("ws://{address}"),
+        url,
         identity_key,
         &filter,
         stop,

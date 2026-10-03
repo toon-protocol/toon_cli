@@ -305,11 +305,7 @@ fn start_app(
             // A relay that sells its feed checks the host a subscriber says it is paying:
             // where clients reach it, which is the onion endpoint or the public hostname.
             if toon.relay.selling().is_some() {
-                let url = match (&toon.reach, onion) {
-                    (node::Reach::Clearnet { hostname }, _) => Some(format!("wss://{hostname}")),
-                    (node::Reach::Hidden, Some(endpoint)) => Some(format!("ws://{endpoint}")),
-                    (node::Reach::Hidden, None) => None,
-                };
+                let url = node::reached_at(&toon.reach, onion);
                 env.extend(url.map(|url| ("TOON_RELAY_URL".to_owned(), url)));
             }
             // The relay asks its own connector where a write to it is paid, and which
