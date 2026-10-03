@@ -2,12 +2,11 @@
 
 The gate substitutes four things: the chain, the overlay, the app runner and the remote
 relay. This run uses the real ones: the `anon` daemon on the Anyone network, the relay
-image in a container, the `infra` sandbox's local chain and hub, and, once one sells a
-feed, a relay to subscribe to. "Hub" and "relay node" below are the sandbox's own names
-for its connector and for a connector with a relay behind it. It is run by hand,
-before a release and after moving the connector pin, the relay image or the `anon`
-release. It is not part of the gate, because it needs Docker and a network nobody here
-controls.
+image in a container, the `infra` sandbox's local chain and hub, and the relay image that
+sells its live feed. "Hub" and "relay node" below are the sandbox's own names for its
+connector and for a connector with a relay behind it. It is run by hand, before a release
+and after moving the connector pin, the relay image or the `anon` release. It is not part
+of the gate, because it needs Docker and a network nobody here controls.
 
 Record every run as a comment on the spec (#2): the date, `toon --version`, and for each
 step below whether it did what the step says. Open a ticket for every step that did not.
@@ -19,9 +18,9 @@ step.
 
 | Step | What happens today | Ticket |
 | --- | --- | --- |
+| 1, the sandbox | Its relays do not sell their feed, hence `feed.yml` and the routes added by hand | infra #53 |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
 | 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
-| 3, `join` | The deposit lands and the `join` fails with `peer_failed`, "confirmed, and the chain shows no balance there"; the same command again finds the channel, and is counted against the day's spending a second time | #102 |
 
 ## What it needs
 
@@ -47,6 +46,8 @@ docker build -t toon-e2e-app docs/end-to-end/app
 ## 1. The sandbox, with its hub hidden
 
 ```sh
+export COMPOSE_FILE=docker-compose.yml:$PWD/docs/end-to-end/feed.yml
+export FEED_RELAY_IMAGE=ghcr.io/toon-protocol/relay:rust-sha-c56b435
 make -C ../infra/sandbox clean
 make -C ../infra/sandbox up-topology NODES="relay relay2" CHAINS=evm HS=relay
 ```
@@ -69,6 +70,36 @@ export HUB=<hub>.anyone
 export USDC=0x0A867CA0442383c2A89951244B955AA19b615b58   # the sandbox's FiatToken
 export RPC=http://localhost:8545
 ```
+
+`feed.yml`, above, puts the sandbox's relays on a relay image that sells its feed and gives
+them the feed's settings (infra #53). Each connector also needs a route to its relay's
+subscribe handler, and each relay must start after that route, since
+it reads its connector's routes once. `up-topology` renders the connectors' configs
+itself, so the route is added to what it rendered:
+
+```sh
+R=../infra/sandbox/conf/.rendered/topology
+for n in relay relay2; do
+  printf '\n[[routes]]\nprefix = "g.toon.%s.subscribe"\nhandler_url = "http://%s:3100/subscribe"\nprice = 1\n' \
+    $n $n >> $R/connector-$n.toml
+done
+docker restart toon-sandbox-relay-connector-1 toon-sandbox-relay2-connector-1
+for i in $(seq 60); do
+  curl -sf localhost:3200/ilp | grep -q relay.subscribe \
+    && curl -sf localhost:3290/ilp | grep -q relay2.subscribe && break
+  sleep 2
+done
+(cd ../infra/sandbox && HUB_RELAY_URL=ws://$HUB:7100 docker compose --profile relay \
+  up -d --no-deps relay)
+docker restart toon-sandbox-relay2-1
+for p in 7100 7110; do
+  curl -s -H 'Accept: application/nostr+json' http://localhost:$p/ | jq -c .toon_subscription
+done
+```
+
+**Expect** each relay's `toon_subscription` to name its subscribe route
+(`g.toon.relay.subscribe`, `g.toon.relay2.subscribe`), a price of 1 and a broadcast price
+of 1. It appears a few seconds after the relay starts.
 
 ## 2. A hidden agent node against the sandbox
 
@@ -123,6 +154,7 @@ curl -s --socks5-hostname 127.0.0.1:19050 -H 'Accept: application/nostr+json' ht
 `httpEndpoint`, and the relay's information document on port 7100 of the same address,
 whose `toon` object names the relay's ILP address, the connector's onion endpoint, its
 seal key and a price of 1. Both go through a daemon that is not the agent node's own.
+Asked within seconds of `up`, the onion endpoint may not answer yet: ask again.
 
 ### Join
 
@@ -186,6 +218,7 @@ spending have each moved by that 1.
 ```sh
 $E/toon create second --image toon-e2e-app --deposit 1000000 --accept-anyone-terms --yes --json \
   > $E/create.json
+$E/toon limit show --json
 ```
 
 The first attempt fails with `unfunded` and names the new TOON app's settlement address.
@@ -193,7 +226,8 @@ Fund it with `fund <address> 10000000` and run the command again.
 
 **Expect** a second onion endpoint, different from the first, an ILP address under an
 address segment of its own (`g.toon.<segment>`), and two peerings, each with a channel of
-1000000. Then pay the app behind the new connector from the first one:
+1000000: two deposits, so `limit show` is down by 2000000. Then pay the app behind the
+new connector from the first one:
 
 ```sh
 SECOND=$(jq -r .created.listen $E/create.json)
@@ -254,17 +288,13 @@ $E/toon event publish --kind 1 --content "from another agent node" \
   --relay ws://$ME:7100 --yes --json > $E/other-event.json
 $E/toon event query ws://$ME:7100 \
   --filter "{\"ids\":[\"$(jq -r .event.id $E/other-event.json)\"]}" --json
-$E/toon down --json
-export HOME=$E/sandbox
-$E/toon channel list --json
 ```
 
-**Expect** `published` with `paid: 1`, the event read back from the first agent node's
-relay at its onion endpoint, and the first agent node's inbound channel from the other
-one at watermark 1. Everything between the two crosses the overlay, from one hidden
-service to another. Before the `route add`, the publish fails with `peering_needed`, and
-its message names the `peer add`, with `--deposit <amount> --yes`, and the `route add` to
-run.
+**Expect** `published` with `paid: 1`, and the event read back from the first agent
+node's relay at its onion endpoint. Everything between the two crosses the overlay, from
+one hidden service to another. Before the `route add`, the publish fails with
+`peering_needed`, and its message names the `peer add`, with `--deposit <amount> --yes`,
+and the `route add` to run.
 
 A first publish over a cold link may be rejected, or fail with `send_failed`, at about
 the packet's expiry and not after it: a connector that forwards the packet stops waiting on
@@ -277,6 +307,25 @@ the failure's `event` names it, for `toon event query` to look for before the co
 again. The failure's `paid` is read from the outbound watermark right after the packet, and
 can show a voucher the next forward then drops, so it can be above what the packet finally
 costs.
+
+Then the same `peer add` twice more, back to back, and the first agent node's side of
+the channel:
+
+```sh
+$E/toon limit show --json
+$E/toon peer add http://$ME/ilp --deposit 1000000 --id first --yes --json
+$E/toon peer add http://$ME/ilp --deposit 1000000 --id first --yes --json
+$E/toon limit show --json
+$E/toon down --json
+export HOME=$E/sandbox
+$E/toon channel list --json
+```
+
+**Expect** each `peer add` to find the channel the first one opened: `deposited: false`, a
+channel status of `found`, and `limit show` the same before and after them. A connector
+refuses a request it has already accepted in the same clock second, so the later of the
+pair may take up to a second longer: the command line signs it again once the second has
+turned. The first agent node's inbound channel from the other one is at watermark 1.
 
 ### Another agent node subscribes to this one's relay
 
@@ -313,13 +362,55 @@ $E/toon relay subscribe ws://localhost:7110 --filter '{"kinds":[1]}' \
 $E/toon relay subscriptions --json
 ```
 
-**Expect** a balance at each relay, the hub's and `relay2`'s, and their events arriving
-in the agent node's own relay. A packet to `relay2` is forwarded by the hub, so
-`--packet-amount` is the hub's price for that route, 101, as `--amount` was for the
-write: the hub keeps 100 of each packet, and ten packets credit ten times `relay2`'s
-subscribe price. While no relay sells a feed each command fails with `relay_not_payable`,
-having read the relay's information document, the hub's through the overlay, and the step
-is recorded as not run.
+**Expect** a balance of 10 at each relay, the hub's and `relay2`'s, with `paid` 10 and
+1010. A packet to `relay2` is forwarded by the hub, so `--packet-amount` is the hub's price
+for that route, 101, as `--amount` was for the write: the hub keeps 100 of each packet, and
+ten packets credit ten times `relay2`'s subscribe price.
+
+Then the feeds, which the supervisor reads and hands to the agent node's own relay:
+
+```sh
+$E/toon event publish --kind 1 --content "live" --relay ws://$HUB:7100 --yes --json \
+  > $E/live.json
+$E/toon event query ws://$READ --filter "{\"ids\":[\"$(jq -r .event.id $E/live.json)\"]}" --json
+$E/toon event query ws://$READ \
+  --filter "{\"ids\":[\"$(jq -r .event.id $E/relay2-event.json)\"]}" --json
+$E/toon relay subscriptions --json
+```
+
+**Expect** the live event in the agent node's own relay within seconds (asked at once, it
+may not be there yet: ask again), read from the hub's feed through the overlay, and the
+hub's balance at 9: stored events are free and a live one is debited at the broadcast
+price. The event written to `relay2` earlier is there too, read from `relay2`'s feed,
+which the supervisor dials directly since `relay2` is on this machine, and `relay2`'s
+balance stays at 10.
+
+Then a live event at `relay2`:
+
+```sh
+$E/toon event publish --kind 1 --content "live, relay2" --relay ws://localhost:7110 \
+  --amount 101 --yes --json > $E/live2.json
+$E/toon event query ws://$READ --filter "{\"ids\":[\"$(jq -r .event.id $E/live2.json)\"]}" --json
+$E/toon relay subscriptions --json
+```
+
+**Expect** the live event in the agent node's own relay within seconds, and `relay2`'s
+balance at 9.
+
+Run the hub's subscription out with nine more writes to its relay, and top it up:
+
+```sh
+for i in $(seq 9); do
+  $E/toon event publish --kind 1 --content "run out $i" --relay ws://$HUB:7100 --yes --json
+done
+$E/toon relay subscriptions --json
+$E/toon relay subscribe ws://$HUB:7100 --amount 2 --yes --json
+$E/toon relay subscriptions --json
+```
+
+**Expect** the hub's subscription at balance 0, `exhausted: true`, once the relay has sent
+the event that used up the balance, then at 2 after the top-up, which keeps the filter,
+and `exhausted: false`.
 
 ### Stop
 
@@ -395,18 +486,19 @@ $E/toon limit show --json
 ```
 
 **Expect** a peering `devnet`, a route for `g.toon` over it, and an open channel of
-1000000, with the day's spending down by 1000000. Two failures are known, both
-`peer_failed`, and after either the same `join` is run again:
+1000000, with `deposited: true` and the day's spending down by 1000000.
 
-- "out of gas": the address holds too little ETH and nothing was sent, so send it more
-  first (#101).
-- "confirmed, and the chain shows no balance there": the deposit landed, and the
-  connector's next read of the chain looks to have been answered before the block was
-  seen. The second `join` reports `peering.channel.status` as `found` and deposits
-  nothing (#102).
+A `join` that fails with `peer_failed` and "out of gas" found too little ETH on the
+settlement address. Nothing was sent and the attempt still takes 1000000 off the day's
+spending, so send the settlement address more and run the same `join` again (#101).
 
-Each failed attempt, and the one that finds the channel, takes 1000000 more off the day's
-spending.
+The public RPC can answer the connector's read after the deposit from before the
+deposit's block. The connector then refuses the peering, and `join` repeats it for a few
+seconds, which no run has yet seen on a real chain. A repeat that succeeds reports the
+channel's status as `found`, still with `deposited: true`. A `join` that still fails says
+that the deposit confirmed on chain; the same `join` again finds the channel, reports
+`deposited: false` and takes nothing more off the day's spending. Record either on the
+connector's ticket, toon-protocol/connector#1447.
 
 Then pay the devnet's relay over the new channel:
 
