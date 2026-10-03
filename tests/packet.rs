@@ -130,3 +130,109 @@ fn the_help_says_no_passphrase_is_needed() {
         );
     }
 }
+
+fn reject(node: &Running, address: &str) {
+    let sent = node
+        .machine
+        .toon(&["send", address, "--amount", "0", "--yes", "--json"]);
+    assert_eq!(sent.json()["reject"]["code"], "F02", "{}", sent.stdout);
+}
+
+#[test]
+fn a_connector_that_rejected_nothing_lists_nothing() {
+    let node = running();
+
+    let run = node.machine.toon(&["packet", "list", "--json"]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    assert_eq!(
+        run.json(),
+        serde_json::json!({ "toon_app": "relay", "packets": [] })
+    );
+    let text = node.machine.toon(&["packet", "list"]);
+    assert_eq!(text.exit_code, 0);
+    assert!(
+        text.stdout.contains("No packet was rejected"),
+        "{}",
+        text.stdout
+    );
+}
+
+#[test]
+fn rejected_packets_are_listed_newest_first_and_limited() {
+    let node = running();
+    reject(&node, "g.nobody.first");
+    reject(&node, "g.nobody.second");
+
+    let run = node.machine.toon(&["packet", "list", "--json"]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let report = run.json();
+    let packets = report["packets"].as_array().expect("packets");
+    assert_eq!(packets.len(), 2, "{report}");
+    assert_eq!(packets[0]["destination"], "g.nobody.second");
+    assert_eq!(packets[1]["destination"], "g.nobody.first");
+    assert_eq!(packets[0]["outcome"], "rejected");
+    assert_eq!(packets[0]["code"], "F02");
+    assert!(packets[0]["message"]
+        .as_str()
+        .is_some_and(|m| !m.is_empty()));
+    assert!(packets[0]["time"].as_str().is_some());
+    let text = node.machine.toon(&["packet", "list"]);
+    assert!(text.stdout.contains("g.nobody.second"), "{}", text.stdout);
+    assert!(text.stdout.contains("toon packet count"), "{}", text.stdout);
+
+    let one = node.machine.toon(&["packet", "list", "-n", "1", "--json"]);
+    let one = one.json();
+    assert_eq!(one["packets"].as_array().expect("packets").len(), 1);
+    assert_eq!(one["packets"][0]["destination"], "g.nobody.second");
+}
+
+#[test]
+fn rejects_are_listed_while_the_agent_node_is_stopped() {
+    let node = running();
+    reject(&node, "g.nobody.here");
+    assert_eq!(node.machine.toon(&["down"]).exit_code, 0);
+
+    let run = node.machine.toon(&["packet", "list", "--json"]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    assert_eq!(run.json()["packets"][0]["destination"], "g.nobody.here");
+}
+
+#[test]
+fn packet_list_names_a_toon_app_with_app() {
+    let node = running();
+    reject(&node, "g.nobody.here");
+
+    let run = node
+        .machine
+        .toon(&["--app", "relay", "packet", "list", "--json"]);
+    assert_eq!(run.json()["packets"][0]["destination"], "g.nobody.here");
+    let unknown = node
+        .machine
+        .toon(&["packet", "list", "--app", "nobody", "--json"]);
+    assert_eq!(unknown.json()["error"]["code"], "unknown_name");
+}
+
+#[test]
+fn packet_list_without_an_agent_node_says_so() {
+    let machine = Machine::new();
+
+    let run = machine.toon(&["packet", "list", "--json"]);
+
+    assert_eq!(run.json()["error"]["code"], "no_agent_node");
+    assert_eq!(run.exit_code, 3);
+}
+
+#[test]
+fn the_list_help_says_rejected_only_and_no_passphrase() {
+    let run = Machine::new().toon(&["packet", "list", "--help"]);
+    assert_eq!(run.exit_code, 0);
+    assert!(run.stdout.contains("needs no passphrase"), "{}", run.stdout);
+    assert!(
+        run.stdout.contains("only rejected packets"),
+        "{}",
+        run.stdout
+    );
+}
