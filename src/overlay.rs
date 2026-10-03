@@ -7,8 +7,8 @@
 //! one contract suite, in the tests below. The real one runs the `anon` daemon (`anon.rs`);
 //! when it cannot bootstrap, every command that needs an overlay fails, as it must. The
 //! other is the loopback stand-in the tests use: `TOON_OVERLAY=loopback` selects it, and
-//! its proxy passes through to loopback addresses and to the ports published behind an
-//! onion endpoint, and refuses everything else.
+//! its proxy passes through to the ports published behind an onion endpoint, and refuses
+//! everything else, loopback hosts included, as the real daemon does.
 //!
 //! Both are found by the next process. The daemon leaves its port in `overlay/daemon`; the
 //! stand-in leaves where its proxy listens in `overlay/loopback`, and a later `bootstrap`
@@ -454,13 +454,11 @@ fn socks(
             .unwrap_or_else(|e| e.into_inner())
             .get(&(host.clone(), port))
             .copied()
-    } else if host == "localhost" || host.parse::<Ipv4Addr>().is_ok_and(|ip| ip.is_loopback()) {
-        Some(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
     } else {
         None
     };
     let Some(target) = target else {
-        // Not allowed by the ruleset: a stand-in goes nowhere that is not loopback.
+        // Not allowed by the ruleset: a stand-in, like the real daemon, refuses private addresses.
         return client.write_all(&[5, 2, 0, 1, 0, 0, 0, 0, 0, 0]);
     };
     let Ok(upstream) = TcpStream::connect_timeout(&target, Duration::from_secs(5)) else {
@@ -707,19 +705,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_stand_in_passes_loopback_through_and_refuses_the_rest() {
+    fn the_stand_in_refuses_loopback_and_everything_not_published() {
         let home = tempfile::tempdir().unwrap();
         let edge = Loopback::start(home.path()).unwrap();
         let server = serve("here");
-        assert_eq!(
-            Some("here".into()),
-            through(
-                edge.proxy(),
-                "127.0.0.1",
-                server.port(),
-                Duration::from_secs(5)
-            )
-        );
+        for host in ["127.0.0.1", "localhost"] {
+            assert!(
+                through(edge.proxy(), host, server.port(), Duration::from_secs(5)).is_none(),
+                "{host}"
+            );
+        }
         assert!(through(edge.proxy(), "example.com", 443, Duration::from_secs(5)).is_none());
     }
 
