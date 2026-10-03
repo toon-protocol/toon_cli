@@ -970,7 +970,7 @@ pub fn unanswered_cost(paid: u128, event: Option<Value>) -> Error {
     }
 }
 
-/// Read the connector's one-line summary of a send. The connector's own `send` verb is
+/// Read the connector's summary of a send. The connector's own `send` verb is
 /// what forms, seals, signs and checks the packet, and it reports in text.
 fn answer(summary: &str) -> Option<Answer> {
     if summary.starts_with("FULFILL WITH THE WRONG FULFILMENT") {
@@ -1515,8 +1515,9 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        answer, before_sending, packet_wait, peer_add_on, PeerAdd, Surface, AMBIGUOUS_CHAIN,
-        AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD, UNREAD_TIMEOUT,
+        answer, before_sending, packet_wait, peer_add_on, Answer, PeerAdd, Surface,
+        AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD,
+        UNREAD_TIMEOUT,
     };
     use crate::cli::Chain;
     use crate::outcome::ErrorCode;
@@ -1656,14 +1657,14 @@ mod tests {
         let summary =
             "REJECT F02 -- no route\nNo route to g.nobody.here.\naccumulated cost: 101 base units";
         match answer(summary) {
-            Some(super::Answer::Rejected { code, message }) => {
+            Some(Answer::Rejected { code, message }) => {
                 assert_eq!(code, "F02");
                 assert_eq!(message, "No route to g.nobody.here.");
             }
             _ => panic!("not a reject"),
         }
         match answer("REJECT F02 -- no route\naccumulated cost: 0 base units") {
-            Some(super::Answer::Rejected { message, .. }) => assert_eq!(message, ""),
+            Some(Answer::Rejected { message, .. }) => assert_eq!(message, ""),
             _ => panic!("not a reject"),
         }
     }
