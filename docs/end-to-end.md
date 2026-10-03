@@ -20,7 +20,6 @@ step.
 | Step | What happens today | Ticket |
 | --- | --- | --- |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
-| 2, hold a subscription | No relay serves the subscribe route | relay #215 |
 | 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
 | 3, `join` | The deposit lands and the `join` fails with `peer_failed`, "confirmed, and the chain shows no balance there"; the same command again finds the channel, and is counted against the day's spending a second time | #102 |
 
@@ -267,10 +266,43 @@ service to another. Before the `route add`, the publish fails with `peering_need
 its message names the `peer add`, with `--deposit <amount> --yes`, and the `route add` to
 run.
 
-A first publish over a cold link may be rejected after 30 seconds, or fail with
-`send_failed` when the connector does not answer in time (the packet has expired by then;
-the failure's `paid` and `event` say what it cost and which event it carried). It is paid
-for, and the same command succeeds when run again.
+A first publish over a cold link may be rejected, or fail with `send_failed`, at about
+the packet's expiry and not after it: a connector that forwards the packet stops waiting on
+the next hop at the packet's outgoing expiry (a little under its 30 seconds) and answers
+`R00`, and signs nothing for a packet that ran out of time before the voucher was signed. A
+packet the next hop never carried is not paid for on a batch-settlement channel when the
+next hop can be asked where it stands: the connector's next forward on the channel signs
+from that figure. A packet the next hop did carry is paid for, and its event may be stored;
+the failure's `event` names it, for `toon event query` to look for before the command is run
+again. The failure's `paid` is read from the outbound watermark right after the packet, and
+can show a voucher the next forward then drops, so it can be above what the packet finally
+costs.
+
+### Another agent node subscribes to this one's relay
+
+The first agent node sells its relay's live feed, and the other one pays for it:
+
+```sh
+$E/toon relay price --subscribe 100 --broadcast 1 --yes --json
+$E/toon route list --json
+```
+
+Start the other agent node again in the third terminal, with `HOME=$E/other`, then:
+
+```sh
+HOME=$E/other $E/toon relay subscribe ws://$ME:7100 --filter '{"kinds":[1]}' \
+  --amount 1000 --yes --json
+$E/toon event publish --kind 1 --content "to a subscriber" --json
+$E/toon relay subscriptions --incoming --json
+HOME=$E/other $E/toon relay subscriptions --json
+HOME=$E/other $E/toon down --json
+```
+
+**Expect** `restarted: true` from `relay price`, and the connector's `route list` showing
+the relay's subscribe route at 100. The subscribe pays ten packets of 100 over the
+peering the publish above used, and `--incoming` lists the other agent node's subscriber
+key with a balance of 1000, less 1 for each event the relay has broadcast to it since;
+`relay subscriptions` on the other agent node shows the same balance at `ws://$ME:7100`.
 
 ### Hold a subscription
 

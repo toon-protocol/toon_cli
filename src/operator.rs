@@ -420,6 +420,20 @@ pub(crate) const STALE_READ: &str = "confirmed, and the chain shows no balance t
 const STALE_READ_REPEATS: u32 = 3;
 const STALE_READ_WAIT: Duration = Duration::from_millis(1_200);
 
+/// What the connector's answer to a peering is when it could not read the other side's
+/// self-description in time: the start of its refusal, which it has before any channel is
+/// opened, and the reason a timed-out read gives. Nothing was deposited, and the connector
+/// does not repeat the read, so this command does. A refusal for any other reason (no
+/// proxy, a refused connection) has the first half of this and not the second. Pinned by
+/// tests against the connector the build embeds.
+pub(crate) const UNREAD: &str = "could not read the self-description at";
+pub(crate) const UNREAD_TIMEOUT: &str = "operation timed out";
+
+/// How many times a peering whose self-description read timed out is repeated. Each attempt
+/// has taken the connector's 10 seconds, so no two are signed in the same second without
+/// a pause.
+const UNREAD_REPEATS: u32 = 3;
+
 /// A peering made, and whether this command deposited into its channel.
 pub struct Peered {
     pub report: Report,
@@ -459,13 +473,31 @@ pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Peered, Error> {
             ),
         )
     };
-    let mut repeats = 0;
-    while status == 502 && text.contains(STALE_READ) && repeats < STALE_READ_REPEATS {
-        deposit_confirmed = true;
-        repeats += 1;
-        std::thread::sleep(STALE_READ_WAIT);
-        (status, text) = write(surface, reqwest::Method::POST, "/peers", Some(&body))
-            .map_err(|error| unpeered(&error.message))?;
+    let (mut stale_repeats, mut unread_repeats) = (0, 0);
+    loop {
+        if status != 502 {
+            break;
+        }
+        if text.contains(STALE_READ) && stale_repeats < STALE_READ_REPEATS {
+            deposit_confirmed = true;
+            stale_repeats += 1;
+            std::thread::sleep(STALE_READ_WAIT);
+        } else if text.contains(UNREAD)
+            && text.contains(UNREAD_TIMEOUT)
+            && unread_repeats < UNREAD_REPEATS
+        {
+            unread_repeats += 1;
+        } else {
+            break;
+        }
+        (status, text) =
+            write(surface, reqwest::Method::POST, "/peers", Some(&body)).map_err(|error| {
+                if deposit_confirmed {
+                    unpeered(&error.message)
+                } else {
+                    error
+                }
+            })?;
     }
     if deposit_confirmed && status != 200 {
         return Err(unpeered(&refusal(status, &text)));
@@ -1353,7 +1385,7 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 mod tests {
     use super::{
         before_sending, packet_wait, peer_add_on, PeerAdd, Surface, PACKET_EXPIRY, REPLAYED,
-        STALE_READ,
+        STALE_READ, UNREAD, UNREAD_TIMEOUT,
     };
     use crate::outcome::ErrorCode;
     use std::io::{Read, Write};
@@ -1407,6 +1439,13 @@ mod tests {
 
     fn stale() -> (u16, String) {
         (502, format!("the opening deposit into 'c' {STALE_READ}"))
+    }
+
+    fn unread() -> (u16, String) {
+        (
+            502,
+            format!("{UNREAD} http://x.anyone/ilp: error sending request: {UNREAD_TIMEOUT}"),
+        )
     }
 
     fn found() -> (u16, String) {
@@ -1551,6 +1590,62 @@ mod tests {
             found,
             "the embedded connector no longer says {STALE_READ:?}"
         );
+    }
+
+    /// The timeout repeat is keyed on the start of the connector's refusal, a string literal
+    /// in its crates, and on the reason reqwest gives a read that outlasted its wait.
+    /// `tests/peer_unread.rs` pins the pair through the running connector.
+    #[test]
+    fn the_connectors_unread_wording_is_pinned() {
+        let binary = std::fs::read(std::env::current_exe().expect("this binary")).expect("read");
+        // A format string is kept in pieces, so the literal ends where `{url}` begins.
+        let wording = [UNREAD.as_bytes(), b" "].concat();
+        assert!(
+            binary
+                .windows(wording.len())
+                .any(|window| window == wording.as_slice()),
+            "the embedded connector no longer says {UNREAD:?}"
+        );
+    }
+
+    #[test]
+    fn a_peering_whose_self_description_timed_out_is_repeated_and_reported_as_a_first_success() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (url, seen) = connector(vec![unread(), unread(), found()]);
+        let peered = peer_add_on(&surface(home.path(), url), &add()).expect("peered");
+        assert!(!peered.deposited);
+        assert!(peered.report.text.contains("nothing deposited"));
+        assert_eq!(seen.try_iter().count(), 3);
+    }
+
+    #[test]
+    fn a_peering_whose_self_description_always_timed_out_fails_with_the_refusal() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (url, seen) = connector(vec![unread()]);
+        let Err(error) = peer_add_on(&surface(home.path(), url), &add()) else {
+            panic!("the peering was made");
+        };
+        assert_eq!(error.code, ErrorCode::PeerFailed);
+        assert!(error.message.contains(UNREAD_TIMEOUT), "{}", error.message);
+        assert_eq!(seen.try_iter().count(), 1 + super::UNREAD_REPEATS as usize);
+    }
+
+    #[test]
+    fn a_self_description_unread_for_another_reason_is_attempted_once() {
+        let home = tempfile::tempdir().expect("a directory");
+        let refused = (502, format!("{UNREAD} http://x/ilp: connection refused"));
+        let (url, seen) = connector(vec![refused]);
+        assert!(peer_add_on(&surface(home.path(), url), &add()).is_err());
+        assert_eq!(seen.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn a_stale_read_after_a_timeout_is_still_repeated() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (url, seen) = connector(vec![unread(), stale(), found()]);
+        let peered = peer_add_on(&surface(home.path(), url), &add()).expect("peered");
+        assert!(peered.deposited);
+        assert_eq!(seen.try_iter().count(), 3);
     }
 
     /// The connector keeps its wording for a replayed signature in a private type, so it is

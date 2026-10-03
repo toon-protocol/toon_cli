@@ -722,8 +722,7 @@ fn a_connector_that_charges_to_forward_rejects_the_price_and_the_text_names_the_
     let chain = AnvilChain::start();
     let (near, _mid, _far, relay) = through_a_charging_connector(&chain);
     let before = remaining(&near);
-
-    // The text report; the JSON report of the same rejection is read in a test of its own.
+    // The text report, then the JSON one: each way of looking at the rejection has its own run.
     let url = relay.url();
     let run = near.toon(&[
         "relay",
@@ -897,8 +896,8 @@ fn a_direct_subscription_reports_the_packet_amount_as_the_price() {
 fn a_rejected_packet_leaves_nothing_behind_for_the_next_run() {
     let chain = AnvilChain::start();
     let (near, _mid, _far, relay) = through_a_charging_connector(&chain);
-    // A packet the connector rejected is not paid for (#1446): its claim is not carried by the
-    // next voucher, so a second run's packets are priced from nothing and are rejected as well.
+    // A packet the next hop rejected is not paid for (connector#1446), so it leaves no
+    // value behind: the next run's first packet is short of the price again.
     let first = subscribe(
         &near,
         &relay,
@@ -916,6 +915,7 @@ fn a_rejected_packet_leaves_nothing_behind_for_the_next_run() {
     assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
     let report = run.json();
     assert_eq!(report["outcome"], "rejected", "{report}");
+    assert_eq!(report["response"]["code"], "F03", "{report}");
     assert_eq!(report["credited"], 0, "{report}");
     assert_eq!(report["paid"], 0, "{report}");
     assert_eq!(remaining(&near), before);

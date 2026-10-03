@@ -3,7 +3,9 @@
 //! What the operator asks for is recorded in `state.json`, as everything is. The relay
 //! reads its name, description, expiry behaviour and blocklist when it starts, so a change
 //! to them restarts it; the price of a write is on the connector's route, which is
-//! rendered when the connector starts, so changing it restarts the connector. The
+//! rendered when the connector starts, so changing it restarts the connector. So is the
+//! subscribe route that a relay selling its live feed has (ADR 0005), at the subscribe
+//! price; the broadcast price is the relay's own setting. The
 //! supervisor restarts the relay and its connector together, so either change drops the
 //! packets the connector holds, and needs `--yes` while the agent node is running.
 
@@ -107,6 +109,12 @@ fn report(settings: &RelaySettings, price: u64, restarted: bool, changed: bool) 
         price,
         node::RELAY_EPHEMERAL_PRICE,
     );
+    match settings.selling() {
+        Some((subscribe, broadcast)) => text.push_str(&format!(
+            "\nPrice of a subscribe packet: {subscribe}\nPrice of a broadcast event: {broadcast}"
+        )),
+        None => text.push_str("\nThe live feed is not sold."),
+    }
     if restarted {
         text.push_str("\nThe relay and its connector were restarted.");
     } else if changed {
@@ -124,6 +132,8 @@ fn report(settings: &RelaySettings, price: u64, restarted: bool, changed: bool) 
             "prices": {
                 "write": price,
                 "ephemeral": node::RELAY_EPHEMERAL_PRICE,
+                "subscribe": settings.subscribe_price.filter(|_| settings.selling().is_some()),
+                "broadcast": settings.broadcast_price.filter(|_| settings.selling().is_some()),
             },
             "restarted": restarted,
         }),
@@ -170,31 +180,96 @@ pub fn config(home: &Path, change: &Change, yes: bool) -> Result<Report, Error> 
     Ok(report(&settings, price, restarted, true))
 }
 
-/// `toon relay price`: set the price of a write on the connector's route. A running
-/// connector restarts for it, and drops the packets it holds, so that needs `yes`.
-pub fn price(home: &Path, amount: u64, yes: bool) -> Result<Report, Error> {
+/// What `toon relay price` was asked to set. A price of `0` for the subscribe route or
+/// the broadcast stops selling the live feed, which has no price of nothing.
+#[derive(Debug, Default)]
+pub struct Prices {
+    pub write: Option<u64>,
+    pub subscribe: Option<u64>,
+    pub broadcast: Option<u64>,
+}
+
+fn usage(message: &str) -> Error {
+    Error {
+        nothing_sent: false,
+        unanswered: None,
+        code: ErrorCode::Usage,
+        message: message.into(),
+    }
+}
+
+/// `toon relay price`: set the price of a write on the connector's route, and the prices
+/// of the live feed: the subscribe route's, on the connector, and the broadcast price, on
+/// the relay. A running connector restarts for it, and drops the packets it holds, so that
+/// needs `yes`.
+pub fn price(home: &Path, prices: &Prices, yes: bool) -> Result<Report, Error> {
+    if prices.write.is_none() && prices.subscribe.is_none() && prices.broadcast.is_none() {
+        return Err(usage(
+            "Nothing to set: give the price of a write, `--subscribe` or `--broadcast`.",
+        ));
+    }
     let mut state = load(home)?;
+    let app = relay_of(&mut state)?;
+    let settings = &app.relay;
+    let (mut subscribe, mut broadcast) = (
+        prices.subscribe.or(settings.subscribe_price),
+        prices.broadcast.or(settings.broadcast_price),
+    );
+    if prices.subscribe == Some(0) || prices.broadcast == Some(0) {
+        if prices.subscribe.is_some_and(|price| price > 0)
+            || prices.broadcast.is_some_and(|price| price > 0)
+        {
+            return Err(usage(
+                "A price of 0 stops selling the live feed: give 0 for both, or for one.",
+            ));
+        }
+        (subscribe, broadcast) = (None, None);
+    }
+    if subscribe.is_some() != broadcast.is_some() {
+        return Err(usage(
+            "The live feed is sold at two prices, one for a subscribe packet and one for a \
+             broadcast event: give `--subscribe` and `--broadcast` together.",
+        ));
+    }
     confirm(home, yes, "A new price")?;
     let before = state.clone();
     let app = relay_of(&mut state)?;
     let toon_app = app.name.clone();
-    for behind in app
-        .apps
-        .iter_mut()
-        .filter(|behind| behind.name == node::RELAY)
-    {
-        behind.price = amount;
+    if let Some(amount) = prices.write {
+        for behind in app
+            .apps
+            .iter_mut()
+            .filter(|behind| behind.name == node::RELAY)
+        {
+            behind.price = amount;
+        }
     }
+    app.relay.subscribe_price = subscribe;
+    app.relay.broadcast_price = broadcast;
     let settings = app.relay.clone();
+    let write = write_price(app);
     let restarted = apps::apply(home, &before, &state, &toon_app)?;
-    Ok(report(&settings, amount, restarted, true))
+    Ok(report(&settings, write, restarted, true))
 }
 
 /// `toon relay`.
 pub fn run(home: &Path, command: RelayCommand) -> Result<Report, Error> {
     match command {
         RelayCommand::Config(args) => config(home, &args.change(), args.yes),
-        RelayCommand::Price { amount, yes } => price(home, amount, yes),
+        RelayCommand::Price {
+            amount,
+            subscribe,
+            broadcast,
+            yes,
+        } => price(
+            home,
+            &Prices {
+                write: amount,
+                subscribe,
+                broadcast,
+            },
+            yes,
+        ),
         RelayCommand::Subscribe {
             relay,
             filter,
@@ -204,6 +279,7 @@ pub fn run(home: &Path, command: RelayCommand) -> Result<Report, Error> {
         } => {
             crate::subscribe::subscribe(home, &relay, filter.as_deref(), amount, packet_amount, yes)
         }
-        RelayCommand::Subscriptions => crate::subscribe::subscriptions(home),
+        RelayCommand::Subscriptions { incoming: false } => crate::subscribe::subscriptions(home),
+        RelayCommand::Subscriptions { incoming: true } => crate::subscribe::incoming(home),
     }
 }
