@@ -88,7 +88,8 @@ connector is running, or fail with `confirmation_required` and change nothing.
    `event query`, `event follow`, `relay subscribe`, `relay subscriptions`, `send --seal-to`) go
    through the overlay too, except to a plain `http://` or `ws://` endpoint on this machine, and
    fail with `overlay_unavailable` when it is not there. `--max-per-command` and `--max-per-day`
-   set the spending limit.
+   set the spending limit. `--solana` adds Solana as a settlement chain. The settlement chains
+   are chosen at `init`; no command adds one later, so decide before running it.
 2. Fund the wallet (next section).
 3. `toon up` starts the supervisor as a `systemd --user` unit. `toon up --foreground` runs it in
    the current process. `toon down` stops it.
@@ -120,6 +121,20 @@ is what a client pays the connector for a packet to the app, `--address` the ILP
 (`g.toon.<segment>.<app>` by default). It restarts that connector, so it needs `--yes`. `toon remove <app>`
 takes an app and its route away. An agent node has one relay, the one `toon init` made: `add`
 refuses the relay's image (any tag or digest) with `one_relay`.
+
+An image given with `--image` must:
+
+- listen on port 3100 inside the container (`TOON_BLS_PORT`),
+- answer `GET /health` with `200` within two minutes of starting,
+- keep what it must not lose under `/data` (`TOON_DATA_DIR`).
+
+The app is given no environment beyond `TOON_BLS_PORT` and `TOON_DATA_DIR`. An image that needs
+a secret or another variable to start fails with `app_failed`; `toon logs <app>` says why. Do not
+assume a published image meets this: the one image known to run unchanged is the minimal app in
+`docs/guide/adding-an-app.md` (built with `docker build`, also used by the end-to-end run).
+
+An app's loopback address is not a way to pay it. A request made straight to it does not arrive
+as a packet through the connector, so it is unpaid work: never do it in place of a payment.
 
 ## Create a TOON app: `toon create`
 
