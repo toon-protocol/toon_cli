@@ -129,16 +129,19 @@ fn peer_url(home: &Path, app: &ToonApp, surface: &Surface) -> Result<String, Err
 }
 
 /// What a peering between two TOON apps is: the connector of `from` peers toward `to` and
-/// forwards the packets for `to`'s address to it.
+/// forwards the packets for `to`'s address to it. A deposit it makes is added to `deposits`
+/// as soon as it is made, whatever fails after.
 fn peer(
     home: &Path,
     from: (&ToonApp, &Surface),
     to: (&ToonApp, &Surface),
     deposit: u128,
     chain: Option<Chain>,
-) -> Result<(Value, bool), Error> {
+    deposits: &mut u128,
+) -> Result<Value, Error> {
     let url = peer_url(home, to.0, to.1)?;
-    let peering = operator::peer_add_on(
+    let prefix = to.0.address();
+    let peering = operator::peer_and_route_on(
         from.1,
         &PeerAdd {
             address: &url,
@@ -148,18 +151,15 @@ fn peer(
             max_packet_amount: 0,
             chain,
         },
+        &prefix,
+        deposits,
     )?;
-    let prefix = to.0.address();
-    operator::route_add_on(from.1, &prefix, &to.0.name, 0)?;
-    Ok((
-        json!({
-            "from": from.0.name,
-            "to": to.0.name,
-            "route": prefix,
-            "peering": peering.report.json["peering"],
-        }),
-        peering.deposited,
-    ))
+    Ok(json!({
+        "from": from.0.name,
+        "to": to.0.name,
+        "route": prefix,
+        "peering": peering.report.json["peering"],
+    }))
 }
 
 /// `toon create`.
@@ -253,9 +253,7 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
                 ((new, &far), (source, &near)),
                 ((source, &near), (new, &far)),
             ] {
-                let (made, deposited) = peer(home, from, to, deposit, create.chain)?;
-                peerings.push(made);
-                deposits += u128::from(deposited);
+                peerings.push(peer(home, from, to, deposit, create.chain, &mut deposits)?);
             }
             Ok(())
         })();
