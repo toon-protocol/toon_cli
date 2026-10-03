@@ -101,6 +101,11 @@ pub enum Command {
         #[command(subcommand)]
         command: EventCommand,
     },
+    /// Send private messages under the agent identity
+    Message {
+        #[command(subcommand)]
+        command: MessageCommand,
+    },
     /// Scaffold a draft NIP and publish it as an event under the agent identity
     Nip {
         #[command(subcommand)]
@@ -483,6 +488,32 @@ pub enum EventCommand {
     Follow {
         /// The relay's websocket URL, as given to `toon relay subscribe`
         relay: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MessageCommand {
+    /// Send a private message (NIP-17) from the agent identity to one or more public keys
+    Send {
+        /// The recipients' public keys, in hex
+        recipients: Vec<String>,
+        /// The message
+        #[arg(long)]
+        content: String,
+        /// The id of the message this one replies to
+        #[arg(long)]
+        reply_to: Option<String>,
+        /// The conversation's subject
+        #[arg(long)]
+        subject: Option<String>,
+        /// Send the recipients' wraps to this relay instead (`ws://host:port` or
+        /// `wss://host:port`), paying its write price for each; the sender's copy still
+        /// goes to the agent node's own relay
+        #[arg(long)]
+        relay: Option<String>,
+        /// Confirm that this command moves money: without it nothing is paid
+        #[arg(long, requires = "relay")]
+        yes: bool,
     },
 }
 
