@@ -28,6 +28,7 @@ use crate::connector::{self, Startup};
 use crate::control;
 use crate::egress::Egress;
 use crate::funding;
+use crate::inbox::Inbox;
 use crate::node::{self, App, AppFiles, ConnectorFiles, Reach, Source, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::overlay::{self, Edge};
@@ -108,6 +109,15 @@ impl Surroundings for Shared {
                 .iter()
                 .find(|app| app.name == node::RELAY && app.running.load(Ordering::SeqCst))
                 .map(|app| app.address)
+        })
+    }
+
+    fn read_relay(&self) -> Option<SocketAddr> {
+        self.units().iter().find_map(|unit| {
+            unit.apps()
+                .iter()
+                .find(|app| app.name == node::RELAY && app.running.load(Ordering::SeqCst))
+                .and_then(|app| app.read_address)
         })
     }
 
@@ -193,6 +203,8 @@ pub struct Supervisor {
     home: PathBuf,
     /// Receives every subscription's live feed into the relay.
     receiver: Option<Receiver>,
+    /// Opens the private messages that reach the agent node's own relay.
+    inbox: Option<Inbox>,
 }
 
 /// How a supervisor ended.
@@ -372,6 +384,7 @@ fn launch(
         socket: socket.to_path_buf(),
         home: home.to_path_buf(),
         receiver: None,
+        inbox: None,
     };
     for app in &state.toon_apps {
         if let Err(error) = supervisor.add(app) {
@@ -381,6 +394,7 @@ fn launch(
     }
     supervisor.reconcile(state);
     supervisor.receiver = Some(Receiver::start(home, supervisor.shared.clone()));
+    supervisor.inbox = Some(Inbox::start(home, supervisor.shared.clone()));
     let answering = Arc::clone(&supervisor.shared);
     thread::spawn(move || {
         control::serve(listener, move |request, toon_app| {
@@ -721,6 +735,7 @@ impl Supervisor {
     fn shutdown(&mut self) {
         // The feeds stop first: they write into the relay.
         self.receiver = None;
+        self.inbox = None;
         for unit in &mut self.units {
             unit.shared.reloads().clear();
             unit.stop();

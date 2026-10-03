@@ -10,10 +10,12 @@ use std::path::Path;
 use serde_json::{json, Value};
 
 use crate::cli::MessageCommand;
+use crate::control;
 use crate::egress::Egress;
 use crate::event;
 use crate::gift_wrap;
 use crate::home;
+use crate::inbox;
 use crate::node;
 use crate::operator;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
@@ -368,7 +370,121 @@ pub fn run(command: MessageCommand) -> Result<Report, Error> {
                 None => send_here(&home, &message),
             }
         }
+        MessageCommand::List { with, since, limit } => list(&with, since, limit),
     }
+}
+
+/// `toon message list`: the private messages the supervisor has opened and kept, which
+/// needs no passphrase, opens no keystore and sends and pays nothing.
+fn list(with: &[String], since: Option<u64>, limit: Option<usize>) -> Result<Report, Error> {
+    let mut others: Vec<String> = Vec::new();
+    for key in with {
+        others.push(public_key(key).ok_or_else(|| {
+            usage(format!(
+                "{key} is not a public key: it is 64 hex digits, a point on the curve."
+            ))
+        })?);
+    }
+    let home = home::resolve()?;
+    if node::State::load(&home)?.is_none() {
+        return Err(node::no_agent_node(&home));
+    }
+    let secret = inbox::kept_secret(&home).ok_or_else(|| Error {
+        nothing_sent: true,
+        unanswered: None,
+        code: ErrorCode::AgentKeyNotKept,
+        message: "The agent identity's secret is not kept in the agent node's home, so no private \
+                  message has been opened. `toon event publish` and `toon message send` write it."
+            .into(),
+    })?;
+    let identity = event::public_key(&secret)?;
+    let conversation = (!others.is_empty()).then(|| {
+        others.push(identity.clone());
+        others.sort();
+        others.dedup();
+        inbox::conversation(&others)
+    });
+
+    let mut messages: Vec<Value> = inbox::load(&home)
+        .into_iter()
+        .filter_map(|rumor| {
+            let participants = inbox::participants(&rumor);
+            let from = rumor["pubkey"].as_str()?.to_ascii_lowercase();
+            let id = rumor["id"].as_str()?.to_owned();
+            let created_at = rumor["created_at"].as_u64()?;
+            Some(json!({
+                "id": id,
+                "conversation": inbox::conversation(&participants),
+                "participants": participants,
+                "sent": from == identity,
+                "from": from,
+                "created_at": created_at,
+                "kind": rumor["kind"],
+                "content": rumor["content"],
+                "tags": rumor["tags"],
+            }))
+        })
+        .filter(|message| since.is_none_or(|since| message["created_at"].as_u64() >= Some(since)))
+        .filter(|message| {
+            conversation
+                .as_ref()
+                .is_none_or(|conversation| message["conversation"] == *conversation)
+        })
+        .collect();
+    let key = |message: &Value| {
+        (
+            message["created_at"].as_u64().unwrap_or(0),
+            message["id"].as_str().unwrap_or_default().to_owned(),
+        )
+    };
+    messages.sort_by_key(key);
+    if let Some(limit) = limit {
+        messages.drain(..messages.len().saturating_sub(limit));
+    }
+
+    let running = control::running(&home);
+    let mut text = if messages.is_empty() {
+        "No private message is stored.".to_owned()
+    } else {
+        messages
+            .iter()
+            .map(|message| {
+                format!(
+                    "{} {} {} {}: {}",
+                    message["created_at"],
+                    message["id"].as_str().unwrap_or_default(),
+                    if message["sent"] == true {
+                        "to"
+                    } else {
+                        "from"
+                    },
+                    message["participants"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .filter(|key| *key != identity)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    message["content"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    if !running {
+        text.push_str(
+            "\nThe supervisor is not running, so no new message is opened: `toon up` starts it.",
+        );
+    }
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({
+            "messages": messages,
+            "supervisor": if running { "running" } else { "not_running" },
+        }),
+        text,
+    })
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ mod feed;
 mod funding;
 mod gift_wrap;
 mod home;
+mod inbox;
 mod keystore;
 mod lifecycle;
 mod message;
