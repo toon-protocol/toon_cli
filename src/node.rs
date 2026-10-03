@@ -281,6 +281,9 @@ pub struct App {
     pub prefix: String,
     /// What a client pays the connector for a packet on that route.
     pub price: u64,
+    /// What a client should send the app, as the operator wrote it. The connector publishes
+    /// it on the route and never reads it.
+    pub request: Option<Value>,
 }
 
 impl App {
@@ -291,6 +294,7 @@ impl App {
             source: Source::Relay,
             prefix: relay_write_prefix(segment),
             price: RELAY_WRITE_PRICE,
+            request: None,
         }
     }
 
@@ -300,6 +304,14 @@ impl App {
     }
 
     fn json(&self) -> Value {
+        let mut value = self.source_json();
+        if let Some(request) = &self.request {
+            value["request"] = request.clone();
+        }
+        value
+    }
+
+    fn source_json(&self) -> Value {
         match &self.source {
             Source::Relay => {
                 json!({ "name": self.name, "price": self.price, "prefix": self.prefix })
@@ -329,7 +341,55 @@ impl App {
             source,
             prefix,
             price,
+            request: value
+                .get("request")
+                .filter(|request| request.is_object())
+                .cloned(),
         })
+    }
+}
+
+/// `request` as the value of a TOML inline table, or why a TOML table cannot carry it.
+pub fn request_toml(request: &Value) -> Result<String, String> {
+    if !request.is_object() {
+        return Err("it must be one JSON object".into());
+    }
+    toml_value(request)
+}
+
+fn toml_value(value: &Value) -> Result<String, String> {
+    match value {
+        Value::Null => Err("a TOML table cannot carry `null`".into()),
+        Value::Bool(flag) => Ok(flag.to_string()),
+        Value::Number(number) => {
+            if number.is_u64() && number.as_u64() > Some(i64::MAX as u64) {
+                return Err(format!("{number} is too large for a TOML integer"));
+            }
+            let text = number.to_string();
+            let plain = number.is_i64() || number.is_u64();
+            Ok(if plain || text.contains(['.', 'e', 'E']) {
+                text
+            } else {
+                format!("{text}.0")
+            })
+        }
+        Value::String(text) => Ok(string(text)),
+        Value::Array(items) => Ok(format!(
+            "[{}]",
+            items
+                .iter()
+                .map(toml_value)
+                .collect::<Result<Vec<_>, _>>()?
+                .join(", ")
+        )),
+        Value::Object(members) => Ok(format!(
+            "{{ {} }}",
+            members
+                .iter()
+                .map(|(key, member)| Ok(format!("{} = {}", string(key), toml_value(member)?)))
+                .collect::<Result<Vec<_>, String>>()?
+                .join(", ")
+        )),
     }
 }
 
@@ -694,7 +754,8 @@ fn via_proxy(overlay: Option<&Overlay>, rpc_url: &str) -> &'static str {
 
 /// A TOML basic string. JSON's escapes are the ones TOML reads.
 fn string(text: &str) -> String {
-    Value::from(text).to_string()
+    // JSON leaves DEL raw, and a TOML basic string may not hold it.
+    Value::from(text).to_string().replace('\u{7f}', "\\u007f")
 }
 
 /// The onion endpoint of `app`, if it is a hidden service whose key is there.
@@ -827,6 +888,15 @@ pub fn render(
             string(&handler),
             behind.price,
         ));
+        if let Some(request) = &behind.request {
+            let table = request_toml(request).map_err(|why| Error {
+                code: ErrorCode::Usage,
+                message: format!("The request of {} cannot be written: {why}.", behind.name),
+                nothing_sent: false,
+                unanswered: None,
+            })?;
+            config.push_str(&format!("request = {table}\n"));
+        }
         if let Some(ephemeral) = ephemeral {
             config.push_str(&format!(
                 "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = 0\n",

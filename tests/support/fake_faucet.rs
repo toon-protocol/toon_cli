@@ -9,6 +9,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+/// What a faucet answers for a path it refuses, as the devnet's does inside a cooldown.
+const REFUSAL: &str = r#"{"message":"address is in its cooldown"}"#;
+
 pub struct FakeFaucet {
     url: String,
     asked: Arc<Mutex<Vec<(String, String)>>>,
@@ -17,13 +20,20 @@ pub struct FakeFaucet {
 impl FakeFaucet {
     /// A faucet whose drips fund the chain behind `funded`.
     pub fn funding(funded: Arc<AtomicBool>) -> Self {
+        Self::refusing(funded, &[])
+    }
+
+    /// A faucet that refuses, with 429, every request to one of `refused` paths, and
+    /// funds the chain behind `funded` for the others.
+    pub fn refusing(funded: Arc<AtomicBool>, refused: &[&str]) -> Self {
+        let refused: Vec<String> = refused.iter().map(|path| (*path).to_owned()).collect();
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind the fake faucet");
         let url = format!("http://{}", listener.local_addr().expect("its address"));
         let asked = Arc::new(Mutex::new(Vec::new()));
         let record = Arc::clone(&asked);
         thread::spawn(move || {
             for stream in listener.incoming().map_while(Result::ok) {
-                serve(stream, &funded, &record);
+                serve(stream, &funded, &record, &refused);
             }
         });
         Self { url, asked }
@@ -39,7 +49,12 @@ impl FakeFaucet {
     }
 }
 
-fn serve(mut stream: TcpStream, funded: &AtomicBool, asked: &Mutex<Vec<(String, String)>>) {
+fn serve(
+    mut stream: TcpStream,
+    funded: &AtomicBool,
+    asked: &Mutex<Vec<(String, String)>>,
+    refused: &[String],
+) {
     let mut request = Vec::new();
     let mut chunk = [0u8; 1024];
     let (head_end, length) = loop {
@@ -80,12 +95,17 @@ fn serve(mut stream: TcpStream, funded: &AtomicBool, asked: &Mutex<Vec<(String, 
         .to_owned();
     let body: serde_json::Value = serde_json::from_slice(&request[head_end..]).unwrap_or_default();
     let address = body["address"].as_str().unwrap_or_default().to_owned();
+    let refuse = refused.contains(&path);
     asked.lock().unwrap().push((path, address));
-    funded.store(true, Ordering::SeqCst);
-    let reply = r#"{"success":true}"#;
+    let (status, reply) = if refuse {
+        ("429 Too Many Requests", REFUSAL)
+    } else {
+        funded.store(true, Ordering::SeqCst);
+        ("200 OK", r#"{"success":true}"#)
+    };
     let _ = write!(
         stream,
-        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+        "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
         reply.len()
     );
 }

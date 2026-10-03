@@ -20,7 +20,7 @@ ordinary HTTP request and returns an ordinary answer, and never sees a packet, a
 payment. The [relay](https://github.com/toon-protocol/relay) is an app. An app on its own is never called a TOON app.
 Others that run behind a connector: [`store`](https://github.com/toon-protocol/store) (Arweave blob storage),
 [`gas-station`](https://github.com/toon-protocol/gas-station) (pays other people's gas) and
-[`anytoon`](https://github.com/toon-protocol/anytoon) (the Anyone credentials issuer, unchanged).
+[`anytoon`](https://github.com/toon-protocol/anytoon) (the Anyone credentials issuer).
 
 **Relay.** The Nostr relay app every agent node has, the one `toon init` creates. Writing to
 it is paid through its connector. An agent node has exactly one; `toon add` and

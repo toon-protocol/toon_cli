@@ -218,3 +218,154 @@ fn route_list_needs_the_agent_node_to_be_running() {
     assert_eq!(run.json()["error"]["code"], "not_running");
     assert_eq!(run.exit_code, 1);
 }
+
+/// An app at a URL that records each request it receives, head and body, and answers 201.
+fn app() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/inbox", listener.local_addr().unwrap());
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = std::sync::Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            loop {
+                let read = stream.read(&mut buffer).unwrap_or(0);
+                request.extend_from_slice(&buffer[..read]);
+                let text = String::from_utf8_lossy(&request).into_owned();
+                let complete = text.split_once("\r\n\r\n").is_some_and(|(head, body)| {
+                    let wanted = head
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|n| n.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    body.len() >= wanted
+                });
+                if read == 0 || complete {
+                    break;
+                }
+            }
+            log.lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&request).into_owned());
+            let _ = stream.write_all(
+                b"HTTP/1.1 201 Created\r\nContent-Length: 5\r\nConnection: close\r\n\r\nmade!",
+            );
+        }
+    });
+    (url, seen)
+}
+
+fn add_app(node: &Running, url: &str) {
+    let run = node.machine.toon(&[
+        "add",
+        "inbox",
+        "--to",
+        "relay",
+        "--url",
+        url,
+        "--address",
+        "g.toon.inbox",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+}
+
+#[test]
+fn a_request_with_a_method_a_path_and_a_body_reaches_the_app_and_its_answer_comes_back() {
+    let (url, seen) = app();
+    let node = running();
+    add_app(&node, &url);
+    let body = node.machine.home().join("body.json");
+    fs::write(&body, br#"{"text":"hello"}"#).unwrap();
+
+    let run = node.machine.toon(&[
+        "send",
+        "g.toon.inbox",
+        "--amount",
+        "0",
+        "--method",
+        "PUT",
+        "--path",
+        "/some/path?x=1",
+        "--body",
+        body.to_str().unwrap(),
+        "--yes",
+        "--json",
+    ]);
+
+    let report = run.json();
+    assert_eq!(report["outcome"], "fulfilled", "{report}");
+    assert_eq!(report["response"]["status"], 201);
+    assert_eq!(report["response"]["body"], "made!");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    let request = seen[0].to_ascii_lowercase();
+    assert!(
+        request.starts_with("put /inbox/some/path?x=1 "),
+        "{request}"
+    );
+    assert!(
+        request.contains("content-type: application/json"),
+        "{request}"
+    );
+    assert!(request.ends_with(r#"{"text":"hello"}"#), "{request}");
+}
+
+#[test]
+fn a_send_with_none_of_the_request_flags_is_an_empty_post_to_the_root() {
+    let (url, seen) = app();
+    let node = running();
+    add_app(&node, &url);
+
+    let run = node
+        .machine
+        .toon(&["send", "g.toon.inbox", "--amount", "0", "--yes"]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let seen = seen.lock().unwrap();
+    assert!(seen[0].starts_with("POST /inbox "), "{seen:?}");
+    assert!(seen[0].ends_with("\r\n\r\n"), "{seen:?}");
+}
+
+#[test]
+fn an_unreadable_body_file_fails_before_sending_and_counts_for_nothing() {
+    let (url, seen) = app();
+    let node = running();
+    add_app(&node, &url);
+    let missing = node.machine.home().join("missing.json");
+    let remaining = |node: &Running| {
+        node.machine.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone()
+    };
+    let before = remaining(&node);
+    assert!(before.is_string(), "{before}");
+
+    let run = node.machine.toon(&[
+        "send",
+        "g.toon.inbox",
+        "--amount",
+        "1",
+        "--body",
+        missing.to_str().unwrap(),
+        "--yes",
+        "--json",
+    ]);
+
+    let error = run.json()["error"].clone();
+    assert_eq!(error["code"], "send_failed", "{}", run.stdout);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("could not be read"),
+        "{error}"
+    );
+    assert_eq!(run.exit_code, 1);
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(remaining(&node), before);
+}

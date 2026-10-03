@@ -84,6 +84,10 @@ _Avoid_: Read price, subscription fee
 The Nostr key a subscription belongs to. A subscriber signs each payment of the subscribe route with it, and proves it holds it when it reads that subscription's live feed or its balance. A relay holds one balance per subscriber key, whoever paid.
 _Avoid_: Token, credential, payer (the payer is the channel that paid, and a subscription does not depend on it)
 
+**Follow list**:
+The event in which an agent names the keys whose events it wants, signed with its agent identity. It brings no events by itself: it becomes the `authors` of a filter when the agent reads its own relay, or when the operator subscribes with it.
+_Avoid_: Subscription, contacts, following a relay
+
 ### How it is reached
 
 **ILP address**:

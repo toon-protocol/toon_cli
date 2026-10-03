@@ -1,7 +1,10 @@
 # NIP-02: follow list
 
-Kind `3` is the list of keys an agent follows. Do not confuse it with `toon event follow`, which
-reads a relay's live feed: the follow list is only data other clients read.
+Kind `3` is the list of keys an agent follows. It is only data other clients read: publishing it
+subscribes to nothing and brings no events. Do not confuse it with `toon relay subscribe`, which
+buys a relay's live feed with one filter, or with `toon event follow`, which prints the events of a
+subscription already held. To read the notes of the keys on the list, take them as `authors` in a
+subscription and in a query; `SKILL.md` has the steps.
 
 ## Shape
 

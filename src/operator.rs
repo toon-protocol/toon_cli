@@ -249,13 +249,33 @@ fn write_text(
 /// terminates, then the routes it forwards.
 pub fn route_list(home: &Path) -> Result<Report, Error> {
     let surface = surface(home)?;
-    let routes = read(&surface, "/routes")?;
+    let mut routes = read(&surface, "/routes")?;
     let forwarding = read(&surface, "/routes/peers")?;
+    // The operator surface lists a route without its `request`, which the state keeps.
+    if let Some(state) = State::load(home)? {
+        let toon_app = crate::apps::toon_app(&state, TARGET.get().map(String::as_str))?;
+        for route in routes
+            .iter_mut()
+            .filter(|route| route.get("request").is_none())
+        {
+            let request = toon_app
+                .apps
+                .iter()
+                .find(|app| route["prefix"].as_str() == Some(app.prefix.as_str()))
+                .and_then(|app| app.request.clone());
+            if let Some(request) = request {
+                route["request"] = request;
+            }
+        }
+    }
     let mut lines: Vec<String> = routes
         .iter()
         .map(|route| {
+            let request = route
+                .get("request")
+                .map_or(String::new(), |request| format!(", request {request}"));
             format!(
-                "{} -> {} (price {})",
+                "{} -> {} (price {}{request})",
                 route["prefix"].as_str().unwrap_or_default(),
                 route["handler_url"].as_str().unwrap_or_default(),
                 route["price"]
@@ -968,16 +988,26 @@ fn before_sending(error: &connector_cli::CliError) -> bool {
 
 /// Send one packet from the operator surface to `destination`, for `amount`, sealed to the
 /// connector at `seal_to`, or to this one, and return what the connector says it came to.
-/// `body` is a file the request carries as its JSON body.
+/// `method` and `target` are the request the app receives; `body` is a file the request
+/// carries as its JSON body.
 pub fn dispatch(
     home: &Path,
     destination: &str,
     amount: u64,
     seal_to: Option<&str>,
+    method: &str,
+    target: &str,
     body: Option<&Path>,
 ) -> Result<Answer, Error> {
     let surface = surface(home)?;
     let send_failed = |message: String| failed(ErrorCode::SendFailed, message);
+    // A body that cannot be read is found out before anything is sent.
+    if let Some(path) = body {
+        std::fs::read(path).map_err(|error| Error {
+            nothing_sent: true,
+            ..send_failed(format!("{} could not be read: {error}.", path.display()))
+        })?;
+    }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1008,7 +1038,15 @@ pub fn dispatch(
         };
         let headers = vec![("content-type".to_owned(), "application/json".to_owned())];
         let public = identity(&egress, &seal_to)?;
-        return dispatch_with_headers(home, destination, amount, &public, headers, body);
+        return dispatch_with_headers(
+            home,
+            destination,
+            amount,
+            &public,
+            (method, target),
+            headers,
+            body,
+        );
     }
     let mut arguments = vec![
         "toon send",
@@ -1023,6 +1061,10 @@ pub fn dispatch(
         &seal_to,
         "--amount",
         &amount_text,
+        "--method",
+        method,
+        "--target",
+        target,
     ];
     if let Some(body) = &body {
         arguments.extend(["--body", body]);
@@ -1091,15 +1133,16 @@ fn identity(egress: &Egress, seal_to: &str) -> Result<[u8; 65], Error> {
 }
 
 /// Send one packet like [`dispatch`] does, but sealed to the key `public` itself, which
-/// is not fetched from anywhere, with `headers` on the request and `body` in memory. The
-/// connector's `send` fixes the request's headers, so this forms, seals and
-/// signs the packet itself, with the connector's own crates, and reads the answer the
-/// same way.
+/// is not fetched from anywhere, with the request's `(method, target)`, `headers` on the
+/// request and `body` in memory. The connector's `send` fixes the request's headers, so this
+/// forms, seals and signs the packet itself, with the connector's own crates, and reads the
+/// answer the same way.
 pub fn dispatch_with_headers(
     home: &Path,
     destination: &str,
     amount: u64,
     public: &[u8; 65],
+    (method, target): (&str, &str),
     headers: Vec<(String, String)>,
     body: Vec<u8>,
 ) -> Result<Answer, Error> {
@@ -1122,8 +1165,8 @@ pub fn dispatch_with_headers(
         .map_err(|error| not_sent(error.to_string()))?;
 
     let plaintext = EnvelopeRequest {
-        method: "POST".into(),
-        target: "/".into(),
+        method: method.into(),
+        target: target.into(),
         headers,
         body,
     }
@@ -1216,8 +1259,17 @@ pub fn send(
     destination: &str,
     amount: u64,
     seal_to: Option<&str>,
+    method: &str,
+    target: &str,
+    body: Option<&Path>,
 ) -> Result<Report, Error> {
-    let answer = dispatch(home, destination, amount, seal_to, None)?;
+    // The connector takes the target relative to the route's handler, and `--path` names
+    // it from the handler's root.
+    let target = match target.strip_prefix('/') {
+        Some("") | None => target,
+        Some(relative) => relative,
+    };
+    let answer = dispatch(home, destination, amount, seal_to, method, target, body)?;
     if matches!(answer, Answer::Unanswered) {
         // `toon send` reads the watermarks, which only its caller can.
         return Err(unanswered_cost(u128::from(amount), None));

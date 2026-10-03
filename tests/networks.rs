@@ -375,6 +375,99 @@ fn wallet_fund_says_what_the_faucet_left_unfunded() {
     assert_eq!(lacking[1]["for"], "start");
 }
 
+const EVM_PATH: &str = "/api/base-sepolia/request";
+const SOLANA_PATH: &str = "/api/solana/usdc-request";
+
+/// Initialises on both chains, the Solana one answered by `solana_rpc`; returns the EVM
+/// and Solana addresses.
+fn init_on_both_chains(
+    machine: &Machine,
+    chain: &FakeChain,
+    solana_rpc: &FakeChain,
+    faucet: &FakeFaucet,
+) -> (String, String) {
+    let init = machine.init_with(&[
+        "--solana",
+        "--solana-rpc-url",
+        &solana_rpc.rpc_url(),
+        "--evm-rpc-url",
+        &chain.rpc_url(),
+        "--faucet-url",
+        faucet.url(),
+    ]);
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let chains = &init.json()["wallet"]["chains"];
+    (
+        chains["evm"][0]["address"].as_str().unwrap().to_owned(),
+        chains["solana"][0]["address"].as_str().unwrap().to_owned(),
+    )
+}
+
+#[test]
+fn wallet_fund_asks_for_the_solana_address_when_the_evm_one_is_refused() {
+    let chain = FakeChain::start_unfunded();
+    let solana_rpc = FakeChain::start_unfunded();
+    let faucet = FakeFaucet::refusing(chain.funded(), &[EVM_PATH]);
+    let machine = Machine::new();
+    let (evm, solana) = init_on_both_chains(&machine, &chain, &solana_rpc, &faucet);
+
+    let json = machine.toon(&["wallet", "fund", "--json"]);
+    let text = machine.toon(&["wallet", "fund"]);
+
+    assert_eq!(json.exit_code, 0, "{}", json.stdout);
+    assert_eq!(
+        faucet.asked()[..2],
+        [
+            (EVM_PATH.to_owned(), evm.clone()),
+            (SOLANA_PATH.to_owned(), solana.clone())
+        ]
+    );
+    let report = json.json();
+    let funded = report["funded"].as_array().unwrap();
+    assert_eq!(funded.len(), 1, "{}", json.stdout);
+    assert_eq!(funded[0]["chain"], "solana");
+    assert_eq!(funded[0]["address"], solana.as_str());
+    assert_eq!(funded[0]["faucet"]["success"], true);
+    assert!(funded[0].get("airdrop").is_some());
+    let refused = report["refused"].as_array().unwrap();
+    assert_eq!(refused.len(), 1, "{}", json.stdout);
+    assert_eq!(refused[0]["chain"], "evm");
+    assert_eq!(refused[0]["address"], evm.as_str());
+    assert!(refused[0]["reason"].as_str().unwrap().contains("cooldown"));
+    assert_eq!(text.exit_code, 0, "{}", text.stdout);
+    assert!(
+        text.stdout.contains(&format!("{solana} (solana): asked")),
+        "{}",
+        text.stdout
+    );
+    assert!(
+        text.stdout.contains(&format!("{evm} (evm): refused")),
+        "{}",
+        text.stdout
+    );
+    assert!(text.stdout.contains("cooldown"), "{}", text.stdout);
+}
+
+#[test]
+fn wallet_fund_fails_naming_each_address_when_the_faucet_refuses_every_one() {
+    let chain = FakeChain::start_unfunded();
+    let solana_rpc = FakeChain::start_unfunded();
+    let faucet = FakeFaucet::refusing(chain.funded(), &[EVM_PATH, SOLANA_PATH]);
+    let machine = Machine::new();
+    let (evm, solana) = init_on_both_chains(&machine, &chain, &solana_rpc, &faucet);
+
+    let fund = machine.toon(&["wallet", "fund", "--json"]);
+
+    assert_eq!(fund.exit_code, 1, "{}", fund.stdout);
+    assert_eq!(fund.json()["error"]["code"], "faucet_unavailable");
+    let message = fund.json()["error"]["message"].as_str().unwrap().to_owned();
+    assert!(message.contains(&evm), "{message}");
+    assert!(message.contains(&solana), "{message}");
+    assert_eq!(message.matches("cooldown").count(), 2, "{message}");
+    // The airdrop for fees is asked for although the faucet refused the token.
+    assert_eq!(solana_rpc.count("requestAirdrop"), 1);
+}
+
 #[test]
 fn wallet_fund_has_no_faucet_to_ask_on_mainnet_or_the_sandbox() {
     for network in ["mainnet", "sandbox"] {

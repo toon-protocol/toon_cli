@@ -667,3 +667,122 @@ fn a_hidden_sandbox_agent_node_joins_through_the_hub_it_is_told_at_an_anyone_nam
     assert_eq!(joined.exit_code, 0, "{}{}", joined.stdout, joined.stderr);
     assert_eq!(chain.balance(&evm), DEPOSIT * 9, "the deposit is on chain");
 }
+
+#[test]
+fn a_request_to_an_app_through_the_overlay_carries_its_method_path_and_body() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let url = format!("http://{}/inbox", listener.local_addr().expect("address"));
+    let (tx, seen) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 4096];
+            while !String::from_utf8_lossy(&request).ends_with("{\"text\":\"hello\"}") {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                }
+            }
+            let _ = tx.send(String::from_utf8_lossy(&request).into_owned());
+            let _ = stream.write_all(
+                b"HTTP/1.1 201 Created\r\nContent-Length: 5\r\nConnection: close\r\n\r\nmade!",
+            );
+        }
+    });
+    // The name is declared to the supervisor before its connector listens, so it stands for
+    // a port that forwards to the connector once it does.
+    let forwarder = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let names = declare(
+        "inbox.anyone",
+        7100,
+        forwarder.local_addr().expect("address"),
+    );
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    let up = machine.start_with(&["up", "--foreground", "--json"], |command| {
+        command.env("TOON_OVERLAY_NAMES", &names);
+    });
+    up.report();
+    let added = machine.toon(&[
+        "add",
+        "inbox",
+        "--to",
+        "relay",
+        "--url",
+        &url,
+        "--address",
+        "g.toon.inbox",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(added.exit_code, 0, "{}", added.stdout);
+    let status = machine.toon(&["status", "--json"]).json();
+    let connector: SocketAddr = status["agent_node"]["toon_apps"][0]["connector"]["address"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the connector has no address: {status}"))
+        .parse()
+        .expect("a socket address");
+    forward(forwarder, connector);
+    let body = machine.home().join("body.json");
+    std::fs::write(&body, br#"{"text":"hello"}"#).unwrap();
+
+    // Sealed to the connector at a `.anyone` name, so the packet goes through the overlay.
+    let sent = toon(
+        &machine,
+        &[
+            "send",
+            "g.toon.inbox",
+            "--amount",
+            "0",
+            "--seal-to",
+            "http://inbox.anyone:7100/ilp",
+            "--method",
+            "PUT",
+            "--path",
+            "/some/path?x=1",
+            "--body",
+            body.to_str().unwrap(),
+            "--yes",
+            "--json",
+        ],
+    );
+
+    let report = sent.json();
+    assert_eq!(report["outcome"], "fulfilled", "{report}{}", sent.stderr);
+    assert_eq!(report["response"]["status"], 201);
+    assert_eq!(report["response"]["body"], "made!");
+    let request = seen
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the app received the request")
+        .to_ascii_lowercase();
+    assert!(
+        request.starts_with("put /inbox/some/path?x=1 "),
+        "{request}"
+    );
+    assert!(
+        request.contains("content-type: application/json"),
+        "{request}"
+    );
+    assert!(request.ends_with(r#"{"text":"hello"}"#), "{request}");
+}
+
+/// Carry every connection `listener` accepts to `target`, both ways.
+fn forward(listener: TcpListener, target: SocketAddr) {
+    thread::spawn(move || {
+        for inbound in listener.incoming().flatten() {
+            let Ok(outbound) = std::net::TcpStream::connect(target) else {
+                continue;
+            };
+            for (mut from, mut to) in [
+                (inbound.try_clone().unwrap(), outbound.try_clone().unwrap()),
+                (outbound, inbound),
+            ] {
+                thread::spawn(move || {
+                    let _ = std::io::copy(&mut from, &mut to);
+                    let _ = to.shutdown(std::net::Shutdown::Write);
+                });
+            }
+        }
+    });
+}
