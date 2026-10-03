@@ -130,5 +130,5 @@ What a connector answers a packet that came without payment: its price for that 
 _Avoid_: Quote, offer
 
 **Probe**:
-A packet sent to learn what a path costs. It is expected to be rejected, pays nothing, and the reject states the summed fees of every connector on the path.
+A packet sent to learn what a path costs. It is expected to be rejected, and the reject states the path's cost: the fee of every connector that forwards it, and the terminating route's charge for the request sent. A probe can cost up to the amount it carries; by default it carries nothing and pays nothing. A probe that stopped at a connector it could not pay states a partial cost, the amount to carry to get past that connector. A probe whose amount covers the path's cost is delivered and paid for, as a send is.
 _Avoid_: Quote, dry run; using "probe" for asking one connector its terms
