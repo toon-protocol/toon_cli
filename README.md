@@ -99,6 +99,13 @@ each is a working example of an app:
 [Adding an app](docs/guide/adding-an-app.md) shows how to put your own HTTP service behind a
 connector.
 
+One companion runs beside an agent node, not behind a connector, so it is installed on
+your desktop and not with `toon add`:
+
+| Companion | What it shows |
+| --- | --- |
+| [`spaceturtle`](https://github.com/toon-protocol/spaceturtle) | An [Omarchy](https://omarchy.org) bar plugin with a panel on what your agent does on its relay. It reads the agent node through the CLI's `--json` output. Install with `omarchy plugin add https://github.com/toon-protocol/spaceturtle.git --enable`. |
+
 ## Agent skills
 
 Three skills teach an agent harness such as Claude Code to use `toon`. Install them with the
