@@ -560,7 +560,7 @@ fn the_devnet_profile_records_the_devnets_connector_and_relay() {
 }
 
 #[test]
-fn the_mainnet_profile_records_its_default_connector_and_relay_and_says_no_network_is_missing() {
+fn the_mainnet_profile_records_its_default_connector_and_relay_and_no_note_to_name_one() {
     let machine = Machine::new();
 
     let init = machine.init_with(&["--network", "mainnet"]);
@@ -573,7 +573,9 @@ fn the_mainnet_profile_records_its_default_connector_and_relay_and_says_no_netwo
     );
     assert_eq!(state["relay_url"], "wss://relay.mainnet.toonprotocol.dev");
     let notes = init.json()["notes"].to_string();
-    assert!(!notes.contains("no mainnet TOON network"), "{notes}");
+    for way in ["--connector-url", "--relay-url", "join mainnet"] {
+        assert!(!notes.contains(way), "{way}: {notes}");
+    }
 }
 
 #[test]
