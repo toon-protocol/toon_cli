@@ -545,9 +545,6 @@ const HIDDEN_NOTE: &str =
     "A hidden service hides where the TOON app is reachable, and not who it pays: \
      payments are on a public chain.";
 
-/// Said when the network has no connector: `mainnet`, unless `init` was given one.
-const NO_NETWORK_NOTE: &str = "There is no mainnet TOON network yet, so `toon join mainnet` is refused until `init` is given `--connector-url` (and `--relay-url`).";
-
 /// Said when a hidden agent node is initialised for the sandbox without a connector, and
 /// when `toon join sandbox` is refused on it.
 pub const SANDBOX_HUB_NOTE: &str = "A hidden agent node cannot reach the sandbox's hub on `localhost`, so this one records no connector and `toon join sandbox` is refused. Name the hub with `--connector-url http://<hub>.anyone:3200/ilp` (and `--relay-url ws://<hub>.anyone:7100`) on `init`, or run the agent node with `--clearnet`.";
@@ -557,12 +554,8 @@ fn notes(state: &node::State) -> Vec<&'static str> {
     if state.toon_apps.iter().any(|app| app.reach == Reach::Hidden) {
         notes.push(HIDDEN_NOTE);
     }
-    if state.connector_url.is_none() {
-        notes.push(if state.network == Profile::Sandbox {
-            SANDBOX_HUB_NOTE
-        } else {
-            NO_NETWORK_NOTE
-        });
+    if state.connector_url.is_none() && state.network == Profile::Sandbox {
+        notes.push(SANDBOX_HUB_NOTE);
     }
     notes
 }

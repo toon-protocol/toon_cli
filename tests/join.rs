@@ -159,11 +159,12 @@ fn join_over_the_per_command_limit_is_refused_and_spends_nothing() {
 }
 
 #[test]
-fn a_network_with_a_connector_and_no_relay_is_joined_and_no_relay_is_read() {
+fn a_mainnet_agent_node_is_joined_through_the_connector_named_at_init() {
     let chain = AnvilChain::start();
     let network = node_on(&chain, None);
     let connector = format!("http://{}/ilp", network.address);
-    // The mainnet profile names no relay; the anvil token names itself as the devnet's does.
+    // The connector and relay are named at `init`, so the real mainnet node is not contacted;
+    // the anvil token names itself as the devnet's does.
     let agent = node_with(
         &chain,
         &[
@@ -171,6 +172,8 @@ fn a_network_with_a_connector_and_no_relay_is_joined_and_no_relay_is_read() {
             "mainnet",
             "--connector-url",
             &connector,
+            "--relay-url",
+            "ws://127.0.0.1:7100",
             "--evm-asset-name",
             "USDC",
         ],
@@ -186,7 +189,7 @@ fn a_network_with_a_connector_and_no_relay_is_joined_and_no_relay_is_read() {
     ]);
 
     assert_eq!(joined.exit_code, 0, "{}", joined.stdout);
-    assert!(joined.json()["relay"].is_null(), "{}", joined.stdout);
+    assert_eq!(joined.json()["relay"], "ws://127.0.0.1:7100");
     assert_eq!(chain.balance(&agent.evm), DEPOSIT * 9);
     let peers = agent.machine.toon(&["peer", "list", "--json"]);
     assert_eq!(peers.json()["peers"][0]["id"], "mainnet");
@@ -194,7 +197,7 @@ fn a_network_with_a_connector_and_no_relay_is_joined_and_no_relay_is_read() {
     assert_eq!(after.json()["agent_node"]["joined"], "mainnet");
     assert_eq!(
         after.json()["agent_node"]["reads"].as_array().map(Vec::len),
-        Some(0)
+        Some(1)
     );
 }
 

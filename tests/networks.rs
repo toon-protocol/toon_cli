@@ -560,40 +560,37 @@ fn the_devnet_profile_records_the_devnets_connector_and_relay() {
 }
 
 #[test]
-fn the_mainnet_profile_records_no_connector_and_no_relay_and_join_is_refused() {
+fn the_mainnet_profile_records_its_default_connector_and_relay_and_no_note_to_name_one() {
     let machine = Machine::new();
 
     let init = machine.init_with(&["--network", "mainnet"]);
 
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
     let state = state(&machine);
-    assert!(state["connector_url"].is_null(), "{state}");
-    assert!(state["relay_url"].is_null(), "{state}");
-    let notes = init.json()["notes"].to_string();
-    assert!(notes.contains("no mainnet TOON network yet"), "{notes}");
-
-    let left =
-        machine.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone();
-
-    let joined = machine.toon(&["join", "mainnet", "--deposit", "1000000", "--yes", "--json"]);
-
-    assert_eq!(joined.exit_code, 1, "{}", joined.stdout);
-    assert_eq!(joined.json()["error"]["code"], "join_refused");
-    let message = joined.json()["error"]["message"].to_string();
-    assert!(message.contains("--connector-url"), "{message}");
-    assert!(message.contains("--relay-url"), "{message}");
-    let still = machine.toon(&["limit", "show", "--json"]);
     assert_eq!(
-        still.json()["limits"]["remaining_today"],
-        left,
-        "a refused join is not counted"
+        state["connector_url"],
+        "https://connector.mainnet.toonprotocol.dev/ilp"
     );
-    let status = machine.toon(&["status", "--json"]);
-    assert!(
-        status.json()["agent_node"]["joined"].is_null(),
-        "{}",
-        status.stdout
+    assert_eq!(state["relay_url"], "wss://relay.mainnet.toonprotocol.dev");
+    let notes = init.json()["notes"].to_string();
+    for way in ["--connector-url", "--relay-url", "join mainnet"] {
+        assert!(!notes.contains(way), "{way}: {notes}");
+    }
+}
+
+#[test]
+fn a_clearnet_mainnet_agent_node_records_the_same_defaults() {
+    let machine = Machine::new();
+
+    let init = machine.init_with(&["--network", "mainnet", "--clearnet", "agent.example.com"]);
+
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let state = state(&machine);
+    assert_eq!(
+        state["connector_url"],
+        "https://connector.mainnet.toonprotocol.dev/ilp"
     );
+    assert_eq!(state["relay_url"], "wss://relay.mainnet.toonprotocol.dev");
 }
 
 #[test]

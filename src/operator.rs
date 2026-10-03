@@ -1521,7 +1521,7 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
         return Err(failed(
             ErrorCode::JoinRefused,
             format!(
-                "There is no {name} TOON network yet: this agent node records no connector for it. \
+                "This agent node records no connector for {name}. \
                  Name one with `--connector-url` (and `--relay-url`) on `init`."
             ),
         ));
