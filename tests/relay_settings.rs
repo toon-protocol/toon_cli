@@ -3,7 +3,7 @@ mod support;
 use std::fs;
 use std::net::SocketAddr;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use support::fake_chain::FakeChain;
 use support::Machine;
 
@@ -371,4 +371,61 @@ fn incoming_subscriptions_are_the_relays_list_of_subscribers() {
         shown["subscribers"][0]["pubkey"],
         "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e"
     );
+    assert_eq!(shown["totals"], json!({ "subscribers": 1 }));
+    let text = machine.toon(&["relay", "subscriptions", "--incoming"]);
+    assert!(text.stdout.contains("1 subscriber keys with a balance."));
+    assert!(!text.stdout.contains("peer"));
+
+    let status = machine.toon(&["status", "--json"]).json();
+    assert_eq!(
+        status["agent_node"]["totals"],
+        json!({ "subscriptions": { "active": 0, "exhausted": 0 }, "subscribers": 1 })
+    );
+}
+
+#[test]
+fn status_counts_both_directions_and_says_unknown_while_the_relay_is_stopped() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    machine
+        .toon(&[
+            "relay",
+            "price",
+            "--subscribe",
+            "1000",
+            "--broadcast",
+            "10",
+            "--json",
+        ])
+        .json();
+
+    let stopped = machine.toon(&["status", "--json"]);
+    assert_eq!(stopped.exit_code, 1, "{}", stopped.stdout);
+    assert_eq!(
+        stopped.json()["agent_node"]["totals"],
+        json!({
+            "subscriptions": { "active": 0, "exhausted": 0 },
+            "subscribers": null,
+        })
+    );
+    let text = machine.toon(&["status"]);
+    assert_eq!(text.exit_code, 1);
+    assert!(text
+        .stdout
+        .contains("Subscriptions held: 0 with a balance, 0 exhausted."));
+    assert!(text.stdout.contains("with a balance: unknown."));
+
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+    fs::write(
+        machine
+            .agent_node_home()
+            .join("apps/relay/data/subscribers.json"),
+        r#"{"broadcast_price":10,"subscribers":[]}"#,
+    )
+    .unwrap();
+    let running = machine.toon(&["status", "--json"]);
+    assert_eq!(running.exit_code, 0, "{}", running.stdout);
+    assert_eq!(running.json()["agent_node"]["totals"]["subscribers"], 0);
 }

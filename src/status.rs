@@ -139,7 +139,9 @@ pub fn status(home: &Path) -> Result<Report, Error> {
     // What `subscribe` and the supervisor last kept, not what each relay says now: asking
     // them is `toon relay subscriptions`.
     let mut subscriptions = Vec::new();
-    for kept in crate::subscribe::load(home)? {
+    let all_kept = crate::subscribe::load(home)?;
+    let (active, exhausted_count) = crate::subscribe::totals(&all_kept);
+    for kept in all_kept {
         let exhausted = kept.exhausted();
         lines.push(if exhausted {
             format!(
@@ -159,6 +161,15 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             "exhausted": exhausted,
         }));
     }
+    // Asked of the running relay: unknown while it does not answer, which is not a failure.
+    let subscribers = crate::subscribe::incoming_with_balance(home);
+    lines.push(format!(
+        "Subscriptions held: {active} with a balance, {exhausted_count} exhausted."
+    ));
+    lines.push(match subscribers {
+        Some(count) => format!("Subscriber keys of its own relay with a balance: {count}."),
+        None => "Subscriber keys of its own relay with a balance: unknown.".into(),
+    });
     Ok(Report {
         exit: if all_running {
             Exit::Success
@@ -173,6 +184,10 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                 "reads": state.reads,
                 "toon_apps": toon_apps,
                 "subscriptions": subscriptions,
+                "totals": {
+                    "subscriptions": { "active": active, "exhausted": exhausted_count },
+                    "subscribers": subscribers,
+                },
             },
         }),
         text: lines.join("\n"),

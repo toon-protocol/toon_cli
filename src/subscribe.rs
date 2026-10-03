@@ -588,16 +588,25 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
         ));
     }
     save(home, &kept)?;
-    let text = if lines.is_empty() {
-        "No subscriptions.".to_owned()
-    } else {
-        lines.join("\n")
-    };
+    let (active, exhausted) = totals(&kept);
+    if lines.is_empty() {
+        lines.push("No subscriptions.".to_owned());
+    }
+    lines.push(format!("{active} with a balance, {exhausted} exhausted."));
     Ok(Report {
         exit: Exit::Success,
-        json: json!({ "subscriptions": shown }),
-        text,
+        json: json!({
+            "subscriptions": shown,
+            "totals": { "active": active, "exhausted": exhausted },
+        }),
+        text: lines.join("\n"),
     })
+}
+
+/// How many of `kept` have a balance and how many are exhausted.
+pub fn totals(kept: &[Kept]) -> (usize, usize) {
+    let exhausted = kept.iter().filter(|kept| kept.exhausted()).count();
+    (kept.len() - exhausted, exhausted)
 }
 
 /// Note that the relay of `dialled`, the subscription a feed was dialled for, closed that
@@ -671,6 +680,64 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
 /// own relay, and what each has left, as the running relay lists them on its write port,
 /// which nothing but the operator reaches.
 pub fn incoming(home: &Path) -> Result<Report, Error> {
+    let body = own_subscribers(home)?;
+    let subscribers = body["subscribers"]
+        .as_array()
+        .ok_or_else(|| unreadable_list("it answered no list".into()))?;
+    let with_balance = holding_a_balance(subscribers);
+    let mut lines: Vec<String> = subscribers
+        .iter()
+        .map(|subscriber| {
+            format!(
+                "{}: balance {}, {} per event, filter {}",
+                subscriber["pubkey"].as_str().unwrap_or("?"),
+                subscriber["balance"],
+                subscriber["broadcast_price"],
+                subscriber["filter"],
+            )
+        })
+        .collect();
+    if lines.is_empty() {
+        lines.push("No one subscribes to this agent node's relay.".to_owned());
+    }
+    lines.push(format!("{with_balance} subscriber keys with a balance."));
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({
+            "broadcast_price": body["broadcast_price"],
+            "subscribers": subscribers,
+            "totals": { "subscribers": with_balance },
+        }),
+        text: lines.join("\n"),
+    })
+}
+
+fn unreadable_list(why: String) -> Error {
+    Error {
+        nothing_sent: false,
+        unanswered: None,
+        code: ErrorCode::QueryFailed,
+        message: format!("The relay's list of subscribers could not be read: {why}."),
+    }
+}
+
+/// How many subscriber keys of `subscribers` hold a balance.
+fn holding_a_balance(subscribers: &[Value]) -> usize {
+    subscribers
+        .iter()
+        .filter(|subscriber| subscriber["balance"].as_u64().is_some_and(|b| b > 0))
+        .count()
+}
+
+/// How many subscriber keys hold a balance at this agent node's own relay, or `None`
+/// when the running relay does not say.
+pub fn incoming_with_balance(home: &Path) -> Option<usize> {
+    let body = own_subscribers(home).ok()?;
+    Some(holding_a_balance(body["subscribers"].as_array()?))
+}
+
+/// The running relay's answer to `GET /subscribers`.
+fn own_subscribers(home: &Path) -> Result<Value, Error> {
     let state = node::State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
     let failed = |code, message: String| Error {
         nothing_sent: false,
@@ -716,45 +783,12 @@ pub fn incoming(home: &Path) -> Result<Report, Error> {
         .and_then(|reported| reported["address"].as_str())
         .ok_or_else(not_running)?;
     let url = format!("http://{address}/subscribers");
-    let unreadable = |why: String| {
-        failed(
-            ErrorCode::QueryFailed,
-            format!("The relay's list of subscribers could not be read: {why}."),
-        )
-    };
-    let body = reqwest::blocking::Client::builder()
+    reqwest::blocking::Client::builder()
         .timeout(PATIENCE)
         .no_proxy()
         .build()
         .and_then(|client| client.get(&url).send())
         .and_then(reqwest::blocking::Response::error_for_status)
         .and_then(|response| response.json::<Value>())
-        .map_err(|error| unreadable(error.to_string()))?;
-    let subscribers = body["subscribers"]
-        .as_array()
-        .ok_or_else(|| unreadable("it answered no list".into()))?;
-    let lines: Vec<String> = subscribers
-        .iter()
-        .map(|subscriber| {
-            format!(
-                "{}: balance {}, {} per event, filter {}",
-                subscriber["pubkey"].as_str().unwrap_or("?"),
-                subscriber["balance"],
-                subscriber["broadcast_price"],
-                subscriber["filter"],
-            )
-        })
-        .collect();
-    Ok(Report {
-        exit: Exit::Success,
-        json: json!({
-            "broadcast_price": body["broadcast_price"],
-            "subscribers": subscribers,
-        }),
-        text: if lines.is_empty() {
-            "No one subscribes to this agent node's relay.".to_owned()
-        } else {
-            lines.join("\n")
-        },
-    })
+        .map_err(|error| unreadable_list(error.to_string()))
 }

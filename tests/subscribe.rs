@@ -338,6 +338,10 @@ fn subscriptions_lists_the_balance_and_filter_at_each_relay() {
     peer_and_route(&near, &far);
     let empty = near.toon(&["relay", "subscriptions", "--json"]);
     assert_eq!(empty.json()["subscriptions"], json!([]));
+    assert_eq!(
+        empty.json()["totals"],
+        json!({ "active": 0, "exhausted": 0 })
+    );
     let paid = subscribe(
         &near,
         &relay,
@@ -361,6 +365,15 @@ fn subscriptions_lists_the_balance_and_filter_at_each_relay() {
             "current": true,
             "exhausted": false,
         }])
+    );
+    assert_eq!(
+        listed.json()["totals"],
+        json!({ "active": 1, "exhausted": 0 })
+    );
+    let status = near.machine.toon(&["status", "--json"]).json();
+    assert_eq!(
+        status["agent_node"]["totals"]["subscriptions"],
+        json!({ "active": 1, "exhausted": 0 })
     );
 }
 
