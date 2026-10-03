@@ -129,6 +129,13 @@ fn is_signed(event: &Value) -> bool {
     let (Ok(key), Ok(signature)) = (
         hex::decode(&pubkey)
             .map_err(drop)
+            .and_then(|bytes| {
+                if bytes.len() == 32 {
+                    Ok(bytes)
+                } else {
+                    Err(())
+                }
+            })
             .and_then(|bytes| VerifyingKey::from_bytes(&bytes).map_err(drop)),
         hex::decode(&sig)
             .map_err(drop)
@@ -266,6 +273,18 @@ mod tests {
 
         let refused = open(&wrapped, &recipient).unwrap_err();
         assert!(refused.0.contains("other than the rumor's"), "{refused:?}");
+    }
+
+    #[test]
+    fn an_event_with_a_key_of_the_wrong_length_is_refused_and_does_not_panic() {
+        let (recipient, _) = key(5);
+        let mut wrapped = json!({
+            "id": "00", "pubkey": "abcd", "created_at": 1, "kind": WRAP, "tags": [],
+            "content": "x", "sig": "00",
+        });
+        assert!(open(&wrapped, &recipient).is_err());
+        wrapped["pubkey"] = json!("ab".repeat(33));
+        assert!(open(&wrapped, &recipient).is_err());
     }
 
     #[test]

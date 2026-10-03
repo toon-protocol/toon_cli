@@ -41,7 +41,7 @@ fn usage(message: impl Into<String>) -> Error {
 /// A public key as hex: 32 bytes, and a point on the curve.
 fn public_key(key: &str) -> Option<String> {
     let key = key.to_ascii_lowercase();
-    let bytes = hex::decode(&key).ok()?;
+    let bytes = hex::decode(&key).ok().filter(|bytes| bytes.len() == 32)?;
     k256::schnorr::VerifyingKey::from_bytes(&bytes).ok()?;
     Some(key)
 }
@@ -291,12 +291,11 @@ fn send_to(home: &Path, message: &Message, relay: &str, yes: bool) -> Result<Rep
     let sealed = seal(&secret, &sender, message)?;
     let own = own_relay(home)?;
 
-    // Free, and first: a copy the sender cannot find again is not worth a payment.
-    write_copy(home, &sealed.to_sender)?;
-    let copy = wrap_entry(&sealed.to_sender, &sender, &own, &published());
-
     spending::spend_packets(home, total, yes, |packets| {
-        let mut wraps = vec![copy];
+        // Free, and first, but only once the limit has let the payment through: a copy the
+        // sender cannot find again is not worth a payment, and a refused send leaves none.
+        write_copy(home, &sealed.to_sender)?;
+        let mut wraps = vec![wrap_entry(&sealed.to_sender, &sender, &own, &published())];
         let mut paid: u128 = 0;
         for (recipient, wrap) in message.recipients.iter().zip(&sealed.to_recipients) {
             let written = event::write_to(
@@ -350,6 +349,36 @@ pub fn run(command: MessageCommand) -> Result<Report, Error> {
                 Some(relay) => send_to(&home, &message, &relay, yes),
                 None => send_here(&home, &message),
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_rumor_inside_every_wrap_names_every_recipient() {
+        let secrets = [[1u8; 32], [2u8; 32], [3u8; 32]];
+        let keys: Vec<String> = secrets
+            .iter()
+            .map(|secret| event::public_key(secret).unwrap())
+            .collect();
+        let message = Message::of(&keys[1..], "hello", None, Some("plans")).unwrap();
+
+        let sealed = seal(&secrets[0], &keys[0], &message).unwrap();
+
+        let wraps = sealed.to_recipients.iter().chain([&sealed.to_sender]);
+        let secrets = [&secrets[1], &secrets[2], &secrets[0]];
+        for (wrap, secret) in wraps.zip(secrets) {
+            let opened = gift_wrap::open(wrap, secret).unwrap();
+            assert_eq!(opened.rumor, sealed.rumor);
+            assert_eq!(opened.sender, keys[0]);
+            assert_eq!(opened.rumor["kind"], 14);
+            assert_eq!(
+                opened.rumor["tags"],
+                json!([["p", keys[1]], ["p", keys[2]], ["subject", "plans"]])
+            );
         }
     }
 }
