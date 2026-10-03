@@ -208,6 +208,7 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
             },
             prefix: prefix.clone(),
             price: create.price,
+            request: None,
         }],
         relay: node::RelaySettings::default(),
     };

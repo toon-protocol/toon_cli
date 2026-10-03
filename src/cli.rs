@@ -172,6 +172,10 @@ pub struct AddArgs {
     /// What a client pays the connector for a packet to the app
     #[arg(long, default_value_t = 0)]
     pub price: u64,
+    /// A file holding one JSON object that says what a client should send the app: the
+    /// connector publishes it on the route, and never reads it
+    #[arg(long, value_name = "FILE")]
+    pub request: Option<std::path::PathBuf>,
     /// Go ahead although the connector restarts and drops packets in flight
     #[arg(long)]
     pub yes: bool,

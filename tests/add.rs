@@ -485,3 +485,147 @@ fn an_app_added_with_no_address_is_reached_under_its_connectors_segment() {
     // The old default, made of the name alone, goes nowhere.
     assert!(send(connector(&machine), "g.toon.notes", b"x").is_err());
 }
+
+/// The route at `prefix` as the connector describes itself over loopback.
+fn described(machine: &Machine, prefix: &str) -> Value {
+    let described: Value = reqwest::blocking::get(format!("http://{}/ilp", connector(machine)))
+        .and_then(|response| response.json())
+        .expect("the connector's self-description");
+    described["routes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no routes: {described}"))
+        .iter()
+        .find(|route| route["prefix"] == prefix)
+        .unwrap_or_else(|| panic!("no route {prefix}: {described}"))
+        .clone()
+}
+
+#[test]
+fn a_request_is_published_on_the_route_and_survives_restarts() {
+    let (machine, _chain, up) = running();
+    let request = serde_json::json!({
+        "protocol": "nip90", "kinds": [5096, 5098], "params": { "chain": ["evm:84532"] },
+        "note": "a\u{7f}b",
+    });
+    let file = machine.write_agent_node_file("request.json", request.to_string());
+    let file = file.to_str().unwrap();
+
+    let run = machine.toon(&[
+        "add",
+        "notes",
+        "--to",
+        "relay",
+        "--image",
+        "notes:1",
+        "--request",
+        file,
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let run = machine.toon(&[
+        "add",
+        "plain",
+        "--to",
+        "relay",
+        "--url",
+        "http://127.0.0.1:9",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+
+    let published = described(&machine, &notes_address(&machine));
+    assert_eq!(published["request"], request);
+    let plain = described(
+        &machine,
+        &format!("g.toon.{}.plain", machine.segment("relay")),
+    );
+    assert!(plain.get("request").is_none(), "{plain}");
+
+    let routes = machine.toon(&["route", "list", "--json"]).json();
+    let listed = routes["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|route| route["prefix"] == notes_address(&machine).as_str())
+        .expect("the route");
+    assert_eq!(listed["request"], request);
+
+    // A restart caused by another command.
+    let run = machine.toon(&[
+        "route",
+        "price",
+        &notes_address(&machine),
+        "3",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    assert_eq!(
+        described(&machine, &notes_address(&machine))["request"],
+        request
+    );
+
+    let mut up = up;
+    let down = machine.toon(&["down", "--json"]);
+    assert_eq!(down.exit_code, 0, "{}", down.stdout);
+    assert_eq!(up.exit_code(), 0);
+    let again = machine.start(&["up", "--foreground", "--json"]);
+    again.report();
+    assert_eq!(
+        described(&machine, &notes_address(&machine))["request"],
+        request
+    );
+}
+
+#[test]
+fn a_request_that_is_not_an_object_is_refused_and_nothing_changes() {
+    let (machine, _chain, _up) = running();
+    let before = fs::read_to_string(machine.agent_node_home().join("state.json")).unwrap();
+    let pid = machine.toon(&["status", "--json"]).json()["agent_node"]["toon_apps"][0]["connector"]
+        ["pid"]
+        .clone();
+    for (name, text) in [
+        ("array.json", "[1]"),
+        ("null.json", r#"{"a": null}"#),
+        ("nested.json", r#"{"a": [{"b": null}]}"#),
+        ("text.json", "not json"),
+        ("scalar.json", "3"),
+    ] {
+        let file = machine.write_agent_node_file(name, text);
+        let run = machine.toon(&[
+            "add",
+            "notes",
+            "--to",
+            "relay",
+            "--image",
+            "notes:1",
+            "--request",
+            file.to_str().unwrap(),
+            "--yes",
+            "--json",
+        ]);
+        assert_eq!(run.exit_code, 2, "{name}: {}", run.stdout);
+        assert_eq!(run.json()["error"]["code"], "usage", "{name}");
+    }
+    let run = machine.toon(&[
+        "add",
+        "notes",
+        "--to",
+        "relay",
+        "--image",
+        "notes:1",
+        "--request",
+        "/no/such/file",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(run.exit_code, 2, "{}", run.stdout);
+    assert_eq!(
+        fs::read_to_string(machine.agent_node_home().join("state.json")).unwrap(),
+        before
+    );
+    let after = machine.toon(&["status", "--json"]).json();
+    assert_eq!(after["agent_node"]["toon_apps"][0]["connector"]["pid"], pid);
+}

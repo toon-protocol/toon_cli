@@ -126,6 +126,11 @@ is what a client pays the connector for a packet to the app, `--address` the ILP
 (`g.toon.<segment>.<app>` by default). It restarts that connector, so it needs `--yes`. `toon remove <app>`
 takes an app and its route away. An agent node has one relay, the one `toon init` made: `add`
 refuses the relay's image (any tag or digest) with `one_relay`.
+`--request <file>` takes a file holding one JSON object that says what a client should send the
+app; the connector publishes it, unread, as the route's `request` on `GET /ilp` and `toon route
+list`. Example: `toon add echo --to relay --image echo-app --request request.json --yes`, with
+`{"protocol": "http", "method": "POST", "path": "/"}` in `request.json`. A file that is not one
+JSON object, or holds `null`, is refused with `usage`. To change it, remove the app and add it again.
 
 An image given with `--image` must:
 

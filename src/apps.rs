@@ -63,6 +63,8 @@ pub struct Add<'a> {
     /// The address prefix, `g.toon.<segment>.<app>` if omitted.
     pub address: Option<&'a str>,
     pub price: u64,
+    /// A file holding the JSON object that says what a client should send the app.
+    pub request: Option<&'a Path>,
     pub yes: bool,
 }
 
@@ -73,6 +75,21 @@ fn failed(code: ErrorCode, message: String) -> Error {
         nothing_sent: false,
         unanswered: None,
     }
+}
+
+/// The `request` in `file`: one JSON object that a TOML table can carry.
+fn read_request(file: &Path) -> Result<serde_json::Value, Error> {
+    let refused = |why: String| {
+        failed(
+            ErrorCode::Usage,
+            format!("--request {}: {why}.", file.display()),
+        )
+    };
+    let text = std::fs::read_to_string(file).map_err(|source| refused(source.to_string()))?;
+    let request: serde_json::Value =
+        serde_json::from_str(&text).map_err(|source| refused(format!("not JSON ({source})")))?;
+    node::request_toml(&request).map_err(refused)?;
+    Ok(request)
 }
 
 fn loaded(home: &Path) -> Result<State, Error> {
@@ -216,6 +233,7 @@ pub fn free(state: &State, name: &str) -> Result<(), Error> {
 /// `toon add`: put a new app behind the connector of the TOON app `to`.
 pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
     add.origin.refuse_relay_image()?;
+    let request = add.request.map(read_request).transpose()?;
     let state = loaded(home)?;
     let Some(index) = state.toon_apps.iter().position(|app| app.name == add.to) else {
         return Err(unknown(&state, add.to));
@@ -252,6 +270,7 @@ pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
         source,
         prefix: prefix.clone(),
         price: add.price,
+        request,
     });
     let restarted_now = apply(home, &state, &changed, add.to)?;
     Ok(Report {
