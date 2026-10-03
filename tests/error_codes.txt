@@ -36,3 +36,4 @@ peering_needed
 not_subscribed
 one_relay
 no_follow_list
+describe_failed

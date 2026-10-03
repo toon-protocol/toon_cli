@@ -11,6 +11,7 @@ pub mod anvil_chain;
 pub mod fake_chain;
 pub mod fake_faucet;
 pub mod fake_remote_relay;
+pub mod fake_solana;
 pub mod local_chain;
 pub mod spy;
 pub mod unpeerable;

@@ -68,7 +68,7 @@ A failed command with `--json` prints:
 | `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
 | `app_failed` | 1 | An app behind a connector did not start, or stopped; the message carries the reason |
 | `unfunded` | 1 | A settlement key does not hold what is needed, so `toon up` did not start the connector (the token; on Solana also SOL), or a command that has a connector send a transaction did not (EVM gas, 0.001 ETH, whether the check finds too little or the connector reports the chain refused to estimate for lack of it: `toon join`, `toon peer add` with a deposit, `toon create` with a deposit, `toon channel open`, `fund`, `withdraw`, `land`); the message names each address and the amount |
-| `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused |
+| `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused every address (one refusal does not fail the command while another address is funded) |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
 | `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event) could not be sent: the connector's operator surface refused the write, could not be reached, or did not answer within the wait (the packet's 30-second expiry and five seconds more); the message carries the reason. A packet that went unanswered has expired and will not be delivered, so the command can be run again; the failure's JSON carries `paid` and, for `toon event publish --relay`, the `event` with its id (see Spending limit) |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
@@ -93,6 +93,7 @@ A failed command with `--json` prints:
 | `funds_held` | 1 | `toon destroy` did nothing: a channel of the TOON app still holds funds, or its channels could not be read; the message names each |
 | `last_toon_app` | 1 | `toon destroy` was given the only TOON app: an agent node always has one |
 | `one_relay` | 1 | `toon create` or `toon add` was given the relay's image (any tag or digest of the repository this build pins): an agent node runs one relay, the one `toon init` created; nothing was changed |
+| `describe_failed` | 1 | `toon describe` got no self-description from the connector's `/ilp` URL: it did not answer, answered an error status, or answered something that is not a self-description (a JSON object with `routes`); nothing was paid |
 
 
 ## The wallet passphrase
