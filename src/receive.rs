@@ -24,6 +24,7 @@ use serde_json::Value;
 
 use crate::event;
 use crate::feed::{self, Ended};
+use crate::overlay;
 use crate::subscribe::{self, Kept};
 
 /// How often the receiver reads what is kept again.
@@ -45,8 +46,19 @@ const OVERLAP: u64 = 600;
 pub trait Surroundings: Send + Sync {
     /// The write address of the agent node's own relay, if it runs.
     fn relay(&self) -> Option<SocketAddr>;
-    /// The overlay's SOCKS5 proxy, if the supervisor has one.
+    /// The overlay's SOCKS5 proxy, if the supervisor has one. A feed asks for it through
+    /// `proxy_for`, which leaves out a relay on this machine.
     fn proxy(&self) -> Option<SocketAddr>;
+}
+
+/// The proxy a feed at `url` is dialled through: none for a plain relay on this machine
+/// (`overlay::is_local_plain`, the rule a command follows), the overlay's otherwise.
+fn proxy_for(surroundings: &dyn Surroundings, url: &str) -> Option<SocketAddr> {
+    if overlay::is_local_plain(url) {
+        None
+    } else {
+        surroundings.proxy()
+    }
 }
 
 /// The receiving end of the subscriptions; it stops when it is dropped.
@@ -166,7 +178,7 @@ fn run(home: &Path, surroundings: &dyn Surroundings, stop: &AtomicBool) {
             let progress = Arc::clone(progress.entry(relay.clone()).or_default());
             let stopping = Arc::new(AtomicBool::new(false));
             let thread = {
-                let (home, proxy) = (home.to_path_buf(), surroundings.proxy());
+                let (home, proxy) = (home.to_path_buf(), proxy_for(surroundings, &entry.relay));
                 let stopping = Arc::clone(&stopping);
                 thread::spawn(move || {
                     receive(
