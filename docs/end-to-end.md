@@ -20,7 +20,6 @@ step.
 | --- | --- | --- |
 | 1, the sandbox | Its relays do not sell their feed, hence `feed.yml` and the routes added by hand | infra #53 |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
-| 2, another agent node | Now and then the first packet between two hidden services outlasts its 30-second expiry: `rejected` or `send_failed`, paid for, and the relay holds no event | #109 |
 | 2, hold a subscription | Nothing from `relay2`'s feed reaches the agent node's own relay, and its balance does not move: the supervisor dials `ws://localhost:7110` through the overlay, which refuses it | #113 |
 | 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
 
@@ -298,12 +297,17 @@ one hidden service to another. Before the `route add`, the publish fails with
 `peering_needed`, and its message names the `peer add`, with `--deposit <amount> --yes`,
 and the `route add` to run.
 
-The first packet over a link between two hidden services can outlast its expiry (#109).
-The publish is then `rejected`, or fails with `send_failed` when the connector does not
-answer in time; either way the output carries `paid`, what the packet cost, and the
-`event`. The relay holds no event from it, and the same command succeeds when run again:
-run the publish and the query again, and expect the watermark in the step below to be
-higher by that `paid`.
+A first publish over a cold link may be rejected, or fail with `send_failed`, at about
+the packet's expiry and not after it: a connector that forwards the packet stops waiting on
+the next hop at the packet's outgoing expiry (a little under its 30 seconds) and answers
+`R00`, and signs nothing for a packet that ran out of time before the voucher was signed. A
+packet the next hop never carried is not paid for on a batch-settlement channel when the
+next hop can be asked where it stands: the connector's next forward on the channel signs
+from that figure. A packet the next hop did carry is paid for, and its event may be stored;
+the failure's `event` names it, for `toon event query` to look for before the command is run
+again. The failure's `paid` is read from the outbound watermark right after the packet, and
+can show a voucher the next forward then drops, so it can be above what the packet finally
+costs.
 
 Then the same `peer add` twice more, back to back, and the first agent node's side of
 the channel:
