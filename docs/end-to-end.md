@@ -266,10 +266,17 @@ service to another. Before the `route add`, the publish fails with `peering_need
 its message names the `peer add`, with `--deposit <amount> --yes`, and the `route add` to
 run.
 
-A first publish over a cold link may be rejected after 30 seconds, or fail with
-`send_failed` when the connector does not answer in time (the packet has expired by then;
-the failure's `paid` and `event` say what it cost and which event it carried). It is paid
-for, and the same command succeeds when run again.
+A first publish over a cold link can still be rejected, or fail with `send_failed`, but
+no longer after the connector has waited past the packet's expiry. A connector that
+forwards the packet stops waiting on the next hop at the packet's outgoing expiry (a little
+under its 30 seconds) and answers `R00`; it signs nothing for a packet that has run out of
+time before the voucher is signed. A wait that ends at the peering's own 30-second answer
+timeout, with the packet still alive, is still `T01`. A packet that was never carried is not
+paid for on a batch-settlement channel: the connector's next forward on the channel asks
+the next hop where it stands and signs from that figure. The failure's `paid` is still read
+from the outbound watermark right after the packet, and can show a voucher the next forward
+then drops, so it can be above what the packet finally costs. The same command can be run
+again.
 
 ### Hold a subscription
 

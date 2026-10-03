@@ -313,8 +313,12 @@ connector's `send` refused its arguments. These still fail with `send_failed`. A
 failure may have paid, and stays counted, including a refusal from the operator surface and
 an answer that was not understood. A packet the connector did not answer within the wait,
 which is longer than the packet's 30-second expiry so that the connector's own reject is
-what is normally reported, fails with `send_failed` and is counted by what the watermarks
-moved by, like a rejected packet (the whole amount, if they cannot be read). The failure's
+what is normally reported (a connector forwarding it answers `R00` at the packet's expiry
+and signs nothing for a packet that has run out of time), fails with `send_failed` and is
+counted by what the watermarks moved by, like a rejected packet (the whole amount, if they
+cannot be read). A packet a connector never carried is not paid for on a batch-settlement
+channel: its next forward signs from what the next hop reports, so the count can be above
+what the packet finally costs. The failure's
 JSON is `{"error": {"code", "message"}, "paid"}` with the `event` for `toon event publish
 --relay`; the text says that the packet has expired, names the event's id so that
 `toon event query` can ask the relay for it, and gives the "It cost N base units." sentence
