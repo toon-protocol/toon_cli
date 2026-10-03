@@ -32,7 +32,7 @@ toon init --network sandbox --accept-anyone-terms \
 
 **Overrides.** `--evm-rpc-url`, `--evm-token`, `--faucet-url`, `--connector-url` and
 `--relay-url` replace one setting of the profile; `toon init --help` lists the rest.
-`--solana` settles on Solana too.
+`--solana` settles on Solana too, and `--solana-rpc-url` replaces its JSON-RPC endpoint.
 
 ## Hidden service
 

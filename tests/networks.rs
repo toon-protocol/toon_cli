@@ -378,16 +378,18 @@ fn wallet_fund_says_what_the_faucet_left_unfunded() {
 const EVM_PATH: &str = "/api/base-sepolia/request";
 const SOLANA_PATH: &str = "/api/solana/usdc-request";
 
+/// Initialises on both chains, the Solana one answered by `solana_rpc`; returns the EVM
+/// and Solana addresses.
 fn init_on_both_chains(
     machine: &Machine,
     chain: &FakeChain,
+    solana_rpc: &FakeChain,
     faucet: &FakeFaucet,
 ) -> (String, String) {
-    let solana = FakeChain::start_unfunded();
     let init = machine.init_with(&[
         "--solana",
         "--solana-rpc-url",
-        &solana.rpc_url(),
+        &solana_rpc.rpc_url(),
         "--evm-rpc-url",
         &chain.rpc_url(),
         "--faucet-url",
@@ -404,9 +406,10 @@ fn init_on_both_chains(
 #[test]
 fn wallet_fund_asks_for_the_solana_address_when_the_evm_one_is_refused() {
     let chain = FakeChain::start_unfunded();
+    let solana_rpc = FakeChain::start_unfunded();
     let faucet = FakeFaucet::refusing(chain.funded(), &[EVM_PATH]);
     let machine = Machine::new();
-    let (evm, solana) = init_on_both_chains(&machine, &chain, &faucet);
+    let (evm, solana) = init_on_both_chains(&machine, &chain, &solana_rpc, &faucet);
 
     let json = machine.toon(&["wallet", "fund", "--json"]);
     let text = machine.toon(&["wallet", "fund"]);
@@ -448,9 +451,10 @@ fn wallet_fund_asks_for_the_solana_address_when_the_evm_one_is_refused() {
 #[test]
 fn wallet_fund_fails_naming_each_address_when_the_faucet_refuses_every_one() {
     let chain = FakeChain::start_unfunded();
+    let solana_rpc = FakeChain::start_unfunded();
     let faucet = FakeFaucet::refusing(chain.funded(), &[EVM_PATH, SOLANA_PATH]);
     let machine = Machine::new();
-    let (evm, solana) = init_on_both_chains(&machine, &chain, &faucet);
+    let (evm, solana) = init_on_both_chains(&machine, &chain, &solana_rpc, &faucet);
 
     let fund = machine.toon(&["wallet", "fund", "--json"]);
 
@@ -460,6 +464,8 @@ fn wallet_fund_fails_naming_each_address_when_the_faucet_refuses_every_one() {
     assert!(message.contains(&evm), "{message}");
     assert!(message.contains(&solana), "{message}");
     assert_eq!(message.matches("cooldown").count(), 2, "{message}");
+    // The airdrop for fees is asked for although the faucet refused the token.
+    assert_eq!(solana_rpc.count("requestAirdrop"), 1);
 }
 
 #[test]

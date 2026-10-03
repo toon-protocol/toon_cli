@@ -436,7 +436,8 @@ fn faucet_error(message: String) -> Error {
 }
 
 /// What the faucet answered for `address`: its reply, or the reason it gave for refusing.
-/// An `Err` is the egress policy forbidding the request, which no address can get around.
+/// An `Err` is the egress refusing to make the request at all (its policy forbids it, or
+/// the proxy is unusable), which no address can get around.
 fn ask(
     egress: &Egress,
     faucet: &str,
