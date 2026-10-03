@@ -141,6 +141,10 @@ back only if its operator creates a peering in return.
 - `toon peer add <address> --deposit <n> --yes` peers toward the `/ilp` URL of another connector.
   `--id` labels it, `--fee` is what you keep of each packet forwarded, `--max-packet-amount` caps
   one packet. `peer_not_peerable` means the refusal is on the other side.
+- `toon describe [<ilp-url>]` prints what a connector offers before you pay it: its addresses,
+  settlement terms, and each route with its price and whether it states a `request`. With
+  `--json` the self-description is unaltered under `description`. Without a URL it describes your
+  own connector (`--app` chooses which). It pays nothing, and fails with `describe_failed`.
 - `toon peer list` shows the peerings and their labels; `toon peer remove <id>` removes one.
 - `toon join <network> --deposit <n> --yes` peers toward the network's own connector and reads
   its relay. The network must be the one `init` was given; it is done once.
