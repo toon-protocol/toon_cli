@@ -101,6 +101,11 @@ pub enum Command {
         #[command(subcommand)]
         command: EventCommand,
     },
+    /// Send private messages under the agent identity
+    Message {
+        #[command(subcommand)]
+        command: MessageCommand,
+    },
     /// Scaffold a draft NIP and publish it as an event under the agent identity
     Nip {
         #[command(subcommand)]
@@ -478,11 +483,50 @@ pub enum EventCommand {
         #[arg(long)]
         following: bool,
     },
-    /// Print the events of the live feed of a relay this agent node subscribed to, one JSON
-    /// document to a line, as they arrive
+    /// Print the live events of the agent node's own relay, one JSON document to a line, as
+    /// they arrive: it needs no subscription and pays nothing
+    Watch {
+        /// A NIP-01 filter, as one JSON object; its `limit` is dropped. Without it, and
+        /// without --following, every live event is printed
+        #[arg(long)]
+        filter: Option<String>,
+        /// Set the filter's `authors` to the keys in the agent's follow list, read once
+        /// when the command starts
+        #[arg(long)]
+        following: bool,
+    },
+    /// Removed: `toon event watch` reads the agent node's own relay
+    #[command(hide = true)]
     Follow {
-        /// The relay's websocket URL, as given to `toon relay subscribe`
-        relay: String,
+        /// Whatever it was given
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        ignored: Vec<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MessageCommand {
+    /// Send a private message (NIP-17) from the agent identity to one or more public keys
+    Send {
+        /// The recipients' public keys, in hex
+        recipients: Vec<String>,
+        /// The message
+        #[arg(long)]
+        content: String,
+        /// The id of the message this one replies to
+        #[arg(long)]
+        reply_to: Option<String>,
+        /// The conversation's subject
+        #[arg(long)]
+        subject: Option<String>,
+        /// Send the recipients' wraps to this relay instead (`ws://host:port` or
+        /// `wss://host:port`), paying its write price for each; the sender's copy still
+        /// goes to the agent node's own relay
+        #[arg(long)]
+        relay: Option<String>,
+        /// Confirm that this command moves money: without it nothing is paid
+        #[arg(long, requires = "relay")]
+        yes: bool,
     },
 }
 

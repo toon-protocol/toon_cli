@@ -18,7 +18,6 @@ use crate::control;
 use crate::derive;
 use crate::egress::Egress;
 use crate::event;
-use crate::feed;
 use crate::node;
 use crate::operator::{self, Answer};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
@@ -632,58 +631,6 @@ pub fn mark_exhausted(home: &Path, dialled: &Kept) -> Result<(), Error> {
         }
         _ => Ok(()),
     }
-}
-
-/// `toon event follow`: print the events of the live feed of `relay` as they arrive, one
-/// JSON document to a line, for as long as the relay sends them. A feed has no end of its
-/// own, so this returns only with the reason it stopped.
-pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
-    if node::State::load(home)?.is_none() {
-        return Err(node::no_agent_node(home));
-    }
-    let Some(kept) = load(home)?.into_iter().find(|kept| kept.relay == relay) else {
-        return Err(Error {
-            nothing_sent: false,
-            unanswered: None,
-            code: ErrorCode::NotSubscribed,
-            message: format!(
-                "This agent node holds no subscription at {relay}: `toon relay subscribe` opens one."
-            ),
-        });
-    };
-    let secret = match kept_secret(home) {
-        Some(secret) => secret,
-        None => *subscriber_secret(home)?,
-    };
-    let proxy = Egress::of(home)?.proxy_for(relay)?;
-    let stop = std::sync::atomic::AtomicBool::new(false);
-    let mut stdout = std::io::stdout().lock();
-    let mut unwritten = false;
-    let ended = feed::read(relay, &secret, &kept.filter, proxy, &stop, |event| {
-        use std::io::Write;
-        unwritten = writeln!(stdout, "{event}")
-            .and_then(|()| stdout.flush())
-            .is_err();
-        !unwritten
-    });
-    let failed = |message: String| Error {
-        nothing_sent: false,
-        unanswered: None,
-        code: ErrorCode::QueryFailed,
-        message,
-    };
-    Err(match ended {
-        _ if unwritten => failed("The events could not be written.".into()),
-        feed::Ended::Exhausted(reason) => {
-            let _ = mark_exhausted(home, &kept);
-            failed(format!(
-                "The subscription at {relay} has run out: {reason}. `toon relay subscribe` tops it up."
-            ))
-        }
-        feed::Ended::Closed(reason) => failed(format!("{relay} closed the feed: {reason}")),
-        feed::Ended::Dropped(message) => failed(message),
-        feed::Ended::Stopped => failed(format!("The feed of {relay} stopped.")),
-    })
 }
 
 /// The TOON app of this agent node that runs its own relay. None is `unknown_name`.

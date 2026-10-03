@@ -1,8 +1,8 @@
-//! The receiving end of a subscription: dial another relay's live feed, prove which
-//! subscriber key we hold with NIP-42, send one `REQ` and hand on each event
-//! (`nips/paid-subscription.md`, "The live feed").
+//! The receiving end of a live feed: dial a relay, prove which key we hold with NIP-42,
+//! send one `REQ` and hand on each event (`nips/paid-subscription.md`, "The live feed").
 //!
-//! The supervisor (`receive`) and `toon event follow` both read a feed this way. A relay
+//! The supervisor (`receive`) reads other relays' feeds as the subscriber, and `toon event
+//! watch` reads the agent node's own relay as its operator. A relay
 //! reached through the overlay is dialled through its SOCKS5 proxy, naming the host
 //! (`socks5h`), so that nothing is resolved on this machine; a `wss://` relay's TLS runs
 //! inside the stream the proxy returns.
@@ -171,11 +171,38 @@ fn frame(message: Message) -> Option<Vec<Value>> {
     }
 }
 
+/// How a feed is read: whom it answers an `AUTH` challenge as, and what it keeps.
+pub struct Reading<'a> {
+    /// The key that answers the relay's `AUTH` challenge, and the URL the `relay` tag of the
+    /// answer names, which is where the relay is reached and not always the address that
+    /// is dialled. None sends the `REQ` at once, for a relay that sends no challenge.
+    pub login: Option<(&'a [u8; 32], &'a str)>,
+    /// Hand on only the events that arrive after the relay's `EOSE`, and not the stored
+    /// ones it sends first.
+    pub live_only: bool,
+}
+
 /// Read the live feed of `relay` for the subscriber key `secret`, with `filter`, and call
 /// `on_event` for every event it sends, until it ends. `on_event` returns whether to go on.
 pub fn read(
     relay: &str,
     secret: &[u8; 32],
+    filter: &Value,
+    proxy: Option<SocketAddr>,
+    stop: &AtomicBool,
+    on_event: impl FnMut(Value) -> bool,
+) -> Ended {
+    let reading = Reading {
+        login: Some((secret, relay)),
+        live_only: false,
+    };
+    listen(relay, &reading, filter, proxy, stop, on_event)
+}
+
+/// Read the live feed of `relay` as `reading` says, until it ends.
+pub fn listen(
+    relay: &str,
+    reading: &Reading,
     filter: &Value,
     proxy: Option<SocketAddr>,
     stop: &AtomicBool,
@@ -187,52 +214,56 @@ pub fn read(
     };
     let dropped = |error: tungstenite::Error| Ended::Dropped(format!("{relay}: {error}."));
 
-    // The relay opens with an `AUTH` challenge; the feed is for the key that answers it.
-    let started = Instant::now();
-    let challenge = loop {
-        if stop.load(Ordering::SeqCst) {
-            return Ended::Stopped;
-        }
-        if started.elapsed() > PATIENCE {
-            return Ended::Dropped(format!("{relay} sent no AUTH challenge."));
-        }
-        match socket.read() {
-            Ok(message) => {
-                if let Some(frame) = frame(message) {
-                    if frame.first().and_then(Value::as_str) == Some("AUTH") {
-                        if let Some(challenge) = frame.get(1).and_then(Value::as_str) {
-                            break challenge.to_owned();
+    let mut opening = Vec::new();
+    if let Some((secret, url)) = reading.login {
+        // The relay opens with an `AUTH` challenge; the feed is for the key that answers it.
+        let started = Instant::now();
+        let challenge = loop {
+            if stop.load(Ordering::SeqCst) {
+                return Ended::Stopped;
+            }
+            if started.elapsed() > PATIENCE {
+                return Ended::Dropped(format!("{relay} sent no AUTH challenge."));
+            }
+            match socket.read() {
+                Ok(message) => {
+                    if let Some(frame) = frame(message) {
+                        if frame.first().and_then(Value::as_str) == Some("AUTH") {
+                            if let Some(challenge) = frame.get(1).and_then(Value::as_str) {
+                                break challenge.to_owned();
+                            }
                         }
                     }
                 }
+                Err(error) if timed_out(&error) => {}
+                Err(error) => return dropped(error),
             }
-            Err(error) if timed_out(&error) => {}
-            Err(error) => return dropped(error),
-        }
-    };
-    let answer = match event::sign(
-        secret,
-        event::now(),
-        CLIENT_AUTH,
-        json!([["relay", relay], ["challenge", challenge]]),
-        "",
-    ) {
-        Ok(answer) => answer,
-        Err(error) => return Ended::Dropped(error.message),
-    };
+        };
+        let answer = match event::sign(
+            secret,
+            event::now(),
+            CLIENT_AUTH,
+            json!([["relay", url], ["challenge", challenge]]),
+            "",
+        ) {
+            Ok(answer) => answer,
+            Err(error) => return Ended::Dropped(error.message),
+        };
+        opening.push(json!(["AUTH", answer]));
+    }
     let mut filter = filter.clone();
     if let Some(filter) = filter.as_object_mut() {
         // A filter's `limit` has no meaning for a live feed.
         filter.remove("limit");
     }
-    for message in [
-        json!(["AUTH", answer]),
-        json!(["REQ", SUBSCRIPTION, filter]),
-    ] {
+    opening.push(json!(["REQ", SUBSCRIPTION, filter]));
+    for message in opening {
         if let Err(error) = socket.send(Message::text(message.to_string())) {
             return dropped(error);
         }
     }
+
+    let mut stored = reading.live_only;
 
     let ended = loop {
         if stop.load(Ordering::SeqCst) {
@@ -247,7 +278,11 @@ pub fn read(
             continue;
         };
         match (frame.first().and_then(Value::as_str), frame.get(1)) {
+            (Some("EOSE"), Some(id)) if id == SUBSCRIPTION => stored = false,
             (Some("EVENT"), Some(id)) if id == SUBSCRIPTION => {
+                if stored {
+                    continue;
+                }
                 if let Some(event) = frame.get(2) {
                     if !on_event(event.clone()) {
                         break Ended::Stopped;

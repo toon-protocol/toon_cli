@@ -21,7 +21,10 @@ ed25519-dalek = "2"
 getrandom = "0.2"
 hex = "0.4"
 hmac = "0.12"
-k256 = { version = "0.13", features = ["schnorr"] }
+k256 = { version = "0.13", features = ["schnorr", "ecdh"] }
+# NIP-44: the stream cipher and the key derivation, at the versions already in `Cargo.lock`.
+chacha20 = "0.9"
+hkdf = "0.12"
 scrypt = "0.11"
 sha2 = "0.10"
 sha3 = "0.10"
@@ -68,7 +71,7 @@ tokio-rustls = "0.24"
 # The relay image `toon` runs as a container (ADR 0001), pinned by digest. `build.rs`
 # hands it to `toon --version`.
 [package.metadata.toon]
-relay_image = "ghcr.io/toon-protocol/relay:rust-sha-c56b435@sha256:f2e94e1fde1074691d58cf33f086e86f72f90b9834dcb36ef7df71adff04f761"
+relay_image = "ghcr.io/toon-protocol/relay:rust-sha-f574257@sha256:bc00f1303b1e917481433181e059b59458250b238d9478a5c3d316d6ae5f7871"
 
 [lints.rust]
 unsafe_code = "forbid"

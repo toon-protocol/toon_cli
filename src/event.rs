@@ -4,6 +4,8 @@
 //! It is published as an operator write to the agent node's own relay through the
 //! relay's write route, and read back with a plain NIP-01 `REQ`, which is free.
 
+use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -41,7 +43,7 @@ fn usage(message: impl Into<String>) -> Error {
 }
 
 /// The event's id: the SHA-256 of its NIP-01 serialization.
-fn event_id(pubkey: &str, created_at: u64, kind: u64, tags: &Value, content: &str) -> [u8; 32] {
+pub fn event_id(pubkey: &str, created_at: u64, kind: u64, tags: &Value, content: &str) -> [u8; 32] {
     let serialized = json!([0, pubkey, created_at, kind, tags, content]).to_string();
     Sha256::digest(serialized.as_bytes()).into()
 }
@@ -114,6 +116,7 @@ pub fn publish(
         return Err(node::no_agent_node(home));
     }
     let secret = agent_secret(home)?;
+    keep_agent_secret(home, &secret)?;
     let event = sign(&secret, now(), kind, tags, content)?;
     write(home, event, amount)
 }
@@ -150,6 +153,41 @@ pub fn agent_secret(home: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> 
     })
 }
 
+/// Where the agent identity's secret is kept for the supervisor, which has no passphrase to
+/// open the wallet with, beside the subscriber key and the connectors' keys (ADR 0008).
+pub fn agent_key_path(home: &Path) -> std::path::PathBuf {
+    home.join("agent.key")
+}
+
+/// Keep the agent identity's secret, readable by the owner alone, where it is not kept yet
+/// (or another wallet's is).
+/// The file is derived from the mnemonic, so a backup leaves it out.
+pub fn keep_agent_secret(home: &Path, secret: &[u8; 32]) -> Result<(), Error> {
+    let path = agent_key_path(home);
+    if std::fs::read(&path).is_ok_and(|kept| kept == secret) {
+        return Ok(());
+    }
+    node::write(&path, secret, 0o600)
+}
+
+/// [`keep_agent_secret`] for a wallet just made, from its mnemonic.
+pub fn keep_agent_secret_of(home: &Path, phrase: &str) -> Result<(), Error> {
+    let mnemonic: bip39::Mnemonic = phrase.parse().map_err(|_| Error {
+        nothing_sent: false,
+        unanswered: None,
+        code: ErrorCode::KeystoreCorrupt,
+        message: "The mnemonic is not valid.".into(),
+    })?;
+    let secret =
+        derive::agent_identity_secret(&*derive::seed(&mnemonic)).map_err(|source| Error {
+            nothing_sent: false,
+            unanswered: None,
+            code: ErrorCode::KeystoreCorrupt,
+            message: source.0,
+        })?;
+    keep_agent_secret(home, &secret)
+}
+
 /// The x-only public key, in hex, of the key `secret`.
 pub fn public_key(secret: &[u8; 32]) -> Result<String, Error> {
     SigningKey::from_bytes(secret)
@@ -183,7 +221,7 @@ pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
 
 /// Write a signed event to `destination` for `amount`, sealed to the key `seal_to`, or to
 /// this agent node's own connector.
-fn write_to(
+pub fn write_to(
     home: &Path,
     event: Value,
     destination: &str,
@@ -399,6 +437,71 @@ pub fn fetch(egress: &Egress, relay: &str, filter: &Value) -> Result<Vec<Value>,
     Ok(events)
 }
 
+/// `toon event watch`: print the live events of the agent node's own relay that match
+/// `filter`, with `authors` set to the keys the agent follows when `following`, one JSON
+/// document to a line, for as long as the relay sends them. A feed has no end of its own,
+/// so this returns only with the reason it stopped.
+pub fn watch(filter: Option<&str>, following: bool) -> Result<Report, Error> {
+    let home = home::resolve()?;
+    let filter = filter.map(parse_filter).transpose()?;
+    let filter = if following {
+        self::following(&home, filter)?.0
+    } else {
+        filter.unwrap_or_else(|| json!({}))
+    };
+    let state = node::State::load(&home)?.ok_or_else(|| node::no_agent_node(&home))?;
+    let app = crate::subscribe::own_relay_app(&state)?;
+    let address = crate::subscribe::own_relay_address(&home, &app.name)?;
+    let dialled = format!("ws://{address}");
+
+    // A relay that sells its feed gives a live read to its operator: whoever answers its
+    // challenge with its own identity key, naming where the relay is reached, which is not
+    // the loopback address dialled. A relay that does not sell it sends no challenge.
+    let identity = if app.relay.selling().is_some() {
+        let key = fs::read(node::AppFiles::of(&home, node::RELAY).identity_key)
+            .ok()
+            .and_then(|key| <[u8; 32]>::try_from(key.as_slice()).ok())
+            .ok_or_else(|| Error {
+                nothing_sent: false,
+                unanswered: None,
+                code: ErrorCode::AppFailed,
+                message: "The identity key of the relay is not readable.".into(),
+            })?;
+        let url = node::reached_at(&app.reach, node::onion_endpoint(&home, app).as_deref())
+            .unwrap_or_else(|| dialled.clone());
+        Some((zeroize::Zeroizing::new(key), url))
+    } else {
+        None
+    };
+    let reading = feed::Reading {
+        login: identity.as_ref().map(|(key, url)| (&**key, url.as_str())),
+        live_only: true,
+    };
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    let mut stdout = std::io::stdout().lock();
+    let mut unwritten = false;
+    let ended = feed::listen(&dialled, &reading, &filter, None, &stop, |event| {
+        unwritten = writeln!(stdout, "{event}")
+            .and_then(|()| stdout.flush())
+            .is_err();
+        !unwritten
+    });
+    let failed = |message: String| Error {
+        nothing_sent: false,
+        unanswered: None,
+        code: ErrorCode::QueryFailed,
+        message,
+    };
+    Err(match ended {
+        _ if unwritten => failed("The events could not be written.".into()),
+        feed::Ended::Exhausted(reason) | feed::Ended::Closed(reason) => {
+            failed(format!("The relay closed the feed: {reason}"))
+        }
+        feed::Ended::Dropped(message) => failed(message),
+        feed::Ended::Stopped => failed("The feed of the relay stopped.".into()),
+    })
+}
+
 /// Where another relay is paid for a write, from its information document.
 pub struct Edge {
     pub ilp_address: String,
@@ -475,7 +578,7 @@ pub fn information_document(egress: &Egress, relay: &str) -> Result<Value, Error
 
 /// The write edge `relay` publishes in its NIP-11 information document, the `toon`
 /// object.
-fn edge(egress: &Egress, relay: &str) -> Result<Edge, Error> {
+pub fn edge(egress: &Egress, relay: &str) -> Result<Edge, Error> {
     let document = information_document(egress, relay)?;
     edge_fields(&document["toon"]).map_err(|missing| {
         unpayable(format!(
@@ -542,6 +645,7 @@ fn publish_to(
         });
     }
     let secret = agent_secret(home)?;
+    keep_agent_secret(home, &secret)?;
     let event = sign(&secret, now(), kind, tags, content)?;
     let sent: u128 = amount.into();
     spending::spend_packets(home, sent, yes, |packets| {
@@ -615,7 +719,11 @@ pub fn run(command: EventCommand) -> Result<Report, Error> {
             filter,
             following,
         } => query(&relay, filter.as_deref(), following),
-        EventCommand::Follow { relay } => crate::subscribe::follow(&home::resolve()?, &relay),
+        EventCommand::Watch { filter, following } => watch(filter.as_deref(), following),
+        EventCommand::Follow { .. } => Err(usage(
+            "`toon event follow` is gone: `toon event watch` prints the live events of this \
+             agent node's own relay, and `toon relay subscribe` fills it.",
+        )),
     }
 }
 

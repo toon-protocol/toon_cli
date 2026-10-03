@@ -641,6 +641,22 @@ pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Peered, Error> {
     })
 }
 
+/// [`peer_add_on`], then forward `prefix` over the peering. A deposit the peering made is
+/// added to `deposits` before the route is asked for, so a route that then fails, even
+/// before anything is sent, does not give that deposit back.
+pub fn peer_and_route_on(
+    surface: &Surface,
+    add: &PeerAdd,
+    prefix: &str,
+    deposits: &mut u128,
+) -> Result<Peered, Error> {
+    let id = add.id.map_or_else(|| label(add.address), str::to_owned);
+    let peered = peer_add_on(surface, add)?;
+    *deposits += u128::from(peered.deposited);
+    route_add_on(surface, prefix, &id, 0)?;
+    Ok(peered)
+}
+
 /// `toon peer list`: the connector's peerings.
 pub fn peer_list(home: &Path) -> Result<Report, Error> {
     let surface = surface(home)?;
@@ -1515,9 +1531,9 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        answer, before_sending, packet_wait, peer_add_on, Answer, PeerAdd, Surface,
-        AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD,
-        UNREAD_TIMEOUT,
+        answer, before_sending, packet_wait, peer_add_on, peer_and_route_on, Answer, PeerAdd,
+        Surface, AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ,
+        UNREAD, UNREAD_TIMEOUT,
     };
     use crate::cli::Chain;
     use crate::outcome::ErrorCode;
@@ -1824,6 +1840,22 @@ mod tests {
         );
         assert!(crate::spending::failed_before_paying(&error));
         assert_eq!(seen.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn a_deposit_is_counted_though_the_route_after_it_is_refused_before_anything_is_sent() {
+        let home = tempfile::tempdir().expect("a directory");
+        let opened = r#"{"id":"far","channel":{"id":"c","status":"opened"}}"#.to_owned();
+        let (url, _) = connector(vec![(200, opened), (401, "unauthorized".to_owned())]);
+        let mut deposits = 0;
+        let Err(error) =
+            peer_and_route_on(&surface(home.path(), url), &add(), "g.far", &mut deposits)
+        else {
+            panic!("the route was made");
+        };
+        assert_eq!(error.code, ErrorCode::RouteFailed);
+        assert!(crate::spending::failed_before_paying(&error));
+        assert_eq!(deposits, 1, "the peering's deposit landed before the route");
     }
 
     #[test]

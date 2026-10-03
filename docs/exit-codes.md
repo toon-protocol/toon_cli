@@ -70,7 +70,7 @@ A failed command with `--json` prints:
 | `unfunded` | 1 | A settlement key does not hold what is needed, so `toon up` did not start the connector (the token; on Solana also SOL), or a command that has a connector send a transaction did not (EVM gas, 0.001 ETH, whether the check finds too little or the connector reports the chain refused to estimate for lack of it: `toon join`, `toon peer add` with a deposit, `toon create` with a deposit, `toon channel open`, `fund`, `withdraw`, `land`); the message names each address and the amount |
 | `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused every address (one refusal does not fail the command while another address is funded) |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
-| `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event) could not be sent: the connector's operator surface refused the write, could not be reached, or did not answer within the wait (the packet's 30-second expiry and five seconds more); the message carries the reason. A packet that went unanswered has expired and will not be delivered, so the command can be run again; the failure's JSON carries `paid` and, for `toon event publish --relay`, the `event` with its id (see Spending limit) |
+| `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event; for `toon message send`, a wrap) could not be sent: the connector's operator surface refused the write, could not be reached, or did not answer within the wait (the packet's 30-second expiry and five seconds more); the message carries the reason. A packet that went unanswered has expired and will not be delivered, so the command can be run again; the failure's JSON carries `paid` and, for `toon event publish --relay`, the `event` with its id (see Spending limit) |
 | `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
 | `unknown_name` | 1 | `--app`, `toon create --app`, `toon destroy`, `toon logs`, `toon add` or `toon remove` was given a name that is not a TOON app or an app of this agent node, as that command needs |
 | `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
@@ -84,9 +84,8 @@ A failed command with `--json` prints:
 | `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
 | `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap (its `anon` release could not be downloaded or did not match its pinned checksum, its terms were not agreed to, or the daemon did not come up), so a hidden service was not created or started, or a command on a hidden agent node that makes a request of its own (a faucet, a chain, a relay, a connector) had no overlay to send it through; nothing falls back to clearnet |
 | `join_refused` | 1 | `toon join` named a network other than the one this agent node was initialised for, the agent node has already joined one, or it records no connector for the network (`mainnet` has none unless `init` was given `--connector-url`); nothing was spent |
-| `relay_not_payable` | 1 | `toon event publish --relay` or `toon relay subscribe` could not read the relay's information document (or, for a `wss://` relay, its certificate did not verify), or it names no write edge (`toon`: `ilp_address`, `connector_url`, `connector_seal_key`, `price`; the key is 65 bytes of hex beginning `04`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
-| `peering_needed` | 1 | `toon event publish --relay` or `toon relay subscribe` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. The message prints the `toon peer add <connector_url> --deposit <amount> --yes` to run (for `subscribe`, with the deposit it would take in place of `<amount>`), then `toon route add` |
-| `not_subscribed` | 1 | `toon event follow` named a relay at which this agent node holds no subscription: `toon relay subscribe` opens one |
+| `relay_not_payable` | 1 | `toon event publish --relay`, `toon message send --relay` or `toon relay subscribe` could not read the relay's information document (or, for a `wss://` relay, its certificate did not verify), or it names no write edge (`toon`: `ilp_address`, `connector_url`, `connector_seal_key`, `price`; the key is 65 bytes of hex beginning `04`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
+| `peering_needed` | 1 | `toon event publish --relay`, `toon message send --relay` or `toon relay subscribe` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. The message prints the `toon peer add <connector_url> --deposit <amount> --yes` to run (for `subscribe`, with the deposit it would take in place of `<amount>`), then `toon route add` |
 | `no_follow_list` | 1 | `toon event query --following` or `toon relay subscribe --following` found no follow list of the agent identity on the agent node's own relay, or one with no keys; nothing was sent or paid |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
 | `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
@@ -98,7 +97,7 @@ A failed command with `--json` prints:
 
 ## The wallet passphrase
 
-`toon init`, `toon wallet show`, `toon wallet balances`, `toon wallet backup`, `toon wallet restore` `toon event publish` and `toon nip publish` read the passphrase from the file named by
+`toon init`, `toon wallet show`, `toon wallet balances`, `toon wallet backup`, `toon wallet restore` `toon event publish`, `toon message send` and `toon nip publish` read the passphrase from the file named by
 `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`. It is never a flag. One trailing
 newline in the file is not part of the passphrase.
 
@@ -154,7 +153,7 @@ On a hidden agent node, one with at least one hidden TOON app, the requests a co
 itself also go through the overlay's SOCKS5 proxy, naming the host: the faucet and chain RPC of
 `wallet fund` and `wallet balances`, a relay's information document and balance read
 (`event publish --relay`, `relay subscribe`, `relay subscriptions`), a relay's websocket
-(`event query`, `event follow`), and the `/identity` and packet of `send --seal-to`. A plain
+(`event query`), and the `/identity` and packet of `send --seal-to`. A plain
 `http://` or `ws://` endpoint on this machine (`localhost`, `127.0.0.1`, `[::1]`) is dialled
 directly, as the connector's own RPC is. If the overlay cannot be had, each of these commands
 fails with `overlay_unavailable` and dials nothing directly; a relay the proxy refuses fails as
@@ -262,12 +261,20 @@ subscription is given is a snapshot: following someone later does not change it,
 report of `relay subscribe --following` says how many keys it holds and that it stays fixed
 until the command is run again. The command needs the passphrase, to name the agent identity.
 
-`toon event follow <relay-url>` prints the events of the live feed of a relay this agent node
-subscribed to, one JSON document to a line, as they arrive, with or without `--json`. A feed
-has no end, so it exits 1 with the reason it stopped: `query_failed` when the relay closed
-the feed or dropped (the subscription has run out, if the message says so), and
-`not_subscribed` when the agent node holds no subscription at that relay. It dials the relay
-directly, not through the overlay.
+`toon event watch [--filter <json>] [--following]` prints the live events of the agent node's own
+relay, one JSON document to a line, flushed as each arrives, with or without `--json`. It takes no
+relay URL, needs no subscription, sends no packet and counts nothing against the spending
+limit. Only events that arrive after it starts are printed; `event query` reads the stored
+ones. `--filter` is parsed and refused as on `event query`, and its `limit` is dropped;
+`--following` sets its `authors` as on `event query`, read once at the start. A relay that
+sells its feed keeps a `REQ` open only for its operator, so the command answers the relay's
+NIP-42 challenge with the relay's own identity key, signing the `relay` tag with the URL the
+relay is reached at (its onion endpoint or public hostname) and not the loopback address it
+dials; a relay that does not sell its feed sends no challenge and is read at once. Without an
+agent node it fails with `no_agent_node`, with no relay in it `unknown_name`, and with the relay not
+running `not_running`. A feed has no end, so it exits 1 with the reason it stopped:
+`query_failed` when the relay closed the feed or dropped. `toon event follow` is removed and is
+`usage`, naming `toon event watch`.
 
 `toon nip publish` signs a draft (`nips/proposals-as-events.md`) the same way and writes it
 to the agent node's own relay as `toon event publish` does, with the same outcomes. It first

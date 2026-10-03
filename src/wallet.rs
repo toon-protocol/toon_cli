@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use crate::cli::WalletCommand;
 use crate::derive::{self, Addresses};
 use crate::egress::Egress;
+use crate::event;
 use crate::funding;
 use crate::keystore;
 use crate::node::{self, Reach};
@@ -170,9 +171,12 @@ pub fn init(home: &Path, options: &node::Options, restore: bool) -> Result<Repor
     if !keystore::create(home, &passphrase, &phrase)? {
         return existing(home, options);
     }
+    // Where it cannot be kept, the next command that opens the keystore keeps it.
+    let _ = event::keep_agent_secret_of(home, &phrase);
     if let Err(error) = state.save(home) {
         // The mnemonic has not been shown, so the wallet goes with the TOON app.
         let _ = std::fs::remove_file(keystore::path(home));
+        let _ = std::fs::remove_file(event::agent_key_path(home));
         discard_toon_apps(home);
         return Err(error);
     }
@@ -1067,7 +1071,10 @@ pub fn restore(home: &Path, from: &Path) -> Result<Report, Error> {
         endpoints.push(json!({ "connector": connector, "onion_endpoint": endpoint }));
     }
     match keystore::create(home, &passphrase, &phrase) {
-        Ok(true) => {}
+        Ok(true) => {
+            // Where it cannot be kept, the next command that opens the keystore keeps it.
+            let _ = event::keep_agent_secret_of(home, &phrase);
+        }
         Ok(false) => {
             undo(&written);
             return Err(Error {
