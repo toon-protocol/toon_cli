@@ -16,10 +16,13 @@ mod egress;
 mod event;
 mod feed;
 mod funding;
+mod gift_wrap;
 mod home;
 mod keystore;
 mod lifecycle;
+mod message;
 mod nip;
+mod nip44;
 mod node;
 mod operator;
 mod outcome;
@@ -228,6 +231,7 @@ fn run() -> ExitCode {
         )
         .into(),
         Command::Event { command } => render(event::run(command), json).into(),
+        Command::Message { command } => render(message::run(command), json).into(),
         Command::Nip { command } => render(nip::run(command), json).into(),
         Command::Skill { command } => render(skill::run(command), json).into(),
         Command::Relay { command } => render(
