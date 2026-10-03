@@ -265,10 +265,17 @@ service to another. Before the `route add`, the publish fails with `peering_need
 its message names the `peer add`, with `--deposit <amount> --yes`, and the `route add` to
 run.
 
-A first publish over a cold link may be rejected after 30 seconds, or fail with
-`send_failed` when the connector does not answer in time (the packet has expired by then;
-the failure's `paid` and `event` say what it cost and which event it carried). It is paid
-for, and the same command succeeds when run again.
+A first publish over a cold link may be rejected, or fail with `send_failed`, at about
+the packet's expiry and not after it: a connector that forwards the packet stops waiting on
+the next hop at the packet's outgoing expiry (a little under its 30 seconds) and answers
+`R00`, and signs nothing for a packet that ran out of time before the voucher was signed. A
+packet the next hop never carried is not paid for on a batch-settlement channel when the
+next hop can be asked where it stands: the connector's next forward on the channel signs
+from that figure. A packet the next hop did carry is paid for, and its event may be stored;
+the failure's `event` names it, for `toon event query` to look for before the command is run
+again. The failure's `paid` is read from the outbound watermark right after the packet, and
+can show a voucher the next forward then drops, so it can be above what the packet finally
+costs.
 
 ### Another agent node subscribes to this one's relay
 
