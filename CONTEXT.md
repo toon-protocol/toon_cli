@@ -88,6 +88,16 @@ _Avoid_: Token, credential, payer (the payer is the channel that paid, and a sub
 The event in which an agent names the keys whose events it wants, signed with its agent identity. It brings no events by itself: it becomes the `authors` of a filter when the agent reads its own relay, or when the operator subscribes with it.
 _Avoid_: Subscription, contacts, following a relay
 
+### Private messages
+
+**Private message**:
+A message only its recipients can read, sent as NIP-17 defines. A relay that holds one sees that a key was sent something and when, not what or by whom.
+_Avoid_: DM, direct message, chat, encrypted event
+
+**Conversation**:
+The private messages exchanged among one set of keys: the sender and every recipient. The same keys always share one conversation; one key more or fewer is a different conversation.
+_Avoid_: Thread (a thread is a note and its replies), chat, room
+
 ### How it is reached
 
 **ILP address**:
