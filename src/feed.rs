@@ -29,6 +29,11 @@ const TICK: Duration = Duration::from_millis(250);
 /// NIP-42: a kind of event that answers an `AUTH` challenge.
 const CLIENT_AUTH: u64 = 22242;
 
+/// How long a read of the agent node's own relay waits for an `AUTH` challenge before it
+/// asks for events without answering one: a relay that does not sell its feed need not
+/// challenge.
+const CHALLENGE_GRACE: Duration = Duration::from_secs(1);
+
 /// The id of the one `REQ` a feed sends.
 pub const SUBSCRIPTION: &str = "feed";
 
@@ -171,6 +176,19 @@ fn frame(message: Message) -> Option<Vec<Value>> {
     }
 }
 
+/// The NIP-42 answer of the key `secret` to the challenge `challenge` of the relay reached
+/// at `url`.
+fn answer(secret: &[u8; 32], url: &str, challenge: &str) -> Result<Value, Ended> {
+    event::sign(
+        secret,
+        event::now(),
+        CLIENT_AUTH,
+        json!([["relay", url], ["challenge", challenge]]),
+        "",
+    )
+    .map_err(|error| Ended::Dropped(error.message))
+}
+
 /// How a feed is read: whom it answers an `AUTH` challenge as, and what it keeps.
 pub struct Reading<'a> {
     /// The key that answers the relay's `AUTH` challenge, and the URL the `relay` tag of the
@@ -239,15 +257,9 @@ pub fn listen(
                 Err(error) => return dropped(error),
             }
         };
-        let answer = match event::sign(
-            secret,
-            event::now(),
-            CLIENT_AUTH,
-            json!([["relay", url], ["challenge", challenge]]),
-            "",
-        ) {
+        let answer = match answer(secret, url, &challenge) {
             Ok(answer) => answer,
-            Err(error) => return Ended::Dropped(error.message),
+            Err(ended) => return ended,
         };
         opening.push(json!(["AUTH", answer]));
     }
@@ -297,6 +309,82 @@ pub fn listen(
                 } else {
                     Ended::Closed(reason.to_owned())
                 };
+            }
+            _ => {}
+        }
+    };
+    let _ = socket.close(None);
+    ended
+}
+
+/// Read the live feed of the agent node's own `relay` with `filter` and call `on_event` for
+/// every event it sends, until it ends. A relay that sells its feed closes a free read after
+/// the stored events but keeps one open for a connection that proves an operator key, and
+/// the relay's own identity key, `identity_key`, is always one: so a challenge is answered
+/// with it, naming `url`, where the relay is reached, which is not always the address that
+/// is dialled, and the `REQ` is sent once the challenge is answered. A relay that sends no
+/// challenge within a moment is asked without one.
+pub fn read_own(
+    relay: &str,
+    url: &str,
+    identity_key: &[u8; 32],
+    filter: &Value,
+    stop: &AtomicBool,
+    mut on_event: impl FnMut(Value),
+) -> Ended {
+    let mut socket = match dial(relay, None) {
+        Ok(socket) => socket,
+        Err(message) => return Ended::Dropped(message),
+    };
+    let dropped = |error: tungstenite::Error| Ended::Dropped(format!("{relay}: {error}."));
+    let request = json!(["REQ", SUBSCRIPTION, filter]).to_string();
+    let started = Instant::now();
+    let (mut requested, mut answered) = (false, false);
+    let ended = loop {
+        if stop.load(Ordering::SeqCst) {
+            break Ended::Stopped;
+        }
+        if !requested && started.elapsed() > CHALLENGE_GRACE {
+            if let Err(error) = socket.send(Message::text(request.clone())) {
+                break dropped(error);
+            }
+            requested = true;
+        }
+        let message = match socket.read() {
+            Ok(message) => message,
+            Err(error) if timed_out(&error) => continue,
+            Err(error) => break dropped(error),
+        };
+        let Some(frame) = frame(message) else {
+            continue;
+        };
+        match (frame.first().and_then(Value::as_str), frame.get(1)) {
+            (Some("AUTH"), Some(challenge)) if !answered => {
+                let Some(challenge) = challenge.as_str() else {
+                    continue;
+                };
+                let answer = match answer(identity_key, url, challenge) {
+                    Ok(answer) => answer,
+                    Err(ended) => break ended,
+                };
+                answered = true;
+                // A `REQ` sent before the answer is asked again, as the relay may have
+                // read it as a free one.
+                for message in [json!(["AUTH", answer]).to_string(), request.clone()] {
+                    if let Err(error) = socket.send(Message::text(message)) {
+                        return dropped(error);
+                    }
+                }
+                requested = true;
+            }
+            (Some("EVENT"), Some(id)) if id == SUBSCRIPTION => {
+                if let Some(event) = frame.get(2) {
+                    on_event(event.clone());
+                }
+            }
+            (Some("CLOSED"), Some(id)) if id == SUBSCRIPTION => {
+                let reason = frame.get(2).and_then(Value::as_str).unwrap_or_default();
+                break Ended::Closed(reason.to_owned());
             }
             _ => {}
         }

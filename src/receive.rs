@@ -46,6 +46,8 @@ const OVERLAP: u64 = 600;
 pub trait Surroundings: Send + Sync {
     /// The write address of the agent node's own relay, if it runs.
     fn relay(&self) -> Option<SocketAddr>;
+    /// The read address of the agent node's own relay, if it runs.
+    fn read_relay(&self) -> Option<SocketAddr>;
     /// The overlay's SOCKS5 proxy, if the supervisor has one. A feed asks for it through
     /// `proxy_for`, which leaves out a relay on this machine.
     fn proxy(&self) -> Option<SocketAddr>;

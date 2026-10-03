@@ -35,9 +35,6 @@ impl From<crate::outcome::Error> for WrapError {
     }
 }
 
-// Opening is built with sealing so that the round trip is tested in one place; the
-// supervisor opens wraps in the next ticket.
-#[cfg_attr(not(test), allow(dead_code))]
 fn refuse<T>(message: &str) -> Result<T, WrapError> {
     Err(WrapError(message.to_owned()))
 }
@@ -107,9 +104,6 @@ pub fn wrap(
     )?)
 }
 
-// Opening is built with sealing so that the round trip is tested in one place; the
-// supervisor opens wraps in the next ticket.
-#[cfg_attr(not(test), allow(dead_code))]
 /// Whether `event` carries the id and the signature NIP-01 defines.
 fn is_signed(event: &Value) -> bool {
     let text = |field: &str| event[field].as_str().map(str::to_owned);
@@ -146,9 +140,6 @@ fn is_signed(event: &Value) -> bool {
     key.verify_raw(&computed, &signature).is_ok()
 }
 
-// Opening is built with sealing so that the round trip is tested in one place; the
-// supervisor opens wraps in the next ticket.
-#[cfg_attr(not(test), allow(dead_code))]
 /// What opening a wrap yields: the rumor, and the key that sealed it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Opened {
@@ -156,9 +147,6 @@ pub struct Opened {
     pub sender: String,
 }
 
-// Opening is built with sealing so that the round trip is tested in one place; the
-// supervisor opens wraps in the next ticket.
-#[cfg_attr(not(test), allow(dead_code))]
 /// Open the wrap `wrap` with the secret of the key it was sent to. A wrap or a seal that is
 /// not signed as it says, a seal that is not a kind 13 with no tags, and a seal whose
 /// `pubkey` is not the rumor's, are refused.
