@@ -12,8 +12,9 @@ connector, or its own peerings. Then [create a TOON app](creating-a-toon-app.md)
 An app is a plain HTTP service. The connector unseals each paid packet and makes the HTTP
 request inside it (method, path and body) to the app, then returns the app's answer to the
 payer. The app never sees a payment, so any HTTP service can be one. For full examples, see
-[`gas-station`](https://github.com/toon-protocol/gas-station), and [`anytoon`](https://github.com/toon-protocol/anytoon).
-The minimal app below is the one image this guide shows running under `toon add --image`.
+[`gas-station`](https://github.com/toon-protocol/gas-station) and
+[`anytoon`](https://github.com/toon-protocol/anytoon). The minimal app below is the one image
+this guide shows running under `toon add --image`.
 
 Given as a container image, an app must:
 

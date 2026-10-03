@@ -131,7 +131,8 @@ An image given with `--image` must:
 The app is given no environment beyond `TOON_BLS_PORT` and `TOON_DATA_DIR`. An image that needs
 a secret or another variable to start fails with `app_failed`; `toon logs <app>` says why. Do not
 assume a published image meets this: the one image known to run unchanged is the minimal app in
-`docs/guide/adding-an-app.md` (built with `docker build`, also used by the end-to-end run).
+[Adding an app](https://github.com/toon-protocol/toon_cli/blob/main/docs/guide/adding-an-app.md),
+built with `docker build`; the end-to-end run adds an app built the same way.
 
 An app's loopback address is not a way to pay it. A request made straight to it does not arrive
 as a packet through the connector, so it is unpaid work: never do it in place of a payment.
