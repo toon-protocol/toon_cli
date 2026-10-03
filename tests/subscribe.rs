@@ -968,3 +968,86 @@ fn a_rejected_subscribe_packet_is_in_paid_and_in_the_limit_by_what_the_watermark
     assert_eq!(report["paid"], moved, "{report}");
     assert_eq!(remaining_before - remaining(), moved);
 }
+
+#[test]
+fn following_subscribes_with_the_keys_of_the_follow_list_as_a_snapshot() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    let identity = near.toon(&["wallet", "show", "--json"]).json()["wallet"]["agent_identity"]
+        .as_str()
+        .expect("the agent identity")
+        .to_owned();
+    let other = "cd".repeat(32);
+    let tags = json!([["p", identity], ["p", other]]).to_string();
+    let published = near.toon(&["event", "publish", "--kind", "3", "--tags", &tags, "--json"]);
+    assert_eq!(
+        published.exit_code, 0,
+        "{}{}",
+        published.stdout, published.stderr
+    );
+
+    let run = subscribe(
+        &near,
+        &relay,
+        &[
+            "--following",
+            "--filter",
+            FILTER,
+            "--amount",
+            "1000",
+            "--yes",
+        ],
+    );
+
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    let report = run.json();
+    assert_eq!(report["following"], 2);
+    assert_eq!(report["filter"]["kinds"], json!([1]));
+    let mut authors: Vec<_> = report["filter"]["authors"]
+        .as_array()
+        .expect("authors")
+        .iter()
+        .map(|key| key.as_str().unwrap().to_owned())
+        .collect();
+    authors.sort();
+    let mut expected = vec![identity, other];
+    expected.sort();
+    assert_eq!(authors, expected);
+    let plain = near.toon(&[
+        "relay",
+        "subscribe",
+        &relay.url(),
+        "--following",
+        "--amount",
+        "1000",
+        "--yes",
+    ]);
+    assert!(
+        plain.stdout.contains("2 followed keys") && plain.stdout.contains("fixed"),
+        "{}",
+        plain.stdout
+    );
+    let listed = near.toon(&["relay", "subscriptions", "--json"]).json();
+    assert_eq!(
+        listed["subscriptions"][0]["filter"]["authors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    // The list changes; the subscription's filter does not.
+    let tags = json!([["p", "ef".repeat(32)]]).to_string();
+    let republished = near.toon(&["event", "publish", "--kind", "3", "--tags", &tags, "--json"]);
+    assert_eq!(republished.exit_code, 0);
+    let listed = near.toon(&["relay", "subscriptions", "--json"]).json();
+    assert_eq!(
+        listed["subscriptions"][0]["filter"]["authors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}

@@ -87,6 +87,7 @@ A failed command with `--json` prints:
 | `relay_not_payable` | 1 | `toon event publish --relay` or `toon relay subscribe` could not read the relay's information document (or, for a `wss://` relay, its certificate did not verify), or it names no write edge (`toon`: `ilp_address`, `connector_url`, `connector_seal_key`, `price`; the key is 65 bytes of hex beginning `04`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
 | `peering_needed` | 1 | `toon event publish --relay` or `toon relay subscribe` found no peering of this agent node that reaches the relay's connector; nothing was paid and no peering was created. The message prints the `toon peer add <connector_url> --deposit <amount> --yes` to run (for `subscribe`, with the deposit it would take in place of `<amount>`), then `toon route add` |
 | `not_subscribed` | 1 | `toon event follow` named a relay at which this agent node holds no subscription: `toon relay subscribe` opens one |
+| `no_follow_list` | 1 | `toon event query --following` or `toon relay subscribe --following` found no follow list of the agent identity on the agent node's own relay, or one with no keys; nothing was sent or paid |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
 | `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
 | `funds_held` | 1 | `toon destroy` did nothing: a channel of the TOON app still holds funds, or its channels could not be read; the message names each |
@@ -250,6 +251,15 @@ over loopback, through the overlay's proxy when the agent node has one. It reads
 resumes, a top-up resumes one that ran out, and a feed that drops is dialled again. When the
 relay closes a feed with `payment-required` the subscription is marked exhausted until it is
 topped up.
+
+`--following`, on `toon event query` and `toon relay subscribe`, sets the `authors` of the filter
+to the keys in the `p` tags of the newest kind 3 event the agent identity signed, read from the
+agent node's own relay (which must be running, else `not_running`). `--filter` is then optional
+and keeps its other fields; one that already has `authors` is `usage`, and no follow list, or
+one without keys, is `no_follow_list`, each before anything is sent or paid. The filter a
+subscription is given is a snapshot: following someone later does not change it, and the
+report of `relay subscribe --following` says how many keys it holds and that it stays fixed
+until the command is run again. The command needs the passphrase, to name the agent identity.
 
 `toon event follow <relay-url>` prints the events of the live feed of a relay this agent node
 subscribed to, one JSON document to a line, as they arrive, with or without `--json`. A feed

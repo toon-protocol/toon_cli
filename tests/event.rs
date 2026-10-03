@@ -203,3 +203,115 @@ fn query_of_a_relay_that_is_not_there_fails() {
     assert_eq!(run.json()["error"]["code"], "query_failed");
     assert_eq!(run.exit_code, 1);
 }
+
+const OTHER: &str = "cd0000000000000000000000000000000000000000000000000000000000cd00";
+
+impl Running {
+    fn follow(&self, keys: &[&str]) {
+        let tags: Vec<Value> = keys
+            .iter()
+            .map(|key| serde_json::json!(["p", key]))
+            .collect();
+        let published = self.publish(&["--kind", "3", "--tags", &Value::Array(tags).to_string()]);
+        assert_eq!(published.exit_code, 0, "{}", published.stdout);
+    }
+
+    fn query(&self, args: &[&str]) -> support::Run {
+        let url = self.relay_url();
+        let mut all = vec!["event", "query", &url[..], "--json"];
+        all.extend_from_slice(args);
+        self.machine.toon_with(&all, |command| {
+            command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+        })
+    }
+}
+
+#[test]
+fn following_queries_only_the_events_of_the_keys_in_the_follow_list() {
+    let node = running();
+    let me = node.agent_identity();
+    assert_eq!(
+        node.publish(&["--kind", "1", "--content", "mine"])
+            .exit_code,
+        0
+    );
+    node.follow(&[&me]);
+
+    let query = node.query(&["--following", "--filter", r#"{"kinds":[1]}"#]);
+
+    assert_eq!(query.exit_code, 0, "{}", query.stdout);
+    let report = query.json();
+    assert_eq!(report["filter"]["kinds"], serde_json::json!([1]));
+    assert_eq!(report["filter"]["authors"], serde_json::json!([me]));
+    let events = report["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1, "{report}");
+    assert_eq!(events[0]["content"], "mine");
+}
+
+#[test]
+fn following_without_a_filter_leaves_out_the_events_of_other_keys() {
+    let node = running();
+    assert_eq!(
+        node.publish(&["--kind", "1", "--content", "mine"])
+            .exit_code,
+        0
+    );
+    node.follow(&[OTHER]);
+
+    let query = node.query(&["--following"]);
+
+    assert_eq!(query.exit_code, 0, "{}", query.stdout);
+    assert_eq!(query.json()["events"], serde_json::json!([]));
+    assert_eq!(
+        query.json()["filter"]["authors"],
+        serde_json::json!([OTHER])
+    );
+}
+
+#[test]
+fn following_with_a_filter_that_has_authors_is_usage() {
+    let node = running();
+    node.follow(&[OTHER]);
+
+    let query = node.query(&["--following", "--filter", r#"{"authors":["ab"]}"#]);
+
+    assert_eq!(query.json()["error"]["code"], "usage");
+    assert_eq!(query.exit_code, 2, "{}", query.stdout);
+}
+
+#[test]
+fn following_with_no_follow_list_or_an_empty_one_is_no_follow_list() {
+    let node = running();
+
+    let none = node.query(&["--following"]);
+    assert_eq!(none.json()["error"]["code"], "no_follow_list");
+    assert_eq!(none.exit_code, 1);
+
+    node.follow(&[]);
+    let empty = node.query(&["--following"]);
+    assert_eq!(empty.json()["error"]["code"], "no_follow_list");
+}
+
+#[test]
+fn subscribing_with_no_follow_list_pays_nothing() {
+    let node = running();
+
+    let run = node.machine.toon_with(
+        &[
+            "relay",
+            "subscribe",
+            "ws://127.0.0.1:9",
+            "--following",
+            "--amount",
+            "1000",
+            "--yes",
+            "--json",
+        ],
+        |command| {
+            command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+        },
+    );
+
+    assert_eq!(run.json()["error"]["code"], "no_follow_list");
+    assert_eq!(run.exit_code, 1);
+}
