@@ -2,8 +2,8 @@
 
 The gate substitutes four things: the chain, the overlay, the app runner and the remote
 relay. This run uses the real ones: the `anon` daemon on the Anyone network, the relay
-image in a container, the `infra` sandbox's local chain and hub, and, once one sells a
-feed, a relay to subscribe to. "Hub" and "relay node" below are the sandbox's own names
+image in a container, the `infra` sandbox's local chain and hub, and the relay image that
+sells its live feed. "Hub" and "relay node" below are the sandbox's own names
 for its connector and for a connector with a relay behind it. It is run by hand,
 before a release and after moving the connector pin, the relay image or the `anon`
 release. It is not part of the gate, because it needs Docker and a network nobody here
@@ -21,7 +21,8 @@ step.
 | --- | --- | --- |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
 | 2, another agent node | Now and then the first packet between two hidden services outlasts its 30-second expiry: `rejected` or `send_failed`, paid for, and the relay holds no event | #109 |
-| 2, hold a subscription | No relay serves the subscribe route | relay #215 |
+| 1, the sandbox | Its relays do not sell their feed, hence `feed.yml` and the routes added by hand | infra #53 |
+| 2, hold a subscription | Nothing from `relay2`'s feed reaches the agent node's own relay, and its balance does not move: the supervisor dials `ws://localhost:7110` through the overlay, which refuses it | #113 |
 | 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
 
 ## What it needs
@@ -48,6 +49,8 @@ docker build -t toon-e2e-app docs/end-to-end/app
 ## 1. The sandbox, with its hub hidden
 
 ```sh
+export COMPOSE_FILE=docker-compose.yml:$PWD/docs/end-to-end/feed.yml
+export FEED_RELAY_IMAGE=ghcr.io/toon-protocol/relay:rust-sha-c56b435
 make -C ../infra/sandbox clean
 make -C ../infra/sandbox up-topology NODES="relay relay2" CHAINS=evm HS=relay
 ```
@@ -70,6 +73,33 @@ export HUB=<hub>.anyone
 export USDC=0x0A867CA0442383c2A89951244B955AA19b615b58   # the sandbox's FiatToken
 export RPC=http://localhost:8545
 ```
+
+The sandbox's relays do not sell their feed (infra #53). `feed.yml`, above, puts them on a
+relay image that does and gives them the feed's settings; each connector also needs a
+route to its relay's subscribe handler, and each relay must start after that route, since
+it reads its connector's routes once. `up-topology` renders the connectors' configs
+itself, so the route is added to what it rendered:
+
+```sh
+R=../infra/sandbox/conf/.rendered/topology
+for n in relay relay2; do
+  printf '\n[[routes]]\nprefix = "g.toon.%s.subscribe"\nhandler_url = "http://%s:3100/subscribe"\nprice = 1\n' \
+    $n $n >> $R/connector-$n.toml
+done
+docker restart toon-sandbox-relay-connector-1 toon-sandbox-relay2-connector-1
+until curl -sf localhost:3200/ilp | grep -q relay.subscribe \
+  && curl -sf localhost:3290/ilp | grep -q relay2.subscribe; do sleep 2; done
+(cd ../infra/sandbox && HUB_RELAY_URL=ws://$HUB:7100 docker compose --profile relay \
+  up -d --no-deps relay)
+docker restart toon-sandbox-relay2-1
+for p in 7100 7110; do
+  curl -s -H 'Accept: application/nostr+json' http://localhost:$p/ | jq -c .toon_subscription
+done
+```
+
+**Expect** each relay's `toon_subscription` to name its subscribe route
+(`g.toon.relay.subscribe`, `g.toon.relay2.subscribe`), a price of 1 and a broadcast price
+of 1. It appears a few seconds after the relay starts.
 
 ## 2. A hidden agent node against the sandbox
 
@@ -301,13 +331,43 @@ $E/toon relay subscribe ws://localhost:7110 --filter '{"kinds":[1]}' \
 $E/toon relay subscriptions --json
 ```
 
-**Expect** a balance at each relay, the hub's and `relay2`'s, and their events arriving
-in the agent node's own relay. A packet to `relay2` is forwarded by the hub, so
-`--packet-amount` is the hub's price for that route, 101, as `--amount` was for the
-write: the hub keeps 100 of each packet, and ten packets credit ten times `relay2`'s
-subscribe price. While no relay sells a feed each command fails with `relay_not_payable`,
-having read the relay's information document, the hub's through the overlay, and the step
-is recorded as not run.
+**Expect** a balance of 10 at each relay, the hub's and `relay2`'s, with `paid` 10 and
+1010. A packet to `relay2` is forwarded by the hub, so `--packet-amount` is the hub's price
+for that route, 101, as `--amount` was for the write: the hub keeps 100 of each packet, and
+ten packets credit ten times `relay2`'s subscribe price.
+
+Then the feeds, which the supervisor reads and hands to the agent node's own relay:
+
+```sh
+$E/toon event publish --kind 1 --content "live" --relay ws://$HUB:7100 --yes --json \
+  > $E/live.json
+$E/toon event query ws://$READ --filter "{\"ids\":[\"$(jq -r .event.id $E/live.json)\"]}" --json
+$E/toon event query ws://$READ \
+  --filter "{\"ids\":[\"$(jq -r .event.id $E/relay2-event.json)\"]}" --json
+$E/toon relay subscriptions --json
+```
+
+**Expect** the live event in the agent node's own relay within seconds, read from the hub's
+feed through the overlay, and the hub's balance at 9: stored events are free and a live
+one is debited at the broadcast price. The event written to `relay2` earlier should be
+there too, but is not (#113), and `relay2`'s balance stays at 10.
+`$E/toon event follow ws://localhost:7110 --json` prints `relay2`'s stored events and then
+its live ones, each debited, until it is stopped: the command line dials it directly.
+
+Run the hub's subscription out with nine more writes to its relay, and top it up:
+
+```sh
+for i in $(seq 9); do
+  $E/toon event publish --kind 1 --content "run out $i" --relay ws://$HUB:7100 --yes --json
+done
+$E/toon relay subscriptions --json
+$E/toon relay subscribe ws://$HUB:7100 --amount 2 --yes --json
+$E/toon relay subscriptions --json
+```
+
+**Expect** the hub's subscription at balance 0, `exhausted: true`, once the relay has sent
+the event that used up the balance, then at 2 after the top-up, which keeps the filter,
+and `exhausted: false`.
 
 ### Stop
 
