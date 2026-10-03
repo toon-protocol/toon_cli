@@ -443,7 +443,7 @@ fn status_counts_both_directions_and_says_unknown_while_the_relay_is_stopped() {
 }
 
 /// The `TOON_` names the relay reads, taken from the image `relay_image` in `Cargo.toml`
-/// pins (`rust-sha-c56b435`). Take them again when that pin moves.
+/// pins (`rust-sha-1b02f2e`). Take them again when that pin moves.
 const RELAY_READS: &[&str] = &[
     "TOON_MNEMONIC",
     "TOON_SECRET_KEY",
@@ -477,6 +477,7 @@ const RELAY_READS: &[&str] = &[
     "TOON_OPERATOR_PUBKEYS",
     "TOON_NIP42_AUTH",
     "TOON_AUTH_REQUIRED_KINDS",
+    "TOON_NIP17_RECIPIENT_ONLY",
     "TOON_NIP29_GROUPS",
     "TOON_BLOCKED_EVENT_IDS",
 ];

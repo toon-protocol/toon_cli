@@ -26,6 +26,14 @@
 //! connection that answers it with its own identity key (`NOSTR_SECRET_KEY`) and a `relay`
 //! tag naming the host of `TOON_RELAY_URL`, as the Rust relay does. For anyone else it
 //! sends `CLOSED` with `payment-required:` after `EOSE`.
+//!
+//! A relay told `TOON_NIP17_RECIPIENT_ONLY=true` follows the Rust relay's rule for gift
+//! wraps: it challenges every connection and records every key the connection proves; a
+//! wrap (kind 1059) is served, stored or live, only to a connection that has proven a key in
+//! the wrap's `p` tags; a `REQ` naming kind 1059 from a connection that has proven no key is
+//! `CLOSED` with `auth-required:`, and one naming no kinds is answered without wraps. On a
+//! relay that sells its feed, proving a key closes the subscriptions the connection had, and
+//! the connection is fed live only if the key proven last is the relay's own.
 
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -273,6 +281,21 @@ struct Gate {
     challenge: Option<String>,
     /// Whether the connection answered it as the relay's operator.
     operator: bool,
+    /// Whether a wrap is served only to the keys it is addressed to, which are those the
+    /// connection has proven.
+    recipient_only: bool,
+    /// Every key the connection has proven.
+    proven: Vec<String>,
+}
+
+/// Whether `gate` lets its connection read `event`.
+fn readable(gate: &Gate, event: &serde_json::Value) -> bool {
+    !gate.recipient_only
+        || event["kind"] != 1059
+        || event["tags"].as_array().is_some_and(|tags| {
+            tags.iter()
+                .any(|tag| tag[0] == "p" && gate.proven.iter().any(|key| tag[1] == key.as_str()))
+        })
 }
 
 /// The host of a URL: what stands between `://` and the next `/` or `:`.
@@ -281,17 +304,13 @@ fn host(url: &str) -> &str {
     rest.split(['/', ':']).next().unwrap_or_default()
 }
 
-/// The reason an `AUTH` event is not the relay's own identity key answering `challenge`,
-/// naming the host the relay is reached at, as the relay checks it (`docs/paid-feed.md`,
-/// "The operator"), or none if it is.
+/// The reason an `AUTH` event is not a key answering `challenge`, naming the host the relay
+/// is reached at, as the relay checks it (`docs/paid-feed.md`, "The operator"), or none if
+/// it is.
 fn refused(event: &serde_json::Value, challenge: &str) -> Option<&'static str> {
     use k256::schnorr::{signature::hazmat::PrehashVerifier, Signature, VerifyingKey};
     use sha2::{Digest, Sha256};
 
-    let secret = hex::decode(env::var("NOSTR_SECRET_KEY").unwrap_or_default()).unwrap_or_default();
-    let own = k256::schnorr::SigningKey::from_bytes(&secret)
-        .map(|key| hex::encode(key.verifying_key().to_bytes()))
-        .unwrap_or_default();
     let tag = |name: &str| {
         event["tags"]
             .as_array()
@@ -324,13 +343,24 @@ fn refused(event: &serde_json::Value, challenge: &str) -> Option<&'static str> {
         Some("invalid: bad signature")
     } else if tag("challenge") != Some(challenge) {
         Some("invalid: wrong challenge")
+    } else if env::var_os("TOON_BROADCAST_PRICE").is_none() {
+        // A relay that sells nothing knows no URL of its own: the tag need only name one.
+        tag("relay")
+            .filter(|url| !url.is_empty())
+            .map_or(Some("invalid: the event names no relay"), |_| None)
     } else if tag("relay").map(host) != Some(host(&reached)) {
         Some("invalid: the relay tag does not name the host this relay is reached at")
-    } else if event["pubkey"] != own.as_str() {
-        Some("restricted: not the operator")
     } else {
         None
     }
+}
+
+/// The relay's own identity key, in hex.
+fn own_key() -> String {
+    let secret = hex::decode(env::var("NOSTR_SECRET_KEY").unwrap_or_default()).unwrap_or_default();
+    k256::schnorr::SigningKey::from_bytes(&secret)
+        .map(|key| hex::encode(key.verifying_key().to_bytes()))
+        .unwrap_or_default()
 }
 
 fn websocket(stream: TcpStream, data: &Path) {
@@ -341,9 +371,12 @@ fn websocket(stream: TcpStream, data: &Path) {
     // and keeps a `REQ` open after `EOSE` only for its operator. Any other relay keeps
     // it open for every reader.
     let selling = env::var_os("TOON_BROADCAST_PRICE").is_some();
+    let recipient_only = env::var("TOON_NIP17_RECIPIENT_ONLY").is_ok_and(|value| value == "true");
     let mut gate = Gate {
-        challenge: selling.then(|| hex::encode(rand_bytes())),
+        challenge: (selling || recipient_only).then(|| hex::encode(rand_bytes())),
         operator: !selling,
+        recipient_only,
+        proven: Vec::new(),
     };
     if let Some(challenge) = &gate.challenge {
         let _ = socket.send(tungstenite::Message::text(
@@ -363,7 +396,10 @@ fn websocket(stream: TcpStream, data: &Path) {
     loop {
         for (subscription, filters, sent) in &mut open {
             for event in stored(data) {
-                if !sent.contains(&event["id"]) && filters.iter().any(|f| matches(f, &event)) {
+                if !sent.contains(&event["id"])
+                    && readable(&gate, &event)
+                    && filters.iter().any(|f| matches(f, &event))
+                {
                     sent.push(event["id"].clone());
                     let _ = socket.send(tungstenite::Message::text(
                         serde_json::json!(["EVENT", subscription, event]).to_string(),
@@ -395,7 +431,16 @@ fn websocket(stream: TcpStream, data: &Path) {
                     Some(challenge) => refused(&frame[1], challenge),
                     None => Some("invalid: no challenge was sent"),
                 };
-                gate.operator = reason.is_none();
+                if reason.is_none() {
+                    let key = frame[1]["pubkey"].as_str().unwrap_or_default().to_owned();
+                    // A connection that proves another key loses what it had open.
+                    if selling && gate.proven.last() != Some(&key) {
+                        open.clear();
+                    }
+                    // A relay that sells nothing feeds every reader live.
+                    gate.operator = !selling || key == own_key();
+                    gate.proven.push(key);
+                }
                 let _ = socket.send(tungstenite::Message::text(
                     serde_json::json!([
                         "OK",
@@ -410,13 +455,29 @@ fn websocket(stream: TcpStream, data: &Path) {
             Some("REQ") if frame.len() >= 3 => {
                 let subscription = frame[1].clone();
                 open.retain(|(id, _, _)| *id != subscription);
+                let names_wraps = frame[2..].iter().any(|filter| {
+                    filter["kinds"]
+                        .as_array()
+                        .is_some_and(|k| k.contains(&1059.into()))
+                });
+                if gate.recipient_only && names_wraps && gate.proven.is_empty() {
+                    let _ = socket.send(tungstenite::Message::text(
+                        serde_json::json!([
+                            "CLOSED",
+                            subscription,
+                            "auth-required: a gift wrap is read by the key it is addressed to"
+                        ])
+                        .to_string(),
+                    ));
+                    continue;
+                }
                 let events = stored(data);
                 let mut found: Vec<&serde_json::Value> = Vec::new();
                 for filter in &frame[2..] {
                     // A filter's `limit` keeps its newest matches: the log holds them oldest first.
                     let matched: Vec<_> = events
                         .iter()
-                        .filter(|event| matches(filter, event))
+                        .filter(|event| readable(&gate, event) && matches(filter, event))
                         .collect();
                     let limit = filter["limit"]
                         .as_u64()

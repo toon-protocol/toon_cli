@@ -62,17 +62,13 @@ impl Node {
 
     /// The wraps this node's relay holds that are addressed to `key`.
     fn wraps_for(&self, key: &str) -> Vec<Value> {
-        let filter = json!({ "kinds": [1059], "#p": [key] }).to_string();
-        let query = self.machine.toon(&[
-            "event",
-            "query",
-            &format!("ws://{}", self.relay()),
-            "--filter",
-            &filter,
-            "--json",
-        ]);
-        assert_eq!(query.exit_code, 0, "{}", query.stdout);
-        query.json()["events"].as_array().unwrap().clone()
+        let mut wraps = self.machine.stored_events(&[1059]);
+        wraps.retain(|wrap| {
+            wrap["tags"]
+                .as_array()
+                .is_some_and(|tags| tags.iter().any(|tag| tag[0] == "p" && tag[1] == key))
+        });
+        wraps
     }
 
     /// Write `event` to this node's relay as a relay is written to: its write route.

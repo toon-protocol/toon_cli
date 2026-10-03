@@ -71,7 +71,7 @@ tokio-rustls = "0.24"
 # The relay image `toon` runs as a container (ADR 0001), pinned by digest. `build.rs`
 # hands it to `toon --version`.
 [package.metadata.toon]
-relay_image = "ghcr.io/toon-protocol/relay:rust-sha-f574257@sha256:bc00f1303b1e917481433181e059b59458250b238d9478a5c3d316d6ae5f7871"
+relay_image = "ghcr.io/toon-protocol/relay:rust-sha-1b02f2e@sha256:3eea8d9421892a3f9617ce268db8df7432484221de08f7a217494ac0540d1059"
 
 [lints.rust]
 unsafe_code = "forbid"

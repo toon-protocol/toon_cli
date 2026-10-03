@@ -318,16 +318,16 @@ pub fn listen(
 }
 
 /// Read the live feed of the agent node's own `relay` with `filter` and call `on_event` for
-/// every event it sends, until it ends. A relay that sells its feed closes a free read after
-/// the stored events but keeps one open for a connection that proves an operator key, and
-/// the relay's own identity key, `identity_key`, is always one: so a challenge is answered
-/// with it, naming `url`, where the relay is reached, which is not always the address that
-/// is dialled, and the `REQ` is sent once the challenge is answered. A relay that sends no
+/// every event it sends, until it ends. The one challenge is answered once for each of
+/// `keys`, in order, naming `url`, where the relay is reached, which is not always the
+/// address that is dialled, and the `REQ` is sent once they are answered. The relay reads a
+/// wrap as the whole set of keys proven, and feeds a sold feed live to the key proven last,
+/// which the relay's identity key, being an operator's, should be. A relay that sends no
 /// challenge within a moment is asked without one.
 pub fn read_own(
     relay: &str,
     url: &str,
-    identity_key: &[u8; 32],
+    keys: &[&[u8; 32]],
     filter: &Value,
     stop: &AtomicBool,
     mut on_event: impl FnMut(Value),
@@ -363,14 +363,18 @@ pub fn read_own(
                 let Some(challenge) = challenge.as_str() else {
                     continue;
                 };
-                let answer = match answer(identity_key, url, challenge) {
-                    Ok(answer) => answer,
-                    Err(ended) => break ended,
-                };
+                let mut opening = Vec::new();
+                for key in keys {
+                    match answer(key, url, challenge) {
+                        Ok(answer) => opening.push(json!(["AUTH", answer]).to_string()),
+                        Err(ended) => return ended,
+                    }
+                }
                 answered = true;
-                // A `REQ` sent before the answer is asked again, as the relay may have
+                // A `REQ` sent before the answers is asked again, as the relay may have
                 // read it as a free one.
-                for message in [json!(["AUTH", answer]).to_string(), request.clone()] {
+                opening.push(request.clone());
+                for message in opening {
                     if let Err(error) = socket.send(Message::text(message)) {
                         return dropped(error);
                     }

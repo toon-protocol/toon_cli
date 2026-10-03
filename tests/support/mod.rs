@@ -171,6 +171,18 @@ impl Machine {
         self.home().join(".toon").join("agent-node")
     }
 
+    /// The events of `kinds` that the agent node's own relay holds, read from its data
+    /// directory: the relay serves a gift wrap only to the key it is addressed to, so a
+    /// reader that authenticates as no one cannot ask for them.
+    pub fn stored_events(&self, kinds: &[u64]) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(self.agent_node_home().join("apps/relay/data/events.log"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|event| kinds.iter().any(|kind| event["kind"] == *kind))
+            .collect()
+    }
+
     /// The address segment of the TOON app `name`, as the agent node's state holds it.
     pub fn segment(&self, name: &str) -> String {
         let state: Value = serde_json::from_slice(

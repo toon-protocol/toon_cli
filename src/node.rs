@@ -169,7 +169,9 @@ impl RelaySettings {
     /// `subscribe_address` is where the connector's subscribe route is, passed when the
     /// relay sells its feed.
     pub fn env(&self, subscribe_address: &str) -> Vec<(String, String)> {
-        let mut env = Vec::new();
+        // A wrap is served only to the key it is addressed to, on
+        // every agent node's relay and whatever the operator has set.
+        let mut env = vec![("TOON_NIP17_RECIPIENT_ONLY".into(), "true".into())];
         if let Some(name) = &self.name {
             env.push(("TOON_RELAY_NAME".into(), name.clone()));
         }

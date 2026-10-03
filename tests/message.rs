@@ -47,27 +47,9 @@ impl Running {
         self.toon(&all)
     }
 
-    fn relay_url(&self) -> String {
-        let status = self.machine.toon(&["status", "--json"]).json();
-        let address = status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
-            .as_str()
-            .unwrap_or_else(|| panic!("the relay has no address: {status}"));
-        format!("ws://{address}")
-    }
-
     /// The events of `kinds` the agent node's own relay holds.
     fn events(&self, kinds: &[u64]) -> Vec<Value> {
-        let filter = serde_json::json!({ "kinds": kinds }).to_string();
-        let query = self.machine.toon(&[
-            "event",
-            "query",
-            &self.relay_url(),
-            "--filter",
-            &filter,
-            "--json",
-        ]);
-        assert_eq!(query.exit_code, 0, "{}", query.stdout);
-        query.json()["events"].as_array().unwrap().clone()
+        self.machine.stored_events(kinds)
     }
 
     fn agent_identity(&self) -> String {

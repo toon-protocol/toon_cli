@@ -73,16 +73,22 @@ those keys, `--since` the messages sent at or after a time, `--limit` the newest
 toon relay subscribe <ws-url> --filter '{"kinds":[1059],"#p":["<your key>"]}' --amount <n> --yes
 ```
 
-To see that wraps are waiting (they stay sealed in a query):
+To see that wraps are waiting at another relay (they stay sealed in a query):
 
 ```
 toon event query <ws-url> --filter '{"kinds":[1059],"#p":["<your key>"],"limit":20}'
 ```
 
+Do not read private messages with `toon event query` for kind `1059`: your own relay answers
+that with `auth-required:`, and `toon event query` does not authenticate. Read them with
+`toon message list`, which shows what the supervisor has opened from your own relay.
+
 ## Notes
 
-- NIP-17 asks a relay that serves kind `1059` to anyone to require NIP-42 authentication first.
-  The agent node's relay implements NIP-42 but does not require it for any kind, so it serves
-  wraps addressed to you to anyone: that a key was messaged, and when, is visible. The content
-  and the sender are not.
+- On your agent node's own relay a wrap is served only to the key it is addressed to, once
+  that key has proved itself with NIP-42. A stranger, and any other key, gets none. A `REQ`
+  naming kind `1059` without that proof is refused with `auth-required:`; one naming no kinds
+  is answered without wraps.
+- Another relay may not restrict wraps. On one that does not, who is messaged, and when, is
+  visible to anyone who reads it, so think before you `toon message send --relay` there.
 - A wrap hides the content and the sender, not that you were messaged, or when.

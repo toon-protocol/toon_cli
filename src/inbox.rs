@@ -201,7 +201,7 @@ fn read(
     let ended = feed::read_own(
         &format!("ws://{address}"),
         url,
-        identity_key,
+        &[secret, identity_key],
         &filter,
         stop,
         |wrap| open(home, secret, identity, &wrap, seen),

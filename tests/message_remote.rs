@@ -30,14 +30,6 @@ impl Node {
             command.env("TOON_PASSPHRASE", support::PASSPHRASE);
         })
     }
-
-    fn relay_url(&self) -> String {
-        let status = self.machine.toon(&["status", "--json"]).json();
-        let address = status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
-            .as_str()
-            .unwrap_or_else(|| panic!("the relay has no address: {status}"));
-        format!("ws://{address}")
-    }
 }
 
 fn node_on(chain: &AnvilChain) -> Node {
@@ -115,18 +107,9 @@ fn peer_and_route(near: &Node, far: &Node) {
 const ALICE: &str = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 const BOB: &str = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
 
-/// The wraps the relay of `node` holds.
-fn wraps_at(asker: &Node, relay: &str) -> Vec<Value> {
-    let query = asker.machine.toon(&[
-        "event",
-        "query",
-        relay,
-        "--filter",
-        r#"{"kinds":[1059]}"#,
-        "--json",
-    ]);
-    assert_eq!(query.exit_code, 0, "{}", query.stdout);
-    query.json()["events"].as_array().unwrap().clone()
+/// The wraps the own relay of `node` holds.
+fn wraps_at(node: &Node) -> Vec<Value> {
+    node.machine.stored_events(&[1059])
 }
 
 fn remaining_today(node: &Node) -> u128 {
@@ -162,7 +145,7 @@ fn the_recipients_wraps_are_paid_for_and_the_senders_copy_stays_home() {
     let report = sent.json();
     assert_eq!(report["outcome"], "sent", "{report}");
     assert_eq!(report["paid"], PRICE * 2);
-    let at_far = wraps_at(&near, &far.relay_url());
+    let at_far = wraps_at(&far);
     let mut addressed: Vec<&str> = at_far
         .iter()
         .map(|wrap| wrap["tags"][0][1].as_str().unwrap())
@@ -170,7 +153,7 @@ fn the_recipients_wraps_are_paid_for_and_the_senders_copy_stays_home() {
     addressed.sort();
     assert_eq!(addressed, [ALICE, BOB]);
     // The sender's copy is on the own relay, and only that.
-    let at_home = wraps_at(&near, &near.relay_url());
+    let at_home = wraps_at(&near);
     assert_eq!(at_home.len(), 1, "{at_home:?}");
     let identity =
         near.toon(&["wallet", "show", "--json"]).json()["wallet"]["agent_identity"].clone();
@@ -208,8 +191,8 @@ fn without_yes_the_total_is_stated_and_nothing_is_sent_or_paid() {
             .contains(&format!("{} base units", PRICE * 2)),
         "{error}"
     );
-    assert_eq!(wraps_at(&near, &far.relay_url()), Vec::<Value>::new());
-    assert_eq!(wraps_at(&near, &near.relay_url()), Vec::<Value>::new());
+    assert_eq!(wraps_at(&far), Vec::<Value>::new());
+    assert_eq!(wraps_at(&near), Vec::<Value>::new());
     assert_eq!(remaining_today(&near), before);
 }
 
@@ -277,6 +260,6 @@ fn a_total_past_the_limit_is_refused_and_nothing_is_written() {
         "{}",
         run.stdout
     );
-    assert_eq!(wraps_at(&near, &far.relay_url()), Vec::<Value>::new());
-    assert_eq!(wraps_at(&near, &near.relay_url()), Vec::<Value>::new());
+    assert_eq!(wraps_at(&far), Vec::<Value>::new());
+    assert_eq!(wraps_at(&near), Vec::<Value>::new());
 }
