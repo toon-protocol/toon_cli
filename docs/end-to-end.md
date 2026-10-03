@@ -21,14 +21,13 @@ step.
 | --- | --- | --- |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
 | 2, hold a subscription | No relay serves the subscribe route | relay #215 |
-| 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
 | 3, `join` | The deposit lands and the `join` fails with `peer_failed`, "confirmed, and the chain shows no balance there"; the same command again finds the channel, and is counted against the day's spending a second time | #102 |
 
 ## What it needs
 
 - Docker, `jq`, `curl`, and Foundry's `cast`.
 - The `infra` checkout beside this one, set up once with `make setup` in `infra/sandbox`.
-- For the last step of part 3, about 0.001 Base Sepolia ETH from a public faucet.
+- For the last step of part 3, at least 0.001 Base Sepolia ETH from a public faucet.
 
 The run never touches your own agent node: every command below runs with `HOME` set to a
 directory made for the run.
@@ -351,8 +350,7 @@ over `wss://` through the overlay. The `join` is refused with `unfunded`, naming
 settlement address and the ETH it needs for gas, and the day's spending is unchanged.
 
 The devnet faucet sends no ETH, and a connector pays the gas of its own deposit. Send
-about 0.001 Base Sepolia ETH to that address from a public faucet (the 0.0001 the message
-names is too little, #101), and join:
+at least 0.001 Base Sepolia ETH to that address from a public faucet, and join:
 
 ```sh
 $E/toon join devnet --deposit 1000000 --yes --json
@@ -362,17 +360,15 @@ $E/toon limit show --json
 ```
 
 **Expect** a peering `devnet`, a route for `g.toon` over it, and an open channel of
-1000000, with the day's spending down by 1000000. Two failures are known, both
-`peer_failed`, and after either the same `join` is run again:
+1000000, with the day's spending down by 1000000. One failure is known, a
+`peer_failed`, after which the same `join` is run again:
 
-- "out of gas": the address holds too little ETH and nothing was sent, so send it more
-  first (#101).
 - "confirmed, and the chain shows no balance there": the deposit landed, and the
   connector's next read of the chain looks to have been answered before the block was
   seen. The second `join` reports `peering.channel.status` as `found` and deposits
   nothing (#102).
 
-Each failed attempt, and the one that finds the channel, takes 1000000 more off the day's
+The failed attempt, and the one that finds the channel, takes 1000000 more off the day's
 spending.
 
 Then pay the devnet's relay over the new channel:

@@ -15,8 +15,10 @@ use crate::node::{self, ConnectorFiles, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::profile::Profile;
 
-/// Gas an EVM settlement key must hold, in wei: 0.0001 ETH.
-const EVM_GAS: u128 = 100_000_000_000_000;
+/// Gas an EVM settlement key must hold, in wei: 0.001 ETH. The connector pays about 3 gwei
+/// for a unit of gas whatever the chain asks, so a deposit costs about 0.0004 ETH, and more
+/// when the key must also approve the token.
+const EVM_GAS: u128 = 1_000_000_000_000_000;
 /// What a Solana settlement key must hold for fees and rent, in lamports: 0.01 SOL.
 const SOLANA_GAS: u128 = 10_000_000;
 /// What the faucet is asked for as SOL, in lamports: 1 SOL.
@@ -111,7 +113,7 @@ pub fn needs(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
                 Purpose::Deposit,
                 "ETH".to_owned(),
                 EVM_GAS,
-                "0.0001 ETH for gas".to_owned(),
+                "0.001 ETH for gas".to_owned(),
             ),
             (
                 false,
@@ -198,6 +200,53 @@ pub fn ensure_gas(home: &Path, network: Profile, app: &ToonApp) -> Result<(), Er
         ),
         &lacking,
     ))
+}
+
+/// What a connector's refusal of a write says when the chain would not estimate the
+/// transaction for lack of gas, in the words RPC nodes use for it (they differ between
+/// providers, so this is best-effort). The connector estimates before it signs, so a write
+/// refused this way sent nothing.
+const OUT_OF_GAS: [&str; 3] = ["out of gas", "gas required exceeds", "insufficient funds"];
+
+/// The gas a connector's key must hold, to turn the connector's refusal for lack of it into
+/// `unfunded`. Every command that has a connector send a transaction uses it.
+#[derive(Clone, Debug)]
+pub struct GasRefusal {
+    network: Profile,
+    app: String,
+    needs: Vec<Need>,
+}
+
+impl GasRefusal {
+    /// The gas the EVM settlement key of `app` must hold. `None` when it settles on no EVM
+    /// chain, or its key cannot be read.
+    pub fn of(home: &Path, network: Profile, app: &ToonApp) -> Option<Self> {
+        let mut needs = deposit_needs(home, app).ok()?;
+        needs.retain(|need| need.chain == "evm" && need.gas);
+        (!needs.is_empty()).then(|| Self {
+            network,
+            app: app.name.clone(),
+            needs,
+        })
+    }
+
+    /// The `unfunded` refusal if the connector's answer, `status` and `text`, is a refusal
+    /// for lack of gas; `None` otherwise.
+    pub fn of_answer(&self, status: u16, text: &str) -> Option<Error> {
+        let lower = text.to_lowercase();
+        if status != 502 || !OUT_OF_GAS.iter().any(|words| lower.contains(words)) {
+            return None;
+        }
+        Some(unfunded(
+            self.network,
+            &format!(
+                "The settlement key of {} has too little gas for a transaction, so nothing was sent. The connector answered {status}: {}.",
+                self.app,
+                text.trim()
+            ),
+            &self.needs,
+        ))
+    }
 }
 
 fn rpc(egress: &Egress, url: &str, method: &str, params: Value) -> Result<Value, String> {
@@ -515,4 +564,51 @@ pub fn fund(home: &Path) -> Result<Report, Error> {
         }),
         text,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refusal() -> GasRefusal {
+        GasRefusal {
+            network: Profile::Devnet,
+            app: "agent".to_owned(),
+            needs: vec![Need {
+                chain: "evm",
+                address: "0xabc".to_owned(),
+                asset: "ETH".to_owned(),
+                amount: EVM_GAS,
+                shown: "0.001 ETH for gas".to_owned(),
+                gas: true,
+                purpose: Purpose::Deposit,
+                rpc_url: String::new(),
+                token: String::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_502_in_an_rpc_nodes_words_for_no_gas_is_unfunded() {
+        for text in [
+            "batch-settlement backend error: (code: -32003, message: out of gas: gas required exceeds: 66555, data: None)",
+            "Gas required exceeds allowance (66555)",
+            "insufficient funds for gas * price + value",
+        ] {
+            let error = refusal().of_answer(502, text).expect("recognised");
+            assert_eq!(error.code, ErrorCode::Unfunded);
+            assert!(error.message.contains("0xabc"), "{}", error.message);
+            assert!(error.message.contains("0.001 ETH"), "{}", error.message);
+            assert!(error.message.contains(text), "{}", error.message);
+            assert!(crate::spending::failed_before_paying(&error));
+        }
+    }
+
+    #[test]
+    fn any_other_answer_is_not_recognised() {
+        assert!(refusal()
+            .of_answer(502, "the peer publishes no endpoint")
+            .is_none());
+        assert!(refusal().of_answer(500, "out of gas").is_none());
+    }
 }

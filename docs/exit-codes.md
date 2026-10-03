@@ -67,7 +67,7 @@ A failed command with `--json` prints:
 | `connector_failed` | 1 | A connector did not start, or the supervisor did not stop when `toon down` asked; the message carries the connector's own reason |
 | `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
 | `app_failed` | 1 | An app behind a connector did not start, or stopped; the message carries the reason |
-| `unfunded` | 1 | A settlement key does not hold what is needed, so `toon up` did not start the connector (the token; on Solana also SOL), or a command that has a connector send a transaction did not (EVM gas: `toon join`, `toon peer add` with a deposit, `toon create` with a deposit, `toon channel open`, `fund`, `withdraw`, `land`); the message names each address and the amount |
+| `unfunded` | 1 | A settlement key does not hold what is needed, so `toon up` did not start the connector (the token; on Solana also SOL), or a command that has a connector send a transaction did not (EVM gas, 0.001 ETH, whether the check finds too little or the connector reports the chain refused to estimate for lack of it: `toon join`, `toon peer add` with a deposit, `toon create` with a deposit, `toon channel open`, `fund`, `withdraw`, `land`); the message names each address and the amount |
 | `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up` |
 | `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event) could not be sent: the connector's operator surface refused the write, could not be reached, or did not answer within the wait (the packet's 30-second expiry and five seconds more); the message carries the reason. A packet that went unanswered has expired and will not be delivered, so the command can be run again; the failure's JSON carries `paid` and, for `toon event publish --relay`, the `event` with its id (see Spending limit) |
@@ -111,8 +111,12 @@ settlement key holds less than one whole token, or on Solana less than 0.01 SOL 
 fails with `unfunded`. An EVM connector starts without gas: gas is spent when it sends a
 transaction, so `toon join`, `toon peer add` with a deposit, `toon create` with a deposit (both
 keys send one) and `toon channel open`, `fund`, `withdraw` and `land` fail with `unfunded` while
-the EVM settlement key holds less than 0.0001 ETH. They refuse before the spending limit is
-charged and before anything is sent. A chain that cannot be asked is not a verdict: the
+the EVM settlement key holds less than 0.001 ETH. They refuse before the spending limit is
+charged and before anything is sent. A connector that refuses such a write because the chain
+would not estimate the transaction for lack of gas (a 502 whose text says `out of gas`,
+`gas required exceeds` or `insufficient funds`, as RPC nodes word it) is reported the same way,
+with the connector's text kept: it estimates before it signs, so nothing was sent, and the
+deposit is not counted against the spending limit. A chain that cannot be asked is not a verdict: the
 connector answers for itself. The devnet faucet sends no ETH: the message then says Base
 Sepolia ETH comes from a public Base Sepolia faucet, to be given the address it names, and
 does not name `toon wallet fund`. `toon wallet fund` exits 0 when only gas is lacking, and says
@@ -281,7 +285,7 @@ each channel opened with `--deposit`, with a forwarding route each way; `--no-pe
 The deposits move money, so they need `--yes` and count twice against the spending limit. A
 settlement key that holds too little fails with `unfunded`, and nothing is created: the message
 names the address to fund. With a deposit, both the new app's key and `<from>`'s must hold the
-gas a deposit spends (0.0001 ETH on EVM); with `--no-peer` neither needs any. A running supervisor starts the connector; otherwise `toon up` does.
+gas a deposit spends (0.001 ETH on EVM); with `--no-peer` neither needs any. A running supervisor starts the connector; otherwise `toon up` does.
 
 `--app <name>` on any command that talks to a connector, such as `toon send`, `toon peer`,
 `toon route` and `toon channel`, says which TOON app it is about; the first TOON app is the

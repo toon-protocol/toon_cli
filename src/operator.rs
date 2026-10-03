@@ -14,6 +14,7 @@ use zeroize::Zeroizing;
 use crate::cli::{ChannelCommand, JoinArgs, PeerCommand, RouteCommand};
 use crate::control;
 use crate::egress::Egress;
+use crate::funding::GasRefusal;
 use crate::node::{self, ConnectorFiles, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::spending;
@@ -29,6 +30,8 @@ pub struct Surface {
     write_key: PathBuf,
     /// Whether the connector may peer toward a plain `http://` address.
     plaintext_peers: bool,
+    /// What the connector's key must hold for gas, to name when a write is refused for it.
+    gas: Option<GasRefusal>,
 }
 
 fn failed(code: ErrorCode, message: String) -> Error {
@@ -83,6 +86,7 @@ pub fn surface_of(home: &Path, name: Option<&str>) -> Result<Surface, Error> {
         bearer_token: ConnectorFiles::of(home, app.connector).bearer_token,
         write_key: node::operator_key(home),
         plaintext_peers: app.plaintext_peers,
+        gas: GasRefusal::of(home, state.network, app),
     })
 }
 
@@ -392,6 +396,17 @@ fn refused(code: ErrorCode, status: u16, text: &str) -> Error {
     }
 }
 
+impl Surface {
+    /// A write the connector refused, as an error: `unfunded` when the answer is a refusal
+    /// for lack of gas, else `code`.
+    fn refused_write(&self, code: ErrorCode, status: u16, text: &str) -> Error {
+        self.gas
+            .as_ref()
+            .and_then(|gas| gas.of_answer(status, text))
+            .unwrap_or_else(|| refused(code, status, text))
+    }
+}
+
 /// The `toon peer add` command a message tells the reader to run: it takes the deposit
 /// `peer add` requires and the `--yes` it needs to deposit it. `deposit` and `extra` are
 /// printed as given, so a placeholder in angle brackets may stand for either.
@@ -531,7 +546,7 @@ pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Peered, Error> {
                 ),
             )
         } else {
-            refused(ErrorCode::PeerFailed, status, &text)
+            surface.refused_write(ErrorCode::PeerFailed, status, &text)
         });
     }
     let peering: Value = serde_json::from_str(&text).map_err(|error| {
@@ -705,6 +720,13 @@ fn channel_write(home: &Path, path: &str, body: String) -> Result<Value, Error> 
             ..error
         })?;
     if !(200..300).contains(&status) {
+        if let Some(unfunded) = surface
+            .gas
+            .as_ref()
+            .and_then(|gas| gas.of_answer(status, &text))
+        {
+            return Err(unfunded);
+        }
         return Err(Error {
             // The connector authenticates a write before it does anything.
             nothing_sent: status == 401,
@@ -1424,6 +1446,7 @@ mod tests {
             bearer_token: home.join("token"),
             write_key,
             plaintext_peers: true,
+            gas: None,
         }
     }
 

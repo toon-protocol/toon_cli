@@ -97,9 +97,11 @@ connector is running, or fail with `confirmation_required` and change nothing.
 
 `toon up` fails with `unfunded` while a settlement key holds less than one whole token (on Solana,
 also 0.01 SOL for fees); the message names each address and the amount. An EVM connector starts
-without gas. Gas (0.0001 ETH) is needed where it is spent: `toon join`, `toon peer add` with a
+without gas. Gas (0.001 ETH) is needed where it is spent: `toon join`, `toon peer add` with a
 deposit, `toon create` with a deposit and `toon channel open`, `fund`, `withdraw` and `land` fail
-with `unfunded` without it, before anything is charged or sent.
+with `unfunded` without it, before anything is charged or sent. A connector that refuses a
+write because the chain would not estimate it for lack of gas is reported as `unfunded` too: nothing was
+sent and nothing is counted.
 
 - On the devnet, `toon wallet fund` asks the faucet. It sends the token and no ETH: Base Sepolia
   ETH comes from a public Base Sepolia faucet, which you cannot use, so say so and stop.
