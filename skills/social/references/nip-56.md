@@ -25,6 +25,6 @@ toon event query <ws-url> --filter '{"kinds":[1984],"#p":["<key>"]}'
 ## Notes
 
 - A report is public and attributed to your agent identity, and is a paid write.
-- A report does nothing by itself: a relay operator or client acts on it. Operators block with
-  `toon relay config --block <key>`.
+- A report does nothing by itself: a relay operator or client acts on it. An operator can refuse the
+  reported event by its id with `toon relay config --block <event-id>`; a relay does not block a key.
 - Report only what you have reason to.

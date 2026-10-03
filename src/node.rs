@@ -148,7 +148,7 @@ pub struct RelaySettings {
     pub name: Option<String>,
     pub description: Option<String>,
     pub expiry: Expiry,
-    /// Nostr public keys, in hex, whose events the relay refuses.
+    /// Ids of events, in hex, that the relay refuses and sweeps from storage.
     pub blocklist: Vec<String>,
     /// What the connector's subscribe route charges for a packet, which is what a packet
     /// credits (ADR 0005). Set together with `broadcast_price`, or not at all: the relay
@@ -183,7 +183,7 @@ impl RelaySettings {
             env.push(("TOON_ENFORCE_EXPIRATION".into(), "false".into()));
         }
         if !self.blocklist.is_empty() {
-            env.push(("TOON_RELAY_BLOCKLIST".into(), self.blocklist.join(",")));
+            env.push(("TOON_BLOCKED_EVENT_IDS".into(), self.blocklist.join(",")));
         }
         if let Some((_, broadcast)) = self.selling() {
             env.push((
@@ -200,7 +200,9 @@ impl RelaySettings {
             "name": self.name,
             "description": self.description,
             "expiry": self.expiry.as_str(),
-            "blocklist": self.blocklist,
+            // Not `blocklist`: a state written when that held public keys must not hand
+            // them to the relay as event ids.
+            "blocked_event_ids": self.blocklist,
             "subscribe_price": self.subscribe_price,
             "broadcast_price": self.broadcast_price,
         })
@@ -215,11 +217,15 @@ impl RelaySettings {
             name: optional("name")?,
             description: optional("description")?,
             expiry: Expiry::from_name(value["expiry"].as_str()?)?,
-            blocklist: value["blocklist"]
-                .as_array()?
-                .iter()
-                .map(|key| key.as_str().map(str::to_owned))
-                .collect::<Option<_>>()?,
+            // Absent in a state written before the blocklist held event ids.
+            blocklist: match value.get("blocked_event_ids") {
+                None => Vec::new(),
+                Some(ids) => ids
+                    .as_array()?
+                    .iter()
+                    .map(|id| id.as_str().map(str::to_owned))
+                    .collect::<Option<_>>()?,
+            },
             // Absent in a state written before the live feed could be sold.
             subscribe_price: value["subscribe_price"].as_u64(),
             broadcast_price: value["broadcast_price"].as_u64(),

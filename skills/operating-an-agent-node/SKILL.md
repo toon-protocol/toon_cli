@@ -197,7 +197,7 @@ inbound channel now.
 ## Relay settings
 
 `toon relay config` shows the relay's settings and prices. With `--name`, `--description`,
-`--expiry honour|ignore`, `--block <pubkey>` or `--unblock <pubkey>` it changes them and restarts
+`--expiry honour|ignore`, `--block <event-id>` or `--unblock <event-id>` it changes them and restarts
 the relay and its connector (`--yes`). `toon relay price <amount>` sets the price of one write
 to the relay's route.
 
