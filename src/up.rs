@@ -271,6 +271,7 @@ fn start_app(
     toon: &ToonApp,
     app: &App,
     runner: &dyn AppRunner,
+    onion: Option<&str>,
 ) -> Result<Option<Box<dyn RunningApp>>, Error> {
     let files = AppFiles::of(home, &app.name);
     let (image, env) = match &app.source {
@@ -288,7 +289,17 @@ fn start_app(
                 ),
             })?;
             let mut env = vec![("NOSTR_SECRET_KEY".to_owned(), hex::encode(identity))];
-            env.extend(toon.relay.env());
+            env.extend(toon.relay.env(&app.subscribe_prefix()));
+            // A relay that sells its feed checks the host a subscriber says it is paying:
+            // where clients reach it, which is the onion endpoint or the public hostname.
+            if toon.relay.selling().is_some() {
+                let url = match (&toon.reach, onion) {
+                    (node::Reach::Clearnet { hostname }, _) => Some(format!("wss://{hostname}")),
+                    (node::Reach::Hidden, Some(endpoint)) => Some(format!("ws://{endpoint}")),
+                    (node::Reach::Hidden, None) => None,
+                };
+                env.extend(url.map(|url| ("TOON_RELAY_URL".to_owned(), url)));
+            }
             // The relay asks its own connector where a write to it is paid, and which
             // prefix of that connector's is its own. The connector is on this machine's
             // loopback, a hidden one too: its self-description names the onion endpoint.
@@ -316,10 +327,15 @@ fn start_app(
 }
 
 /// Start the apps behind `app`'s connector. What it started is stopped again if one fails.
-fn start_apps(home: &Path, app: &ToonApp, runner: &dyn AppRunner) -> Result<StartedApps, Error> {
+fn start_apps(
+    home: &Path,
+    app: &ToonApp,
+    runner: &dyn AppRunner,
+    onion: Option<&str>,
+) -> Result<StartedApps, Error> {
     let mut started = StartedApps::new();
     for behind in &app.apps {
-        match start_app(home, app, behind, runner) {
+        match start_app(home, app, behind, runner, onion) {
             Ok(Some(running)) => started.push((behind.name.clone(), running)),
             Ok(None) => {}
             Err(error) => {
@@ -658,7 +674,8 @@ impl Supervisor {
             }
             Reach::Clearnet { .. } => None,
         };
-        let apps = start_apps(&self.home, app, &*self.runner)?;
+        let onion = overlay.as_ref().map(|(_, endpoint)| endpoint.as_str());
+        let apps = start_apps(&self.home, app, &*self.runner, onion)?;
         let unit = launch_connector(&self.home, app, overlay, apps)?;
         self.shared.units().push(Arc::clone(&unit.shared));
         self.units.push(unit);
@@ -914,7 +931,8 @@ impl Unit {
             if self.apps.iter().any(|(name, _)| *name == behind.name) {
                 continue;
             }
-            match start_app(home, app, behind, runner) {
+            let onion = self.hidden.as_ref().map(|hidden| hidden.endpoint.as_str());
+            match start_app(home, app, behind, runner, onion) {
                 Ok(Some(running)) => fresh.push((behind.name.clone(), running)),
                 Ok(None) => {}
                 Err(error) => {

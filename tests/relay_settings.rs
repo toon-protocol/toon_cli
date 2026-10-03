@@ -212,3 +212,163 @@ fn relay_commands_need_an_agent_node() {
     assert_eq!(run.exit_code, 3);
     assert_eq!(run.json()["error"]["code"], "no_agent_node");
 }
+
+fn connector_env(machine: &Machine) -> String {
+    fs::read_to_string(machine.agent_node_home().join("apps/relay/data/connector")).unwrap()
+}
+
+#[test]
+fn selling_the_feed_renders_a_subscribe_route_and_hands_the_relay_its_settings() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+    assert!(
+        !config(&machine).contains(".subscribe"),
+        "{}",
+        config(&machine)
+    );
+    assert!(!connector_env(&machine).contains("TOON_SUBSCRIBE_ILP_ADDRESS"));
+
+    let refused = machine.toon(&[
+        "relay",
+        "price",
+        "--subscribe",
+        "1000",
+        "--broadcast",
+        "10",
+        "--json",
+    ]);
+    assert_eq!(refused.json()["error"]["code"], "confirmation_required");
+
+    let run = machine.toon(&[
+        "relay",
+        "price",
+        "--subscribe",
+        "1000",
+        "--broadcast",
+        "10",
+        "--yes",
+        "--json",
+    ]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let shown = run.json();
+    assert_eq!(shown["restarted"], true);
+    assert_eq!(shown["prices"]["subscribe"], 1000);
+    assert_eq!(shown["prices"]["broadcast"], 10);
+    assert_eq!(shown["prices"]["write"], 1);
+    let address = relay_address(&machine);
+    assert!(
+        config(&machine).contains(&format!(
+            "prefix = \"{}.subscribe\"\nhandler_url = \"http://{address}/subscribe\"\nprice = 1000\n",
+            machine.relay_prefix()
+        )),
+        "{}",
+        config(&machine)
+    );
+    let env = connector_env(&machine);
+    assert!(
+        env.contains(&format!(
+            "TOON_SUBSCRIBE_ILP_ADDRESS={}.subscribe\n",
+            machine.relay_prefix()
+        )),
+        "{env}"
+    );
+    assert!(env.contains("TOON_BROADCAST_PRICE=10\n"), "{env}");
+    assert!(env.contains("TOON_RELAY_URL=ws://"), "{env}");
+    let routes = machine.toon(&["route", "list", "--json"]).json();
+    let subscribe = routes["routes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|route| route["prefix"] == format!("{}.subscribe", machine.relay_prefix()).as_str())
+        .expect("the subscribe route");
+    assert_eq!(subscribe["price"], 1000);
+
+    // The write price is not touched by it, and a price of 0 stops selling.
+    let stopped = machine.toon(&["relay", "price", "--subscribe", "0", "--yes", "--json"]);
+    assert_eq!(stopped.exit_code, 0, "{}", stopped.stdout);
+    assert_eq!(stopped.json()["prices"]["subscribe"], Value::Null);
+    assert!(
+        !config(&machine).contains(".subscribe"),
+        "{}",
+        config(&machine)
+    );
+    assert!(!connector_env(&machine).contains("TOON_BROADCAST_PRICE"));
+}
+
+#[test]
+fn the_feed_is_sold_at_two_prices_together() {
+    let machine = Machine::new();
+    machine.init_with(&[]);
+
+    let alone = machine.toon(&["relay", "price", "--subscribe", "1000", "--json"]);
+    assert_eq!(alone.exit_code, 2, "{}", alone.stdout);
+    assert_eq!(alone.json()["error"]["code"], "usage");
+
+    let nothing = machine.toon(&["relay", "price", "--json"]);
+    assert_eq!(nothing.exit_code, 2, "{}", nothing.stdout);
+
+    let run = machine.toon(&[
+        "relay",
+        "price",
+        "--subscribe",
+        "1000",
+        "--broadcast",
+        "10",
+        "--json",
+    ]);
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let shown = machine.toon(&["relay", "config", "--json"]).json();
+    assert_eq!(shown["prices"]["subscribe"], 1000);
+    assert_eq!(shown["prices"]["broadcast"], 10);
+}
+
+#[test]
+fn incoming_subscriptions_are_the_relays_list_of_subscribers() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+
+    let unsold = machine.toon(&["relay", "subscriptions", "--incoming", "--json"]);
+    assert_eq!(unsold.exit_code, 1, "{}", unsold.stdout);
+    assert_eq!(unsold.json()["error"]["code"], "query_failed");
+
+    machine
+        .toon(&[
+            "relay",
+            "price",
+            "--subscribe",
+            "1000",
+            "--broadcast",
+            "10",
+            "--json",
+        ])
+        .json();
+    let down = machine.toon(&["relay", "subscriptions", "--incoming", "--json"]);
+    assert_eq!(down.json()["error"]["code"], "not_running");
+
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+    let listed = r#"{"broadcast_price":10,"subscribers":[{"pubkey":"7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e","balance":990,"broadcast_price":10,"filter":{"kinds":[1]}}]}"#;
+    fs::write(
+        machine
+            .agent_node_home()
+            .join("apps/relay/data/subscribers.json"),
+        listed,
+    )
+    .unwrap();
+
+    let run = machine.toon(&["relay", "subscriptions", "--incoming", "--json"]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let shown = run.json();
+    assert_eq!(shown["broadcast_price"], 10);
+    assert_eq!(shown["subscribers"][0]["balance"], 990);
+    assert_eq!(
+        shown["subscribers"][0]["pubkey"],
+        "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e"
+    );
+}

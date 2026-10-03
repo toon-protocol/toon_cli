@@ -14,6 +14,7 @@ use base64::Engine;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::control;
 use crate::derive;
 use crate::egress::Egress;
 use crate::event;
@@ -663,5 +664,97 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
         feed::Ended::Closed(reason) => failed(format!("{relay} closed the feed: {reason}")),
         feed::Ended::Dropped(message) => failed(message),
         feed::Ended::Stopped => failed(format!("The feed of {relay} stopped.")),
+    })
+}
+
+/// `toon relay subscriptions --incoming`: who subscribed to the feed of this agent node's
+/// own relay, and what each has left, as the running relay lists them on its write port,
+/// which nothing but the operator reaches.
+pub fn incoming(home: &Path) -> Result<Report, Error> {
+    let state = node::State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
+    let failed = |code, message: String| Error {
+        nothing_sent: false,
+        unanswered: None,
+        code,
+        message,
+    };
+    let Some(app) = state.toon_apps.iter().find(|app| {
+        app.apps
+            .iter()
+            .any(|behind| behind.name == node::RELAY && behind.source == node::Source::Relay)
+    }) else {
+        return Err(failed(
+            ErrorCode::UnknownName,
+            "No TOON app of this agent node has a relay.".into(),
+        ));
+    };
+    if app.relay.selling().is_none() {
+        return Err(failed(
+            ErrorCode::QueryFailed,
+            "This agent node's relay does not sell its live feed: `toon relay price --subscribe \
+             <amount> --broadcast <amount>` starts."
+                .into(),
+        ));
+    }
+    let not_running = || {
+        failed(
+            ErrorCode::NotRunning,
+            "The relay is not running: `toon up` starts it, and it lists its subscribers.".into(),
+        )
+    };
+    let reply = control::ask(home, "status").ok_or_else(not_running)?;
+    let address = reply["toon_apps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|reported| reported["name"] == app.name.as_str())
+        .and_then(|reported| reported["apps"].as_array())
+        .into_iter()
+        .flatten()
+        .find(|reported| reported["name"] == node::RELAY)
+        .filter(|reported| reported["running"] == true)
+        .and_then(|reported| reported["address"].as_str())
+        .ok_or_else(not_running)?;
+    let url = format!("http://{address}/subscribers");
+    let unreadable = |why: String| {
+        failed(
+            ErrorCode::QueryFailed,
+            format!("The relay's list of subscribers could not be read: {why}."),
+        )
+    };
+    let body = reqwest::blocking::Client::builder()
+        .timeout(PATIENCE)
+        .no_proxy()
+        .build()
+        .and_then(|client| client.get(&url).send())
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(|response| response.json::<Value>())
+        .map_err(|error| unreadable(error.to_string()))?;
+    let subscribers = body["subscribers"]
+        .as_array()
+        .ok_or_else(|| unreadable("it answered no list".into()))?;
+    let lines: Vec<String> = subscribers
+        .iter()
+        .map(|subscriber| {
+            format!(
+                "{}: balance {}, {} per event, filter {}",
+                subscriber["pubkey"].as_str().unwrap_or("?"),
+                subscriber["balance"],
+                subscriber["broadcast_price"],
+                subscriber["filter"],
+            )
+        })
+        .collect();
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({
+            "broadcast_price": body["broadcast_price"],
+            "subscribers": subscribers,
+        }),
+        text: if lines.is_empty() {
+            "No one subscribes to this agent node's relay.".to_owned()
+        } else {
+            lines.join("\n")
+        },
     })
 }

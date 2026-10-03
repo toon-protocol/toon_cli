@@ -162,6 +162,12 @@ inbound channel now.
 the relay and its connector (`--yes`). `toon relay price <amount>` sets the price of one write
 to the relay's route.
 
+To sell the relay's live feed (ADR 0005), `toon relay price --subscribe <amount> --broadcast <amount>`
+sets what a subscribe packet costs and credits, on a new route of the connector, and what the relay
+debits for each event it broadcasts to a subscriber. The two come together, and a price of `0` stops
+selling. `toon relay subscriptions --incoming` asks the running relay who subscribed and what each
+has left.
+
 ## Sending
 
 `toon send <address> --amount <n> --yes` sends one packet and reports fulfilled or rejected. It
