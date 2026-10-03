@@ -192,9 +192,8 @@ fn run() -> ExitCode {
         .into(),
         Command::Describe { url } => render(
             match url {
-                Some(_) => describe::run(home::resolve().ok().as_deref(), url.as_deref(), None),
-                None => home::resolve()
-                    .and_then(|home| describe::run(Some(&home), None, app.as_deref())),
+                Some(url) => describe::url(&url),
+                None => home::resolve().and_then(|home| describe::own(&home, app.as_deref())),
             },
             json,
         )

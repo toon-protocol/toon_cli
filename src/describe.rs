@@ -22,19 +22,19 @@ fn failed(message: String) -> Error {
     }
 }
 
-/// Describe the connector at `url`, or this agent node's own (of the TOON app `app`, else
-/// the first) when no URL is given.
-pub fn run(home: Option<&Path>, url: Option<&str>, app: Option<&str>) -> Result<Report, Error> {
-    let (url, egress) = match (url, home) {
-        (Some(url), Some(home)) => (url.to_owned(), Egress::of(home)?),
-        (Some(url), None) => (url.to_owned(), Egress::direct()),
-        (None, Some(home)) => (
-            format!("{}/ilp", crate::operator::surface_of(home, app)?.url),
-            Egress::of(home)?,
-        ),
-        (None, None) => return Err(crate::home::resolve().unwrap_err()),
-    };
-    let description = fetch(&egress, &url)?;
+/// Describe the connector at `url`, through this machine's agent node's egress if it has one.
+pub fn url(url: &str) -> Result<Report, Error> {
+    describe(&Egress::open()?, url.to_owned())
+}
+
+/// Describe this agent node's own connector: of the TOON app `app`, else the first.
+pub fn own(home: &Path, app: Option<&str>) -> Result<Report, Error> {
+    let url = format!("{}/ilp", crate::operator::surface_of(home, app)?.url);
+    describe(&Egress::of(home)?, url)
+}
+
+fn describe(egress: &Egress, url: String) -> Result<Report, Error> {
+    let description = fetch(egress, &url)?;
     Ok(Report {
         exit: Exit::Success,
         text: render(&url, &description),
@@ -83,6 +83,19 @@ fn lines(value: &Value, indent: &str, out: &mut String) {
             Value::Object(_) => {
                 out.push_str(&format!("{indent}{key}:\n"));
                 lines(member, &format!("{indent}  "), out);
+            }
+            // Settlement terms are lists of objects, one per chain: each its own block.
+            Value::Array(items) if items.iter().any(Value::is_object) => {
+                out.push_str(&format!("{indent}{key}:\n"));
+                for item in items {
+                    let mut block = String::new();
+                    lines(item, &format!("{indent}    "), &mut block);
+                    if block.is_empty() {
+                        block = format!("{indent}    {}\n", scalar(item));
+                    }
+                    block.replace_range(..indent.len() + 4, &format!("{indent}  - "));
+                    out.push_str(&block);
+                }
             }
             Value::Array(items) => {
                 let items: Vec<String> = items.iter().map(scalar).collect();

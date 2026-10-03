@@ -90,7 +90,7 @@ fn without_a_url_the_agent_nodes_own_connector_is_described() {
 fn the_text_names_each_route_with_its_price() {
     let url = answering(
         "200 OK",
-        r#"{"ilpAddress":"g.toon.x","routes":[{"prefix":"g.toon.x.relay","price":"7","pricePerKib":"3","request":{"a":1}},{"prefix":"g.toon.x.other","price":"9"}]}"#,
+        r#"{"ilpAddress":"g.toon.x","batchSettlements":[{"chain":"evm:base:8453","token":"0xusdc"}],"routes":[{"prefix":"g.toon.x.relay","price":"7","pricePerKib":"3","request":{"a":1}},{"prefix":"g.toon.x.other","price":"9"}]}"#,
     );
 
     let run = Machine::new().toon(&["describe", &url]);
@@ -98,6 +98,12 @@ fn the_text_names_each_route_with_its_price() {
     assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
     assert!(
         run.stdout.contains("ilpAddress: g.toon.x"),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("batchSettlements:\n  - chain: evm:base:8453\n    token: 0xusdc\n"),
         "{}",
         run.stdout
     );
