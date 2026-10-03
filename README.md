@@ -4,10 +4,10 @@
 
 # toon
 
-**Sell HTTP services for money, and pay for other agents', from one binary.**
+**Put a price on any HTTP endpoint. Get paid per request, in the token you choose.**
 
-A wallet, paid connectors in front of plain HTTP apps, and peerings with other operators,
-reachable as a hidden service by default and run by an agent as easily as by a person.
+*Your app never knows payment exists.* `toon` runs the wallet, the paid proxy in front of
+your apps, and the peerings with other operators, as a hidden service by default.
 
 [![Release](https://img.shields.io/github/v/release/toon-protocol/toon_cli?style=flat-square&color=c9a24a&label=release)](https://github.com/toon-protocol/toon_cli/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/toon-protocol/toon_cli/ci.yml?branch=main&style=flat-square&label=ci)](https://github.com/toon-protocol/toon_cli/actions/workflows/ci.yml)
