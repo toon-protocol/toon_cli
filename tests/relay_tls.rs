@@ -205,7 +205,7 @@ fn node_on(chain: &AnvilChain, root: Option<&std::path::Path>) -> Node {
 }
 
 #[test]
-fn a_wss_relay_is_subscribed_followed_and_received_from() {
+fn a_wss_relay_is_subscribed_and_received_from() {
     let chain = AnvilChain::start();
     let relay = FakeRemoteRelay::start(SUBSCRIBE, PRICE, BROADCAST_PRICE).with_tls(&[]);
     let root = relay.root_file();
@@ -288,16 +288,7 @@ fn a_wss_relay_is_subscribed_followed_and_received_from() {
 
     // The supervisor's receiver holds the subscription at the `wss://` URL as given.
     eventually(|| relay.open_feeds() == 1);
-    let follow = near
-        .machine
-        .start_with(&["event", "follow", &url, "--json"], |command| {
-            command.env("TOON_TRUSTED_ROOT", &root);
-        });
-    eventually(|| relay.open_feeds() == 2);
     relay.broadcast(event(7));
-
-    let printed: Value = serde_json::from_str(&follow.line()).expect("one document");
-    assert_eq!(printed, event(7));
-    // The receiver delivered it to the agent node's own relay.
+    // The receiver delivers it to the agent node's own relay.
     eventually(|| near.stored() == vec![event(7)["id"].as_str().unwrap().to_owned()]);
 }

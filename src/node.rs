@@ -767,6 +767,17 @@ pub fn onion_endpoint(home: &Path, app: &ToonApp) -> Option<String> {
     Some(overlay::address_of(key.as_slice().try_into().ok()?))
 }
 
+/// The URL clients reach a relay at, which a relay that sells its feed checks the `relay`
+/// tag of an `AUTH` against: the public hostname, or the onion endpoint of a hidden
+/// service. None for a hidden service whose endpoint is not known.
+pub fn reached_at(reach: &Reach, onion: Option<&str>) -> Option<String> {
+    match (reach, onion) {
+        (Reach::Clearnet { hostname }, _) => Some(format!("wss://{hostname}")),
+        (Reach::Hidden, Some(endpoint)) => Some(format!("ws://{endpoint}")),
+        (Reach::Hidden, None) => None,
+    }
+}
+
 /// What a hidden service's connector is told about the overlay.
 pub struct Overlay {
     /// The SOCKS proxy all of its outbound traffic goes through.

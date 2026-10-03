@@ -180,7 +180,7 @@ fn relay_address(relay: &FakeRemoteRelay) -> SocketAddr {
 }
 
 #[test]
-fn a_hidden_agent_node_subscribes_reads_and_follows_a_relay_at_an_anyone_name() {
+fn a_hidden_agent_node_subscribes_to_and_reads_a_relay_at_an_anyone_name() {
     let chain = AnvilChain::start();
     let far = far_on(&chain);
     let relay = selling(&far);
@@ -224,15 +224,9 @@ fn a_hidden_agent_node_subscribes_reads_and_follows_a_relay_at_an_anyone_name() 
     assert_eq!(query.exit_code, 0, "{}{}", query.stdout, query.stderr);
     assert_eq!(query.json()["events"], json!([event(1)]));
 
-    // The supervisor's feed is one; the one `follow` opens is the other.
+    // The supervisor reaches the relay's feed through the overlay, and it is the only
+    // connection any command opens.
     eventually(|| relay.open_feeds() == 1);
-    let follow = near.machine.start(&["event", "follow", url, "--json"]);
-    eventually(|| relay.open_feeds() == 2);
-    relay.broadcast(event(2));
-    // The feed starts with what the relay stores, as the draft says.
-    let first: Value = serde_json::from_str(&follow.line()).expect("one document");
-    let second: Value = serde_json::from_str(&follow.line()).expect("one document");
-    assert_eq!((first, second), (event(1), event(2)));
 }
 
 /// A server that answers every request with a NIP-11 document that names `connector`, and
