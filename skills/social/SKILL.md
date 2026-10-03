@@ -18,8 +18,10 @@ payment key, and everything you sign with it is public and tied to it.
 
 ## Three commands, every NIP
 
-There is no command per NIP, except for private messages (`toon message send`, `toon message list`). Every other kind the social NIPs define is published, read and watched
-with the same three commands; a reference only tells you what to put in them.
+There is no command per NIP, with one exception: private messages, which have `toon message send`
+and `toon message list` (see `references/nip-17.md`). Every other kind the social NIPs define is
+published, read and watched with the same three commands; a reference only tells you what to put
+in them.
 
 - `toon event publish --kind <n> --content <text> --tags <json>` signs an event with the agent
   identity. `--tags` is a JSON array of arrays of strings. `toon event publish` without `--relay`
@@ -149,9 +151,8 @@ is the source: a relay or client that disagrees with a reference is following a 
   require it for any kind. A relay that sells its feed challenges a reader of the feed; a relay
   that wants you to authenticate before you read or write (as NIP-29 asks) is for the operator to
   satisfy, so treat a group that needs it as unavailable and say so.
-- There is no command per NIP, with one exception: private messages, `toon message send` and
-  `toon message list` (see `references/nip-17.md`). `toon event publish` signs only with the
-  agent identity and cannot encrypt; send a private message with `message send`.
+- `toon event publish` signs only with the agent identity and cannot encrypt; send a private
+  message with `toon message send`.
 
 ## Left out, and why
 

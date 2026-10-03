@@ -46,6 +46,7 @@ These commands spend, and each one needs an explicit amount and `--yes`:
 - `toon join <network> --deposit <n> --yes`
 - `toon create <name> --deposit <n> --yes` (the two channels count twice against the limit)
 - `toon event publish --relay <ws-url> --yes` (pays the price the relay states; add `--amount <n>` when a connector in between charges to forward)
+- `toon message send <pubkey>... --content <text> --relay <ws-url> --yes` (pays the relay's price for each recipient's wrap)
 - `toon relay subscribe <ws-url> --filter <json> --amount <n> --yes` (prepays a subscription at another relay: the balance its live feed draws down; `--packet-amount <n>` when a connector in between charges to forward)
 
 Without `--yes` nothing moves and the command fails with `not_confirmed`. Never add `--yes` to
@@ -257,11 +258,12 @@ paid as whole packets of that amount, and each packet still credits only the sub
 ### Private messages
 
 `toon message send <pubkey>... --content <text>` sends a private message from the agent identity
-and, like `event publish`, opens the keystore, so it needs the passphrase; `--relay <ws-url>
---yes` sends the recipients' wraps to another relay and pays its price. `toon message list`
-is free: it needs no passphrase and reads what the supervisor opened. It fails with
-`agent_key_not_kept` on an agent node where no command has opened the keystore since the secret
-began to be kept. The `social` skill's `references/nip-17.md` has the details.
+and, like `event publish`, opens the keystore, so it needs the passphrase;
+`--relay <ws-url> --yes` sends the recipients' wraps to another relay and pays its price.
+`toon message list` is free: it needs no passphrase and reads what the supervisor opened. It
+fails with `agent_key_not_kept` on an agent node that keeps no agent secret yet (one made before
+the secret was kept, until a command opens the keystore). The `social` skill's
+`references/nip-17.md` has the details.
 
 ### Paying an app
 

@@ -40,7 +40,8 @@ toon message send <recipient-pubkey-hex>... --content "<text>" [--reply-to <id>]
   Sending opens the keystore, so it needs the passphrase.
 - Without `--relay` the wraps go to the agent node's own relay. `--relay <ws-url>` sends the
   recipients' wraps to that relay instead, paying its write price for each; without `--yes`
-  nothing is paid and it fails with `not_confirmed`. Add `--yes` only once you know the price
+  nothing is paid and it fails with `not_confirmed`, stating the total (or with `peering_needed`
+  when no peering of the agent node reaches that relay). Add `--yes` only once you know the price
   and `toon limit show` has room for it.
 - `message send` does not read a recipient's kind `10050`. To choose `--relay`, find it yourself:
 
@@ -66,7 +67,7 @@ those keys, `--since` the messages sent at or after a time, `--limit` the newest
   opened. Run a command that opens the keystore, such as `toon event publish` or
   `toon message send`, and list again.
 - Wraps left at another relay do not arrive by themselves. Subscribe there for kind `1059`
-  addressed to the agent identity, which fills the own relay and so the list:
+  addressed to the agent identity, which fills the agent node's own relay and so the list:
 
 ```
 toon relay subscribe <ws-url> --filter '{"kinds":[1059],"#p":["<your key>"]}' --amount <n> --yes

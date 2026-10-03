@@ -286,9 +286,21 @@ fn the_social_skill_has_one_reference_per_nip_in_the_set() {
 #[test]
 fn no_skill_says_the_relay_lacks_nip_42_or_names_a_private_message_a_dm_or_a_chat() {
     for (name, file) in shipped_skills() {
-        let _ = file;
-        let text = skill_text(&name);
-        assert!(!text.contains("not implemented by the relay"), "{name}");
+        let dir = file.parent().unwrap().to_path_buf();
+        let mut files = vec![file];
+        if let Ok(references) = fs::read_dir(dir.join("references")) {
+            files.extend(references.map(|entry| entry.unwrap().path()));
+        }
+        for path in files {
+            let text = fs::read_to_string(&path).unwrap().replace('\n', " ");
+            for stale in ["not implemented by the relay", "does not implement NIP-42"] {
+                assert!(
+                    !text.contains(stale),
+                    "{name}: {} says {stale}",
+                    path.display()
+                );
+            }
+        }
     }
     let social = skill_text("social");
     assert!(social.contains("the relay implements it"));
