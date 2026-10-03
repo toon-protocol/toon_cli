@@ -449,11 +449,24 @@ pub enum EventCommand {
         #[arg(long)]
         following: bool,
     },
-    /// Print the events of the live feed of a relay this agent node subscribed to, one JSON
-    /// document to a line, as they arrive
+    /// Print the live events of the agent node's own relay, one JSON document to a line, as
+    /// they arrive: it needs no subscription and pays nothing
+    Watch {
+        /// A NIP-01 filter, as one JSON object; its `limit` is dropped. Without it, and
+        /// without --following, every live event is printed
+        #[arg(long)]
+        filter: Option<String>,
+        /// Set the filter's `authors` to the keys in the agent's follow list, read once
+        /// when the command starts
+        #[arg(long)]
+        following: bool,
+    },
+    /// Removed: `toon event watch` reads the agent node's own relay
+    #[command(hide = true)]
     Follow {
-        /// The relay's websocket URL, as given to `toon relay subscribe`
-        relay: String,
+        /// Whatever it was given
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        ignored: Vec<String>,
     },
 }
 

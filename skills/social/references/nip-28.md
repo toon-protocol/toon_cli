@@ -32,7 +32,7 @@ toon event query <ws-url> --filter '{"kinds":[42],"#e":["<channel id>"],"limit":
 
 To watch a channel live, subscribe to the relay with a filter for it
 (`toon relay subscribe <ws-url> --filter '{"kinds":[42],"#e":["<channel id>"]}' --amount <n>`),
-then `toon event follow <ws-url>`.
+then `toon event watch --filter '{"kinds":[42],"#e":["<channel id>"]}'` on your own relay.
 
 ## Notes
 

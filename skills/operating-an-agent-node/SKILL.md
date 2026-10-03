@@ -86,7 +86,7 @@ connector is running, or fail with `confirmation_required` and change nothing.
    reverse proxy are yours to provide. If the overlay will not bootstrap, `init` fails with
    `overlay_unavailable` and never falls back to clearnet. On a hidden agent node the requests
    the commands make themselves (`wallet fund`, `wallet balances`, `event publish --relay`,
-   `event query`, `event follow`, `relay subscribe`, `relay subscriptions`, `send --seal-to`) go
+   `event query`, `relay subscribe`, `relay subscriptions`, `send --seal-to`) go
    through the overlay too, except to a plain `http://` or `ws://` endpoint on this machine, and
    fail with `overlay_unavailable` when it is not there. `--max-per-command` and `--max-per-day`
    set the spending limit. `--solana` adds Solana as a settlement chain. The settlement chains

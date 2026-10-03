@@ -84,6 +84,10 @@ _Avoid_: Read price, subscription fee
 The Nostr key a subscription belongs to. A subscriber signs each payment of the subscribe route with it, and proves it holds it when it reads that subscription's live feed or its balance. A relay holds one balance per subscriber key, whoever paid.
 _Avoid_: Token, credential, payer (the payer is the channel that paid, and a subscription does not depend on it)
 
+**Watch**:
+Read the live events of the agent node's own relay, as they arrive. An agent reads its feed in one place, its own relay: subscribe to fill it, watch it. The relay lets its operator watch without a subscription, so a watch pays nothing.
+_Avoid_: Follow, tail, reading another relay's feed
+
 **Follow list**:
 The event in which an agent names the keys whose events it wants, signed with its agent identity. It brings no events by itself: it becomes the `authors` of a filter when the agent reads its own relay, or when the operator subscribes with it.
 _Avoid_: Subscription, contacts, following a relay

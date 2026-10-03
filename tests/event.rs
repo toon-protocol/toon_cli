@@ -1,6 +1,7 @@
 mod support;
 
 use serde_json::Value;
+use std::time::Duration;
 use support::fake_chain::FakeChain;
 use support::fake_remote_relay::FakeRemoteRelay;
 use support::{Foreground, Machine};
@@ -391,4 +392,242 @@ fn following_with_the_own_relay_not_running_is_not_running() {
         query.stdout
     );
     assert_eq!(query.exit_code, 1);
+}
+
+impl Running {
+    /// `toon event watch` with `args`, left running.
+    fn watch(&self, args: &[&str]) -> Foreground {
+        let mut all = vec!["event", "watch"];
+        all.extend_from_slice(args);
+        self.machine.start_with(&all, |command| {
+            command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+        })
+    }
+
+    /// Publish kind 1 events, `<prefix>0`, `<prefix>1` and so on, until `watch` prints one:
+    /// it says nothing of being connected, and prints only what arrives after. The events
+    /// it printed, as documents.
+    fn publish_until_printed(&self, watch: &Foreground, prefix: &str) -> Vec<Value> {
+        for number in 0..100 {
+            let content = format!("{prefix}{number}");
+            let published = self.publish(&["--kind", "1", "--content", &content]);
+            assert_eq!(published.exit_code, 0, "{}", published.stdout);
+            if let Some(line) = watch.try_line(Duration::from_millis(300)) {
+                let mut printed = vec![serde_json::from_str(&line).expect("one document")];
+                while let Some(line) = watch.try_line(Duration::from_millis(300)) {
+                    printed.push(serde_json::from_str(&line).expect("one document"));
+                }
+                return printed;
+            }
+        }
+        panic!("the watch printed nothing; stderr:\n{}", watch.stderr());
+    }
+
+    /// Start selling the relay's live feed, which restarts the relay.
+    fn sell_the_feed(&self) {
+        let run = self.machine.toon(&[
+            "relay",
+            "price",
+            "--subscribe",
+            "1000",
+            "--broadcast",
+            "10",
+            "--yes",
+            "--json",
+        ]);
+        assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    }
+
+    fn limits(&self) -> Value {
+        self.machine.toon(&["limit", "show", "--json"]).json()["limits"].clone()
+    }
+}
+
+#[test]
+fn watch_prints_an_event_written_after_it_started_and_not_the_stored_ones() {
+    let node = running();
+    assert_eq!(
+        node.publish(&["--kind", "1", "--content", "before"])
+            .exit_code,
+        0
+    );
+    let limits = node.limits();
+    let watch = node.watch(&[]);
+
+    let printed = node.publish_until_printed(&watch, "after");
+
+    assert!(
+        printed
+            .iter()
+            .all(|event| event["content"].as_str().unwrap().starts_with("after")),
+        "{printed:?}"
+    );
+    assert_eq!(printed[0]["kind"], 1);
+    // It pays nothing and counts nothing against the limit but what was published: 0.
+    assert_eq!(node.limits(), limits);
+}
+
+#[test]
+fn watch_with_a_filter_prints_only_the_live_events_that_match() {
+    let node = running();
+    let watch = node.watch(&["--filter", r#"{"kinds":[7],"limit":5}"#]);
+
+    for number in 0..100 {
+        assert_eq!(
+            node.publish(&["--kind", "1", "--content", "note"])
+                .exit_code,
+            0
+        );
+        let reaction = format!("+{number}");
+        assert_eq!(
+            node.publish(&["--kind", "7", "--content", &reaction])
+                .exit_code,
+            0
+        );
+        if let Some(line) = watch.try_line(Duration::from_millis(300)) {
+            let printed: Value = serde_json::from_str(&line).expect("one document");
+            assert_eq!(printed["kind"], 7, "{printed}");
+            while let Some(line) = watch.try_line(Duration::from_millis(300)) {
+                let printed: Value = serde_json::from_str(&line).expect("one document");
+                assert_eq!(printed["kind"], 7, "{printed}");
+            }
+            return;
+        }
+    }
+    panic!("the watch printed nothing; stderr:\n{}", watch.stderr());
+}
+
+#[test]
+fn watch_following_prints_only_the_live_events_of_followed_keys() {
+    let node = running();
+    let me = node.agent_identity();
+    node.follow(&[&me]);
+    let watch = node.watch(&["--following"]);
+
+    let printed = node.publish_until_printed(&watch, "mine");
+
+    assert!(printed.iter().all(|event| event["pubkey"] == me.as_str()));
+    // The filter is the follow list: with another key followed, nothing of mine is printed.
+    node.follow(&[OTHER]);
+    let other = node.watch(&["--following"]);
+    for number in 0..5 {
+        let content = format!("not-followed{number}");
+        node.publish(&["--kind", "1", "--content", &content]);
+    }
+    assert_eq!(other.try_line(Duration::from_millis(500)), None);
+}
+
+#[test]
+fn watch_following_with_a_filter_that_has_authors_is_usage() {
+    let node = running();
+    node.follow(&[OTHER]);
+
+    let run = node.machine.toon_with(
+        &[
+            "event",
+            "watch",
+            "--following",
+            "--filter",
+            r#"{"authors":["ab"]}"#,
+            "--json",
+        ],
+        |command| {
+            command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+        },
+    );
+
+    assert_eq!(run.json()["error"]["code"], "usage", "{}", run.stdout);
+    assert_eq!(run.exit_code, 2);
+}
+
+#[test]
+fn watch_following_with_no_follow_list_or_an_empty_one_is_no_follow_list() {
+    let node = running();
+    let watch = |node: &Running| {
+        node.machine
+            .toon_with(&["event", "watch", "--following", "--json"], |command| {
+                command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+            })
+    };
+
+    let none = watch(&node);
+    assert_eq!(none.json()["error"]["code"], "no_follow_list");
+    assert_eq!(none.exit_code, 1);
+
+    node.follow(&[]);
+    assert_eq!(watch(&node).json()["error"]["code"], "no_follow_list");
+}
+
+#[test]
+fn watch_refuses_a_filter_that_is_not_an_object() {
+    let node = running();
+
+    let run = node
+        .machine
+        .toon(&["event", "watch", "--filter", "[]", "--json"]);
+
+    assert_eq!(run.json()["error"]["code"], "usage", "{}", run.stdout);
+    assert_eq!(run.exit_code, 2);
+}
+
+#[test]
+fn watch_reads_a_relay_that_sells_its_feed_as_its_operator_with_no_subscription() {
+    let node = running();
+    node.sell_the_feed();
+    let watch = node.watch(&[]);
+
+    let printed = node.publish_until_printed(&watch, "operator");
+
+    assert!(printed[0]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with("operator"));
+}
+
+#[test]
+fn watch_names_the_public_host_of_a_relay_that_sells_its_feed_on_clearnet() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    let init = machine.init_on_clearnet(&chain);
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    let _ = up.report();
+    let node = Running {
+        machine,
+        up,
+        _chain: chain,
+    };
+    node.sell_the_feed();
+    let watch = node.watch(&[]);
+
+    // The relay checks the `relay` tag against toon.example.com, and dialled loopback.
+    let printed = node.publish_until_printed(&watch, "clearnet");
+
+    assert!(printed[0]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with("clearnet"));
+}
+
+#[test]
+fn watch_with_the_own_relay_not_running_is_not_running() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    let init = machine.init_on(&chain);
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+
+    let run = machine.toon(&["event", "watch", "--json"]);
+
+    assert_eq!(run.json()["error"]["code"], "not_running", "{}", run.stdout);
+    assert_eq!(run.exit_code, 1);
+}
+
+#[test]
+fn watch_on_a_machine_with_no_agent_node_says_so() {
+    let machine = Machine::new();
+
+    let run = machine.toon(&["event", "watch", "--json"]);
+
+    assert_eq!(run.json()["error"]["code"], "no_agent_node");
+    assert_eq!(run.exit_code, 3);
 }
