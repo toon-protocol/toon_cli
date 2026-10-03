@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
-use crate::cli::{ChannelCommand, JoinArgs, PeerCommand, RouteCommand};
+use crate::cli::{Chain, ChannelCommand, JoinArgs, PeerCommand, RouteCommand};
 use crate::control;
 use crate::egress::Egress;
 use crate::funding::GasRefusal;
@@ -447,6 +447,22 @@ pub struct PeerAdd<'a> {
     pub id: Option<&'a str>,
     pub fee: u64,
     pub max_packet_amount: u64,
+    /// The settlement chain to peer on, when the operator names one.
+    pub chain: Option<Chain>,
+}
+
+/// What the connector's answer to a peering is when this connector and the other settle on
+/// more than one chain and the request named none: the end of its refusal, which it makes
+/// before any channel is opened. The chains on offer sit between [`AMBIGUOUS_CHAIN_LIST`]
+/// and this. Pinned by a test against the connector the build embeds.
+pub(crate) const AMBIGUOUS_CHAIN: &str = "; name one as `chain` in the request";
+pub(crate) const AMBIGUOUS_CHAIN_LIST: &str = " share settlement on ";
+
+/// The chains the connector listed in its ambiguous-chain refusal `text`, if it is one.
+fn ambiguous_chains(text: &str) -> Option<&str> {
+    let (before, _) = text.split_once(AMBIGUOUS_CHAIN)?;
+    let (_, chains) = before.split_once(AMBIGUOUS_CHAIN_LIST)?;
+    Some(chains.trim())
 }
 
 /// What the connector's answer to a peering is on the connector's own words: it confirmed
@@ -499,6 +515,10 @@ pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Peered, Error> {
         "max_packet_amount": add.max_packet_amount,
         "deposit": add.deposit,
     });
+    let mut body = body;
+    if let (Some(chain), Some(members)) = (add.chain, body.as_object_mut()) {
+        members.insert("chain".into(), json!(chain.name()));
+    }
     let (mut status, mut text) = write(surface, reqwest::Method::POST, "/peers", Some(&body))?;
     // Set once the connector has said that the deposit this command sent confirmed.
     let mut deposit_confirmed = false;
@@ -549,6 +569,22 @@ pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Peered, Error> {
         // peer over plain `http://` refuses such an address, and finds no endpoint it
         // can dial in a description that publishes only those: then the refusal is
         // this side's.
+        if status == 400 {
+            if let Some(chains) = ambiguous_chains(&text) {
+                // Refused before any channel was opened: nothing was deposited.
+                return Err(Error {
+                    nothing_sent: true,
+                    ..failed(
+                        ErrorCode::PeerFailed,
+                        format!(
+                            "This connector and the other settle on more than one chain \
+                             ({chains}). Run the command again with `--chain` naming one. {}",
+                            refusal(status, &text)
+                        ),
+                    )
+                });
+            }
+        }
         let no_endpoint = status == 502 && text.contains("publishes no endpoint");
         let no_client_edge = status == 502 && text.contains("publishes no httpEndpoint");
         let plaintext = status == 502 && text.contains("peer_allow_plaintext_endpoints");
@@ -1341,6 +1377,7 @@ pub fn peer(home: &Path, command: &PeerCommand) -> Result<Report, Error> {
                         id: args.id.as_deref(),
                         fee: args.fee,
                         max_packet_amount: args.max_packet_amount,
+                        chain: args.chain,
                     },
                 )?;
                 Ok((peered.report, peered.deposited))
@@ -1420,6 +1457,7 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
                 id: Some(name),
                 fee: 0,
                 max_packet_amount: 0,
+                chain: args.chain,
             },
         )?;
         let deposited = peered.deposited;
@@ -1466,9 +1504,10 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        before_sending, packet_wait, peer_add_on, PeerAdd, Surface, PACKET_EXPIRY, REPLAYED,
-        STALE_READ, UNREAD, UNREAD_TIMEOUT,
+        before_sending, packet_wait, peer_add_on, PeerAdd, Surface, AMBIGUOUS_CHAIN,
+        AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD, UNREAD_TIMEOUT,
     };
+    use crate::cli::Chain;
     use crate::outcome::ErrorCode;
     use std::io::{Read, Write};
 
@@ -1517,6 +1556,7 @@ mod tests {
             id: Some("far"),
             fee: 0,
             max_packet_amount: 0,
+            chain: None,
         }
     }
 
@@ -1712,6 +1752,97 @@ mod tests {
                 .any(|window| window == wording.as_slice()),
             "the embedded connector no longer says {UNREAD:?}"
         );
+    }
+
+    /// The connector's refusal is a format string kept in pieces; the pieces the refusal is
+    /// recognised by are searched for in the embedded connector.
+    #[test]
+    fn the_connectors_ambiguous_chain_wording_is_pinned() {
+        let binary = std::fs::read(std::env::current_exe().expect("this binary")).expect("read");
+        for wording in [AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST] {
+            assert!(
+                binary
+                    .windows(wording.len())
+                    .any(|window| window == wording.as_bytes()),
+                "the embedded connector no longer says {wording:?}"
+            );
+        }
+    }
+
+    fn ambiguous() -> (u16, String) {
+        (
+            400,
+            format!(
+                "this connector and http://x/ilp{AMBIGUOUS_CHAIN_LIST}evm, solana{AMBIGUOUS_CHAIN}"
+            ),
+        )
+    }
+
+    #[test]
+    fn an_ambiguous_chain_refusal_names_the_chains_and_gives_the_amount_back() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (url, seen) = connector(vec![ambiguous()]);
+        let Err(error) = peer_add_on(&surface(home.path(), url), &add()) else {
+            panic!("the peering was made");
+        };
+        assert_eq!(error.code, ErrorCode::PeerFailed);
+        assert!(error.message.contains("--chain"), "{}", error.message);
+        assert!(error.message.contains("evm, solana"), "{}", error.message);
+        assert!(
+            error.message.contains("name one as `chain`"),
+            "{}",
+            error.message
+        );
+        assert!(crate::spending::failed_before_paying(&error));
+        assert_eq!(seen.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn any_other_400_stays_counted() {
+        let home = tempfile::tempdir().expect("a directory");
+        let (url, _) = connector(vec![(400, "the deposit is below the minimum".to_owned())]);
+        let Err(error) = peer_add_on(&surface(home.path(), url), &add()) else {
+            panic!("the peering was made");
+        };
+        assert_eq!(error.code, ErrorCode::PeerFailed);
+        assert!(!crate::spending::failed_before_paying(&error));
+    }
+
+    /// What a request to a connector that answers once with a found channel carried.
+    fn request_to_connector(add: &PeerAdd) -> String {
+        let home = tempfile::tempdir().expect("a directory");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let url = format!("http://{}", listener.local_addr().expect("an address"));
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("a connection");
+            let mut buffer = [0u8; 8192];
+            let read = stream.read(&mut buffer).expect("a request");
+            let (_, body) = found();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 X\r\ncontent-type: application/json\r\n\
+                 content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            String::from_utf8_lossy(&buffer[..read]).into_owned()
+        });
+        peer_add_on(&surface(home.path(), url), add).expect("peered");
+        handle.join().expect("the request")
+    }
+
+    #[test]
+    fn a_chain_is_sent_as_named_and_not_at_all_otherwise() {
+        for (chain, expected) in [
+            (Some(Chain::Solana), Some("\"chain\":\"solana\"")),
+            (Some(Chain::Evm), Some("\"chain\":\"evm\"")),
+            (None, None),
+        ] {
+            let request = request_to_connector(&PeerAdd { chain, ..add() });
+            match expected {
+                Some(member) => assert!(request.contains(member), "{request}"),
+                None => assert!(!request.contains("\"chain\""), "{request}"),
+            }
+        }
     }
 
     #[test]

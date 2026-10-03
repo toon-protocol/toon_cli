@@ -176,6 +176,7 @@ fn run() -> ExitCode {
                         accept_anyone_terms: args.accept_anyone_terms,
                         listen: &args.listen,
                         deposit: args.deposit,
+                        chain: args.chain,
                         yes: args.yes,
                     },
                 )

@@ -12,6 +12,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::apps::{self, Origin};
+use crate::cli::Chain;
 use crate::egress::Egress;
 use crate::node::{self, App, Reach, Source, State, ToonApp};
 use crate::operator::{self, PeerAdd, Surface};
@@ -34,6 +35,8 @@ pub struct Create<'a> {
     pub listen: &'a str,
     /// What each of the two channels is opened with, or `None` for no peering.
     pub deposit: Option<u128>,
+    /// The settlement chain both peerings are made on, if named.
+    pub chain: Option<Chain>,
     pub yes: bool,
 }
 
@@ -132,6 +135,7 @@ fn peer(
     from: (&ToonApp, &Surface),
     to: (&ToonApp, &Surface),
     deposit: u128,
+    chain: Option<Chain>,
 ) -> Result<(Value, bool), Error> {
     let url = peer_url(home, to.0, to.1)?;
     let peering = operator::peer_add_on(
@@ -142,6 +146,7 @@ fn peer(
             id: Some(&to.0.name),
             fee: 0,
             max_packet_amount: 0,
+            chain,
         },
     )?;
     let prefix = to.0.address();
@@ -248,7 +253,7 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
                 ((new, &far), (source, &near)),
                 ((source, &near), (new, &far)),
             ] {
-                let (made, deposited) = peer(home, from, to, deposit)?;
+                let (made, deposited) = peer(home, from, to, deposit, create.chain)?;
                 peerings.push(made);
                 deposits += u128::from(deposited);
             }
