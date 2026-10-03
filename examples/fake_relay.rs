@@ -250,7 +250,8 @@ fn matches(filter: &serde_json::Value, event: &serde_json::Value) -> bool {
 }
 
 /// A relay that sells its feed sends `AUTH` and keeps a read open only for a connection that
-/// proves the relay's own identity key; a free one gets `CLOSED` after the stored events.
+/// proves the relay's own identity key; a free one gets `CLOSED` after the stored events, with
+/// `auth-required` before an answer and `payment-required` after one, as the draft says.
 fn selling() -> bool {
     env::var_os("TOON_BROADCAST_PRICE").is_some()
 }
@@ -285,7 +286,8 @@ fn websocket(stream: TcpStream, data: &Path) {
     };
     let challenge = format!("challenge-{:x}", std::process::id());
     let selling = selling();
-    let mut authed = false;
+    // Whether the connection answered the challenge, and with the relay's own key.
+    let (mut authed, mut operator) = (false, false);
     if selling && !send(&mut socket, serde_json::json!(["AUTH", challenge])) {
         return;
     }
@@ -337,9 +339,8 @@ fn websocket(stream: TcpStream, data: &Path) {
                             .and_then(|tag| tag[1].as_str())
                     })
                 };
-                authed = event["kind"] == 22242
-                    && tag("challenge") == Some(challenge.as_str())
-                    && event["pubkey"] == identity().as_str();
+                authed = event["kind"] == 22242 && tag("challenge") == Some(challenge.as_str());
+                operator = authed && event["pubkey"] == identity().as_str();
             }
             Some("CLOSE") if frame.len() > 1 => live.retain(|(id, _, _)| *id != frame[1]),
             Some("REQ") if frame.len() >= 3 => {
@@ -373,14 +374,15 @@ fn websocket(stream: TcpStream, data: &Path) {
                 }
                 let _ = send(&mut socket, serde_json::json!(["EOSE", subscription]));
                 live.retain(|(id, _, _)| *id != subscription);
-                if selling && !authed {
+                if selling && !operator {
+                    let reason = if authed {
+                        "payment-required: this feed is sold"
+                    } else {
+                        "auth-required: this feed is sold"
+                    };
                     let _ = send(
                         &mut socket,
-                        serde_json::json!([
-                            "CLOSED",
-                            subscription,
-                            "payment-required: this feed is sold"
-                        ]),
+                        serde_json::json!(["CLOSED", subscription, reason]),
                     );
                 } else {
                     live.push((subscription, frame[2..].to_vec(), sent));

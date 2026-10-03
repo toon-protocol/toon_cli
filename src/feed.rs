@@ -176,6 +176,18 @@ fn frame(message: Message) -> Option<Vec<Value>> {
     }
 }
 
+/// The NIP-42 answer of the key `secret` to the challenge `challenge` of `relay`.
+fn answer(secret: &[u8; 32], relay: &str, challenge: &str) -> Result<Value, Ended> {
+    event::sign(
+        secret,
+        event::now(),
+        CLIENT_AUTH,
+        json!([["relay", relay], ["challenge", challenge]]),
+        "",
+    )
+    .map_err(|error| Ended::Dropped(error.message))
+}
+
 /// Read the live feed of `relay` for the subscriber key `secret`, with `filter`, and call
 /// `on_event` for every event it sends, until it ends. `on_event` returns whether to go on.
 pub fn read(
@@ -215,15 +227,9 @@ pub fn read(
             Err(error) => return dropped(error),
         }
     };
-    let answer = match event::sign(
-        secret,
-        event::now(),
-        CLIENT_AUTH,
-        json!([["relay", relay], ["challenge", challenge]]),
-        "",
-    ) {
+    let answer = match answer(secret, relay, &challenge) {
         Ok(answer) => answer,
-        Err(error) => return Ended::Dropped(error.message),
+        Err(ended) => return ended,
     };
     let mut filter = filter.clone();
     if let Some(filter) = filter.as_object_mut() {
@@ -278,12 +284,12 @@ pub fn read(
 /// Read the live feed of the agent node's own `relay` with `filter` and call `on_event` for
 /// every event it sends, until it ends. A relay that sells its feed closes a free read after
 /// the stored events but keeps one open for a connection that proves an operator key, and
-/// the relay's own identity key, `operator`, is always one: so a challenge is answered with
-/// it, and the `REQ` is sent once the challenge is answered. A relay that sends no challenge
+/// the relay's own identity key, `identity_key`, is always one: so a challenge is answered
+/// with it, and the `REQ` is sent once the challenge is answered. A relay that sends no challenge
 /// within a moment is asked without one.
 pub fn read_own(
     relay: &str,
-    operator: &[u8; 32],
+    identity_key: &[u8; 32],
     filter: &Value,
     stop: &AtomicBool,
     mut on_event: impl FnMut(Value),
@@ -319,15 +325,9 @@ pub fn read_own(
                 let Some(challenge) = challenge.as_str() else {
                     continue;
                 };
-                let answer = match event::sign(
-                    operator,
-                    event::now(),
-                    CLIENT_AUTH,
-                    json!([["relay", relay], ["challenge", challenge]]),
-                    "",
-                ) {
+                let answer = match answer(identity_key, relay, challenge) {
                     Ok(answer) => answer,
-                    Err(error) => break Ended::Dropped(error.message),
+                    Err(ended) => break ended,
                 };
                 answered = true;
                 // A `REQ` sent before the answer is asked again, as the relay may have

@@ -141,7 +141,7 @@ fn run(home: &Path, surroundings: &dyn Surroundings, stop: &AtomicBool) {
         let (Some(secret), Some(address)) = (kept_secret(home), surroundings.read_relay()) else {
             continue;
         };
-        let Some(operator) = relay_identity(home) else {
+        let Some(identity_key) = relay_identity(home) else {
             continue;
         };
         let Ok(identity) = event::public_key(&secret) else {
@@ -149,7 +149,13 @@ fn run(home: &Path, surroundings: &dyn Surroundings, stop: &AtomicBool) {
         };
         let started = Instant::now();
         read(
-            home, address, &operator, &secret, &identity, stop, &mut seen,
+            home,
+            address,
+            &identity_key,
+            &secret,
+            &identity,
+            stop,
+            &mut seen,
         );
         let delay = if started.elapsed() < HEALTHY {
             (retry.1 * 2).min(LONGEST_RETRY)
@@ -172,7 +178,7 @@ fn relay_identity(home: &Path) -> Option<[u8; 32]> {
 fn read(
     home: &Path,
     address: SocketAddr,
-    operator: &[u8; 32],
+    identity_key: &[u8; 32],
     secret: &[u8; 32],
     identity: &str,
     stop: &AtomicBool,
@@ -181,7 +187,7 @@ fn read(
     let filter = json!({ "kinds": [gift_wrap::WRAP], "#p": [identity] });
     let ended = feed::read_own(
         &format!("ws://{address}"),
-        operator,
+        identity_key,
         &filter,
         stop,
         |wrap| open(home, secret, identity, &wrap, seen),

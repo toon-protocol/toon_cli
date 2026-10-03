@@ -164,6 +164,30 @@ fn a_sent_message_is_listed_without_a_passphrase() {
 
     let mode = fs::metadata(alice.store()).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
+
+    // The store is a cache: a backup does not carry it.
+    let file = alice.machine.home().join("agent-node.backup");
+    let backup = alice.toon(&[
+        "wallet",
+        "backup",
+        "--json",
+        "--out",
+        file.to_str().unwrap(),
+    ]);
+    assert_eq!(backup.exit_code, 0, "{}", backup.stdout);
+    let after = Machine::new();
+    let restore = after.toon_with(
+        &["wallet", "restore", "--json", file.to_str().unwrap()],
+        |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        },
+    );
+    assert_eq!(restore.exit_code, 0, "{}", restore.stdout);
+    assert!(after.agent_node_home().is_dir());
+    assert!(!after
+        .agent_node_home()
+        .join("private-messages.json")
+        .exists());
 }
 
 fn a_message_from_another_key_appears_live(alice: &Node, bob: &Node) {
