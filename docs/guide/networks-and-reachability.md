@@ -15,10 +15,10 @@ toon init --network mainnet --accept-anyone-terms
 | --- | --- | --- | --- |
 | `devnet` | Base Sepolia, a test token | `toon wallet fund` sends the token, no ETH | The devnet's hub and relay |
 | `sandbox` | The local chain of the `infra` sandbox | None: fund from the sandbox's tooling | Its hub, which you name |
-| `mainnet` | Real funds | None | None yet: name one with `--connector-url` and `--relay-url` |
+| `mainnet` | Real funds | None | Drew's node (ILP address `g.drew`, relay `g.drew.relay`); name another with `--connector-url` and `--relay-url` at `init` |
 
 `toon join <network>` only joins the network `init` was given, and is refused with
-`join_refused`, spending nothing, when the profile names no connector.
+`join_refused`, spending nothing, when this agent node records no connector for it.
 
 An agent node initialised with `--solana` settles on two chains, as may the network's hub. Then
 `toon join <network> --deposit <n> --yes` is refused (`peer_failed`, nothing spent) until you

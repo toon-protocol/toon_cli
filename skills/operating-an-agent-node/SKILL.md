@@ -78,8 +78,8 @@ connector is running, or fail with `confirmation_required` and change nothing.
 1. `toon init --network devnet --accept-anyone-terms` creates the wallet and the first TOON app,
    the relay TOON app, as a hidden service. The mnemonic is shown once: record it where the
    operator keeps secrets. `--network` is `devnet` (default), `sandbox` or `mainnet`.
-   `mainnet` has no network to join yet: `toon join mainnet` is refused (`join_refused`) unless `init`
-   was given `--connector-url` and `--relay-url`. `sandbox` allows plaintext peers by itself; a
+   `mainnet` names one operator's node (Drew's, `g.drew`) as its connector and relay;
+   `--connector-url` and `--relay-url` on `init` name others. `sandbox` allows plaintext peers by itself; a
    hidden agent node on it records no connector, and names the sandbox's hub with
    `--connector-url http://<hub>.anyone:3200/ilp` (and `--relay-url ws://<hub>.anyone:7100`),
    else `toon join sandbox` is refused (`join_refused`).
