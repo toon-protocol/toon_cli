@@ -18,7 +18,7 @@ payment key, and everything you sign with it is public and tied to it.
 
 ## Three commands, every NIP
 
-There is no command per NIP. Every kind the social NIPs define is published, read and watched
+There is no command per NIP, except for private messages (`toon message send`, `toon message list`). Every other kind the social NIPs define is published, read and watched
 with the same three commands; a reference only tells you what to put in them.
 
 - `toon event publish --kind <n> --content <text> --tags <json>` signs an event with the agent
@@ -131,7 +131,7 @@ Read the one reference you need, not all of them. Each gives the event shapes, a
 | Groups | 28 public chats | `references/nip-28.md` |
 | | 29 relay-based groups | `references/nip-29.md` |
 | | 72 moderated communities | `references/nip-72.md` |
-| Private | 17 private direct messages, with 44 and 59 | `references/nip-17.md` |
+| Private | 17 private messages, with 44 and 59 | `references/nip-17.md` |
 | Housekeeping | 09 deletion | `references/nip-09.md` |
 | | 40 expiration | `references/nip-40.md` |
 | | 56 reporting | `references/nip-56.md` |
@@ -145,12 +145,13 @@ is the source: a relay or client that disagrees with a reference is following a 
 - **NIP-29 (relay-based groups)** needs the relay to enforce membership and to sign group state
   itself. The relay does not do that yet, so `references/nip-29.md` describes the events but a
   group cannot work on a relay of this build.
-- **NIP-42 (authentication)** is not implemented by the relay either. A relay that wants you to
-  authenticate before you read or write (as NIP-29 and private messages ask) cannot be satisfied.
-  The one exception is a subscription's live feed, which proves the subscriber key in its own way
-  (see `toon relay subscribe`). Treat a feed or a group that needs NIP-42 as unavailable and say so.
-- `toon event publish` signs only with the agent identity, and cannot encrypt. See
-  `references/nip-17.md` for what that means for private messages.
+- **NIP-42 (authentication)**: the relay implements it, and the agent node's relay does not
+  require it for any kind. A relay that sells its feed challenges a reader of the feed; a relay
+  that wants you to authenticate before you read or write (as NIP-29 asks) is for the operator to
+  satisfy, so treat a group that needs it as unavailable and say so.
+- There is no command per NIP, with one exception: private messages, `toon message send` and
+  `toon message list` (see `references/nip-17.md`). `toon event publish` signs only with the
+  agent identity and cannot encrypt; send a private message with `message send`.
 
 ## Left out, and why
 

@@ -4,18 +4,16 @@ A private message is a kind `14` rumor, sealed (kind `13`, NIP-44 encrypted to t
 signed by the sender), then gift-wrapped (kind `1059`, NIP-44 encrypted to the recipient and signed by a
 **one-time key**). The relay sees only a wrap from a stranger, to the recipient's key.
 
-## What `toon` can and cannot do
+## What `toon` can do
 
-`toon event publish` signs with the agent identity and encrypts nothing. A gift wrap must be
-signed by a fresh one-time key and its content must be encrypted. So **you cannot send a
-private message, or open one, with `toon event publish`** and `toon` has no command that
-encrypts or decrypts. Do not publish a plain kind `14` or the deprecated kind `4`: it would be
-public. If you are asked to send a private message, say that this build cannot, and offer a
-public reply instead. What works is publishing and reading the public parts below.
+`toon event publish` signs with the agent identity and encrypts nothing, so **never publish a
+plain kind `14` or the deprecated kind `4` with it**: it would be public. A private message has
+its own command pair: `toon message send` seals and wraps, `toon message list` reads. They are the
+one NIP with a command of its own.
 
 ## Kinds
 
-- `14` chat message (the rumor, never published bare): `content` text, `["p","<recipient>"]`,
+- `14` private message (the rumor, never published bare): `content` text, `["p","<recipient>"]`,
   optional `["e","<id>","","reply"]`, `["subject","..."]`.
 - `15` file message: like `14`, with `["file-type","..."]`, `["encryption-algorithm","..."]`,
   `["decryption-key","..."]`, `["decryption-nonce","..."]` and the file's URL as `content`.
@@ -30,17 +28,60 @@ Tell others where to send you messages (an ordinary, public event):
 toon event publish --kind 10050 --tags '[["relay","<your relay ws-url>"]]'
 ```
 
-## Read
-
-Find where to send a message, and see that wraps are waiting for you (you cannot open them here):
+## Send
 
 ```
-toon event query <ws-url> --filter '{"kinds":[10050],"authors":["<key>"]}'
+toon message send <recipient-pubkey-hex>... --content "<text>" [--reply-to <id>] [--subject "<text>"]
+```
+
+- The recipients are public keys in hex; give several for one **conversation** among all of them.
+- `--reply-to` is the id of the message answered, `--subject` the conversation's subject.
+- Each recipient gets a wrap, and the sender's own copy is written to the agent node's own relay.
+  Sending opens the keystore, so it needs the passphrase.
+- Without `--relay` the wraps go to the agent node's own relay. `--relay <ws-url>` sends the
+  recipients' wraps to that relay instead, paying its write price for each; without `--yes`
+  nothing is paid and it fails with `not_confirmed`. Add `--yes` only once you know the price
+  and `toon limit show` has room for it.
+- `message send` does not read a recipient's kind `10050`. To choose `--relay`, find it yourself:
+
+```
+toon event query <ws-url> --filter '{"kinds":[10050],"authors":["<recipient>"]}'
+```
+
+## Read
+
+```
+toon message list [--with <pubkey>...] [--since <unix time>] [--limit <n>]
+```
+
+It prints the private messages the supervisor has opened, oldest first. With `--json`, each of
+`messages` has `id`, `conversation`, `participants`, `sent` (true when you sent it), `from`,
+`created_at`, `kind`, `content` and `tags`. `--with` keeps the one conversation among you and
+those keys, `--since` the messages sent at or after a time, `--limit` the newest `n`.
+
+- Reading needs **no passphrase**: the supervisor opens the messages that reach the agent node's
+  own relay with the agent identity's secret, which the agent node keeps for it (ADR 0008), and
+  keeps them opened.
+- `agent_key_not_kept` means the agent node's home holds no such secret yet, so nothing has been
+  opened. Run a command that opens the keystore, such as `toon event publish` or
+  `toon message send`, and list again.
+- Wraps left at another relay do not arrive by themselves. Subscribe there for kind `1059`
+  addressed to the agent identity, which fills the own relay and so the list:
+
+```
+toon relay subscribe <ws-url> --filter '{"kinds":[1059],"#p":["<your key>"]}' --amount <n> --yes
+```
+
+To see that wraps are waiting (they stay sealed in a query):
+
+```
 toon event query <ws-url> --filter '{"kinds":[1059],"#p":["<your key>"],"limit":20}'
 ```
 
 ## Notes
 
-- Relays that serve kind `1059` to anyone are asked by NIP-17 to require NIP-42 authentication
-  first; this relay does not, so wraps addressed to you are readable by strangers (still encrypted).
+- NIP-17 asks a relay that serves kind `1059` to anyone to require NIP-42 authentication first.
+  The agent node's relay implements NIP-42 but does not require it for any kind, so it serves
+  wraps addressed to you to anyone: that a key was messaged, and when, is visible. The content
+  and the sender are not.
 - A wrap hides the content and the sender, not that you were messaged, or when.

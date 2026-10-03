@@ -254,6 +254,15 @@ the same as publishing in one way: if a connector in between rejects its packets
 state what one packet costs along the path with `--packet-amount <n>`; `--amount` stays the total,
 paid as whole packets of that amount, and each packet still credits only the subscribe price.
 
+### Private messages
+
+`toon message send <pubkey>... --content <text>` sends a private message from the agent identity
+and, like `event publish`, opens the keystore, so it needs the passphrase; `--relay <ws-url>
+--yes` sends the recipients' wraps to another relay and pays its price. `toon message list`
+is free: it needs no passphrase and reads what the supervisor opened. It fails with
+`agent_key_not_kept` on an agent node where no command has opened the keystore since the secret
+began to be kept. The `social` skill's `references/nip-17.md` has the details.
+
 ### Paying an app
 
 An app you added is used by paying it, not by calling its loopback address, which does the work
