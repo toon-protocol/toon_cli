@@ -1,6 +1,6 @@
 [package]
 name = "toon-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "MIT"
 description = "Runs and manages an agent node"
