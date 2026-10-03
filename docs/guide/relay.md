@@ -75,7 +75,7 @@ each event it broadcasts to them (ADR 0005, [`nips/paid-subscription.md`](../../
 ```sh
 toon relay price --subscribe 100 --broadcast 1 --yes
 toon route list                          # the new subscribe route, at 100
-toon relay subscriptions --incoming      # who subscribed and what they have left
+toon relay subscriptions --incoming      # who subscribed and what they have left, and how many hold a balance
 ```
 
 `--subscribe` is what one subscribe packet costs and credits; `--broadcast` is what each
@@ -109,6 +109,12 @@ toon event follow ws://bob…anyone:7100
 When a connector on the way charges to forward, state what one packet costs along the path
 with `--packet-amount`; `--amount` stays the total, and each packet still credits only the
 subscribe price.
+
+Both directions are counted. `toon status` reports the subscriptions this agent node holds
+(with a balance, and exhausted) and the subscriber keys of its own relay that hold a balance;
+the second is 0 while the relay sells no live feed, and unknown while it does not answer,
+which does not change the exit code. `toon relay subscriptions` carries the first pair as
+`totals` beside its list, and `toon relay subscriptions --incoming` the second. With none, every count is 0.
 
 ## Draft NIPs
 

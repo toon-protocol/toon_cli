@@ -62,6 +62,11 @@ pub enum Command {
         #[command(subcommand)]
         command: PeerCommand,
     },
+    /// Print what a connector offers, free: its addresses, settlement terms and routes with their prices
+    Describe {
+        /// The `/ilp` URL of the connector; this agent node's own connector if omitted
+        url: Option<String>,
+    },
     /// Join a network: peer toward its connector and read its relay
     Join(JoinArgs),
     /// Show or change the spending limit
