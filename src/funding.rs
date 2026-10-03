@@ -242,7 +242,7 @@ impl GasRefusal {
             &format!(
                 "The settlement key of {} has too little gas for a transaction, so nothing was sent. The connector answered {status}: {}.",
                 self.app,
-                text.trim()
+                text.trim().trim_end_matches('.')
             ),
             &self.needs,
         ))
@@ -567,11 +567,10 @@ pub fn fund(home: &Path) -> Result<Report, Error> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn refusal() -> GasRefusal {
-        GasRefusal {
+impl GasRefusal {
+    /// The gas of an app `agent` whose EVM settlement address is `0xabc`.
+    pub(crate) fn example() -> Self {
+        Self {
             network: Profile::Devnet,
             app: "agent".to_owned(),
             needs: vec![Need {
@@ -586,6 +585,15 @@ mod tests {
                 token: String::new(),
             }],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refusal() -> GasRefusal {
+        GasRefusal::example()
     }
 
     #[test]
