@@ -429,8 +429,12 @@ pub enum EventCommand {
         /// The relay's websocket URL, `ws://host:port` or `wss://host:port`
         relay: String,
         /// A NIP-01 filter, as one JSON object
+        #[arg(long, required_unless_present = "following")]
+        filter: Option<String>,
+        /// Set the filter's `authors` to the keys in the agent's follow list, the newest
+        /// kind 3 event on the agent node's own relay (which must be running)
         #[arg(long)]
-        filter: String,
+        following: bool,
     },
     /// Print the events of the live feed of a relay this agent node subscribed to, one JSON
     /// document to a line, as they arrive
@@ -542,6 +546,10 @@ pub enum RelayCommand {
         /// a later one replaces the old filter
         #[arg(long)]
         filter: Option<String>,
+        /// Set the filter's `authors` to the keys in the agent's follow list as it is now: the
+        /// filter is a snapshot, and stays fixed until this command is run again
+        #[arg(long)]
+        following: bool,
         /// The most to pay, in the token's base units: paid as whole packets of the packet
         /// amount, so it buys its quotient rounded down
         #[arg(long)]
