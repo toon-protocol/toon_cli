@@ -11,13 +11,16 @@ or more TOON apps. `toon init` creates it, `toon up` starts it.
 **TOON app.** One connector together with the apps behind it. The first one, which
 `toon init` creates, is the *relay TOON app*: its only app is the relay.
 
-**Connector.** The paid reverse proxy at the front of a TOON app. It accepts a packet,
+**Connector.** The paid reverse proxy at the front of a TOON app ([its repository](https://github.com/toon-protocol/connector)). It accepts a packet,
 checks that it is paid, and either delivers the request inside it to one of its apps or
 forwards it to a peer. It has its own identity key and its own settlement keys.
 
 **App.** A plain HTTP service behind a connector. It is *payment-oblivious*: it receives an
 ordinary HTTP request and returns an ordinary answer, and never sees a packet, a key or a
-payment. The relay is an app. An app on its own is never called a TOON app.
+payment. The [relay](https://github.com/toon-protocol/relay) is an app. An app on its own is never called a TOON app.
+Others that run behind a connector: [`store`](https://github.com/toon-protocol/store) (Arweave blob storage),
+[`gas-station`](https://github.com/toon-protocol/gas-station) (pays other people's gas) and
+[`anytoon`](https://github.com/toon-protocol/anytoon) (the Anyone credentials issuer, unchanged).
 
 **Relay.** The Nostr relay app every agent node has, the one `toon init` creates. Writing to
 it is paid through its connector. An agent node has exactly one; `toon add` and
