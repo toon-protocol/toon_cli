@@ -352,7 +352,7 @@ fn incoming_subscriptions_are_the_relays_list_of_subscribers() {
 
     let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
-    let listed = r#"{"broadcast_price":10,"subscribers":[{"pubkey":"7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e","balance":990,"broadcast_price":10,"filter":{"kinds":[1]}}]}"#;
+    let listed = r#"{"broadcast_price":10,"subscribers":[{"pubkey":"7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e","balance":990,"broadcast_price":10,"filter":{"kinds":[1]}},{"pubkey":"0f0f9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e","balance":0,"broadcast_price":10,"filter":{"kinds":[1]}}]}"#;
     fs::write(
         machine
             .agent_node_home()
@@ -373,7 +373,7 @@ fn incoming_subscriptions_are_the_relays_list_of_subscribers() {
     );
     assert_eq!(shown["totals"], json!({ "subscribers": 1 }));
     let text = machine.toon(&["relay", "subscriptions", "--incoming"]);
-    assert!(text.stdout.contains("1 subscriber keys with a balance."));
+    assert!(text.stdout.contains("Subscriber keys with a balance: 1."));
     assert!(!text.stdout.contains("peer"));
 
     let status = machine.toon(&["status", "--json"]).json();
@@ -381,6 +381,10 @@ fn incoming_subscriptions_are_the_relays_list_of_subscribers() {
         status["agent_node"]["totals"],
         json!({ "subscriptions": { "active": 0, "exhausted": 0 }, "subscribers": 1 })
     );
+    let status = machine.toon(&["status"]);
+    assert!(status
+        .stdout
+        .contains("Subscriber keys of its own relay with a balance: 1."));
 }
 
 #[test]
@@ -388,6 +392,9 @@ fn status_counts_both_directions_and_says_unknown_while_the_relay_is_stopped() {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
+    // A relay that sells no live feed has no subscriber, running or not.
+    let unsold = machine.toon(&["status", "--json"]);
+    assert_eq!(unsold.json()["agent_node"]["totals"]["subscribers"], 0);
     machine
         .toon(&[
             "relay",

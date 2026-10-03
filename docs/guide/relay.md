@@ -112,9 +112,9 @@ subscribe price.
 
 Both directions are counted. `toon status` reports the subscriptions this agent node holds
 (with a balance, and exhausted) and the subscriber keys of its own relay that hold a balance;
-it says the second is unknown while the relay does not answer, and its exit code does not
-change for that. `toon relay subscriptions` carries the first pair as `totals` beside its list,
-and `toon relay subscriptions --incoming` the second. With none, every count is 0.
+the second is 0 while the relay sells no live feed, and unknown while it does not answer,
+which does not change the exit code. `toon relay subscriptions` carries the first pair as
+`totals` beside its list, and `toon relay subscriptions --incoming` the second. With none, every count is 0.
 
 ## Draft NIPs
 

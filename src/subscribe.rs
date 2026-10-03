@@ -680,7 +680,8 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
 /// own relay, and what each has left, as the running relay lists them on its write port,
 /// which nothing but the operator reaches.
 pub fn incoming(home: &Path) -> Result<Report, Error> {
-    let body = own_subscribers(home)?;
+    let state = node::State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
+    let body = own_subscribers(home, selling_relay(&state)?)?;
     let subscribers = body["subscribers"]
         .as_array()
         .ok_or_else(|| unreadable_list("it answered no list".into()))?;
@@ -700,7 +701,7 @@ pub fn incoming(home: &Path) -> Result<Report, Error> {
     if lines.is_empty() {
         lines.push("No one subscribes to this agent node's relay.".to_owned());
     }
-    lines.push(format!("{with_balance} subscriber keys with a balance."));
+    lines.push(format!("Subscriber keys with a balance: {with_balance}."));
     Ok(Report {
         exit: Exit::Success,
         json: json!({
@@ -713,12 +714,10 @@ pub fn incoming(home: &Path) -> Result<Report, Error> {
 }
 
 fn unreadable_list(why: String) -> Error {
-    Error {
-        nothing_sent: false,
-        unanswered: None,
-        code: ErrorCode::QueryFailed,
-        message: format!("The relay's list of subscribers could not be read: {why}."),
-    }
+    relay_error(
+        ErrorCode::QueryFailed,
+        format!("The relay's list of subscribers could not be read: {why}."),
+    )
 }
 
 /// How many subscriber keys of `subscribers` hold a balance.
@@ -729,42 +728,52 @@ fn holding_a_balance(subscribers: &[Value]) -> usize {
         .count()
 }
 
-/// How many subscriber keys hold a balance at this agent node's own relay, or `None`
-/// when the running relay does not say.
-pub fn incoming_with_balance(home: &Path) -> Option<usize> {
-    let body = own_subscribers(home).ok()?;
+/// How many subscriber keys hold a balance at the relay of `state`: none when it sells no
+/// live feed, and `None` when it does but the running relay does not say.
+pub fn incoming_with_balance(home: &Path, state: &node::State) -> Option<usize> {
+    let Ok(app) = selling_relay(state) else {
+        return Some(0);
+    };
+    let body = own_subscribers(home, app).ok()?;
     Some(holding_a_balance(body["subscribers"].as_array()?))
 }
 
-/// The running relay's answer to `GET /subscribers`.
-fn own_subscribers(home: &Path) -> Result<Value, Error> {
-    let state = node::State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
-    let failed = |code, message: String| Error {
+fn relay_error(code: ErrorCode, message: String) -> Error {
+    Error {
         nothing_sent: false,
         unanswered: None,
         code,
         message,
-    };
+    }
+}
+
+/// The TOON app of `state` whose relay sells its live feed.
+fn selling_relay(state: &node::State) -> Result<&node::ToonApp, Error> {
     let Some(app) = state.toon_apps.iter().find(|app| {
         app.apps
             .iter()
             .any(|behind| behind.name == node::RELAY && behind.source == node::Source::Relay)
     }) else {
-        return Err(failed(
+        return Err(relay_error(
             ErrorCode::UnknownName,
             "No TOON app of this agent node has a relay.".into(),
         ));
     };
     if app.relay.selling().is_none() {
-        return Err(failed(
+        return Err(relay_error(
             ErrorCode::QueryFailed,
             "This agent node's relay does not sell its live feed: `toon relay price --subscribe \
              <amount> --broadcast <amount>` starts."
                 .into(),
         ));
     }
+    Ok(app)
+}
+
+/// The answer of the running relay of `app` to `GET /subscribers`.
+fn own_subscribers(home: &Path, app: &node::ToonApp) -> Result<Value, Error> {
     let not_running = || {
-        failed(
+        relay_error(
             ErrorCode::NotRunning,
             "The relay is not running: `toon up` starts it, and it lists its subscribers.".into(),
         )

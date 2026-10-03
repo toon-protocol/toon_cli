@@ -162,14 +162,14 @@ pub fn status(home: &Path) -> Result<Report, Error> {
         }));
     }
     // Asked of the running relay: unknown while it does not answer, which is not a failure.
-    let subscribers = crate::subscribe::incoming_with_balance(home);
+    let subscribers = crate::subscribe::incoming_with_balance(home, &state);
     lines.push(format!(
         "Subscriptions held: {active} with a balance, {exhausted_count} exhausted."
     ));
-    lines.push(match subscribers {
-        Some(count) => format!("Subscriber keys of its own relay with a balance: {count}."),
-        None => "Subscriber keys of its own relay with a balance: unknown.".into(),
-    });
+    lines.push(format!(
+        "Subscriber keys of its own relay with a balance: {}.",
+        subscribers.map_or_else(|| "unknown".to_owned(), |count| count.to_string())
+    ));
     Ok(Report {
         exit: if all_running {
             Exit::Success
