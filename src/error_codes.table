@@ -40,4 +40,5 @@ error_codes! {
     OneRelay => "one_relay" => Failure,
     NoFollowList => "no_follow_list" => Failure,
     DescribeFailed => "describe_failed" => Failure,
+    AgentKeyNotKept => "agent_key_not_kept" => Failure,
 }

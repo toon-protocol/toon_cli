@@ -37,3 +37,4 @@ not_subscribed
 one_relay
 no_follow_list
 describe_failed
+agent_key_not_kept

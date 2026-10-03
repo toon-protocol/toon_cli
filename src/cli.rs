@@ -515,6 +515,18 @@ pub enum MessageCommand {
         #[arg(long, requires = "relay")]
         yes: bool,
     },
+    /// List the private messages the supervisor has opened, oldest first; needs no passphrase
+    List {
+        /// Keep the one conversation among the agent identity and these public keys
+        #[arg(long = "with", num_args = 1.., value_name = "PUBKEY")]
+        with: Vec<String>,
+        /// Keep the messages sent at or after this unix time
+        #[arg(long)]
+        since: Option<u64>,
+        /// Keep the newest N messages
+        #[arg(long)]
+        limit: Option<usize>,
+    },
 }
 
 #[derive(Debug, Subcommand)]

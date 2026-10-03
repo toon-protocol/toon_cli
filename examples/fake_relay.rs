@@ -249,49 +249,144 @@ fn matches(filter: &serde_json::Value, event: &serde_json::Value) -> bool {
     fields && tags
 }
 
+/// A relay that sells its feed sends `AUTH` and keeps a read open only for a connection that
+/// proves the relay's own identity key; a free one gets `CLOSED` after the stored events.
+fn selling() -> bool {
+    env::var_os("TOON_BROADCAST_PRICE").is_some()
+}
+
+/// The relay's own public key, in hex, from the secret it was handed.
+fn identity() -> String {
+    let secret = hex::decode(env::var("NOSTR_SECRET_KEY").unwrap_or_default()).unwrap_or_default();
+    k256::schnorr::SigningKey::from_bytes(&secret)
+        .map(|key| hex::encode(key.verifying_key().to_bytes()))
+        .unwrap_or_default()
+}
+
+fn stored_events(data: &Path) -> Vec<serde_json::Value> {
+    fs::read_to_string(data.join("events.log"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect()
+}
+
 fn websocket(stream: TcpStream, data: &Path) {
     let Ok(mut socket) = tungstenite::accept(stream) else {
         return;
     };
-    while let Ok(message) = socket.read() {
-        let tungstenite::Message::Text(text) = message else {
+    let _ = socket
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(100)));
+    let send = |socket: &mut tungstenite::WebSocket<TcpStream>, frame: serde_json::Value| {
+        socket
+            .send(tungstenite::Message::text(frame.to_string()))
+            .is_ok()
+    };
+    let challenge = format!("challenge-{:x}", std::process::id());
+    let selling = selling();
+    let mut authed = false;
+    if selling && !send(&mut socket, serde_json::json!(["AUTH", challenge])) {
+        return;
+    }
+    // The reads kept open: a subscription's id, its filters and the ids already sent on it.
+    let mut live: Vec<(serde_json::Value, Vec<serde_json::Value>, Vec<String>)> = Vec::new();
+    loop {
+        let message = match socket.read() {
+            Ok(message) => Some(message),
+            Err(tungstenite::Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                None
+            }
+            Err(_) => return,
+        };
+        let Some(tungstenite::Message::Text(text)) = message else {
+            // Idle: what was stored since goes to every read that is kept open.
+            if message.is_none() {
+                let events = stored_events(data);
+                for (id, filters, sent) in &mut live {
+                    for event in &events {
+                        let event_id = event["id"].as_str().unwrap_or_default().to_owned();
+                        if !sent.contains(&event_id)
+                            && filters.iter().any(|filter| matches(filter, event))
+                        {
+                            sent.push(event_id);
+                            if !send(&mut socket, serde_json::json!(["EVENT", id, event])) {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
             continue;
         };
         let Ok(serde_json::Value::Array(frame)) = serde_json::from_str(&text) else {
             continue;
         };
-        if frame.first().and_then(|kind| kind.as_str()) != Some("REQ") || frame.len() < 3 {
-            continue;
-        }
-        let subscription = frame[1].clone();
-        let stored = fs::read_to_string(data.join("events.log")).unwrap_or_default();
-        let events: Vec<serde_json::Value> = stored
-            .lines()
-            .filter_map(|line| serde_json::from_str(line).ok())
-            .collect();
-        let mut found: Vec<&serde_json::Value> = Vec::new();
-        for filter in &frame[2..] {
-            // A filter's `limit` keeps its newest matches: the log holds them oldest first.
-            let matched: Vec<_> = events
-                .iter()
-                .filter(|event| matches(filter, event))
-                .collect();
-            let limit = filter["limit"]
-                .as_u64()
-                .map_or(matched.len(), |limit| limit as usize);
-            for event in &matched[matched.len().saturating_sub(limit)..] {
-                if !found.contains(event) {
-                    found.push(event);
+        match frame.first().and_then(|kind| kind.as_str()) {
+            Some("AUTH") if frame.len() > 1 => {
+                let event = &frame[1];
+                let tag = |name: &str| {
+                    event["tags"].as_array().and_then(|tags| {
+                        tags.iter()
+                            .find(|tag| tag[0] == name)
+                            .and_then(|tag| tag[1].as_str())
+                    })
+                };
+                authed = event["kind"] == 22242
+                    && tag("challenge") == Some(challenge.as_str())
+                    && event["pubkey"] == identity().as_str();
+            }
+            Some("CLOSE") if frame.len() > 1 => live.retain(|(id, _, _)| *id != frame[1]),
+            Some("REQ") if frame.len() >= 3 => {
+                let subscription = frame[1].clone();
+                let events = stored_events(data);
+                let mut found: Vec<&serde_json::Value> = Vec::new();
+                for filter in &frame[2..] {
+                    // A filter's `limit` keeps its newest matches: the log holds them oldest first.
+                    let matched: Vec<_> = events
+                        .iter()
+                        .filter(|event| matches(filter, event))
+                        .collect();
+                    let limit = filter["limit"]
+                        .as_u64()
+                        .map_or(matched.len(), |limit| limit as usize);
+                    for event in &matched[matched.len().saturating_sub(limit)..] {
+                        if !found.contains(event) {
+                            found.push(event);
+                        }
+                    }
+                }
+                let sent: Vec<String> = found
+                    .iter()
+                    .map(|event| event["id"].as_str().unwrap_or_default().to_owned())
+                    .collect();
+                for event in found {
+                    let _ = send(
+                        &mut socket,
+                        serde_json::json!(["EVENT", subscription, event]),
+                    );
+                }
+                let _ = send(&mut socket, serde_json::json!(["EOSE", subscription]));
+                live.retain(|(id, _, _)| *id != subscription);
+                if selling && !authed {
+                    let _ = send(
+                        &mut socket,
+                        serde_json::json!([
+                            "CLOSED",
+                            subscription,
+                            "payment-required: this feed is sold"
+                        ]),
+                    );
+                } else {
+                    live.push((subscription, frame[2..].to_vec(), sent));
                 }
             }
+            _ => {}
         }
-        for event in found {
-            let _ = socket.send(tungstenite::Message::text(
-                serde_json::json!(["EVENT", subscription, event]).to_string(),
-            ));
-        }
-        let _ = socket.send(tungstenite::Message::text(
-            serde_json::json!(["EOSE", subscription]).to_string(),
-        ));
     }
 }
