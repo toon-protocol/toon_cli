@@ -351,3 +351,34 @@ fn event_publish_and_message_send_keep_the_secret_where_it_is_missing() {
     assert_eq!(sent.exit_code, 0, "{}{}", sent.stdout, sent.stderr);
     assert_kept_for(&node.machine, &identity);
 }
+
+#[test]
+fn where_the_senders_copy_cannot_be_written_nothing_is_sent() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    let init = machine.init_on(&chain);
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+
+    // The agent node is not running, so its own relay cannot take the sender's copy.
+    let refused = machine.toon_with(
+        &["message", "send", ALICE, "--content", "hello", "--json"],
+        |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        },
+    );
+    assert_ne!(refused.exit_code, 0, "{}", refused.stdout);
+    assert!(
+        refused.json()["error"]["code"].is_string(),
+        "{}",
+        refused.stdout
+    );
+
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    let _ = up.report();
+    let node = Running {
+        machine,
+        _up: up,
+        _chain: chain,
+    };
+    assert_eq!(node.events(&[1059]), Vec::<Value>::new());
+}

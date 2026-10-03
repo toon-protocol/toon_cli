@@ -184,6 +184,7 @@ fn report(
     } else {
         format!("Message {id} was not sent to every recipient.")
     };
+    text.push_str(&format!("\n  rumor: {}", sealed.rumor));
     for wrap in &wraps {
         text.push_str(&format!(
             "\n  wrap {} for {} at {}: {}",
@@ -193,8 +194,11 @@ fn report(
             wrap["outcome"].as_str().unwrap_or_default()
         ));
     }
-    if let (Some(paid), Some(relay)) = (paid, relay) {
-        text.push_str(&format!("\nPaid {paid} base units to {relay}."));
+    match (paid, relay) {
+        (Some(paid), Some(relay)) => {
+            text.push_str(&format!("\nPaid {paid} base units to {relay}."))
+        }
+        _ => text.push_str("\nPaid nothing: the agent node's own relay is written free."),
     }
     let wraps_json: Vec<Value> = wraps
         .iter()
@@ -298,14 +302,28 @@ fn send_to(home: &Path, message: &Message, relay: &str, yes: bool) -> Result<Rep
         let mut wraps = vec![wrap_entry(&sealed.to_sender, &sender, &own, &published())];
         let mut paid: u128 = 0;
         for (recipient, wrap) in message.recipients.iter().zip(&sealed.to_recipients) {
-            let written = event::write_to(
+            let written = match event::write_to(
                 home,
                 wrap.clone(),
                 &edge.ilp_address,
                 price,
                 Some(&edge.seal_key),
-            )
-            .map_err(|error| operator::repriced(error, packets.moved(total)))?;
+            ) {
+                Ok(written) => written,
+                // Once a wrap has been paid for, a failure is not one before paying: it
+                // ends the send and the report counts what the wraps before it cost.
+                Err(error) if paid > 0 => {
+                    paid = packets.moved(total).max(paid);
+                    wraps.push(json!({
+                        "id": wrap["id"],
+                        "to": recipient,
+                        "relay": relay,
+                        "outcome": error.code.as_str(),
+                    }));
+                    break;
+                }
+                Err(error) => return Err(operator::repriced(error, packets.moved(total))),
+            };
             let rejected = written.json["outcome"] == "rejected";
             paid = if rejected {
                 packets.moved(total).max(paid)

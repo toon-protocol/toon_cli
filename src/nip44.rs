@@ -283,8 +283,14 @@ mod tests {
     #[test]
     fn a_message_of_a_length_the_nip_forbids_is_not_encrypted() {
         let conversation = [9u8; 32];
-        assert!(encrypt(&conversation, "").is_err());
-        assert!(encrypt(&conversation, &"x".repeat(65536)).is_err());
+        let lengths = vectors()["invalid"]["encrypt_msg_lengths"].clone();
+        for length in lengths.as_array().unwrap() {
+            let length = length.as_u64().unwrap() as usize;
+            assert!(
+                encrypt(&conversation, &"x".repeat(length)).is_err(),
+                "{length}"
+            );
+        }
         assert!(encrypt(&conversation, &"x".repeat(65535)).is_ok());
     }
 
