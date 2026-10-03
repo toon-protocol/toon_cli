@@ -43,7 +43,7 @@ fn usage(message: impl Into<String>) -> Error {
 }
 
 /// The event's id: the SHA-256 of its NIP-01 serialization.
-fn event_id(pubkey: &str, created_at: u64, kind: u64, tags: &Value, content: &str) -> [u8; 32] {
+pub fn event_id(pubkey: &str, created_at: u64, kind: u64, tags: &Value, content: &str) -> [u8; 32] {
     let serialized = json!([0, pubkey, created_at, kind, tags, content]).to_string();
     Sha256::digest(serialized.as_bytes()).into()
 }
@@ -116,6 +116,7 @@ pub fn publish(
         return Err(node::no_agent_node(home));
     }
     let secret = agent_secret(home)?;
+    keep_agent_secret(home, &secret)?;
     let event = sign(&secret, now(), kind, tags, content)?;
     write(home, event, amount)
 }
@@ -152,6 +153,41 @@ pub fn agent_secret(home: &Path) -> Result<zeroize::Zeroizing<[u8; 32]>, Error> 
     })
 }
 
+/// Where the agent identity's secret is kept for the supervisor, which has no passphrase to
+/// open the wallet with, beside the subscriber key and the connectors' keys (ADR 0008).
+pub fn agent_key_path(home: &Path) -> std::path::PathBuf {
+    home.join("agent.key")
+}
+
+/// Keep the agent identity's secret, readable by the owner alone, where it is not kept yet
+/// (or another wallet's is).
+/// The file is derived from the mnemonic, so a backup leaves it out.
+pub fn keep_agent_secret(home: &Path, secret: &[u8; 32]) -> Result<(), Error> {
+    let path = agent_key_path(home);
+    if std::fs::read(&path).is_ok_and(|kept| kept == secret) {
+        return Ok(());
+    }
+    node::write(&path, secret, 0o600)
+}
+
+/// [`keep_agent_secret`] for a wallet just made, from its mnemonic.
+pub fn keep_agent_secret_of(home: &Path, phrase: &str) -> Result<(), Error> {
+    let mnemonic: bip39::Mnemonic = phrase.parse().map_err(|_| Error {
+        nothing_sent: false,
+        unanswered: None,
+        code: ErrorCode::KeystoreCorrupt,
+        message: "The mnemonic is not valid.".into(),
+    })?;
+    let secret =
+        derive::agent_identity_secret(&*derive::seed(&mnemonic)).map_err(|source| Error {
+            nothing_sent: false,
+            unanswered: None,
+            code: ErrorCode::KeystoreCorrupt,
+            message: source.0,
+        })?;
+    keep_agent_secret(home, &secret)
+}
+
 /// The x-only public key, in hex, of the key `secret`.
 pub fn public_key(secret: &[u8; 32]) -> Result<String, Error> {
     SigningKey::from_bytes(secret)
@@ -185,7 +221,7 @@ pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
 
 /// Write a signed event to `destination` for `amount`, sealed to the key `seal_to`, or to
 /// this agent node's own connector.
-fn write_to(
+pub fn write_to(
     home: &Path,
     event: Value,
     destination: &str,
@@ -542,7 +578,7 @@ pub fn information_document(egress: &Egress, relay: &str) -> Result<Value, Error
 
 /// The write edge `relay` publishes in its NIP-11 information document, the `toon`
 /// object.
-fn edge(egress: &Egress, relay: &str) -> Result<Edge, Error> {
+pub fn edge(egress: &Egress, relay: &str) -> Result<Edge, Error> {
     let document = information_document(egress, relay)?;
     edge_fields(&document["toon"]).map_err(|missing| {
         unpayable(format!(
@@ -609,6 +645,7 @@ fn publish_to(
         });
     }
     let secret = agent_secret(home)?;
+    keep_agent_secret(home, &secret)?;
     let event = sign(&secret, now(), kind, tags, content)?;
     let sent: u128 = amount.into();
     spending::spend_packets(home, sent, yes, |packets| {
