@@ -6,8 +6,9 @@
 //! to `/`, `/write` or `/write-ephemeral`. As the relay does, it answers a write with 200
 //! only if the body is `{"event": ...}`, and with 400 otherwise; a `POST` to `/`, where
 //! it stands in for any other app, is always answered with 200. It writes the secret key
-//! it was handed to `environment` there, `TOON_ENFORCE_EXPIRATION`, `TOON_BLOCKED_EVENT_IDS` and the `TOON_RELAY_*`
-//! settings it was handed but the read port, one `NAME=value` per line, to `settings`, and
+//! it was handed to `environment` there, `TOON_ENFORCE_EXPIRATION`,
+//! `TOON_BLOCKED_EVENT_IDS` and the `TOON_RELAY_*` settings it was handed but the read
+//! port, one `NAME=value` per line, to `settings`, and
 //! `TOON_CONNECTOR_URL`, `TOON_WRITE_ILP_ADDRESS`, `TOON_SUBSCRIBE_ILP_ADDRESS`,
 //! `TOON_BROADCAST_PRICE` and `TOON_RELAY_URL` to `connector`. Every `TOON_` name it was
 //! handed, one per line, goes to `names`. It answers `GET /subscribers` with

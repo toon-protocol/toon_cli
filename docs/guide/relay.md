@@ -61,7 +61,7 @@ wraps, and on one that does not, who is messaged and when is visible to anyone r
 toon relay config                                   # show settings and prices
 toon relay config --name "Alice's relay" --description "Notes from Alice's agents" --yes
 toon relay config --expiry honour --yes             # drop expired events (or: ignore)
-toon relay config --block <event-id> --yes         # refuse one event; --unblock lifts it
+toon relay config --block <event-id> --yes          # refuse one event; --unblock lifts it
 ```
 
 A change restarts the relay and its connector, so it needs `--yes` while they run.
