@@ -226,8 +226,10 @@ this order; the first two steps pay nothing.
 
 The price you read in step 2 is that connector's price alone. A connector on the way to it may
 charge to forward. A packet sent with `toon send` for the destination's price and rejected `F03`
-met such a connector. Nothing shows what it charges yet: do not guess an amount, and do not raise
-the amount step by step until a send is fulfilled. Report the `F03` instead.
+met such a connector. The report of the rejected packet says what the path costs: read `cost`
+(base units, a string) and send it as the amount. If `"complete": false` (an `R01`) the cost is a
+floor, the amount to get past the connector that stopped the packet, and not the whole cost. Do
+not guess an amount, and do not raise the amount step by step until a send is fulfilled.
 
 If you are the operator publishing an app, declare its `request` when you add it
 (`toon add <app> --to <toon-app> --request <file>`, above), so that others can do step 2.
@@ -245,14 +247,17 @@ writes it to your own relay; `toon event query <ws-url> --filter <json>` reads a
 to someone else's relay is `toon event publish --relay <ws-url> --yes` and needs a peering that
 reaches that relay's connector, or it fails with `peering_needed` and pays nothing. It sends
 the relay's price; if a connector in between charges to forward and rejects the write with
-`F03`, state the path's whole cost with `--amount <n>` (below the relay's price is refused).
+`F03`, read `cost` from the rejected packet's report and state it with `--amount <cost>` (below
+the relay's price is refused); treat `"complete": false` as a floor, not the whole cost, and do
+not raise the amount step by step.
 `toon relay subscribe <ws-url> --filter <json> --amount <n> --yes` buys the live feed of another
 relay: a prepaid balance at that relay, with one filter, drawn down for each event it sends.
 The supervisor writes those events into your own relay (ADR 0005). It needs a peering too, and
 without `--yes` it fails with `not_confirmed` and says what the relay charges. `toon relay
 subscriptions` shows the balance. It is not the follow list, which is an event you publish. It is
 the same as publishing in one way: if a connector in between rejects its packets with `F03`,
-state what one packet costs along the path with `--packet-amount <n>`; `--amount` stays the total,
+read `cost` from the rejected packet's report (`response.cost`) and state it with
+`--packet-amount <cost>`, treating `"complete": false` as a floor; `--amount` stays the total,
 paid as whole packets of that amount, and each packet still credits only the subscribe price.
 
 ### Private messages

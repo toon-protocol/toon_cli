@@ -279,15 +279,26 @@ pub fn write_to(
             }),
             text: format!("The relay refused event {id} with {status}: {body}"),
         },
-        Answer::Rejected { code, message } => Report {
-            exit: Exit::Failure,
-            json: json!({
+        Answer::Rejected {
+            code,
+            message,
+            cost,
+        } => {
+            let mut json = json!({
                 "outcome": "rejected",
                 "event": event,
                 "reject": { "code": code, "message": message },
-            }),
-            text: format!("Rejected with {code}: event {id}. {message}"),
-        },
+            });
+            operator::add_cost(&mut json, &code, cost);
+            Report {
+                exit: Exit::Failure,
+                json,
+                text: format!(
+                    "Rejected with {code}: event {id}. {message}{}",
+                    operator::cost_sentence(&code, cost, "--amount")
+                ),
+            }
+        }
         Answer::WrongFulfilment => Report {
             exit: Exit::Failure,
             json: json!({ "outcome": "wrong_fulfilment", "event": event }),
@@ -670,7 +681,8 @@ fn publish_to(
                 report.text
             );
         }
-        if report.json["reject"]["code"] == "F03" {
+        // A stated cost is in the text above; without one the flag is named without a figure.
+        if report.json["reject"]["code"] == "F03" && report.json["cost"].is_null() {
             report.text = format!(
                 "{} A connector on the path to {relay} refused {amount} base units: state the \
                  path's exact cost with `--amount`.",
