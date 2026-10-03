@@ -331,6 +331,15 @@ pub struct SendArgs {
     /// one: the payload is sealed to that connector's identity
     #[arg(long)]
     pub seal_to: Option<String>,
+    /// The request's method
+    #[arg(long, default_value = "POST")]
+    pub method: String,
+    /// The path and query the app receives, beneath the route's handler
+    #[arg(long, default_value = "/")]
+    pub path: String,
+    /// A file whose bytes are the request's body, sent as `application/json`
+    #[arg(long)]
+    pub body: Option<std::path::PathBuf>,
     /// Confirm that this command moves money: without it nothing is sent
     #[arg(long)]
     pub yes: bool,
