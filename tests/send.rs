@@ -330,6 +330,7 @@ fn a_send_with_none_of_the_request_flags_is_an_empty_post_to_the_root() {
     assert_eq!(run.exit_code, 0, "{}", run.stdout);
     let seen = seen.lock().unwrap();
     assert!(seen[0].starts_with("POST /inbox "), "{seen:?}");
+    assert!(seen[0].ends_with("\r\n\r\n"), "{seen:?}");
 }
 
 #[test]
@@ -338,19 +339,33 @@ fn an_unreadable_body_file_fails_before_sending_and_counts_for_nothing() {
     let node = running();
     add_app(&node, &url);
     let missing = node.machine.home().join("missing.json");
+    let remaining = |node: &Running| {
+        node.machine.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone()
+    };
+    let before = remaining(&node);
+    assert!(before.is_string(), "{before}");
 
     let run = node.machine.toon(&[
         "send",
         "g.toon.inbox",
         "--amount",
-        "0",
+        "1",
         "--body",
         missing.to_str().unwrap(),
         "--yes",
         "--json",
     ]);
 
-    assert_ne!(run.exit_code, 0);
-    assert!(run.stdout.contains("could not be read") || run.stderr.contains("could not be read"));
+    let error = run.json()["error"].clone();
+    assert_eq!(error["code"], "send_failed", "{}", run.stdout);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("could not be read"),
+        "{error}"
+    );
+    assert_eq!(run.exit_code, 1);
     assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(remaining(&node), before);
 }

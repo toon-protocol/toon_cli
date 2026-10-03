@@ -318,8 +318,8 @@ anything, and possibly the packet's whole amount when a connector farther on rej
 outbound watermark in `toon channel list` shows the same). If the watermarks cannot be read,
 the packet's full amount stays counted. Nor is a payment counted that failed before it reached
 the connector or that the other side refused. A packet that was never sent is not counted
-either: the operator key could not be read, the identity of the connector to seal to
-could not be fetched or has no usable public key, the packet could not be sealed, or the
+either: the operator key or the `--body` file of `toon send` could not be read, the identity
+of the connector to seal to could not be fetched or has no usable public key, the packet could not be sealed, or the
 connector's `send` refused its arguments. These still fail with `send_failed`. Any other
 failure may have paid, and stays counted, including a refusal from the operator surface and
 an answer that was not understood. A packet the connector did not answer within the wait,

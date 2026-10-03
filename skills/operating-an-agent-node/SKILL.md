@@ -181,15 +181,6 @@ cost, which for a rejected packet may still be its whole amount; it also exits 1
 with `"outcome": "wrong_fulfilment"` when the fulfilment does not match. `--seal-to <url>` seals
 the payload to the identity of a connector that is not yours.
 
-### Paying an app
-
-An app you added is used by paying it, not by calling its loopback address, which does the work
-unpaid. `toon send <app address> --amount <n> --method <method> --path <path> --body <file> --yes`
-carries one request in one paid packet: `--method` is `POST` and `--path` is `/` when absent, and
-`--path` is the path and query the app receives. `--body` is a file whose bytes are the body, sent as
-`application/json`; with none, there is no body. The report's `response` has the app's status and
-body. A body file that cannot be read fails before anything is sent and costs nothing.
-
 `toon event publish --kind <n> --content <text>` signs an event with the agent identity and
 writes it to your own relay; `toon event query <ws-url> --filter <json>` reads a relay. Publishing
 to someone else's relay is `toon event publish --relay <ws-url> --yes` and needs a peering that
@@ -199,6 +190,15 @@ the relay's price; if a connector in between charges to forward and rejects the 
 `toon relay subscribe` is the same: if a connector in between rejects its packets with `F03`,
 state what one packet costs along the path with `--packet-amount <n>`; `--amount` stays the total,
 paid as whole packets of that amount, and each packet still credits only the subscribe price.
+
+### Paying an app
+
+An app you added is used by paying it, not by calling its loopback address, which does the work
+unpaid. `toon send <app address> --amount <n> --method <method> --path <path> --body <file> --yes`
+carries one request in one paid packet: `--method` is `POST` and `--path` is `/` when absent, and
+`--path` is the path and query the app receives. `--body` is a file whose bytes are the body, sent as
+`application/json`; with none, there is no body. The report's `response` has the app's status and
+body. A body file that cannot be read fails before anything is sent and costs nothing.
 
 ## Backup and restore
 

@@ -983,12 +983,10 @@ pub fn dispatch(
     let send_failed = |message: String| failed(ErrorCode::SendFailed, message);
     // A body that cannot be read is found out before anything is sent.
     if let Some(path) = body {
-        std::fs::metadata(path)
-            .and_then(|_| std::fs::File::open(path))
-            .map_err(|error| Error {
-                nothing_sent: true,
-                ..send_failed(format!("{} could not be read: {error}.", path.display()))
-            })?;
+        std::fs::read(path).map_err(|error| Error {
+            nothing_sent: true,
+            ..send_failed(format!("{} could not be read: {error}.", path.display()))
+        })?;
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1115,11 +1113,10 @@ fn identity(egress: &Egress, seal_to: &str) -> Result<[u8; 65], Error> {
 }
 
 /// Send one packet like [`dispatch`] does, but sealed to the key `public` itself, which
-/// is not fetched from anywhere, with the request's `(method, target)`, `headers` on the request and
-/// `body` in memory. The
-/// connector's `send` fixes the request's headers, so this forms, seals and
-/// signs the packet itself, with the connector's own crates, and reads the answer the
-/// same way.
+/// is not fetched from anywhere, with the request's `(method, target)`, `headers` on the
+/// request and `body` in memory. The connector's `send` fixes the request's headers, so this
+/// forms, seals and signs the packet itself, with the connector's own crates, and reads the
+/// answer the same way.
 pub fn dispatch_with_headers(
     home: &Path,
     destination: &str,
