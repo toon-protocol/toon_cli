@@ -77,7 +77,10 @@ connector is running, or fail with `confirmation_required` and change nothing.
    the relay TOON app, as a hidden service. The mnemonic is shown once: record it where the
    operator keeps secrets. `--network` is `devnet` (default), `sandbox` or `mainnet`.
    `mainnet` has no network to join yet: `toon join mainnet` is refused (`join_refused`) unless `init`
-   was given `--connector-url` and `--relay-url`.
+   was given `--connector-url` and `--relay-url`. `sandbox` allows plaintext peers by itself; a
+   hidden agent node on it records no connector, and names the sandbox's hub with
+   `--connector-url http://<hub>.anyone:3200/ilp` (and `--relay-url ws://<hub>.anyone:7100`),
+   else `toon join sandbox` is refused (`join_refused`).
    `--clearnet <hostname>` asks for clearnet instead and needs no terms flag; the certificate and
    reverse proxy are yours to provide. If the overlay will not bootstrap, `init` fails with
    `overlay_unavailable` and never falls back to clearnet. On a hidden agent node the requests

@@ -19,7 +19,6 @@ step.
 
 | Step | What happens today | Ticket |
 | --- | --- | --- |
-| 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
 | 2, hold a subscription | No relay serves the subscribe route | relay #215 |
 | 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
 | 3, `join` | The deposit lands and the `join` fails with `peer_failed`, "confirmed, and the chain shows no balance there"; the same command again finds the channel, and is counted against the day's spending a second time | #102 |
@@ -75,8 +74,8 @@ export RPC=http://localhost:8545
 
 ```sh
 export HOME=$E/sandbox
-$E/toon init --network sandbox --accept-anyone-terms --allow-plaintext-peers \
-  --evm-token $USDC --connector-url http://$HUB:3200/ilp --relay-url ws://$HUB:7100 \
+$E/toon init --network sandbox --accept-anyone-terms \
+  --connector-url http://$HUB:3200/ilp --relay-url ws://$HUB:7100 \
   --json > $E/init.json
 jq '.toon_apps[0].onion_endpoint, .wallet.chains.evm[0].address' $E/init.json
 ```
@@ -231,8 +230,8 @@ endpoint and pays its relay:
 
 ```sh
 export HOME=$E/other
-$E/toon init --network sandbox --accept-anyone-terms --allow-plaintext-peers \
-  --evm-token $USDC --connector-url http://$HUB:3200/ilp --relay-url ws://$HUB:7100 \
+$E/toon init --network sandbox --accept-anyone-terms \
+  --connector-url http://$HUB:3200/ilp --relay-url ws://$HUB:7100 \
   --json > $E/other-init.json
 fund $(jq -r '.wallet.chains.evm[0].address' $E/other-init.json) 100000000
 ```

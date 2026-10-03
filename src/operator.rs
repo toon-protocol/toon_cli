@@ -16,6 +16,7 @@ use crate::control;
 use crate::egress::Egress;
 use crate::node::{self, ConnectorFiles, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::profile::Profile;
 use crate::spending;
 
 /// How long a read of the operator surface waits for the connector.
@@ -1319,6 +1320,15 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
         ));
     }
     let Some(connector_url) = state.connector_url.clone() else {
+        if state.network == Profile::Sandbox {
+            return Err(failed(
+                ErrorCode::JoinRefused,
+                "A hidden agent node cannot reach the sandbox's hub on `localhost`, and this one records no connector. \
+                 Name the hub with `--connector-url http://<hub>.anyone:3200/ilp` (and `--relay-url ws://<hub>.anyone:7100`) on `init`, \
+                 or run the agent node with `--clearnet`."
+                    .to_owned(),
+            ));
+        }
         return Err(failed(
             ErrorCode::JoinRefused,
             format!(

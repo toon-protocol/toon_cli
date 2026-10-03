@@ -554,3 +554,66 @@ fn a_hidden_agent_node_reads_a_wss_relay_at_an_anyone_name_through_the_proxy() {
     assert_eq!(query.exit_code, 0, "{}{}", query.stdout, query.stderr);
     assert_eq!(query.json()["events"], json!([event(1)]));
 }
+
+#[test]
+fn a_hidden_sandbox_agent_node_joins_through_the_hub_it_is_told_at_an_anyone_name() {
+    let chain = AnvilChain::start();
+    let far = far_on(&chain);
+    let hub: SocketAddr = far
+        .url()
+        .trim_start_matches("http://")
+        .trim_end_matches("/ilp")
+        .parse()
+        .expect("the connector's address");
+    let names = declare("hubhubhub.anyone", 3200, hub);
+
+    let machine = Machine::new();
+    // No `--allow-plaintext-peers`: the sandbox profile allows plaintext peers itself.
+    let init = machine.init_with(&[
+        "--network",
+        "sandbox",
+        "--connector-url",
+        "http://hubhubhub.anyone:3200/ilp",
+        "--relay-url",
+        "ws://hubhubhub.anyone:7100",
+        "--evm-rpc-url",
+        &chain.rpc_url(),
+        "--evm-token",
+        &chain.token(),
+        "--evm-decimals",
+        &support::anvil_chain::TOKEN_DECIMALS.to_string(),
+    ]);
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let state: Value = serde_json::from_slice(
+        &std::fs::read(machine.agent_node_home().join("state.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(state["connector_url"], "http://hubhubhub.anyone:3200/ilp");
+    assert_eq!(state["relay_url"], "ws://hubhubhub.anyone:7100");
+    let evm = toon(&machine, &["wallet", "show", "--json"]).json()["wallet"]["chains"]["evm"][0]
+        ["address"]
+        .as_str()
+        .expect("the wallet's EVM address")
+        .to_owned();
+    chain.fund(&evm, DEPOSIT * 10);
+    let _up = machine.start_with(&["up", "--foreground", "--json"], |command| {
+        command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+        command.env("TOON_OVERLAY_NAMES", &names);
+    });
+
+    let joined = toon_declaring(
+        &machine,
+        &names,
+        &[
+            "join",
+            "sandbox",
+            "--deposit",
+            &DEPOSIT.to_string(),
+            "--yes",
+            "--json",
+        ],
+    );
+
+    assert_eq!(joined.exit_code, 0, "{}{}", joined.stdout, joined.stderr);
+    assert_eq!(chain.balance(&evm), DEPOSIT * 9, "the deposit is on chain");
+}
