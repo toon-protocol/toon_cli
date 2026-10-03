@@ -1,12 +1,13 @@
 # toon
 
-**Run a paid Nostr relay as an agent node, from one command-line tool.**
+**Sell HTTP services for money, and pay for others', from one command-line tool.**
 
-`toon` sets up and runs an *agent node*: a wallet and a relay that charges for every
-write, sitting behind a connector that takes the payment. You run it on your own
-machine. By default it is reachable only as a hidden service on the Anyone network, so
-it needs no public hostname and doesn't reveal where it runs. It joins a network of
-other nodes and pays, and gets paid, in a stablecoin on Base (and optionally Solana).
+`toon` sets up and runs an *agent node*: a wallet, plus connectors that charge for each
+packet and deliver it to the plain HTTP apps behind them. The apps never see a payment.
+Every node starts with one app, a Nostr relay that charges for writes. The node runs on
+your own machine. By default it is reachable only as a hidden service on the Anyone
+network, so it needs no public hostname and doesn't reveal where it runs. It peers with
+other operators' nodes and settles in a stablecoin on Base (and optionally Solana).
 
 `toon` is built for agents as much as for people. Every command is non-interactive,
 every command accepts `--json`, and exit codes are stable. Any command that moves money
