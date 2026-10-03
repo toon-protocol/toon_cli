@@ -252,11 +252,11 @@ $E/toon add archive --to second --image $RELAY_IMAGE --yes --json
 ```
 
 **Expect** `restarted: true` in `add.json`, the packet `fulfilled` over the route `create`
-made (a first packet sent while the restarted connector is still coming back is rejected
-with `T01`, after as long as the packet's 30-second expiry, which is expected: its report
-says `paid: 2`, what the rejected packet cost, so send it again), and status showing
-`second` with two apps, both running. The last command is refused with `one_relay`: an
-agent node runs one relay.
+made (a packet sent before the forwarding connector has seen the old session close is
+rejected `T01` as soon as that close arrives, not after the answer timeout, and is not
+sent again; the rejected packet costs nothing, so `paid` is 0 and sending it again is
+safe), and status showing `second` with two apps, both running. The last
+command is refused with `one_relay`: an agent node runs one relay.
 
 ### Another agent node publishes to this one's relay
 
