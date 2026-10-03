@@ -252,15 +252,15 @@ pub fn route_list(home: &Path) -> Result<Report, Error> {
     let mut routes = read(&surface, "/routes")?;
     let forwarding = read(&surface, "/routes/peers")?;
     // The operator surface lists a route without its `request`, which the state keeps.
-    if let Some(state) = crate::node::State::load(home)? {
+    if let Some(state) = State::load(home)? {
+        let toon_app = crate::apps::toon_app(&state, TARGET.get().map(String::as_str))?;
         for route in routes
             .iter_mut()
             .filter(|route| route.get("request").is_none())
         {
-            let request = state
-                .toon_apps
+            let request = toon_app
+                .apps
                 .iter()
-                .flat_map(|app| &app.apps)
                 .find(|app| route["prefix"].as_str() == Some(app.prefix.as_str()))
                 .and_then(|app| app.request.clone());
             if let Some(request) = request {

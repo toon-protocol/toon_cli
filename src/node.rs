@@ -754,7 +754,8 @@ fn via_proxy(overlay: Option<&Overlay>, rpc_url: &str) -> &'static str {
 
 /// A TOML basic string. JSON's escapes are the ones TOML reads.
 fn string(text: &str) -> String {
-    Value::from(text).to_string()
+    // JSON leaves DEL raw, and a TOML basic string may not hold it.
+    Value::from(text).to_string().replace('\u{7f}', "\\u007f")
 }
 
 /// The onion endpoint of `app`, if it is a hidden service whose key is there.

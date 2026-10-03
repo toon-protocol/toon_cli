@@ -505,6 +505,7 @@ fn a_request_is_published_on_the_route_and_survives_restarts() {
     let (machine, _chain, up) = running();
     let request = serde_json::json!({
         "protocol": "nip90", "kinds": [5096, 5098], "params": { "chain": ["evm:84532"] },
+        "note": "a\u{7f}b",
     });
     let file = machine.write_agent_node_file("request.json", request.to_string());
     let file = file.to_str().unwrap();
