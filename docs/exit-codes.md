@@ -210,8 +210,13 @@ when none did). The amount is the relay's price unless `--amount <n>` states
 another: `toon` sends exactly `n`, never probes for the path's cost, and refuses an `--amount`
 below the relay's price with `usage` before anything is signed. A connector between this agent
 node and the relay may charge to forward the write and rejects any other amount than its
-route's price (`F03`); the text report then tells the operator to state the path's cost with
-`--amount`. `--yes` is refused without `--relay`.
+route's price (`F03`). A rejected packet whose reject states a cost above 0 is reported with
+`cost` (the accumulated cost in base units, a decimal string) and `complete` beside `outcome`,
+and the text states the figure as `--amount <cost>`; read the cost from the report. `complete`
+is `false` for an `R01`: the packet stopped at a connector it could not pay, and `cost` is the
+amount to carry to get past that connector, a floor and not the whole cost. A cost of 0 is left
+out. `reject.message` is the reject's own message. Nothing is retried, and the same report is
+given by `toon send`. `--yes` is refused without `--relay`.
 
 `toon relay subscribe <relay-url> --filter <filter> --amount <amount>` subscribes to another
 relay's paid live feed (`nips/paid-subscription.md`). It reads `toon_subscription` from the
@@ -225,8 +230,9 @@ probes for the path's cost, and a `--packet-amount` below the subscribe price is
 number of packets is `--amount` divided by the packet amount, rounded down, and an `--amount`
 that buys none is `usage`. The spending limit is checked against packets times packet amount,
 and the day's count rises by `paid`. A connector between this agent node and the relay may
-charge to forward and rejects any other amount than its route's price (`F03`); the text report
-then tells the operator to state the path's cost with `--packet-amount`. The report gives
+charge to forward and rejects any other amount than its route's price (`F03`); the rejected
+packet's `response` then holds `cost` and `complete` as for `toon send`, and the text states
+`--packet-amount <cost>`, since the cost is one packet's; read the cost from the report. The report gives
 `packets`, `paid` (the packet amount times the packets fulfilled), `credited` (what the relay
 answered, less than `paid` through such a connector), `price` (the subscribe price),
 `packet_amount`, `balance`, `broadcast_price` and `filter`. A packet the relay refuses still cost

@@ -913,6 +913,8 @@ pub enum Answer {
     Rejected {
         code: String,
         message: String,
+        /// The accumulated cost the connector stated, in base units; 0 when it stated none.
+        cost: u128,
     },
     WrongFulfilment,
     /// The connector did not answer within [`packet_wait`]. The packet has expired by now.
@@ -1004,21 +1006,52 @@ fn answer(summary: &str) -> Option<Answer> {
     let (code, rest) = rejected.split_once(" -- ")?;
     let message = rest.split_once('\n').map_or("", |(_, message)| message);
     // The summary ends with `accumulated cost: N base units`, which is not the reject's message.
-    let message = match message.rsplit_once('\n') {
-        Some((message, last)) if is_accumulated_cost(last) => message,
-        None if is_accumulated_cost(message) => "",
-        _ => message,
+    let (message, cost) = match message.rsplit_once('\n') {
+        Some((message, last)) if accumulated_cost(last).is_some() => {
+            (message, accumulated_cost(last))
+        }
+        None if accumulated_cost(message).is_some() => ("", accumulated_cost(message)),
+        _ => (message, None),
     };
     Some(Answer::Rejected {
         code: code.to_owned(),
         message: message.to_owned(),
+        cost: cost.unwrap_or(0),
     })
 }
 
-/// Whether `line` is the summary's last line of a reject, the cost of its path.
-fn is_accumulated_cost(line: &str) -> bool {
-    line.strip_prefix("accumulated cost: ")
-        .is_some_and(|rest| rest.ends_with(" base units"))
+/// The cost in `line`, if it is the summary's last line of a reject, the cost of its path.
+fn accumulated_cost(line: &str) -> Option<u128> {
+    line.strip_prefix("accumulated cost: ")?
+        .strip_suffix(" base units")?
+        .parse()
+        .ok()
+}
+
+/// Add the cost of a rejected packet to its report's `json`, beside `outcome`: `cost` as a
+/// decimal string and `complete`, which is `false` for an `R01`, whose cost is the amount to
+/// carry past the connector that stopped the packet. A cost of 0 adds nothing.
+pub fn add_cost(json: &mut Value, code: &str, cost: u128) {
+    if cost > 0 {
+        json["cost"] = json!(cost.to_string());
+        json["complete"] = json!(code != "R01");
+    }
+}
+
+/// The sentence that states a rejected packet's `cost`, or nothing for a cost of 0. `flag` is
+/// the option that states an amount: the whole cost for a complete one, or, for an `R01`, the
+/// amount to carry past the connector that stopped the packet.
+pub fn cost_sentence(code: &str, cost: u128, flag: &str) -> String {
+    if cost == 0 {
+        String::new()
+    } else if code == "R01" {
+        format!(
+            " The packet stopped at a connector it could not pay: {cost} base units is the amount \
+             to carry to get past it, not the whole cost."
+        )
+    } else {
+        format!(" The path costs {cost} base units: state `{flag} {cost}`.")
+    }
 }
 
 /// Whether the `Debug` of the connector's `SendError` is its `Transport` variant for a
@@ -1270,6 +1303,7 @@ pub fn dispatch_with_headers(
         Err(error) => return Err(send_failed(error.to_string())),
     };
     let status = response.status();
+    let headers = response.headers().clone();
     let bytes = match response.bytes() {
         Ok(bytes) => bytes,
         Err(error) if error.is_timeout() => return Ok(Answer::Unanswered),
@@ -1306,9 +1340,16 @@ pub fn dispatch_with_headers(
         }
         Err(_) => {
             let reject = Reject::decode(&bytes).map_err(|error| undecodable(error.to_string()))?;
+            // An absent or unreadable header is a cost of 0.
+            let cost = headers
+                .get("TOON-Accumulated-Cost")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.trim().parse().ok())
+                .unwrap_or(0);
             Ok(Answer::Rejected {
                 code: reject.code.as_str().to_owned(),
                 message: reject.message,
+                cost,
             })
         }
     }
@@ -1349,16 +1390,27 @@ pub fn send(
             }),
             text: format!("Fulfilled: {sent}. The app answered {status}."),
         },
-        Answer::Rejected { code, message } => Report {
-            exit: Exit::Failure,
-            json: json!({
+        Answer::Rejected {
+            code,
+            message,
+            cost,
+        } => {
+            let mut json = json!({
                 "destination": destination,
                 "amount": amount,
                 "outcome": "rejected",
                 "reject": { "code": code, "message": message },
-            }),
-            text: format!("Rejected with {code}: {sent}. {message}"),
-        },
+            });
+            add_cost(&mut json, &code, cost);
+            Report {
+                exit: Exit::Failure,
+                json,
+                text: format!(
+                    "Rejected with {code}: {sent}. {message}{}",
+                    cost_sentence(&code, cost, "--amount")
+                ),
+            }
+        }
         Answer::Unanswered => unreachable!("handled above"),
         Answer::WrongFulfilment => Report {
             exit: Exit::Failure,
@@ -1673,9 +1725,14 @@ mod tests {
         let summary =
             "REJECT F02 -- no route\nNo route to g.nobody.here.\naccumulated cost: 101 base units";
         match answer(summary) {
-            Some(Answer::Rejected { code, message }) => {
+            Some(Answer::Rejected {
+                code,
+                message,
+                cost,
+            }) => {
                 assert_eq!(code, "F02");
                 assert_eq!(message, "No route to g.nobody.here.");
+                assert_eq!(cost, 101);
             }
             _ => panic!("not a reject"),
         }

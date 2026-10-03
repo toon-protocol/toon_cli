@@ -773,7 +773,10 @@ fn a_connector_that_charges_to_forward_rejects_the_price_and_the_text_names_the_
     assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
     let text = format!("{}{}", run.stdout, run.stderr);
     assert!(text.contains("F03"), "{text}");
-    assert!(text.contains("--packet-amount"), "{text}");
+    assert!(
+        text.contains(&format!("--packet-amount {FORWARD}")),
+        "{text}"
+    );
     // The rejected packet moved the channel by its amount, and the limit counts it.
     assert_eq!(remaining(&near), before - u128::from(PRICE));
 }
@@ -793,9 +796,47 @@ fn the_reject_of_a_charging_connector_is_in_the_json_report_unchanged() {
     let report = rejected.json();
     assert_eq!(report["outcome"], "rejected", "{report}");
     assert_eq!(report["response"]["code"], "F03", "{report}");
+    assert_eq!(report["response"]["cost"], FORWARD.to_string(), "{report}");
+    assert_eq!(report["response"]["complete"], true, "{report}");
+    assert!(
+        !report["response"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("accumulated cost"),
+        "{report}"
+    );
     assert_eq!(report["paid"], PRICE);
     assert_eq!(report["credited"], 0);
     assert_eq!(report["packet_amount"], PRICE);
+}
+
+#[test]
+fn a_rejected_send_through_a_charging_connector_reports_the_cost_to_state() {
+    let chain = AnvilChain::start();
+    let (near, _mid, _far, _relay) = through_a_charging_connector(&chain);
+    let price = PRICE.to_string();
+
+    let run = near.toon(&["send", SUBSCRIBE, "--amount", &price, "--yes", "--json"]);
+
+    assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
+    let report = run.json();
+    assert_eq!(report["outcome"], "rejected", "{report}");
+    assert_eq!(report["reject"]["code"], "F03", "{report}");
+    assert_eq!(report["cost"], FORWARD.to_string(), "{report}");
+    assert_eq!(report["complete"], true, "{report}");
+    assert!(
+        !report["reject"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("accumulated cost"),
+        "{report}"
+    );
+    let text = near.toon(&["send", SUBSCRIBE, "--amount", &price, "--yes"]);
+    assert!(
+        text.stdout.contains(&format!("--amount {FORWARD}")),
+        "{}",
+        text.stdout
+    );
 }
 
 #[test]

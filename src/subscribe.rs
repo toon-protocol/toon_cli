@@ -397,14 +397,19 @@ pub fn subscribe(
                         }
                     }
                 }
-                Answer::Rejected { code, message } => {
+                Answer::Rejected {
+                    code,
+                    message,
+                    cost,
+                } => {
                     metered = true;
-                    let text = format!("A subscribe packet was rejected with {code}. {message}");
-                    stopped = Some((
-                        "rejected",
-                        json!({ "code": code, "message": message }),
-                        text,
-                    ));
+                    let text = format!(
+                        "A subscribe packet was rejected with {code}. {message}{}",
+                        operator::cost_sentence(&code, cost, "--packet-amount")
+                    );
+                    let mut detail = json!({ "code": code, "message": message });
+                    operator::add_cost(&mut detail, &code, cost);
+                    stopped = Some(("rejected", detail, text));
                     break;
                 }
                 Answer::Unanswered => unreachable!("handled above"),
@@ -467,15 +472,17 @@ pub fn subscribe(
                 )
             }
             (_, Some((outcome, detail, text))) => {
-                let hint = if outcome == "rejected" && detail["code"] == "F03" {
-                    format!(
-                        " A connector on the path to {relay} refused a packet of \
+                let hint =
+                    if outcome == "rejected" && detail["code"] == "F03" && detail["cost"].is_null()
+                    {
+                        format!(
+                            " A connector on the path to {relay} refused a packet of \
                          {packet_amount} base units: state the path's exact cost with \
                          `--packet-amount`."
-                    )
-                } else {
-                    String::new()
-                };
+                        )
+                    } else {
+                        String::new()
+                    };
                 json["outcome"] = json!(outcome);
                 json["response"] = detail;
                 (
