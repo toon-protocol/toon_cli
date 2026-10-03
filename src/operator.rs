@@ -986,7 +986,7 @@ pub fn unanswered_cost(paid: u128, event: Option<Value>) -> Error {
     }
 }
 
-/// Read the connector's one-line summary of a send. The connector's own `send` verb is
+/// Read the connector's summary of a send. The connector's own `send` verb is
 /// what forms, seals, signs and checks the packet, and it reports in text.
 fn answer(summary: &str) -> Option<Answer> {
     if summary.starts_with("FULFILL WITH THE WRONG FULFILMENT") {
@@ -1003,10 +1003,22 @@ fn answer(summary: &str) -> Option<Answer> {
     let rejected = summary.strip_prefix("REJECT ")?;
     let (code, rest) = rejected.split_once(" -- ")?;
     let message = rest.split_once('\n').map_or("", |(_, message)| message);
+    // The summary ends with `accumulated cost: N base units`, which is not the reject's message.
+    let message = match message.rsplit_once('\n') {
+        Some((message, last)) if is_accumulated_cost(last) => message,
+        None if is_accumulated_cost(message) => "",
+        _ => message,
+    };
     Some(Answer::Rejected {
         code: code.to_owned(),
         message: message.to_owned(),
     })
+}
+
+/// Whether `line` is the summary's last line of a reject, the cost of its path.
+fn is_accumulated_cost(line: &str) -> bool {
+    line.strip_prefix("accumulated cost: ")
+        .is_some_and(|rest| rest.ends_with(" base units"))
 }
 
 /// Whether the `Debug` of the connector's `SendError` is its `Transport` variant for a
@@ -1519,9 +1531,9 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        before_sending, packet_wait, peer_add_on, peer_and_route_on, PeerAdd, Surface,
-        AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD,
-        UNREAD_TIMEOUT,
+        answer, before_sending, packet_wait, peer_add_on, peer_and_route_on, Answer, PeerAdd,
+        Surface, AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ,
+        UNREAD, UNREAD_TIMEOUT,
     };
     use crate::cli::Chain;
     use crate::outcome::ErrorCode;
@@ -1654,6 +1666,23 @@ mod tests {
             seen.try_iter().count(),
             1 + super::STALE_READ_REPEATS as usize
         );
+    }
+
+    #[test]
+    fn a_rejects_message_leaves_out_the_accumulated_cost_line() {
+        let summary =
+            "REJECT F02 -- no route\nNo route to g.nobody.here.\naccumulated cost: 101 base units";
+        match answer(summary) {
+            Some(Answer::Rejected { code, message }) => {
+                assert_eq!(code, "F02");
+                assert_eq!(message, "No route to g.nobody.here.");
+            }
+            _ => panic!("not a reject"),
+        }
+        match answer("REJECT F02 -- no route\naccumulated cost: 0 base units") {
+            Some(Answer::Rejected { message, .. }) => assert_eq!(message, ""),
+            _ => panic!("not a reject"),
+        }
     }
 
     #[test]
