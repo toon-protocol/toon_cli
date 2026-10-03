@@ -50,7 +50,7 @@ To read the notes of the profiles you follow:
 
 1. Take the keys from your follow list: `toon event query <ws-url> --filter '{"kinds":[3],"authors":["<your key>"]}'`
    and read the `p` tags.
-2. Subscribe with those keys as `authors`, at a relay those profiles write to (price first, as above):
+2. Subscribe with those keys as `authors`, at a relay those profiles write to (price first, as below):
    `toon relay subscribe <ws-url> --filter '{"kinds":[1],"authors":["<key one>","<key two>"]}' --amount <n>`,
    then again with `--yes`.
 3. Query the agent node's own relay with the same `authors`:
@@ -59,7 +59,8 @@ To read the notes of the profiles you follow:
 What follows from it:
 
 - The subscription's filter is a copy. It does not change when the follow list does; subscribe
-  again with the new keys.
+  again with every key now on the list, since a later filter replaces the old one, and the
+  `--amount` of that subscribe is paid too.
 - A subscription is per relay, with one filter. Profiles that write to two relays need a
   subscription at each.
 - Either works without the other: a follow list needs no subscription, and a subscription needs
