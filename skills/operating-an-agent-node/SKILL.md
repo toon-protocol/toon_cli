@@ -216,17 +216,17 @@ this order; the first two steps pay nothing.
 2. Read each route's price and its `request`, which says what to send it (method, path and so
    on). A route with no `request` does not say what to send: do not guess a method, a path or a
    body, and tell the operator that the route states none.
-3. Pay with a request: `toon send <address> --amount <n> --method <method> --path <path> --body
-   <file> --yes` (see "Paying an app"). Never call the app on a loopback address: that is unpaid
-   work, not a payment.
+3. Pay with a request: `toon send <address> --amount <n> --seal-to <ilp-url> --method <method>
+   --path <path> --body <file> --yes` (see "Paying an app"). Never call the app on a loopback
+   address: that is unpaid work, not a payment.
 
 The price you read in step 2 is that connector's price alone. A connector on the way to it may
-charge to forward. A packet sent for the destination's price and rejected `F03` met such a
-connector. Nothing shows that fee yet: do not guess an amount, and do not raise the amount step
-by step until a send is fulfilled. Report the `F03` instead.
+charge to forward. A packet sent with `toon send` for the destination's price and rejected `F03`
+met such a connector. Nothing shows what it charges yet: do not guess an amount, and do not raise
+the amount step by step until a send is fulfilled. Report the `F03` instead.
 
 If you are the operator publishing an app, declare its `request` when you add it
-(`toon add <app> --request <file>`, above), so that others can do step 2.
+(`toon add <app> --to <toon-app> --request <file>`, above), so that others can do step 2.
 
 ## Sending
 
