@@ -674,14 +674,8 @@ const CHAIN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 /// The ERC-20 `balanceOf(address)` selector.
 const BALANCE_OF: &str = "70a08231";
 
-/// One JSON-RPC call to `rpc_url`, whose `result` is a hex quantity.
-fn quantity(egress: &Egress, rpc_url: &str, method: &str, params: Value) -> Result<u128, Error> {
-    let chain_failed = |message: String| Error {
-        nothing_sent: false,
-        unanswered: None,
-        code: ErrorCode::ChainFailed,
-        message: format!("{method} to {rpc_url}: {message}."),
-    };
+/// One JSON-RPC call to `rpc_url`, whose `result` is whatever the method answers.
+fn call(egress: &Egress, rpc_url: &str, method: &str, params: Value) -> Result<Value, Error> {
     let reply: Value = egress
         .client(rpc_url, CHAIN_PATIENCE)?
         .post(rpc_url)
@@ -689,20 +683,87 @@ fn quantity(egress: &Egress, rpc_url: &str, method: &str, params: Value) -> Resu
         .send()
         .and_then(|response| response.error_for_status())
         .and_then(|response| response.json())
-        .map_err(|error| chain_failed(error.to_string()))?;
+        .map_err(|error| chain_failed(rpc_url, method, error.to_string()))?;
     if let Some(error) = reply.get("error") {
-        return Err(chain_failed(format!("the chain refused: {error}")));
+        return Err(chain_failed(
+            rpc_url,
+            method,
+            format!("the chain refused: {error}"),
+        ));
     }
-    let result = reply["result"]
+    reply
+        .get("result")
+        .cloned()
+        .ok_or_else(|| chain_failed(rpc_url, method, "the answer has no result".into()))
+}
+
+/// `method` to `rpc_url` failed, or answered something this cannot read.
+fn chain_failed(rpc_url: &str, method: &str, message: String) -> Error {
+    Error {
+        nothing_sent: false,
+        unanswered: None,
+        code: ErrorCode::ChainFailed,
+        message: format!("{method} to {rpc_url}: {message}."),
+    }
+}
+
+/// One JSON-RPC call to `rpc_url`, whose `result` is a hex quantity.
+fn quantity(egress: &Egress, rpc_url: &str, method: &str, params: Value) -> Result<u128, Error> {
+    let reply = call(egress, rpc_url, method, params)?;
+    let result = reply
         .as_str()
-        .ok_or_else(|| chain_failed("the answer has no result".into()))?;
+        .ok_or_else(|| chain_failed(rpc_url, method, "the answer is not a quantity".into()))?;
     // A 32-byte word. A balance that does not fit its low 16 bytes is refused, not cut.
     let digits = result.trim_start_matches("0x").trim_start_matches('0');
     if digits.is_empty() {
         return Ok(0);
     }
-    u128::from_str_radix(digits, 16)
-        .map_err(|_| chain_failed(format!("'{result}' is not a balance this can show")))
+    u128::from_str_radix(digits, 16).map_err(|_| {
+        chain_failed(
+            rpc_url,
+            method,
+            format!("'{result}' is not a balance this can show"),
+        )
+    })
+}
+
+/// The lamports `address` holds, and its balance of `mint` across its token accounts. An
+/// address with no token account holds none of the token.
+fn solana_balances(
+    egress: &Egress,
+    solana: &node::Solana,
+    address: &str,
+) -> Result<(u64, u128), Error> {
+    let native = call(egress, &solana.rpc_url, "getBalance", json!([address]))?;
+    let native = native["value"].as_u64().ok_or_else(|| {
+        chain_failed(
+            &solana.rpc_url,
+            "getBalance",
+            "the answer has no balance".into(),
+        )
+    })?;
+    let accounts = call(
+        egress,
+        &solana.rpc_url,
+        "getTokenAccountsByOwner",
+        json!([address, { "mint": solana.token }, { "encoding": "jsonParsed" }]),
+    )?;
+    let unreadable = || {
+        chain_failed(
+            &solana.rpc_url,
+            "getTokenAccountsByOwner",
+            "the answer has no token balance".into(),
+        )
+    };
+    let mut token: u128 = 0;
+    for account in accounts["value"].as_array().ok_or_else(unreadable)? {
+        let amount = account["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]
+            .as_str()
+            .and_then(|amount| amount.parse::<u128>().ok())
+            .ok_or_else(unreadable)?;
+        token = token.checked_add(amount).ok_or_else(unreadable)?;
+    }
+    Ok((native, token))
 }
 
 /// `toon wallet balances`: the balance of every address, by TOON app and chain. An address
@@ -782,17 +843,40 @@ pub fn balances(home: &Path) -> Result<Report, Error> {
             }
         };
         entries.push(evm);
-        lines.push(format!(
-            "{} solana {}: no chain configured",
-            app.name, keys.solana
-        ));
-        entries.push(json!({
-            "toon_app": app.name,
-            "chain": "solana",
-            "address": keys.solana,
-            "native": null,
-            "token": null,
-        }));
+        let solana = match &app.solana {
+            Some(solana) => {
+                let (native, token) = solana_balances(&egress, solana, &keys.solana)?;
+                lines.push(format!(
+                    "{} solana {}: {native} native, {token} of token {} ({} decimals)",
+                    app.name, keys.solana, solana.token, solana.decimals
+                ));
+                json!({
+                    "toon_app": app.name,
+                    "chain": "solana",
+                    "address": keys.solana,
+                    "native": native.to_string(),
+                    "token": {
+                        "address": solana.token,
+                        "decimals": solana.decimals,
+                        "balance": token.to_string(),
+                    },
+                })
+            }
+            None => {
+                lines.push(format!(
+                    "{} solana {}: no chain configured",
+                    app.name, keys.solana
+                ));
+                json!({
+                    "toon_app": app.name,
+                    "chain": "solana",
+                    "address": keys.solana,
+                    "native": null,
+                    "token": null,
+                })
+            }
+        };
+        entries.push(solana);
     }
     Ok(Report {
         exit: Exit::Success,
