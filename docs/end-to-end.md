@@ -3,11 +3,10 @@
 The gate substitutes four things: the chain, the overlay, the app runner and the remote
 relay. This run uses the real ones: the `anon` daemon on the Anyone network, the relay
 image in a container, the `infra` sandbox's local chain and hub, and the relay image that
-sells its live feed. "Hub" and "relay node" below are the sandbox's own names
-for its connector and for a connector with a relay behind it. It is run by hand,
-before a release and after moving the connector pin, the relay image or the `anon`
-release. It is not part of the gate, because it needs Docker and a network nobody here
-controls.
+sells its live feed. "Hub" and "relay node" below are the sandbox's own names for its
+connector and for a connector with a relay behind it. It is run by hand, before a release
+and after moving the connector pin, the relay image or the `anon` release. It is not part
+of the gate, because it needs Docker and a network nobody here controls.
 
 Record every run as a comment on the spec (#2): the date, `toon --version`, and for each
 step below whether it did what the step says. Open a ticket for every step that did not.
@@ -19,9 +18,9 @@ step.
 
 | Step | What happens today | Ticket |
 | --- | --- | --- |
+| 1, the sandbox | Its relays do not sell their feed, hence `feed.yml` and the routes added by hand | infra #53 |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
 | 2, another agent node | Now and then the first packet between two hidden services outlasts its 30-second expiry: `rejected` or `send_failed`, paid for, and the relay holds no event | #109 |
-| 1, the sandbox | Its relays do not sell their feed, hence `feed.yml` and the routes added by hand | infra #53 |
 | 2, hold a subscription | Nothing from `relay2`'s feed reaches the agent node's own relay, and its balance does not move: the supervisor dials `ws://localhost:7110` through the overlay, which refuses it | #113 |
 | 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
 
@@ -74,9 +73,9 @@ export USDC=0x0A867CA0442383c2A89951244B955AA19b615b58   # the sandbox's FiatTok
 export RPC=http://localhost:8545
 ```
 
-The sandbox's relays do not sell their feed (infra #53). `feed.yml`, above, puts them on a
-relay image that does and gives them the feed's settings; each connector also needs a
-route to its relay's subscribe handler, and each relay must start after that route, since
+`feed.yml`, above, puts the sandbox's relays on a relay image that sells its feed and gives
+them the feed's settings (infra #53). Each connector also needs a route to its relay's
+subscribe handler, and each relay must start after that route, since
 it reads its connector's routes once. `up-topology` renders the connectors' configs
 itself, so the route is added to what it rendered:
 
@@ -87,8 +86,11 @@ for n in relay relay2; do
     $n $n >> $R/connector-$n.toml
 done
 docker restart toon-sandbox-relay-connector-1 toon-sandbox-relay2-connector-1
-until curl -sf localhost:3200/ilp | grep -q relay.subscribe \
-  && curl -sf localhost:3290/ilp | grep -q relay2.subscribe; do sleep 2; done
+for i in $(seq 60); do
+  curl -sf localhost:3200/ilp | grep -q relay.subscribe \
+    && curl -sf localhost:3290/ilp | grep -q relay2.subscribe && break
+  sleep 2
+done
 (cd ../infra/sandbox && HUB_RELAY_URL=ws://$HUB:7100 docker compose --profile relay \
   up -d --no-deps relay)
 docker restart toon-sandbox-relay2-1
@@ -347,12 +349,28 @@ $E/toon event query ws://$READ \
 $E/toon relay subscriptions --json
 ```
 
-**Expect** the live event in the agent node's own relay within seconds, read from the hub's
-feed through the overlay, and the hub's balance at 9: stored events are free and a live
-one is debited at the broadcast price. The event written to `relay2` earlier should be
-there too, but is not (#113), and `relay2`'s balance stays at 10.
-`$E/toon event follow ws://localhost:7110 --json` prints `relay2`'s stored events and then
-its live ones, each debited, until it is stopped: the command line dials it directly.
+**Expect** the live event in the agent node's own relay within seconds (asked at once, it
+may not be there yet: ask again), read from the hub's feed through the overlay, and the
+hub's balance at 9: stored events are free and a live one is debited at the broadcast
+price. The event written to `relay2` earlier should be there too, but is not (#113), and
+`relay2`'s balance stays at 10.
+
+Until #113 is fixed, read `relay2`'s feed with the command line, which dials it directly.
+Follow it in another terminal, with the same `HOME` and `TOON_PASSPHRASE_FILE`, and stop it
+with ctrl-c once the live event has arrived:
+
+```sh
+$E/toon event follow ws://localhost:7110 --json
+```
+
+```sh
+$E/toon event publish --kind 1 --content "live, relay2" --relay ws://localhost:7110 \
+  --amount 101 --yes --json
+$E/toon relay subscriptions --json
+```
+
+**Expect** `follow` to print `relay2`'s stored events and then the live one, and
+`relay2`'s balance at 9.
 
 Run the hub's subscription out with nine more writes to its relay, and top it up:
 
