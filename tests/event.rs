@@ -508,6 +508,9 @@ fn watch_following_prints_only_the_live_events_of_followed_keys() {
 
     assert!(printed.iter().all(|event| event["pubkey"] == me.as_str()));
     // The filter is the follow list: with another key followed, nothing of mine is printed.
+    // A follow list replaces the one before it only when it is newer: of two written in the
+    // same second the relay keeps the lower id, so this one waits for the next second.
+    std::thread::sleep(Duration::from_millis(1100));
     node.follow(&[OTHER]);
     let other = node.watch(&["--following"]);
     for number in 0..5 {
