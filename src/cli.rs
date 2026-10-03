@@ -62,6 +62,11 @@ pub enum Command {
         #[command(subcommand)]
         command: PeerCommand,
     },
+    /// Print what a connector offers, free: its addresses, settlement terms and routes with their prices
+    Describe {
+        /// The `/ilp` URL of the connector; this agent node's own connector if omitted
+        url: Option<String>,
+    },
     /// Join a network: peer toward its connector and read its relay
     Join(JoinArgs),
     /// Show or change the spending limit
@@ -243,9 +248,15 @@ pub struct InitArgs {
     /// The EVM chain's JSON-RPC endpoint, instead of the profile's
     #[arg(long)]
     pub evm_rpc_url: Option<String>,
+    /// The Solana JSON-RPC endpoint, instead of the profile's; only with `--solana`
+    #[arg(long, requires = "solana")]
+    pub solana_rpc_url: Option<String>,
     /// The token the connector is paid in on that chain, instead of the profile's
     #[arg(long)]
     pub evm_token: Option<String>,
+    /// The Solana chain's JSON-RPC endpoint, instead of the profile's; with `--solana`
+    #[arg(long, requires = "solana")]
+    pub solana_rpc_url: Option<String>,
     /// Let the connector peer toward a plain `http://` address, for a trial on one machine
     #[arg(long)]
     pub allow_plaintext_peers: bool,
@@ -301,7 +312,13 @@ impl InitArgs {
             listen: self.listen.clone(),
             network: self.network,
             evm: Some(evm),
-            solana: self.solana.then(|| self.network.solana()),
+            solana: self.solana.then(|| {
+                let mut solana = self.network.solana();
+                if let Some(rpc_url) = &self.solana_rpc_url {
+                    solana.rpc_url = rpc_url.clone();
+                }
+                solana
+            }),
             plaintext_peers: self.allow_plaintext_peers || self.network.plaintext_peers(),
             limits: spending::Limits {
                 per_command: self.max_per_command,
@@ -419,8 +436,12 @@ pub enum EventCommand {
         /// The relay's websocket URL, `ws://host:port` or `wss://host:port`
         relay: String,
         /// A NIP-01 filter, as one JSON object
+        #[arg(long, required_unless_present = "following")]
+        filter: Option<String>,
+        /// Set the filter's `authors` to the keys in the agent's follow list, the newest
+        /// kind 3 event on the agent node's own relay (which must be running)
         #[arg(long)]
-        filter: String,
+        following: bool,
     },
     /// Print the events of the live feed of a relay this agent node subscribed to, one JSON
     /// document to a line, as they arrive
@@ -532,6 +553,10 @@ pub enum RelayCommand {
         /// a later one replaces the old filter
         #[arg(long)]
         filter: Option<String>,
+        /// Set the filter's `authors` to the keys in the agent's follow list as it is now: the
+        /// filter is a snapshot, and stays fixed until this command is run again
+        #[arg(long)]
+        following: bool,
         /// The most to pay, in the token's base units: paid as whole packets of the packet
         /// amount, so it buys its quotient rounded down
         #[arg(long)]

@@ -435,14 +435,25 @@ fn faucet_error(message: String) -> Error {
     }
 }
 
-fn ask(egress: &Egress, faucet: &str, path: &str, address: &str) -> Result<Value, Error> {
+/// What the faucet answered for `address`: its reply, or the reason it gave for refusing.
+/// An `Err` is the egress refusing to make the request at all (its policy forbids it, or
+/// the proxy is unusable), which no address can get around.
+fn ask(
+    egress: &Egress,
+    faucet: &str,
+    path: &str,
+    address: &str,
+) -> Result<Result<Value, String>, Error> {
     let url = format!("{}{path}", faucet.trim_end_matches('/'));
-    let response = egress
+    let response = match egress
         .client(&url, TIMEOUT)?
         .post(&url)
         .json(&json!({ "address": address }))
         .send()
-        .map_err(|error| faucet_error(format!("The faucet at {url} did not answer: {error}.")))?;
+    {
+        Ok(response) => response,
+        Err(error) => return Ok(Err(format!("The faucet at {url} did not answer: {error}."))),
+    };
     let status = response.status();
     let body: Value = response.json().unwrap_or(Value::Null);
     if !status.is_success() {
@@ -450,15 +461,15 @@ fn ask(egress: &Egress, faucet: &str, path: &str, address: &str) -> Result<Value
             .as_str()
             .or_else(|| body["error"].as_str())
             .unwrap_or("no reason given");
-        return Err(faucet_error(format!(
+        return Ok(Err(format!(
             "The faucet at {url} refused {address} ({status}): {why}."
         )));
     }
-    Ok(body)
+    Ok(Ok(body))
 }
 
-/// `toon wallet fund`: ask the devnet faucet for every settlement address, then say
-/// what is still lacking.
+/// `toon wallet fund`: ask the devnet faucet for every settlement address, whatever it
+/// answers for the others, then say what is still lacking.
 pub fn fund(home: &Path) -> Result<Report, Error> {
     let Some(state) = State::load(home)? else {
         return Err(node::no_agent_node(home));
@@ -480,17 +491,25 @@ pub fn fund(home: &Path) -> Result<Report, Error> {
     };
     let egress = Egress::of_state(home, &state);
     let mut funded = Vec::new();
+    let mut refused = Vec::new();
     for app in &state.toon_apps {
         let files = ConnectorFiles::of(home, app.connector);
         if app.evm.is_some() {
             let address = derive::evm_address(&secret(&files.settlement_key)?);
-            let reply = ask(&egress, faucet, "/api/base-sepolia/request", &address)?;
-            funded.push(json!({ "chain": "evm", "address": address, "faucet": reply }));
+            match ask(&egress, faucet, "/api/base-sepolia/request", &address)? {
+                Ok(reply) => {
+                    funded.push(json!({ "chain": "evm", "address": address, "faucet": reply }))
+                }
+                Err(reason) => {
+                    refused.push(json!({ "chain": "evm", "address": address, "reason": reason }))
+                }
+            }
         }
         if let Some(solana) = &app.solana {
             let address = derive::solana_address(&secret(&files.solana_settlement_key)?);
             let reply = ask(&egress, faucet, "/api/solana/usdc-request", &address)?;
-            // The faucet mints the token; the chain's own airdrop pays for fees.
+            // The faucet mints the token; the chain's own airdrop pays for fees, and is
+            // asked for even when the faucet refused the token.
             let airdrop = rpc(
                 &egress,
                 &solana.rpc_url,
@@ -499,10 +518,32 @@ pub fn fund(home: &Path) -> Result<Report, Error> {
             )
             .map(|signature| json!({ "signature": signature }))
             .unwrap_or_else(|error| json!({ "error": error }));
-            funded.push(json!({
-                "chain": "solana", "address": address, "faucet": reply, "airdrop": airdrop,
-            }));
+            match reply {
+                Ok(reply) => funded.push(json!({
+                    "chain": "solana", "address": address, "faucet": reply, "airdrop": airdrop,
+                })),
+                Err(reason) => refused.push(json!({
+                    "chain": "solana", "address": address, "reason": reason, "airdrop": airdrop,
+                })),
+            }
         }
+    }
+    if funded.is_empty() && !refused.is_empty() {
+        let list: Vec<String> = refused
+            .iter()
+            .map(|entry| {
+                format!(
+                    "{} ({}): {}",
+                    entry["address"].as_str().unwrap_or_default(),
+                    entry["chain"].as_str().unwrap_or_default(),
+                    entry["reason"].as_str().unwrap_or_default()
+                )
+            })
+            .collect();
+        return Err(faucet_error(format!(
+            "The faucet funded no address. {}",
+            list.join(" ")
+        )));
     }
     let mut all = Vec::new();
     for app in &state.toon_apps {
@@ -514,9 +555,17 @@ pub fn fund(home: &Path) -> Result<Report, Error> {
     let mut text = String::from("Asked the devnet faucet for:\n");
     for entry in &funded {
         text.push_str(&format!(
-            "  {} ({})\n",
+            "  {} ({}): asked\n",
             entry["address"].as_str().unwrap_or_default(),
             entry["chain"].as_str().unwrap_or_default()
+        ));
+    }
+    for entry in &refused {
+        text.push_str(&format!(
+            "  {} ({}): refused. {}\n",
+            entry["address"].as_str().unwrap_or_default(),
+            entry["chain"].as_str().unwrap_or_default(),
+            entry["reason"].as_str().unwrap_or_default()
         ));
     }
     match &lacking {
@@ -557,6 +606,7 @@ pub fn fund(home: &Path) -> Result<Report, Error> {
         exit: Exit::Success,
         json: json!({
             "funded": funded,
+            "refused": refused,
             "lacking": lacking
                 .as_ref()
                 .map(|lacking| lacking.iter().map(Need::json).collect::<Vec<_>>())

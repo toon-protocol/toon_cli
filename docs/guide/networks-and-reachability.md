@@ -30,9 +30,9 @@ toon init --network sandbox --accept-anyone-terms \
 
 [`docs/end-to-end.md`](../end-to-end.md) runs a whole agent node against the sandbox.
 
-**Overrides.** `--evm-rpc-url`, `--evm-token`, `--faucet-url`, `--connector-url` and
+**Overrides.** `--evm-rpc-url`, `--solana-rpc-url`, `--evm-token`, `--faucet-url`, `--connector-url` and
 `--relay-url` replace one setting of the profile; `toon init --help` lists the rest.
-`--solana` settles on Solana too.
+`--solana` settles on Solana too, and `--solana-rpc-url` replaces its JSON-RPC endpoint.
 
 ## Hidden service
 

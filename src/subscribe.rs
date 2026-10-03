@@ -233,21 +233,22 @@ pub fn subscribe(
     home: &Path,
     relay: &str,
     filter: Option<&str>,
+    following: bool,
     amount: u64,
     packet_amount: Option<u64>,
     yes: bool,
 ) -> Result<Report, Error> {
-    let filter: Option<Value> = filter
-        .map(|text| {
-            serde_json::from_str(text)
-                .ok()
-                .filter(Value::is_object)
-                .ok_or_else(|| usage("--filter must be one JSON object, like {\"kinds\":[1]}."))
-        })
-        .transpose()?;
+    let filter = filter.map(event::parse_filter).transpose()?;
     if node::State::load(home)?.is_none() {
         return Err(node::no_agent_node(home));
     }
+    // The keys followed now, fixed in the filter until the command is run again.
+    let (filter, followed) = if following {
+        let (filter, count) = event::following(home, filter)?;
+        (Some(filter), Some(count))
+    } else {
+        (filter, None)
+    };
     let terms = terms(&Egress::of(home)?, relay)?;
     // A top-up sends the filter last kept again: the relay may have forgotten an exhausted
     // subscription, and the draft says to send `filter` when that may be so.
@@ -442,6 +443,9 @@ pub fn subscribe(
             "price": terms.price,
             "packet_amount": packet_amount,
         });
+        if let Some(count) = followed {
+            json["following"] = json!(count);
+        }
         let (exit, text) = match (&now, stopped) {
             (_, None) => {
                 let kept = now.as_ref().expect("a packet was credited");
@@ -454,7 +458,12 @@ pub fn subscribe(
                          packets and credited {credited}. The balance is {}, which buys {events} \
                          events at {} each.",
                         kept.balance, kept.broadcast_price
-                    ),
+                    ) + &followed.map_or_else(String::new, |count| {
+                        format!(
+                            " The filter holds {count} followed keys as `authors`, a snapshot \
+                             that stays fixed until `toon relay subscribe --following` is run again."
+                        )
+                    }),
                 )
             }
             (_, Some((outcome, detail, text))) => {
@@ -588,16 +597,25 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
         ));
     }
     save(home, &kept)?;
-    let text = if lines.is_empty() {
-        "No subscriptions.".to_owned()
-    } else {
-        lines.join("\n")
-    };
+    let (active, exhausted) = totals(&kept);
+    if lines.is_empty() {
+        lines.push("No subscriptions.".to_owned());
+    }
+    lines.push(format!("{active} with a balance, {exhausted} exhausted."));
     Ok(Report {
         exit: Exit::Success,
-        json: json!({ "subscriptions": shown }),
-        text,
+        json: json!({
+            "subscriptions": shown,
+            "totals": { "active": active, "exhausted": exhausted },
+        }),
+        text: lines.join("\n"),
     })
+}
+
+/// How many of `kept` have a balance and how many are exhausted.
+pub fn totals(kept: &[Kept]) -> (usize, usize) {
+    let exhausted = kept.iter().filter(|kept| kept.exhausted()).count();
+    (kept.len() - exhausted, exhausted)
 }
 
 /// Note that the relay of `dialled`, the subscription a feed was dialled for, closed that
@@ -667,73 +685,60 @@ pub fn follow(home: &Path, relay: &str) -> Result<Report, Error> {
     })
 }
 
-/// `toon relay subscriptions --incoming`: who subscribed to the feed of this agent node's
-/// own relay, and what each has left, as the running relay lists them on its write port,
-/// which nothing but the operator reaches.
-pub fn incoming(home: &Path) -> Result<Report, Error> {
-    let state = node::State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
-    let failed = |code, message: String| Error {
+/// The TOON app of this agent node that runs its own relay. None is `unknown_name`.
+pub fn own_relay_app(state: &node::State) -> Result<&node::ToonApp, Error> {
+    state
+        .toon_apps
+        .iter()
+        .find(|app| {
+            app.apps
+                .iter()
+                .any(|behind| behind.name == node::RELAY && behind.source == node::Source::Relay)
+        })
+        .ok_or_else(|| Error {
+            nothing_sent: false,
+            unanswered: None,
+            code: ErrorCode::UnknownName,
+            message: "No TOON app of this agent node has a relay.".into(),
+        })
+}
+
+/// Where the running relay of the TOON app `app` listens, `host:port`, as the agent node's
+/// supervisor reports it. The relay not running is `not_running`.
+pub fn own_relay_address(home: &Path, app: &str) -> Result<String, Error> {
+    let not_running = || Error {
         nothing_sent: false,
         unanswered: None,
-        code,
-        message,
-    };
-    let Some(app) = state.toon_apps.iter().find(|app| {
-        app.apps
-            .iter()
-            .any(|behind| behind.name == node::RELAY && behind.source == node::Source::Relay)
-    }) else {
-        return Err(failed(
-            ErrorCode::UnknownName,
-            "No TOON app of this agent node has a relay.".into(),
-        ));
-    };
-    if app.relay.selling().is_none() {
-        return Err(failed(
-            ErrorCode::QueryFailed,
-            "This agent node's relay does not sell its live feed: `toon relay price --subscribe \
-             <amount> --broadcast <amount>` starts."
-                .into(),
-        ));
-    }
-    let not_running = || {
-        failed(
-            ErrorCode::NotRunning,
-            "The relay is not running: `toon up` starts it, and it lists its subscribers.".into(),
-        )
+        code: ErrorCode::NotRunning,
+        message: "The relay is not running: `toon up` starts it.".into(),
     };
     let reply = control::ask(home, "status").ok_or_else(not_running)?;
-    let address = reply["toon_apps"]
+    reply["toon_apps"]
         .as_array()
         .into_iter()
         .flatten()
-        .find(|reported| reported["name"] == app.name.as_str())
+        .find(|reported| reported["name"] == app)
         .and_then(|reported| reported["apps"].as_array())
         .into_iter()
         .flatten()
         .find(|reported| reported["name"] == node::RELAY)
         .filter(|reported| reported["running"] == true)
         .and_then(|reported| reported["address"].as_str())
-        .ok_or_else(not_running)?;
-    let url = format!("http://{address}/subscribers");
-    let unreadable = |why: String| {
-        failed(
-            ErrorCode::QueryFailed,
-            format!("The relay's list of subscribers could not be read: {why}."),
-        )
-    };
-    let body = reqwest::blocking::Client::builder()
-        .timeout(PATIENCE)
-        .no_proxy()
-        .build()
-        .and_then(|client| client.get(&url).send())
-        .and_then(reqwest::blocking::Response::error_for_status)
-        .and_then(|response| response.json::<Value>())
-        .map_err(|error| unreadable(error.to_string()))?;
+        .map(str::to_owned)
+        .ok_or_else(not_running)
+}
+
+/// `toon relay subscriptions --incoming`: who subscribed to the feed of this agent node's
+/// own relay, and what each has left, as the running relay lists them on its write port,
+/// which nothing but the operator reaches.
+pub fn incoming(home: &Path) -> Result<Report, Error> {
+    let state = node::State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
+    let body = own_subscribers(home, selling_relay(&state)?)?;
     let subscribers = body["subscribers"]
         .as_array()
-        .ok_or_else(|| unreadable("it answered no list".into()))?;
-    let lines: Vec<String> = subscribers
+        .ok_or_else(|| unreadable_list("it answered no list".into()))?;
+    let with_balance = holding_a_balance(subscribers);
+    let mut lines: Vec<String> = subscribers
         .iter()
         .map(|subscriber| {
             format!(
@@ -745,16 +750,83 @@ pub fn incoming(home: &Path) -> Result<Report, Error> {
             )
         })
         .collect();
+    if lines.is_empty() {
+        lines.push("No one subscribes to this agent node's relay.".to_owned());
+    }
+    lines.push(format!("Subscriber keys with a balance: {with_balance}."));
     Ok(Report {
         exit: Exit::Success,
         json: json!({
             "broadcast_price": body["broadcast_price"],
             "subscribers": subscribers,
+            "totals": { "subscribers": with_balance },
         }),
-        text: if lines.is_empty() {
-            "No one subscribes to this agent node's relay.".to_owned()
-        } else {
-            lines.join("\n")
-        },
+        text: lines.join("\n"),
     })
+}
+
+fn unreadable_list(why: String) -> Error {
+    relay_error(
+        ErrorCode::QueryFailed,
+        format!("The relay's list of subscribers could not be read: {why}."),
+    )
+}
+
+/// How many subscriber keys of `subscribers` hold a balance.
+fn holding_a_balance(subscribers: &[Value]) -> usize {
+    subscribers
+        .iter()
+        .filter(|subscriber| subscriber["balance"].as_u64().is_some_and(|b| b > 0))
+        .count()
+}
+
+/// How many subscriber keys hold a balance at the relay of `state`: none when it sells no
+/// live feed, and `None` when it does but the running relay does not say.
+pub fn incoming_with_balance(home: &Path, state: &node::State) -> Option<usize> {
+    let Ok(app) = selling_relay(state) else {
+        return Some(0);
+    };
+    let body = own_subscribers(home, app).ok()?;
+    Some(holding_a_balance(body["subscribers"].as_array()?))
+}
+
+fn relay_error(code: ErrorCode, message: String) -> Error {
+    Error {
+        nothing_sent: false,
+        unanswered: None,
+        code,
+        message,
+    }
+}
+
+/// The TOON app of `state` whose relay sells its live feed.
+fn selling_relay(state: &node::State) -> Result<&node::ToonApp, Error> {
+    let app = own_relay_app(state)?;
+    if app.relay.selling().is_none() {
+        return Err(relay_error(
+            ErrorCode::QueryFailed,
+            "This agent node's relay does not sell its live feed: `toon relay price --subscribe \
+             <amount> --broadcast <amount>` starts."
+                .into(),
+        ));
+    }
+    Ok(app)
+}
+
+/// The answer of the running relay of `app` to `GET /subscribers`.
+fn own_subscribers(home: &Path, app: &node::ToonApp) -> Result<Value, Error> {
+    let address = own_relay_address(home, &app.name).map_err(|mut error| {
+        error.message =
+            "The relay is not running: `toon up` starts it, and it lists its subscribers.".into();
+        error
+    })?;
+    let url = format!("http://{address}/subscribers");
+    reqwest::blocking::Client::builder()
+        .timeout(PATIENCE)
+        .no_proxy()
+        .build()
+        .and_then(|client| client.get(&url).send())
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .and_then(|response| response.json::<Value>())
+        .map_err(|error| unreadable_list(error.to_string()))
 }

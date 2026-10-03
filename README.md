@@ -92,9 +92,9 @@ each is a working example of an app:
 | App | What it sells |
 | --- | --- |
 | [`relay`](https://github.com/toon-protocol/relay) | Writes to a Nostr relay; reads are free. Every agent node starts with it. |
-| [`store`](https://github.com/toon-protocol/store) | Blob storage on Arweave, and a worked example of putting any app behind a connector |
+| [`store`](https://github.com/toon-protocol/store) | Blob storage on Arweave |
 | [`gas-station`](https://github.com/toon-protocol/gas-station) | Gas for a Solana transaction or an EVM call, for a caller who holds no SOL or ETH |
-| [`anytoon`](https://github.com/toon-protocol/anytoon) | The Anyone Protocol's credentials issuer, run unchanged from its published image |
+| [`anytoon`](https://github.com/toon-protocol/anytoon) | The Anyone Protocol's credentials issuer |
 
 [Adding an app](docs/guide/adding-an-app.md) shows how to put your own HTTP service behind a
 connector.
