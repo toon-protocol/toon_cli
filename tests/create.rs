@@ -196,6 +196,15 @@ fn a_second_toon_app_is_peered_both_ways_and_a_packet_crosses_each_way() {
     assert_eq!(peers["peers"][0]["id"], "relay", "{peers}");
     let peers = machine.toon(&["peer", "list", "--json"]).json();
     assert_eq!(peers["peers"][0]["id"], "second", "{peers}");
+    // Its connector counts the packet it took from the relay's.
+    let counted = machine
+        .toon(&["--app", "second", "packet", "count", "--json"])
+        .json();
+    assert_eq!(counted["toon_app"], "second", "{counted}");
+    assert!(
+        counted["packets"]["fulfilled"].as_u64() >= Some(1),
+        "{counted}"
+    );
 }
 
 #[test]

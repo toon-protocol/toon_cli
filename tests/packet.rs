@@ -37,7 +37,7 @@ fn a_connector_that_has_carried_nothing_counts_zero_without_a_passphrase() {
             "toon_app": "relay",
             "packets": { "fulfilled": 0, "rejected": 0 },
             "rejects": {},
-            "fees_earned": 0,
+            "fees_earned": "0",
         })
     );
     let text = node.machine.toon(&["packet", "count"]);
@@ -54,6 +54,28 @@ fn a_connector_that_has_carried_nothing_counts_zero_without_a_passphrase() {
     );
     assert!(text.stdout.contains("Fees earned: 0"), "{}", text.stdout);
     assert!(text.stdout.contains("last started"), "{}", text.stdout);
+}
+
+#[test]
+fn a_rejected_packet_is_counted_by_its_code() {
+    let node = running();
+    let sent = node
+        .machine
+        .toon(&["send", "g.nobody.here", "--amount", "0", "--yes", "--json"]);
+    assert_eq!(sent.json()["reject"]["code"], "F02", "{}", sent.stdout);
+
+    let run = node.machine.toon(&["packet", "count", "--json"]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let report = run.json();
+    assert_eq!(report["packets"]["rejected"], 1, "{report}");
+    assert_eq!(
+        report["rejects"],
+        serde_json::json!({ "F02": 1 }),
+        "{report}"
+    );
+    let text = node.machine.toon(&["packet", "count"]);
+    assert!(text.stdout.contains("  F02: 1"), "{}", text.stdout);
 }
 
 #[test]

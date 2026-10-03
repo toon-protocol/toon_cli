@@ -192,7 +192,7 @@ back only if its operator creates a peering in return.
 the connector fulfilled and rejected, the rejects by RFC-0027 code (`F02`, `T04`), and the fees
 earned in the token's base units; `--app` chooses the TOON app. The counts restart with the
 connector, so a restart begins again at 0. With `--json` it prints `toon_app`, `packets`
-(`fulfilled`, `rejected`), `rejects` and `fees_earned`. It fails with `not_running` when the agent
+(`fulfilled`, `rejected`), `rejects` and `fees_earned`, a decimal string as other amounts are. It fails with `not_running` when the agent
 node is stopped.
 
 ## Channels
