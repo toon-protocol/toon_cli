@@ -987,10 +987,22 @@ fn answer(summary: &str) -> Option<Answer> {
     let rejected = summary.strip_prefix("REJECT ")?;
     let (code, rest) = rejected.split_once(" -- ")?;
     let message = rest.split_once('\n').map_or("", |(_, message)| message);
+    // The summary ends with `accumulated cost: N base units`, which is not the reject's message.
+    let message = match message.rsplit_once('\n') {
+        Some((message, last)) if is_accumulated_cost(last) => message,
+        None if is_accumulated_cost(message) => "",
+        _ => message,
+    };
     Some(Answer::Rejected {
         code: code.to_owned(),
         message: message.to_owned(),
     })
+}
+
+/// Whether `line` is the summary's last line of a reject, the cost of its path.
+fn is_accumulated_cost(line: &str) -> bool {
+    line.strip_prefix("accumulated cost: ")
+        .is_some_and(|rest| rest.ends_with(" base units"))
 }
 
 /// Whether the `Debug` of the connector's `SendError` is its `Transport` variant for a
@@ -1503,7 +1515,7 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        before_sending, packet_wait, peer_add_on, PeerAdd, Surface, AMBIGUOUS_CHAIN,
+        answer, before_sending, packet_wait, peer_add_on, PeerAdd, Surface, AMBIGUOUS_CHAIN,
         AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD, UNREAD_TIMEOUT,
     };
     use crate::cli::Chain;
@@ -1637,6 +1649,23 @@ mod tests {
             seen.try_iter().count(),
             1 + super::STALE_READ_REPEATS as usize
         );
+    }
+
+    #[test]
+    fn a_rejects_message_leaves_out_the_accumulated_cost_line() {
+        let summary =
+            "REJECT F02 -- no route\nNo route to g.nobody.here.\naccumulated cost: 101 base units";
+        match answer(summary) {
+            Some(super::Answer::Rejected { code, message }) => {
+                assert_eq!(code, "F02");
+                assert_eq!(message, "No route to g.nobody.here.");
+            }
+            _ => panic!("not a reject"),
+        }
+        match answer("REJECT F02 -- no route\naccumulated cost: 0 base units") {
+            Some(super::Answer::Rejected { message, .. }) => assert_eq!(message, ""),
+            _ => panic!("not a reject"),
+        }
     }
 
     #[test]

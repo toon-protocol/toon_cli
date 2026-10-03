@@ -71,6 +71,8 @@ fn a_rejected_packet_says_why_and_exits_non_zero() {
     let report = run.json();
     assert_eq!(report["outcome"], "rejected", "{report}");
     assert_eq!(report["reject"]["code"], "F02");
+    let message = report["reject"]["message"].as_str().expect("a message");
+    assert!(!message.contains("accumulated cost"), "{message}");
     assert_eq!(run.exit_code, 1);
     assert_eq!(run.stderr, "");
 }
@@ -89,6 +91,7 @@ fn a_rejected_packet_is_readable_text_without_json() {
         "{}",
         run.stdout
     );
+    assert!(!run.stdout.contains("accumulated cost"), "{}", run.stdout);
     assert_eq!(run.exit_code, 1);
 }
 
