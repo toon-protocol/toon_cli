@@ -1007,16 +1007,13 @@ fn answer(summary: &str) -> Option<Answer> {
     let message = rest.split_once('\n').map_or("", |(_, message)| message);
     // The summary ends with `accumulated cost: N base units`, which is not the reject's message.
     let (message, cost) = match message.rsplit_once('\n') {
-        Some((message, last)) if accumulated_cost(last).is_some() => {
-            (message, accumulated_cost(last))
-        }
-        None if accumulated_cost(message).is_some() => ("", accumulated_cost(message)),
-        _ => (message, None),
+        Some((head, last)) => accumulated_cost(last).map_or((message, 0), |cost| (head, cost)),
+        None => accumulated_cost(message).map_or((message, 0), |cost| ("", cost)),
     };
     Some(Answer::Rejected {
         code: code.to_owned(),
         message: message.to_owned(),
-        cost: cost.unwrap_or(0),
+        cost,
     })
 }
 
@@ -1026,6 +1023,16 @@ fn accumulated_cost(line: &str) -> Option<u128> {
         .strip_suffix(" base units")?
         .parse()
         .ok()
+}
+
+/// The accumulated cost a connector states on the answer of `POST /packets`, in base units;
+/// an absent or unreadable header is a cost of 0.
+fn header_cost(headers: &reqwest::header::HeaderMap) -> u128 {
+    headers
+        .get("TOON-Accumulated-Cost")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(0)
 }
 
 /// Add the cost of a rejected packet to its report's `json`, beside `outcome`: `cost` as a
@@ -1340,16 +1347,10 @@ pub fn dispatch_with_headers(
         }
         Err(_) => {
             let reject = Reject::decode(&bytes).map_err(|error| undecodable(error.to_string()))?;
-            // An absent or unreadable header is a cost of 0.
-            let cost = headers
-                .get("TOON-Accumulated-Cost")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.trim().parse().ok())
-                .unwrap_or(0);
             Ok(Answer::Rejected {
                 code: reject.code.as_str().to_owned(),
                 message: reject.message,
-                cost,
+                cost: header_cost(&headers),
             })
         }
     }
@@ -1583,9 +1584,9 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        answer, before_sending, packet_wait, peer_add_on, peer_and_route_on, Answer, PeerAdd,
-        Surface, AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ,
-        UNREAD, UNREAD_TIMEOUT,
+        add_cost, answer, before_sending, cost_sentence, header_cost, packet_wait, peer_add_on,
+        peer_and_route_on, Answer, PeerAdd, Surface, AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST,
+        PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD, UNREAD_TIMEOUT,
     };
     use crate::cli::Chain;
     use crate::outcome::ErrorCode;
@@ -1740,6 +1741,42 @@ mod tests {
             Some(Answer::Rejected { message, .. }) => assert_eq!(message, ""),
             _ => panic!("not a reject"),
         }
+    }
+
+    #[test]
+    fn a_reject_with_a_cost_states_it_and_an_r01_is_a_floor() {
+        let mut json = serde_json::json!({ "outcome": "rejected" });
+        add_cost(&mut json, "F03", 101);
+        assert_eq!(json["cost"], "101");
+        assert_eq!(json["complete"], true);
+        assert!(cost_sentence("F03", 101, "--amount").contains("`--amount 101`"));
+
+        let mut json = serde_json::json!({ "outcome": "rejected" });
+        add_cost(&mut json, "R01", 7);
+        assert_eq!(json["cost"], "7");
+        assert_eq!(json["complete"], false);
+        let text = cost_sentence("R01", 7, "--packet-amount");
+        assert!(
+            text.contains("7 base units is the amount to carry to get past it"),
+            "{text}"
+        );
+        assert!(text.contains("not the whole cost"), "{text}");
+
+        let mut json = serde_json::json!({ "outcome": "rejected" });
+        add_cost(&mut json, "F03", 0);
+        assert_eq!(json, serde_json::json!({ "outcome": "rejected" }));
+        assert_eq!(cost_sentence("F03", 0, "--amount"), "");
+    }
+
+    #[test]
+    fn an_absent_or_unreadable_cost_header_is_a_cost_of_0() {
+        use reqwest::header::{HeaderMap, HeaderValue};
+        let mut headers = HeaderMap::new();
+        assert_eq!(header_cost(&headers), 0);
+        headers.insert("TOON-Accumulated-Cost", HeaderValue::from_static("many"));
+        assert_eq!(header_cost(&headers), 0);
+        headers.insert("TOON-Accumulated-Cost", HeaderValue::from_static("101"));
+        assert_eq!(header_cost(&headers), 101);
     }
 
     #[test]

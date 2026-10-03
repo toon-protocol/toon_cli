@@ -681,7 +681,7 @@ fn publish_to(
                 report.text
             );
         }
-        // A complete cost is stated above; without one the flag is named without a figure.
+        // A stated cost is in the text above; without one the flag is named without a figure.
         if report.json["reject"]["code"] == "F03" && report.json["cost"].is_null() {
             report.text = format!(
                 "{} A connector on the path to {relay} refused {amount} base units: state the \

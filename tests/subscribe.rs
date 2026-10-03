@@ -782,7 +782,7 @@ fn a_connector_that_charges_to_forward_rejects_the_price_and_the_text_names_the_
 }
 
 #[test]
-fn the_reject_of_a_charging_connector_is_in_the_json_report_unchanged() {
+fn the_reject_of_a_charging_connector_and_its_cost_are_in_the_json_report() {
     let chain = AnvilChain::start();
     let (near, _mid, _far, relay) = through_a_charging_connector(&chain);
 

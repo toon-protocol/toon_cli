@@ -247,7 +247,8 @@ to someone else's relay is `toon event publish --relay <ws-url> --yes` and needs
 reaches that relay's connector, or it fails with `peering_needed` and pays nothing. It sends
 the relay's price; if a connector in between charges to forward and rejects the write with
 `F03`, read `cost` from the rejected packet's report and state it with `--amount <cost>` (below
-the relay's price is refused); treat `"complete": false` as a floor, not the whole cost.
+the relay's price is refused); treat `"complete": false` as a floor, not the whole cost, and do
+not raise the amount step by step.
 `toon relay subscribe <ws-url> --filter <json> --amount <n> --yes` buys the live feed of another
 relay: a prepaid balance at that relay, with one filter, drawn down for each event it sends.
 The supervisor writes those events into your own relay (ADR 0005). It needs a peering too, and

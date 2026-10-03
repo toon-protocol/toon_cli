@@ -213,8 +213,9 @@ node and the relay may charge to forward the write and rejects any other amount 
 route's price (`F03`). A rejected packet whose reject states a cost above 0 is reported with
 `cost` (the accumulated cost in base units, a decimal string) and `complete` beside `outcome`,
 and the text states the figure as `--amount <cost>`; read the cost from the report. `complete`
-is `false` for an `R01`: the packet stopped at a connector it could not pay, and `cost` is the
-amount to carry to get past that connector, a floor and not the whole cost. A cost of 0 is left
+is `false` for an `R01`: the packet stopped at a connector it could not pay, `cost` is the
+amount to carry to get past that connector, a floor and not the whole cost, and the text says
+so instead of naming `--amount`. A cost of 0 is left
 out. `reject.message` is the reject's own message. Nothing is retried, and the same report is
 given by `toon send`. `--yes` is refused without `--relay`.
 
