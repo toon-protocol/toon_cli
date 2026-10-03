@@ -20,6 +20,10 @@ toon init --network mainnet --accept-anyone-terms
 `toon join <network>` only joins the network `init` was given, and is refused with
 `join_refused`, spending nothing, when the profile names no connector.
 
+An agent node initialised with `--solana` settles on two chains, as may the network's hub. Then
+`toon join <network> --deposit <n> --yes` is refused (`peer_failed`, nothing spent) until you
+name one: add `--chain evm` or `--chain solana`. No chain is chosen for you.
+
 **Sandbox.** It allows plaintext `http://` peers by itself. A hidden agent node cannot reach
 `localhost`, so name the hub at its onion endpoint:
 

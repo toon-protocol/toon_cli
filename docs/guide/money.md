@@ -44,6 +44,11 @@ With `--solana` at `init`, the Solana key also needs the token and 0.01 SOL befo
 | `toon event publish --relay <url> --yes` | The relay's price, or `--amount` |
 | `toon relay subscribe <url> --amount <n> --yes` | Up to `n`, in whole packets |
 
+The three peerings take an optional `--chain evm|solana`. It is needed when your connector and
+the other settle on more than one chain: the connector refuses to choose for you, the command
+fails with `peer_failed` and says to run it again with `--chain`, and nothing is counted
+against the spending limit. `create` applies its one `--chain` to both peerings.
+
 Each states its amount and does nothing without `--yes`: it fails with `not_confirmed` and
 prints what it would have moved. So the safe way to see what a command costs is to run it
 without `--yes`:

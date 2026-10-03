@@ -12,6 +12,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::apps::{self, Origin};
+use crate::cli::Chain;
 use crate::egress::Egress;
 use crate::node::{self, App, Reach, Source, State, ToonApp};
 use crate::operator::{self, PeerAdd, Surface};
@@ -34,6 +35,8 @@ pub struct Create<'a> {
     pub listen: &'a str,
     /// What each of the two channels is opened with, or `None` for no peering.
     pub deposit: Option<u128>,
+    /// The settlement chain both peerings are made on, if named.
+    pub chain: Option<Chain>,
     pub yes: bool,
 }
 
@@ -132,6 +135,7 @@ fn peer(
     from: (&ToonApp, &Surface),
     to: (&ToonApp, &Surface),
     deposit: u128,
+    chain: Option<Chain>,
 ) -> Result<(Value, bool), Error> {
     let url = peer_url(home, to.0, to.1)?;
     let peering = operator::peer_add_on(
@@ -142,6 +146,7 @@ fn peer(
             id: Some(&to.0.name),
             fee: 0,
             max_packet_amount: 0,
+            chain,
         },
     )?;
     let prefix = to.0.address();
@@ -248,40 +253,53 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
                 ((new, &far), (source, &near)),
                 ((source, &near), (new, &far)),
             ] {
-                let (made, deposited) = peer(home, from, to, deposit)?;
+                let (made, deposited) = peer(home, from, to, deposit, create.chain)?;
                 peerings.push(made);
                 deposits += u128::from(deposited);
             }
             Ok(())
         })();
-        let both = peerings.len() == 2;
+        let moved = peerings_moved(deposit, deposits, outcome.as_ref().err());
+        let chain = create
+            .chain
+            .map(|chain| format!(" --chain {}", chain.name()))
+            .unwrap_or_default();
         Ok((
             match outcome {
                 Ok(()) => Ok(created(home, &new, &from, restarted, peerings)),
-                Err(error) => Err(failed(
-                    error.code,
-                    format!(
-                        "The TOON app {} was created, and {} of its 2 peerings were: {} \
-                         `{}` and `toon route add --app` make the rest.",
-                        new.name,
-                        peerings.len(),
-                        error.message,
-                        operator::peer_add_command(
-                            "<connector_url>",
-                            &deposit.to_string(),
-                            " --app <name>"
-                        )
-                    ),
-                )),
+                Err(error) => Err(Error {
+                    nothing_sent: error.nothing_sent,
+                    ..failed(
+                        error.code,
+                        format!(
+                            "The TOON app {} was created, and {} of its 2 peerings were: {} \
+                             `{}` and `toon route add --app` make the rest.",
+                            new.name,
+                            peerings.len(),
+                            error.message,
+                            operator::peer_add_command(
+                                "<connector_url>",
+                                &deposit.to_string(),
+                                &format!(" --app <name>{chain}")
+                            )
+                        ),
+                    )
+                }),
             },
-            // A failed peering may have deposited, so then both stay counted.
-            if both {
-                spending::Moved::Amount(deposit.saturating_mul(deposits))
-            } else {
-                spending::Moved::All
-            },
+            moved,
         ))
     })?
+}
+
+/// What moved of the two deposits `create --deposit` was counted for, when `deposits` of
+/// its peerings say they deposited one and `failure` is what stopped the rest, if anything.
+/// A failed peering may have deposited, so then both stay counted, unless it certainly
+/// failed before paying.
+fn peerings_moved(deposit: u128, deposits: u128, failure: Option<&Error>) -> spending::Moved {
+    match failure {
+        Some(error) if !spending::failed_before_paying(error) => spending::Moved::All,
+        _ => spending::Moved::Amount(deposit.saturating_mul(deposits)),
+    }
 }
 
 /// Write the new TOON app's keys, record it, and start its connector if the agent node
@@ -451,4 +469,35 @@ pub fn destroy(home: &Path, name: &str) -> Result<Report, Error> {
             "Destroyed the TOON app {name}: its connector stopped and its files are gone."
         ),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{failed, peerings_moved};
+    use crate::outcome::{Error, ErrorCode};
+    use crate::spending::Moved;
+
+    #[test]
+    fn a_peering_refused_before_paying_gives_back_what_it_was_counted_for() {
+        let refused = Error {
+            nothing_sent: true,
+            ..failed(ErrorCode::PeerFailed, "refused".into())
+        };
+        assert_eq!(peerings_moved(5, 0, Some(&refused)), Moved::Amount(0));
+        assert_eq!(peerings_moved(5, 1, Some(&refused)), Moved::Amount(5));
+    }
+
+    #[test]
+    fn any_other_failed_peering_stays_counted() {
+        let failure = failed(
+            ErrorCode::PeerFailed,
+            "the deposit is below the minimum".into(),
+        );
+        assert_eq!(peerings_moved(5, 0, Some(&failure)), Moved::All);
+    }
+
+    #[test]
+    fn two_peerings_keep_what_they_deposited() {
+        assert_eq!(peerings_moved(5, 2, None), Moved::Amount(10));
+    }
 }

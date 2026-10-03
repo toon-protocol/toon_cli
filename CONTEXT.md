@@ -92,6 +92,16 @@ _Avoid_: Follow, tail, reading another relay's feed
 The event in which an agent names the keys whose events it wants, signed with its agent identity. It brings no events by itself: it becomes the `authors` of a filter when the agent reads its own relay, or when the operator subscribes with it.
 _Avoid_: Subscription, contacts, following a relay
 
+### Private messages
+
+**Private message**:
+A message only its recipients can read, sent as NIP-17 defines. A relay that holds one sees that a key was sent something and when, not what or by whom.
+_Avoid_: DM, direct message, chat, encrypted event
+
+**Conversation**:
+The private messages exchanged among one set of keys: the sender and every recipient. The same keys always share one conversation; one key more or fewer is a different conversation.
+_Avoid_: Thread (a thread is a note and its replies), chat, room
+
 ### How it is reached
 
 **ILP address**:
@@ -124,5 +134,5 @@ What a connector answers a packet that came without payment: its price for that 
 _Avoid_: Quote, offer
 
 **Probe**:
-A packet sent to learn what a path costs. It is expected to be rejected, pays nothing, and the reject states the summed fees of every connector on the path.
+A packet sent to learn what a path costs. It is expected to be rejected, and the reject states the path's cost: the fee of every connector that forwards it, and the terminating route's charge for the request sent. A probe can cost up to the amount it carries; by default it carries nothing and pays nothing. A probe that stopped at a connector it could not pay states a partial cost, the amount to carry to get past that connector. A probe whose amount covers the path's cost is delivered and paid for, as a send is.
 _Avoid_: Quote, dry run; using "probe" for asking one connector its terms

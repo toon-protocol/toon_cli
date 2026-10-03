@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use crate::node::{Expiry, Options, Reach};
 use crate::outcome::Exit;
@@ -201,6 +201,10 @@ pub struct CreateArgs {
     /// Create no peerings
     #[arg(long)]
     pub no_peer: bool,
+    /// The settlement chain both peerings are made on: needed when the two connectors settle
+    /// on more than one, and never chosen for you
+    #[arg(long, value_enum, requires = "deposit")]
+    pub chain: Option<Chain>,
     /// Agree to the Anyone Protocol's terms, which a hidden service needs
     #[arg(long)]
     pub accept_anyone_terms: bool,
@@ -363,6 +367,23 @@ pub struct SendArgs {
     pub yes: bool,
 }
 
+/// A settlement chain a peering is made on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Chain {
+    Evm,
+    Solana,
+}
+
+impl Chain {
+    /// The string the connector reads as `chain`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Chain::Evm => "evm",
+            Chain::Solana => "solana",
+        }
+    }
+}
+
 #[derive(Debug, Args)]
 pub struct JoinArgs {
     /// The network to join: the one this agent node was initialised for
@@ -371,6 +392,10 @@ pub struct JoinArgs {
     /// What the channel toward the network's connector is opened with, in the token's base units
     #[arg(long)]
     pub deposit: u128,
+    /// The settlement chain to peer on: needed when this connector and the other settle on
+    /// more than one, and never chosen for you
+    #[arg(long, value_enum)]
+    pub chain: Option<Chain>,
     /// Confirm that this command moves money: without it nothing is deposited
     #[arg(long)]
     pub yes: bool,
@@ -405,6 +430,10 @@ pub struct PeerAddArgs {
     /// The most one forwarded packet may carry; the connector's default if omitted
     #[arg(long, default_value_t = 0)]
     pub max_packet_amount: u64,
+    /// The settlement chain to peer on: needed when this connector and the other settle on
+    /// more than one, and never chosen for you
+    #[arg(long, value_enum)]
+    pub chain: Option<Chain>,
     /// Confirm that this command moves money: without it nothing is deposited
     #[arg(long)]
     pub yes: bool,
