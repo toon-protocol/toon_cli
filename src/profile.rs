@@ -44,7 +44,7 @@ impl Profile {
             ),
             Profile::Sandbox => (
                 "http://localhost:8545",
-                "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+                "0x0A867CA0442383c2A89951244B955AA19b615b58",
                 "USDC",
             ),
             // Base's native USDC names itself "USD Coin", not "USDC".
@@ -94,13 +94,28 @@ impl Profile {
         }
     }
 
+    /// Whether the connector peers toward a plain `http://` address without being asked:
+    /// every endpoint of the sandbox is one.
+    pub fn plaintext_peers(self) -> bool {
+        self == Profile::Sandbox
+    }
+
     /// The `/ilp` URL of the connector `toon join` peers toward.
     /// Mainnet has none: no mainnet TOON network exists yet.
     pub fn connector_url(self) -> Option<&'static str> {
         match self {
             Profile::Devnet => Some("https://proxy.relay.devnet.toonprotocol.dev/ilp"),
-            Profile::Sandbox => Some("http://localhost:4100/ilp"),
+            Profile::Sandbox => Some("http://localhost:3200/ilp"),
             Profile::Mainnet => None,
+        }
+    }
+
+    /// The connector an agent node records when `init` names none. The sandbox's hub is on
+    /// `localhost`, which a hidden agent node cannot reach, so it records none there.
+    pub fn default_connector_url(self, hidden: bool) -> Option<&'static str> {
+        match self {
+            Profile::Sandbox if hidden => None,
+            _ => self.connector_url(),
         }
     }
 

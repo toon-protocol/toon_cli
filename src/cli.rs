@@ -298,15 +298,16 @@ impl InitArgs {
             network: self.network,
             evm: Some(evm),
             solana: self.solana.then(|| self.network.solana()),
-            plaintext_peers: self.allow_plaintext_peers,
+            plaintext_peers: self.allow_plaintext_peers || self.network.plaintext_peers(),
             limits: spending::Limits {
                 per_command: self.max_per_command,
                 per_day: self.max_per_day,
             },
-            connector_url: self
-                .connector_url
-                .clone()
-                .or_else(|| self.network.connector_url().map(str::to_owned)),
+            connector_url: self.connector_url.clone().or_else(|| {
+                self.network
+                    .default_connector_url(self.clearnet.is_none())
+                    .map(str::to_owned)
+            }),
             relay_url: self
                 .relay_url
                 .clone()

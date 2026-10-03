@@ -17,6 +17,7 @@ use crate::egress::Egress;
 use crate::funding::GasRefusal;
 use crate::node::{self, ConnectorFiles, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::profile::Profile;
 use crate::spending;
 
 /// How long a read of the operator surface waits for the connector.
@@ -1342,6 +1343,12 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
         ));
     }
     let Some(connector_url) = state.connector_url.clone() else {
+        if state.network == Profile::Sandbox {
+            return Err(failed(
+                ErrorCode::JoinRefused,
+                crate::wallet::SANDBOX_HUB_NOTE.to_owned(),
+            ));
+        }
         return Err(failed(
             ErrorCode::JoinRefused,
             format!(

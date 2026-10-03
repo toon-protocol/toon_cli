@@ -128,6 +128,13 @@ fails with `faucet_unavailable`, and on mainnet the operator funds the addresses
 says so, and `toon join mainnet` fails with `join_refused` until `init` is given
 `--connector-url` (and `--relay-url`). Its chain settings are unchanged.
 
+`sandbox` allows plaintext peers by itself, since every endpoint of the sandbox is a plain
+`http://` one, and its hub is `http://localhost:3200/ilp`. A hidden agent node cannot reach
+`localhost`, so `init --network sandbox` without `--clearnet` and without `--connector-url`
+records no connector, says so, and `toon join sandbox` fails with `join_refused` until `init`
+names the hub: `--connector-url http://<hub>.anyone:3200/ilp` (and
+`--relay-url ws://<hub>.anyone:7100`), or `--clearnet`.
+
 ## Hidden service and clearnet
 
 A new TOON app is a hidden service (ADR 0003): its connector is reachable only at its onion

@@ -19,7 +19,6 @@ step.
 | Step | What happens today | Ticket |
 | --- | --- | --- |
 | 1, the sandbox | Its relays do not sell their feed, hence `feed.yml` and the routes added by hand | infra #53 |
-| 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
 
 ## What it needs
 
@@ -104,8 +103,8 @@ of 1. It appears a few seconds after the relay starts.
 
 ```sh
 export HOME=$E/sandbox
-$E/toon init --network sandbox --accept-anyone-terms --allow-plaintext-peers \
-  --evm-token $USDC --connector-url http://$HUB:3200/ilp --relay-url ws://$HUB:7100 \
+$E/toon init --network sandbox --accept-anyone-terms \
+  --connector-url http://$HUB:3200/ilp --relay-url ws://$HUB:7100 \
   --json > $E/init.json
 jq '.toon_apps[0].onion_endpoint, .wallet.chains.evm[0].address' $E/init.json
 ```
@@ -264,8 +263,8 @@ endpoint and pays its relay:
 
 ```sh
 export HOME=$E/other
-$E/toon init --network sandbox --accept-anyone-terms --allow-plaintext-peers \
-  --evm-token $USDC --connector-url http://$HUB:3200/ilp --relay-url ws://$HUB:7100 \
+$E/toon init --network sandbox --accept-anyone-terms \
+  --connector-url http://$HUB:3200/ilp --relay-url ws://$HUB:7100 \
   --json > $E/other-init.json
 fund $(jq -r '.wallet.chains.evm[0].address' $E/other-init.json) 100000000
 ```
