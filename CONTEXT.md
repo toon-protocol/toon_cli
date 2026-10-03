@@ -112,3 +112,13 @@ _Avoid_: Hidden-service URL, `.onion` address
 
 **Clearnet**:
 Reachable at an ordinary public hostname. Never the default; the operator asks for it explicitly.
+
+### Finding out what it costs
+
+**Terms**:
+What a connector answers a packet that came without payment: its price for that destination, how to pay, and what to send the route where its operator declared it. Terms come from one connector and say nothing of the connectors on the way to it.
+_Avoid_: Quote, offer
+
+**Probe**:
+A packet sent to learn what a path costs. It is expected to be rejected, pays nothing, and the reject states the summed fees of every connector on the path.
+_Avoid_: Quote, dry run; using "probe" for asking one connector its terms
