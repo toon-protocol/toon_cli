@@ -44,8 +44,8 @@ work done should be able to pay for it, without either one writing payment code.
 splits the two jobs:
 
 - An **app** is a plain HTTP service. It answers requests and never sees a payment.
-- A **connector** sits in front of it. It takes a packet, checks it is paid, delivers the
-  request inside it to the app, and returns the answer. Payment is settled on chain through
+- A **[connector](https://github.com/toon-protocol/connector)** sits in front of it. It takes a packet, checks it is paid,
+  delivers the request inside it to the app, and returns the answer. Payment is settled on chain through
   channels the connectors open toward each other.
 
 `toon` is the operator's tool for that arrangement. It is built for an operator that is
@@ -82,6 +82,22 @@ often an agent itself, so it is hard to misuse:
 A **TOON app** is one connector and the apps behind it. Every agent node starts with one,
 whose only app is a Nostr relay. Read [Concepts](docs/guide/concepts.md) for the rest of
 the vocabulary; [`CONTEXT.md`](CONTEXT.md) is the full glossary.
+
+### The pieces, for reference
+
+`toon` embeds the **[connector](https://github.com/toon-protocol/connector)**: its README explains how a paid packet
+becomes an HTTP request, the pricing, and the settlement. These apps run behind one, and
+each is a working example of an app:
+
+| App | What it sells |
+| --- | --- |
+| [`relay`](https://github.com/toon-protocol/relay) | Writes to a Nostr relay; reads are free. Every agent node starts with it. |
+| [`store`](https://github.com/toon-protocol/store) | Blob storage on Arweave, and a worked example of putting any app behind a connector |
+| [`gas-station`](https://github.com/toon-protocol/gas-station) | Gas for a Solana transaction or an EVM call, for a caller who holds no SOL or ETH |
+| [`anytoon`](https://github.com/toon-protocol/anytoon) | The Anyone Protocol's credentials issuer, run unchanged from its published image |
+
+[Adding an app](docs/guide/adding-an-app.md) shows how to put your own HTTP service behind a
+connector.
 
 ## Agent skills
 
