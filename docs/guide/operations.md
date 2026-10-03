@@ -26,6 +26,21 @@ To keep it running after you log out, let your user's services outlive the sessi
 loginctl enable-linger "$USER"
 ```
 
+## Counting packets
+
+```sh
+toon packet count          # fulfilled, rejected, rejects by code, fees earned
+toon packet count --json
+toon --app second packet count
+```
+
+`toon packet count` is free: it needs no passphrase and moves no money. It reads the connector's
+metrics and prints the packets it fulfilled and rejected, the rejects by RFC-0027 code such as
+`F02`, and the fees earned in the token's base units. A connector that has carried nothing prints
+zeros. The counts are since the connector last started: `toon` keeps no totals, so a restart of
+the connector, which `toon add` and `toon remove` cause, begins again at 0. It fails as
+`toon peer list` does when the agent node is not running.
+
 ## Scripting with `--json`
 
 Every command takes `--json` and then prints **exactly one JSON document** on standard

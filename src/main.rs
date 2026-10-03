@@ -227,6 +227,11 @@ fn run() -> ExitCode {
             json,
         )
         .into(),
+        Command::Packet { command } => render(
+            home::resolve().and_then(|home| operator::packet(&home, &command)),
+            json,
+        )
+        .into(),
         Command::Route { command } => render(
             home::resolve().and_then(|home| operator::route(&home, &command)),
             json,

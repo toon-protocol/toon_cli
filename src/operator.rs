@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
-use crate::cli::{Chain, ChannelCommand, JoinArgs, PeerCommand, RouteCommand};
+use crate::cli::{Chain, ChannelCommand, JoinArgs, PacketCommand, PeerCommand, RouteCommand};
 use crate::control;
 use crate::egress::Egress;
 use crate::funding::GasRefusal;
@@ -106,6 +106,24 @@ fn read(surface: &Surface, path: &str) -> Result<Vec<Value>, Error> {
         .and_then(|client| client.get(&url).bearer_auth(token.trim()).send())
         .and_then(|response| response.error_for_status())
         .and_then(|response| response.json())
+        .map_err(|error| failed(ErrorCode::ConnectorFailed, format!("GET {url}: {error}.")))
+}
+
+/// A read of the connector's operator surface that answers text: `path`, with the bearer token.
+fn read_text(surface: &Surface, path: &str) -> Result<String, Error> {
+    let token = std::fs::read_to_string(&surface.bearer_token).map_err(|source| {
+        failed(
+            ErrorCode::Io,
+            format!("{}: {source}.", surface.bearer_token.display()),
+        )
+    })?;
+    let url = format!("{}{path}", surface.url);
+    reqwest::blocking::Client::builder()
+        .timeout(PATIENCE)
+        .build()
+        .and_then(|client| client.get(&url).bearer_auth(token.trim()).send())
+        .and_then(|response| response.error_for_status())
+        .and_then(|response| response.text())
         .map_err(|error| failed(ErrorCode::ConnectorFailed, format!("GET {url}: {error}.")))
 }
 
@@ -680,6 +698,104 @@ pub fn peer_list(home: &Path) -> Result<Report, Error> {
         json: json!({ "peers": peers }),
         text: lines.join("\n"),
     })
+}
+
+/// The packet counters of a connector, read from its Prometheus text.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PacketCounts {
+    fulfilled: u128,
+    rejected: u128,
+    /// Rejects by RFC-0027 code.
+    rejects: std::collections::BTreeMap<String, u128>,
+    fees_earned: u128,
+}
+
+/// A sample's value as a whole number; Prometheus text may write one as a float.
+fn whole(value: &str) -> Option<u128> {
+    value.parse().ok().or_else(|| {
+        let float: f64 = value.parse().ok()?;
+        (float.is_finite() && float >= 0.0 && float.fract() == 0.0).then_some(float as u128)
+    })
+}
+
+/// The value of the label `name` in a sample's `{...}` part.
+fn label_value<'a>(labels: &'a str, name: &str) -> Option<&'a str> {
+    let rest = labels.split(&format!("{name}=\"")).nth(1)?;
+    rest.split('"').next()
+}
+
+/// Read the packet counters out of Prometheus text. A series that is absent is zero, and a
+/// line this does not know is ignored.
+fn parse_packet_counts(text: &str) -> PacketCounts {
+    let mut counts = PacketCounts::default();
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some((series, value)) = line.rsplit_once(char::is_whitespace) else {
+            continue;
+        };
+        let Some(value) = whole(value) else { continue };
+        let (name, labels) = series.split_once('{').unwrap_or((series, ""));
+        match name.trim() {
+            "toon_packets_total" => match label_value(labels, "outcome") {
+                Some("fulfill") => counts.fulfilled += value,
+                Some("reject") => counts.rejected += value,
+                _ => {}
+            },
+            "toon_packets_rejected_total" => {
+                if let Some(code) = label_value(labels, "code") {
+                    *counts.rejects.entry(code.to_owned()).or_default() += value;
+                }
+            }
+            "toon_fees_earned_total" => counts.fees_earned += value,
+            _ => {}
+        }
+    }
+    counts
+}
+
+/// `toon packet count`: the packets the connector has carried since it last started.
+pub fn packet_count(home: &Path) -> Result<Report, Error> {
+    let surface = surface(home)?;
+    let text = read_text(&surface, "/metrics")?;
+    let counts = parse_packet_counts(&text);
+    let app = State::load(home)?
+        .and_then(|state| {
+            crate::apps::toon_app(&state, TARGET.get().map(String::as_str))
+                .ok()
+                .map(|app| app.name.clone())
+        })
+        .unwrap_or_default();
+    let mut lines = vec![
+        "Counted since the connector last started; a restart begins again at 0.".to_owned(),
+        format!("Packets fulfilled: {}", counts.fulfilled),
+        format!("Packets rejected: {}", counts.rejected),
+    ];
+    lines.extend(
+        counts
+            .rejects
+            .iter()
+            .map(|(code, count)| format!("  {code}: {count}")),
+    );
+    lines.push(format!("Fees earned: {} base units", counts.fees_earned));
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({
+            "toon_app": app,
+            "packets": { "fulfilled": counts.fulfilled, "rejected": counts.rejected },
+            "rejects": counts.rejects,
+            "fees_earned": counts.fees_earned,
+        }),
+        text: lines.join("\n"),
+    })
+}
+
+/// `toon packet`.
+pub fn packet(home: &Path, command: &PacketCommand) -> Result<Report, Error> {
+    match command {
+        PacketCommand::Count => packet_count(home),
+    }
 }
 
 /// `segment`, checked to be one path segment the connector reads as written: a peering's
@@ -1588,6 +1704,7 @@ mod tests {
         peer_and_route_on, Answer, PeerAdd, Surface, AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST,
         PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD, UNREAD_TIMEOUT,
     };
+    use super::{parse_packet_counts, PacketCounts};
     use crate::cli::Chain;
     use crate::outcome::ErrorCode;
     use std::io::{Read, Write};
@@ -2102,5 +2219,38 @@ mod tests {
     #[test]
     fn the_wait_for_a_packet_outlasts_its_expiry() {
         assert!(packet_wait() > PACKET_EXPIRY);
+    }
+    #[test]
+    fn text_with_no_packet_series_counts_zero() {
+        let text = "# TYPE toon_fees_earned_total counter\ntoon_fees_earned_total 0\ntoon_exposure 0\ntoon_settlement_total 0\n";
+        assert_eq!(parse_packet_counts(text), PacketCounts::default());
+    }
+
+    #[test]
+    fn text_with_both_outcomes_and_several_codes_is_counted() {
+        let text = "toon_packets_total{outcome=\"fulfill\"} 12\n\
+toon_packets_total{outcome=\"reject\"} 3\n\
+toon_packets_rejected_total{code=\"F02\"} 2\n\
+toon_packets_rejected_total{code=\"T04\"} 1\n\
+toon_fees_earned_total 40\n";
+        let counts = parse_packet_counts(text);
+        assert_eq!(
+            (counts.fulfilled, counts.rejected, counts.fees_earned),
+            (12, 3, 40)
+        );
+        assert_eq!(counts.rejects.get("F02"), Some(&2));
+        assert_eq!(counts.rejects.get("T04"), Some(&1));
+        assert_eq!(counts.rejects.len(), 2);
+    }
+
+    #[test]
+    fn an_unknown_metric_is_ignored() {
+        let text = "toon_new_thing_total{kind=\"x\"} 9\ntoon_packets_total{outcome=\"fulfill\"} 1\nnot a metric\n";
+        let counts = parse_packet_counts(text);
+        assert_eq!(
+            (counts.fulfilled, counts.rejected, counts.fees_earned),
+            (1, 0, 0)
+        );
+        assert!(counts.rejects.is_empty());
     }
 }
