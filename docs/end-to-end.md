@@ -20,13 +20,12 @@ step.
 | --- | --- | --- |
 | 1, the sandbox | Its relays do not sell their feed, hence `feed.yml` and the routes added by hand | infra #53 |
 | 2, `init` | The sandbox profile has the wrong token and connector, hence the three flags | #67 |
-| 3, `join` | `unfunded` asks for 0.0001 ETH and the deposit costs about 0.0004; with too little the `join` fails with `peer_failed`, "out of gas" | #101 |
 
 ## What it needs
 
 - Docker, `jq`, `curl`, and Foundry's `cast`.
 - The `infra` checkout beside this one, set up once with `make setup` in `infra/sandbox`.
-- For the last step of part 3, about 0.001 Base Sepolia ETH from a public faucet.
+- For the last step of part 3, at least 0.001 Base Sepolia ETH from a public faucet.
 
 The run never touches your own agent node: every command below runs with `HOME` set to a
 directory made for the run.
@@ -475,8 +474,7 @@ over `wss://` through the overlay. The `join` is refused with `unfunded`, naming
 settlement address and the ETH it needs for gas, and the day's spending is unchanged.
 
 The devnet faucet sends no ETH, and a connector pays the gas of its own deposit. Send
-about 0.001 Base Sepolia ETH to that address from a public faucet (the 0.0001 the message
-names is too little, #101), and join:
+at least 0.001 Base Sepolia ETH to that address from a public faucet, and join:
 
 ```sh
 $E/toon join devnet --deposit 1000000 --yes --json
@@ -487,10 +485,6 @@ $E/toon limit show --json
 
 **Expect** a peering `devnet`, a route for `g.toon` over it, and an open channel of
 1000000, with `deposited: true` and the day's spending down by 1000000.
-
-A `join` that fails with `peer_failed` and "out of gas" found too little ETH on the
-settlement address. Nothing was sent and the attempt still takes 1000000 off the day's
-spending, so send the settlement address more and run the same `join` again (#101).
 
 The public RPC can answer the connector's read after the deposit from before the
 deposit's block. The connector then refuses the peering, and `join` repeats it for a few
