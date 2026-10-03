@@ -74,6 +74,11 @@ pub enum Command {
         #[command(subcommand)]
         command: LimitCommand,
     },
+    /// Count the packets the connector has carried, free: needs no passphrase
+    Packet {
+        #[command(subcommand)]
+        command: PacketCommand,
+    },
     /// Manage the connector's forwarding routes
     Route {
         #[command(subcommand)]
@@ -728,6 +733,13 @@ pub enum WalletCommand {
         /// The backup `wallet backup` wrote
         file: PathBuf,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PacketCommand {
+    /// Print how many packets the connector fulfilled and rejected, the rejects by code and the
+    /// fees earned, since it last started. Free: needs no passphrase and moves no money
+    Count,
 }
 
 #[derive(Debug, Subcommand)]
