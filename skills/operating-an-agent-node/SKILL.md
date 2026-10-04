@@ -247,7 +247,7 @@ this order; the first three steps pay nothing.
    counted against the spending limit as a send is), and a probe that is fulfilled has delivered
    the request and paid for it. A route that charges nothing is fulfilled by an amount-0 probe,
    so the app receives the request: a probe that pays nothing can still deliver. A reject with no
-   `cost` (no route, a peer that could not be reached) states none; do not guess one.
+   `cost` (no route, a peer that could not be reached and the like) states none; do not guess one.
 4. Pay with a request: `toon send <address> --amount <n> --seal-to <ilp-url> --method <method>
    --path <path> --body <file> --yes` (see "Paying an app"). Never call the app on a loopback
    address: that is unpaid work, not a payment.

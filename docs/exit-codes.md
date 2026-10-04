@@ -40,7 +40,7 @@ supervisor, and `toon status` reports how many times.
 report. It exits 1 when the supervisor or a connector is not running, and `toon down` exits 0
 whether or not anything was running, unless `systemctl` would not stop the unit. `toon send` exits 1 when the packet was rejected, and still prints its report: the
 reject code is in `reject.code`, and `paid` is what the packet cost (see Spending limit). It
-exits 1 too, with `"outcome": "wrong_fulfilment"`, when the packet was fulfilled with a fulfilment that does not match it. `toon probe` sends a packet as `toon send` does and exits 0 on a reject that states a cost, complete or partial (`cost` and `complete` in the report, `cost` possibly `"0"`), and on a fulfil; it exits 1 on a reject that states none (`F00`, `F01`, `F02`, `R00`, `T00`, `T01`, `T05`), when the answer was not understood or did not come, and on a wrong fulfilment. It has no exit code or error code of its own. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
+exits 1 too, with `"outcome": "wrong_fulfilment"`, when the packet was fulfilled with a fulfilment that does not match it. `toon probe` sends a packet as `toon send` does and exits 0 on a reject that states a cost, complete or partial (`cost` and `complete` in the report, `cost` possibly `"0"`), and on a fulfil; it exits 1 on a reject that states none (the connector's rule says which: no route, a peer that could not be reached and the like), when the answer was not understood or did not come, and on a wrong fulfilment. It has no exit code or error code of its own. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
 and exits 3.
 
 ## Errors

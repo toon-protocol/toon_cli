@@ -169,7 +169,8 @@ fn a_probe_of_a_route_its_direct_peer_terminates_states_the_price_and_pays_what_
     ]);
     assert_eq!(text.exit_code, 0);
     assert!(
-        text.stdout.contains(&format!("`--amount {PRICE}`")),
+        text.stdout
+            .contains(&format!("`toon send --amount {PRICE}`")),
         "{}",
         text.stdout
     );
@@ -327,12 +328,14 @@ fn a_probe_on_a_machine_with_no_agent_node_says_so() {
 }
 
 #[test]
-fn a_probe_sealed_to_an_overlay_name_forms_its_own_request_and_reports_the_cost() {
+fn a_probe_from_a_hidden_agent_node_sealed_to_a_clearnet_name_forms_its_own_request() {
     let chain = AnvilChain::start();
-    // The name stands for a port that forwards to the far connector once it listens.
+    // The name stands for a port that forwards to the far connector once it listens. It is
+    // not an onion endpoint, so the connector's `send` would dial it directly: `toon` forms
+    // the request itself and sends it through the overlay's proxy.
     let forwarder = TcpListener::bind("127.0.0.1:0").expect("bind");
     let names = format!(
-        "far.anyone:7100={}",
+        "far.example:7100={}",
         forwarder.local_addr().expect("address")
     );
     let near = node_with(&chain, Some(&names));
@@ -350,7 +353,7 @@ fn a_probe_sealed_to_an_overlay_name_forms_its_own_request_and_reports_the_cost(
             "probe",
             SUBSCRIBE,
             "--seal-to",
-            "http://far.anyone:7100/ilp",
+            "http://far.example:7100/ilp",
             "--amount",
             "1",
             "--yes",
@@ -413,6 +416,9 @@ fn node_with(chain: &AnvilChain, names: Option<&str>) -> Node {
         ]),
     };
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    if names.is_some() {
+        assert_eq!(init.json()["toon_apps"][0]["reach"], "hidden");
+    }
     let shown = machine.toon_with(&["wallet", "show", "--json"], |command| {
         command.env("TOON_PASSPHRASE", support::PASSPHRASE);
     });
@@ -527,7 +533,7 @@ fn an_amount_0_probe_through_a_connector_that_charges_to_forward_gives_a_partial
         text.stdout
     );
     assert!(
-        text.stdout.contains(&format!("--amount {FORWARD}")),
+        text.stdout.contains(&format!("`--amount {FORWARD} --yes`")),
         "{}",
         text.stdout
     );

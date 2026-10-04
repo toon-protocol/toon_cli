@@ -1255,9 +1255,10 @@ pub fn cost_sentence(code: &str, cost: u128, flag: &str) -> String {
     }
 }
 
-/// [`cost_sentence`] for a probe: a cost of 0 is said too.
-pub fn probe_cost_sentence(code: &str, cost: u128, flag: &str) -> String {
-    stated_cost_sentence(code, cost, flag, true)
+/// [`cost_sentence`] for a probe: a cost of 0 is said too, a complete cost names the amount
+/// to state on `toon send`, and a partial one the amount to probe again with.
+pub fn probe_cost_sentence(code: &str, cost: u128) -> String {
+    stated_cost_sentence(code, cost, "--amount", true)
 }
 
 fn stated_cost_sentence(code: &str, cost: u128, flag: &str, probe: bool) -> String {
@@ -1265,13 +1266,17 @@ fn stated_cost_sentence(code: &str, cost: u128, flag: &str, probe: bool) -> Stri
         connector_cli::CostReading::NoAnswer => String::new(),
         connector_cli::CostReading::Partial if probe => format!(
             " The probe stopped at a connector it could not pay: {cost} base units is the \
-             amount to carry to get past it, not the whole cost. Probe again with `{flag} {cost}`."
+             amount to carry to get past it, not the whole cost. Probe again with \
+             `{flag} {cost} --yes`, which spends it."
         ),
         connector_cli::CostReading::Partial => format!(
             " The packet stopped at a connector it could not pay: {cost} base units is the amount \
              to carry to get past it, not the whole cost."
         ),
         connector_cli::CostReading::Complete if cost == 0 => " The path costs nothing.".to_owned(),
+        connector_cli::CostReading::Complete if probe => {
+            format!(" The path costs {cost} base units: state `toon send {flag} {cost}`.")
+        }
         connector_cli::CostReading::Complete => {
             format!(" The path costs {cost} base units: state `{flag} {cost}`.")
         }
@@ -1674,7 +1679,7 @@ fn send_packet(
                     } else {
                         Exit::Failure
                     },
-                    probe_cost_sentence(&code, cost, "--amount"),
+                    probe_cost_sentence(&code, cost),
                 )
             } else {
                 add_cost(&mut json, &code, cost);
@@ -2052,7 +2057,7 @@ mod tests {
         add_probe_cost(&mut json, "T01", 50);
         assert_eq!(json, serde_json::json!({ "outcome": "rejected" }));
         assert_eq!(cost_sentence("F02", 50, "--amount"), "");
-        assert_eq!(probe_cost_sentence("F02", 50, "--amount"), "");
+        assert_eq!(probe_cost_sentence("F02", 50), "");
     }
 
     #[test]
@@ -2061,7 +2066,15 @@ mod tests {
         add_probe_cost(&mut json, "F03", 0);
         assert_eq!(json["cost"], "0");
         assert_eq!(json["complete"], true);
-        assert!(probe_cost_sentence("F03", 0, "--amount").contains("costs nothing"));
+        assert!(probe_cost_sentence("F03", 0).contains("costs nothing"));
+    }
+
+    #[test]
+    fn a_probe_names_the_send_for_a_complete_cost_and_the_probe_again_for_a_partial_one() {
+        assert!(probe_cost_sentence("F03", 1000).contains("`toon send --amount 1000`"));
+        let partial = probe_cost_sentence("R01", 1100);
+        assert!(partial.contains("`--amount 1100 --yes`"), "{partial}");
+        assert!(partial.contains("not the whole cost"), "{partial}");
     }
 
     #[test]
