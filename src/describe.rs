@@ -55,6 +55,7 @@ pub fn published_addresses(egress: &Egress, url: &str) -> Result<Vec<String>, Er
         .filter(|address| !address.is_empty())
         .map(str::to_owned)
         .collect();
+    addresses.sort();
     addresses.dedup();
     Ok(addresses)
 }

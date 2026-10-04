@@ -294,7 +294,7 @@ pub fn subscribe(
                 operator::peer_add_command(&terms.connector_url, &paid.to_string(), ""),
                 terms.address
             ),
-        )?);
+        ));
     }
     if !yes {
         return Err(Error {

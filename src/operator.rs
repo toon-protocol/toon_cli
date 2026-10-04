@@ -370,27 +370,23 @@ pub fn peering_toward(home: &Path, connector_url: &str) -> Result<Option<String>
 
 /// The `peering_needed` error of a command whose packet to `address` no route forwards.
 /// `without_peering` is its message when no peering reaches `connector_url`; when one does,
-/// the message asks only for a route over it.
+/// the message asks only for a route over it. A peering that cannot be looked up is not
+/// recognised, so the lookup never changes the error.
 pub fn peering_needed(
     home: &Path,
     address: &str,
     connector_url: &str,
     without_peering: String,
-) -> Result<Error, Error> {
-    let message = match peering_toward(home, connector_url)? {
-        Some(id) => format!(
+) -> Error {
+    let message = match peering_toward(home, connector_url) {
+        Ok(Some(id)) => format!(
             "No route of this agent node forwards {address}, but its peering {id} already \
              reaches {connector_url}: no new deposit is needed. Run \
              `toon route add {address} --peer {id}`."
         ),
-        None => without_peering,
+        Ok(None) | Err(_) => without_peering,
     };
-    Ok(Error {
-        nothing_sent: false,
-        unanswered: None,
-        code: ErrorCode::PeeringNeeded,
-        message,
-    })
+    failed(ErrorCode::PeeringNeeded, message)
 }
 
 /// A channel's amount as the connector reports it, which is absent while it is opening or
@@ -1825,15 +1821,16 @@ fn route_published(
     let by_hand = |what: String| {
         format!(" {what} Add a route by hand with `toon route add <address> --peer {name}`.")
     };
-    let egress = crate::egress::Egress::of_state(home, state);
+    let egress = Egress::of_state(home, state);
     let mut addresses = match crate::describe::published_addresses(&egress, connector_url) {
         Ok(addresses) => addresses,
         Err(error) => {
             return (
                 forwarded,
                 by_hand(format!(
-                    "The connector's own addresses were not routed: its self-description could not be read ({}).",
-                    error.message
+                    "The connector's own addresses were not routed: its self-description \
+                     could not be read ({}).",
+                    error.message.trim_end_matches('.')
                 )),
             )
         }

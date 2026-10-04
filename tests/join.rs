@@ -323,7 +323,7 @@ fn a_join_forwards_the_addresses_the_connector_publishes_outside_the_network_pre
         "g.drew.inbox.quote is covered by g.drew.inbox"
     );
     // The network's app at an address outside `g.toon` is paid with no `route add`.
-    let relay = relay_document(&network, "g.drew.inbox");
+    let relay = relay_document(&format!("http://{}/ilp", network.address), "g.drew.inbox");
     let published = agent.machine.toon_with(
         &[
             "event", "publish", "--relay", &relay, "--kind", "1", "--yes", "--json",
@@ -339,11 +339,11 @@ fn a_join_forwards_the_addresses_the_connector_publishes_outside_the_network_pre
     );
 }
 
-/// A relay's information document naming `network`'s connector as where `address` is paid.
+/// A relay's information document naming the connector at `url` as where `address` is paid.
 /// Returns the relay's `ws://` URL.
-fn relay_document(network: &Node, address: &str) -> String {
+fn relay_document(url: &str, address: &str) -> String {
     use std::io::{Read, Write};
-    let url = format!("http://{}/ilp", network.address);
+    let url = url.to_owned();
     let body = serde_json::json!({ "name": "relay", "toon": {
         "ilp_address": address,
         "connector_url": url,
@@ -405,6 +405,41 @@ fn a_join_whose_connector_publishes_only_the_network_prefix_adds_one_route() {
     );
     assert_eq!(forwarding_prefixes(&agent), ["g.toon"]);
 }
+
+#[test]
+fn a_joined_node_asked_to_pay_an_unrouted_address_of_its_network_is_asked_only_for_a_route() {
+    let chain = AnvilChain::start();
+    let network = node_on(&chain, None);
+    app_at(&network, "g.drew.inbox");
+    let connector = publishing_also(&network.address, Some(&["g.drew.inbox"]));
+    let agent = node_on(&chain, Some((&connector, "ws://127.0.0.1:7100")));
+
+    let joined = join_as(&agent, &[]);
+
+    assert!(
+        joined
+            .stdout
+            .contains("forwarding g.toon, g.drew.inbox to it"),
+        "{}",
+        joined.stdout
+    );
+    // The relay names the connector the node joined, at an address no route forwards.
+    let relay = relay_document(&connector, "g.other.relay");
+    let published = agent.machine.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--yes", "--json",
+    ]);
+    let error = published.json()["error"].clone();
+    assert_eq!(error["code"], "peering_needed", "{error}");
+    assert_eq!(published.exit_code, 1);
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.contains("toon route add g.other.relay --peer devnet"),
+        "{message}"
+    );
+    assert!(!message.contains("peer add"), "{message}");
+    assert!(!message.contains("--deposit"), "{message}");
+}
+
 /// A listener in front of the connector at `upstream` that passes every request through,
 /// and adds `extra` to the `ilpAddresses` of its self-description. Returns its `/ilp` URL.
 fn publishing_also(upstream: &str, extra: Option<&[&str]>) -> String {

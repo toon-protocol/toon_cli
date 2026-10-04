@@ -637,7 +637,7 @@ fn publish_to(
                 operator::peer_add_command(&edge.connector_url, "<amount>", ""),
                 edge.ilp_address
             ),
-        )?);
+        ));
     }
     if !yes {
         return Err(Error {

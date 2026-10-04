@@ -278,7 +278,7 @@ fn send_to(home: &Path, message: &Message, relay: &str, yes: bool) -> Result<Rep
                 operator::peer_add_command(&edge.connector_url, "<amount>", ""),
                 edge.ilp_address
             ),
-        )?);
+        ));
     }
     if !yes {
         return Err(Error {
