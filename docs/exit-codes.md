@@ -40,7 +40,7 @@ supervisor, and `toon status` reports how many times.
 report. It exits 1 when the supervisor or a connector is not running, and `toon down` exits 0
 whether or not anything was running, unless `systemctl` would not stop the unit. `toon send` exits 1 when the packet was rejected, and still prints its report: the
 reject code is in `reject.code`, and `paid` is what the packet cost (see Spending limit). It
-exits 1 too, with `"outcome": "wrong_fulfilment"`, when the packet was fulfilled with a fulfilment that does not match it. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
+exits 1 too, with `"outcome": "wrong_fulfilment"`, when the packet was fulfilled with a fulfilment that does not match it. `toon probe` sends a packet as `toon send` does and exits 0 on a reject that states a cost, complete or partial (`cost` and `complete` in the report, `cost` possibly `"0"`), and on a fulfil; it exits 1 on a reject that states none (`F00`, `F01`, `F02`, `R00`, `T00`, `T01`, `T05`), when the answer was not understood or did not come, and on a wrong fulfilment. It has no exit code or error code of its own. On a machine with no agent node, `toon status` prints `{"home": "<path>", "agent_node": null}`
 and exits 3.
 
 ## Errors
@@ -332,7 +332,9 @@ a voucher that has not landed. It never removes the last TOON app (`last_toon_ap
 ## The spending limit
 
 Every command that moves money (`toon send`, `toon peer add`, `toon join`) states its amount and needs
-`--yes`. The amount is checked against the spending limit before the command runs: at most
+`--yes`. `toon probe` moves money only for an amount: with the default amount of 0 it needs no `--yes`, is
+not checked against the limits and counts nothing against the day, and its report carries `paid: 0`; with
+any other amount it is counted as `toon send` is, by what the outbound channels moved by. The amount is checked against the spending limit before the command runs: at most
 `--max-per-command` for one command, and `--max-per-day` for the commands of one UTC day
 together, both in the token's base units, set at `toon init` (defaults 10000000 and
 100000000). A packet that was rejected is counted by what the watermarks of the agent node's

@@ -1271,9 +1271,7 @@ fn stated_cost_sentence(code: &str, cost: u128, flag: &str, probe: bool) -> Stri
             " The packet stopped at a connector it could not pay: {cost} base units is the amount \
              to carry to get past it, not the whole cost."
         ),
-        connector_cli::CostReading::Complete if cost == 0 => {
-            " The path costs nothing.".to_owned()
-        }
+        connector_cli::CostReading::Complete if cost == 0 => " The path costs nothing.".to_owned(),
         connector_cli::CostReading::Complete => {
             format!(" The path costs {cost} base units: state `{flag} {cost}`.")
         }
@@ -1610,7 +1608,16 @@ pub fn probe(
     target: &str,
     body: Option<&Path>,
 ) -> Result<Report, Error> {
-    send_packet(home, destination, amount, seal_to, method, target, body, true)
+    send_packet(
+        home,
+        destination,
+        amount,
+        seal_to,
+        method,
+        target,
+        body,
+        true,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1851,9 +1858,10 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        add_cost, answer, before_sending, cost_sentence, header_cost, packet_wait, peer_add_on,
-        peer_and_route_on, Answer, PeerAdd, Surface, AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST,
-        PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD, UNREAD_TIMEOUT,
+        add_cost, add_probe_cost, answer, before_sending, cost_sentence, header_cost, packet_wait,
+        peer_add_on, peer_and_route_on, probe_cost_sentence, Answer, PeerAdd, Surface,
+        AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD,
+        UNREAD_TIMEOUT,
     };
     use super::{parse_packet_counts, PacketCounts};
     use crate::cli::Chain;
@@ -2035,6 +2043,25 @@ mod tests {
         add_cost(&mut json, "F03", 0);
         assert_eq!(json, serde_json::json!({ "outcome": "rejected" }));
         assert_eq!(cost_sentence("F03", 0, "--amount"), "");
+    }
+
+    #[test]
+    fn a_reject_that_states_no_cost_carries_none_whatever_figure_rode_on_it() {
+        let mut json = serde_json::json!({ "outcome": "rejected" });
+        add_cost(&mut json, "F02", 50);
+        add_probe_cost(&mut json, "T01", 50);
+        assert_eq!(json, serde_json::json!({ "outcome": "rejected" }));
+        assert_eq!(cost_sentence("F02", 50, "--amount"), "");
+        assert_eq!(probe_cost_sentence("F02", 50, "--amount"), "");
+    }
+
+    #[test]
+    fn a_probe_states_a_cost_of_0_and_says_the_path_costs_nothing() {
+        let mut json = serde_json::json!({ "outcome": "rejected" });
+        add_probe_cost(&mut json, "F03", 0);
+        assert_eq!(json["cost"], "0");
+        assert_eq!(json["complete"], true);
+        assert!(probe_cost_sentence("F03", 0, "--amount").contains("costs nothing"));
     }
 
     #[test]
