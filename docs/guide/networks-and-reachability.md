@@ -18,7 +18,9 @@ toon init --network mainnet --accept-anyone-terms
 | `mainnet` | Real funds | None | Drew's node (ILP address `g.drew`, relay `g.drew.relay`); name another with `--connector-url` and `--relay-url` at `init` |
 
 `toon join <network>` only joins the network `init` was given, and is refused with
-`join_refused`, spending nothing, when this agent node records no connector for it.
+`join_refused`, spending nothing, when this agent node records no connector for it. It
+forwards `g.toon` and every other address the network's connector publishes in its
+self-description (the mainnet node's `g.drew.*`) over the new peering.
 
 An agent node initialised with `--solana` settles on two chains, as may the network's hub. Then
 `toon join <network> --deposit <n> --yes` is refused (`peer_failed`, nothing spent) until you

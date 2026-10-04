@@ -42,6 +42,23 @@ fn describe(egress: &Egress, url: String) -> Result<Report, Error> {
     })
 }
 
+/// The addresses the connector at `url` publishes in its self-description: the list
+/// `ilpAddresses` and the single `ilpAddress`, either or both.
+pub fn published_addresses(egress: &Egress, url: &str) -> Result<Vec<String>, Error> {
+    let description = fetch(egress, url)?;
+    let mut addresses: Vec<String> = description["ilpAddresses"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .chain(description.get("ilpAddress"))
+        .filter_map(Value::as_str)
+        .filter(|address| !address.is_empty())
+        .map(str::to_owned)
+        .collect();
+    addresses.dedup();
+    Ok(addresses)
+}
+
 fn fetch(egress: &Egress, url: &str) -> Result<Value, Error> {
     let response = egress
         .client(url, PATIENCE)?

@@ -267,18 +267,18 @@ fn send_to(home: &Path, message: &Message, relay: &str, yes: bool) -> Result<Rep
     let count = message.recipients.len() as u128;
     let total = u128::from(price) * count;
     if !operator::forwards(home, &edge.ilp_address)? {
-        return Err(Error {
-            nothing_sent: false,
-            unanswered: None,
-            code: ErrorCode::PeeringNeeded,
-            message: format!(
+        return Err(operator::peering_needed(
+            home,
+            &edge.ilp_address,
+            &edge.connector_url,
+            format!(
                 "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
                  needed: run `{}` and then `toon route add {} --peer <id>`.",
                 edge.ilp_address,
                 operator::peer_add_command(&edge.connector_url, "<amount>", ""),
                 edge.ilp_address
             ),
-        });
+        )?);
     }
     if !yes {
         return Err(Error {

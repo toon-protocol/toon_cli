@@ -37,8 +37,10 @@ toon event publish --kind 1 --content "hi" --relay ws://bob…anyone:7100 --yes 
 connector's seal key and its price), seals the write to that key and pays the price over
 one of your peerings. Two things can stop it before anything is paid:
 
-- `peering_needed`: none of your peerings reaches that relay's connector. The message prints
-  the `toon peer add … --yes` and `toon route add` to run ([Peering](peering.md)).
+- `peering_needed`: no route forwards the relay's address. If none of your peerings reaches
+  that relay's connector, the message prints the `toon peer add … --yes` and `toon route add`
+  to run; if one does, it prints only the `toon route add … --peer <id>`, and no new deposit
+  is needed ([Peering](peering.md)).
 - `relay_not_payable`: the relay does not say how it is paid.
 
 If a connector on the way charges to forward, it rejects the write with `F03`. State the

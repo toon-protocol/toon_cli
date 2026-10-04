@@ -781,3 +781,48 @@ fn a_publish_the_connector_does_not_answer_reports_its_cost_and_its_event() {
         text.stderr
     );
 }
+
+/// Peer `near` toward `far` without naming the peering, so its id is the label `peer add`
+/// derives from the URL. Returns that id.
+fn peer_without_route(near: &Node, far: &Node) -> String {
+    let peered = near.toon(&[
+        "peer",
+        "add",
+        &far.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+    ]);
+    assert_eq!(peered.exit_code, 0, "{}{}", peered.stdout, peered.stderr);
+    let peers = near.toon(&["peer", "list", "--json"]).json();
+    peers["peers"][0]["id"].as_str().expect("an id").to_owned()
+}
+
+#[test]
+fn with_a_peering_toward_the_connector_the_command_asks_only_for_a_route() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let relay = information_document(&far);
+    let id = peer_without_route(&near, &far);
+
+    let run = near.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--yes", "--json",
+    ]);
+
+    let error = run.json()["error"].clone();
+    assert_eq!(error["code"], "peering_needed", "{error}");
+    assert_eq!(run.exit_code, 1);
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.contains(&format!(
+            "toon route add {} --peer {id}",
+            far.machine.relay_prefix()
+        )),
+        "{message}"
+    );
+    assert!(!message.contains("peer add"), "{message}");
+    assert!(!message.contains("--deposit"), "{message}");
+    let peers = near.toon(&["peer", "list", "--json"]).json();
+    assert_eq!(peers["peers"].as_array().map(Vec::len), Some(1));
+}

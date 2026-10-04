@@ -117,7 +117,7 @@ Change it with `toon` commands, not by hand. An edited `limits.json` stops every
 | `not_confirmed` | The command moves money; read the amount, then add `--yes` |
 | `confirmation_required` | The command restarts a connector; add `--yes` when that is fine |
 | `spending_limit` | Report it, or have the passphrase holder run `toon limit set` |
-| `peering_needed` | Run the `peer add` and `route add` the message prints |
+| `peering_needed` | Run the `peer add` (if the message prints one) and `route add` the message prints |
 | `overlay_unavailable` | The Anyone network did not carry: try again later |
 | `describe_failed` | The connector at that `/ilp` URL gave no self-description: check the URL, or try again later |
 | `connector_failed`, `app_failed` | `toon logs <name>` |

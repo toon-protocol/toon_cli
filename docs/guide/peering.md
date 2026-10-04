@@ -34,8 +34,14 @@ everything on the network:
 ```sh
 toon join devnet --deposit 1000000 --yes
 toon peer list        # a peering labelled devnet
-toon route list       # a route for g.toon over it
+toon route list       # a route for g.toon over it, and one for each address the
+                      # connector publishes that g.toon does not cover
 ```
+
+`join` reads the connector's self-description and forwards its published addresses too, at
+price 0 and inside the one deposit: the default mainnet node answers at `g.drew.*`, not under
+`g.toon`. The report lists every forwarded prefix. If the self-description cannot be read, the
+join still succeeds with `g.toon` and says what was not routed; add that route by hand.
 
 You can join only the network `init` was given, and only once. `join_refused` says which
 rule stopped it; nothing was spent.
@@ -101,7 +107,8 @@ toon event publish --kind 1 --content "hi Bob" --relay ws://bob…anyone:7100 --
 ```
 
 Had she skipped step 2, the publish would fail with `peering_needed` and print the exact
-`peer add` and `route add` to run. Nothing is paid and nothing is created for her.
+`peer add` and `route add` to run (only the `route add`, with no new deposit, when a peering
+already reaches the relay's connector). Nothing is paid and nothing is created for her.
 
 **4. For Bob to pay Alice**, he repeats steps 1 and 2 in the other direction.
 
@@ -136,5 +143,5 @@ withdraw it with `toon channel withdraw` ([Money](money.md#channels)).
 | `peer_not_peerable` | The other connector refuses peerings. Only its operator can change that |
 | `peer_failed` | Your connector refused the peering, or could not be reached |
 | `route_failed` | A route write was refused, or the prefix is not usable |
-| `peering_needed` | No peering reaches the relay you tried to pay; the message names what to run |
+| `peering_needed` | No route forwards the relay you tried to pay; the message names what to run (just a `route add` if a peering already reaches its connector) |
 | `unfunded` | The settlement key lacks the gas for the deposit; nothing was sent |
