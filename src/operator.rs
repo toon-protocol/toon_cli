@@ -1214,28 +1214,69 @@ fn header_cost(headers: &reqwest::header::HeaderMap) -> u128 {
 }
 
 /// Add the cost of a rejected packet to its report's `json`, beside `outcome`: `cost` as a
-/// decimal string and `complete`, which is `false` for an `R01`, whose cost is the amount to
-/// carry past the connector that stopped the packet. A cost of 0 adds nothing.
+/// decimal string and `complete`, which is `false` for a partial cost, the amount to carry
+/// past the connector that stopped the packet. The connector's rule, `reject_cost_reading`,
+/// says what `code` states: a reject that states no cost adds nothing, and neither does a
+/// cost of 0.
 pub fn add_cost(json: &mut Value, code: &str, cost: u128) {
     if cost > 0 {
-        json["cost"] = json!(cost.to_string());
-        json["complete"] = json!(code != "R01");
+        add_stated_cost(json, code, cost);
     }
 }
 
-/// The sentence that states a rejected packet's `cost`, or nothing for a cost of 0. `flag` is
-/// the option that states an amount: the whole cost for a complete one, or, for an `R01`, the
-/// amount to carry past the connector that stopped the packet.
+/// [`add_cost`] for a probe, which states a cost of 0 as well: the path costs nothing.
+pub fn add_probe_cost(json: &mut Value, code: &str, cost: u128) {
+    add_stated_cost(json, code, cost);
+}
+
+fn add_stated_cost(json: &mut Value, code: &str, cost: u128) {
+    match connector_cli::reject_cost_reading(code) {
+        connector_cli::CostReading::Complete => {
+            json["cost"] = json!(cost.to_string());
+            json["complete"] = json!(true);
+        }
+        connector_cli::CostReading::Partial => {
+            json["cost"] = json!(cost.to_string());
+            json["complete"] = json!(false);
+        }
+        connector_cli::CostReading::NoAnswer => {}
+    }
+}
+
+/// The sentence that states a rejected packet's `cost`, or nothing for a cost of 0 or for a
+/// reject that states none. `flag` is the option that states an amount: the whole cost for a
+/// complete one, or, for a partial one, the amount to carry past the connector that stopped
+/// the packet.
 pub fn cost_sentence(code: &str, cost: u128, flag: &str) -> String {
     if cost == 0 {
         String::new()
-    } else if code == "R01" {
-        format!(
+    } else {
+        stated_cost_sentence(code, cost, flag, false)
+    }
+}
+
+/// [`cost_sentence`] for a probe: a cost of 0 is said too.
+pub fn probe_cost_sentence(code: &str, cost: u128, flag: &str) -> String {
+    stated_cost_sentence(code, cost, flag, true)
+}
+
+fn stated_cost_sentence(code: &str, cost: u128, flag: &str, probe: bool) -> String {
+    match connector_cli::reject_cost_reading(code) {
+        connector_cli::CostReading::NoAnswer => String::new(),
+        connector_cli::CostReading::Partial if probe => format!(
+            " The probe stopped at a connector it could not pay: {cost} base units is the \
+             amount to carry to get past it, not the whole cost. Probe again with `{flag} {cost}`."
+        ),
+        connector_cli::CostReading::Partial => format!(
             " The packet stopped at a connector it could not pay: {cost} base units is the amount \
              to carry to get past it, not the whole cost."
-        )
-    } else {
-        format!(" The path costs {cost} base units: state `{flag} {cost}`.")
+        ),
+        connector_cli::CostReading::Complete if cost == 0 => {
+            " The path costs nothing.".to_owned()
+        }
+        connector_cli::CostReading::Complete => {
+            format!(" The path costs {cost} base units: state `{flag} {cost}`.")
+        }
     }
 }
 
@@ -1546,6 +1587,43 @@ pub fn send(
     target: &str,
     body: Option<&Path>,
 ) -> Result<Report, Error> {
+    send_packet(
+        home,
+        destination,
+        amount,
+        seal_to,
+        method,
+        target,
+        body,
+        false,
+    )
+}
+
+/// `toon probe`: the packet of [`send`], read for what it says about cost. A reject that
+/// states a cost, complete or partial, is a success, and a cost of 0 is stated.
+pub fn probe(
+    home: &Path,
+    destination: &str,
+    amount: u64,
+    seal_to: Option<&str>,
+    method: &str,
+    target: &str,
+    body: Option<&Path>,
+) -> Result<Report, Error> {
+    send_packet(home, destination, amount, seal_to, method, target, body, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_packet(
+    home: &Path,
+    destination: &str,
+    amount: u64,
+    seal_to: Option<&str>,
+    method: &str,
+    target: &str,
+    body: Option<&Path>,
+    probing: bool,
+) -> Result<Report, Error> {
     // The connector takes the target relative to the route's handler, and `--path` names
     // it from the handler's root.
     let target = match target.strip_prefix('/') {
@@ -1580,14 +1658,25 @@ pub fn send(
                 "outcome": "rejected",
                 "reject": { "code": code, "message": message },
             });
-            add_cost(&mut json, &code, cost);
+            let (exit, sentence) = if probing {
+                add_probe_cost(&mut json, &code, cost);
+                let states_cost = json.get("cost").is_some();
+                (
+                    if states_cost {
+                        Exit::Success
+                    } else {
+                        Exit::Failure
+                    },
+                    probe_cost_sentence(&code, cost, "--amount"),
+                )
+            } else {
+                add_cost(&mut json, &code, cost);
+                (Exit::Failure, cost_sentence(&code, cost, "--amount"))
+            };
             Report {
-                exit: Exit::Failure,
+                exit,
                 json,
-                text: format!(
-                    "Rejected with {code}: {sent}. {message}{}",
-                    cost_sentence(&code, cost, "--amount")
-                ),
+                text: format!("Rejected with {code}: {sent}. {message}{sentence}"),
             }
         }
         Answer::Unanswered => unreachable!("handled above"),
