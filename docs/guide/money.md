@@ -38,6 +38,7 @@ With `--solana` at `init`, the Solana key also needs the token and 0.01 SOL befo
 | Command | What it moves |
 | --- | --- |
 | `toon send <address> --amount <n> --yes` | One packet of `n` |
+| `toon probe <address> --amount <n> --yes` | Up to `n`; with no `--amount` a probe moves nothing and needs no `--yes` |
 | `toon peer add <url> --deposit <n> --yes` | `n` into a new channel |
 | `toon join <network> --deposit <n> --yes` | `n` into a channel toward the network's hub |
 | `toon create <name> --deposit <n> --yes` | `n` into each of two channels: `2n` |

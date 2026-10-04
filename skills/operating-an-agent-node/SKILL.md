@@ -42,6 +42,7 @@ command here is missing from `toon --help`, the skill is out of date: trust `--h
 These commands spend, and each one needs an explicit amount and `--yes`:
 
 - `toon send <address> --amount <n> --yes`
+- `toon probe <address> --amount <n> --yes` (a probe with no `--amount` carries nothing: it pays nothing and needs no `--yes`)
 - `toon peer add <address> --deposit <n> --yes`
 - `toon join <network> --deposit <n> --yes`
 - `toon create <name> --deposit <n> --yes` (the two channels count twice against the limit)
@@ -229,7 +230,7 @@ keys of its own relay with a balance, or unknown while the relay does not answer
 ## Finding out what a connector offers
 
 Before you send anything to a connector that is not yours, find out what it offers. Do it in
-this order; the first two steps pay nothing.
+this order; the first three steps pay nothing.
 
 1. Read its self-description: `toon describe <ilp-url> --json`, where `<ilp-url>` is the
    connector's `/ilp` URL. It gives the addresses the connector answers to, how it settles and
@@ -237,16 +238,24 @@ this order; the first two steps pay nothing.
 2. Read each route's price and its `request`, which says what to send it (method, path and so
    on). A route with no `request` does not say what to send: do not guess a method, a path or a
    body, and tell the operator that the route states none.
-3. Pay with a request: `toon send <address> --amount <n> --seal-to <ilp-url> --method <method>
+3. Probe the path with the real request: `toon probe <address> --seal-to <ilp-url> --method
+   <method> --path <path> --body <file> --json`. A probe is a packet that carries nothing by
+   default, so it pays nothing. Read `cost` (base units, a string). If `"complete": true` it is the
+   path's cost: state it on `toon send --amount`. If `"complete": false` the probe stopped at a
+   connector it could not pay and `cost` is the amount to carry to get past that connector, not the
+   whole cost: probe again with `--amount <cost> --yes`. A probe with an amount spends it (it is
+   counted against the spending limit as a send is), and a probe that is fulfilled has delivered
+   the request and paid for it. A route that charges nothing is fulfilled by an amount-0 probe,
+   so the app receives the request: a probe that pays nothing can still deliver. A reject with no
+   `cost` (no route, a peer that could not be reached and the like) states none; do not guess one.
+4. Pay with a request: `toon send <address> --amount <n> --seal-to <ilp-url> --method <method>
    --path <path> --body <file> --yes` (see "Paying an app"). Never call the app on a loopback
    address: that is unpaid work, not a payment.
 
 The price you read in step 2 is that connector's price alone. A connector on the way to it may
-charge to forward. A packet sent with `toon send` for the destination's price and rejected `F03`
-met such a connector. The report of the rejected packet says what the path costs: read `cost`
-(base units, a string) and send it as the amount. If `"complete": false` (an `R01`) the cost is a
-floor, the amount to get past the connector that stopped the packet, and not the whole cost. Do
-not guess an amount, and do not raise the amount step by step until a send is fulfilled.
+charge to forward. Learn the path's cost with the probe of step 3, not by sending the price and
+reading a rejected `toon send`. Do not guess an amount, and do not raise the amount step by step
+until a send is fulfilled.
 
 If you are the operator publishing an app, declare its `request` when you add it
 (`toon add <app> --to <toon-app> --request <file>`, above), so that others can do step 2.
