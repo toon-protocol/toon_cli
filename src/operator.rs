@@ -820,13 +820,17 @@ pub fn packet_list(home: &Path, limit: usize) -> Result<Report, Error> {
     let rejected = crate::status::rejected_packets(&crate::status::read_log(&log)?, limit);
     let mut lines =
         vec!["Only rejected packets are listed; `toon packet count` has the totals.".to_owned()];
-    if rejected.is_empty() {
+    if rejected.is_empty() && limit > 0 {
         lines.push("No packet was rejected.".to_owned());
     }
     lines.extend(rejected.iter().map(|packet| {
         format!(
             "{} {} rejected {}: {}",
-            packet.time, packet.destination, packet.code, packet.message
+            packet.time,
+            packet.destination,
+            packet.code,
+            // One packet to a line, whatever the reject's text holds.
+            packet.message.replace(['\r', '\n'], " ")
         )
     }));
     let packets: Vec<Value> = rejected

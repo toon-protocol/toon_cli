@@ -156,6 +156,7 @@ fn a_connector_that_rejected_nothing_lists_nothing() {
         "{}",
         text.stdout
     );
+    assert!(text.stdout.contains("toon packet count"), "{}", text.stdout);
 }
 
 #[test]
@@ -208,11 +209,13 @@ fn packet_list_names_a_toon_app_with_app() {
     let run = node
         .machine
         .toon(&["--app", "relay", "packet", "list", "--json"]);
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
     assert_eq!(run.json()["packets"][0]["destination"], "g.nobody.here");
     let unknown = node
         .machine
         .toon(&["packet", "list", "--app", "nobody", "--json"]);
     assert_eq!(unknown.json()["error"]["code"], "unknown_name");
+    assert_ne!(unknown.exit_code, 0);
 }
 
 #[test]

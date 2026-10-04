@@ -745,7 +745,7 @@ pub enum PacketCommand {
     /// passphrase and moves no money; works while the agent node is stopped
     List {
         /// How many packets to show
-        #[arg(long, short = 'n', default_value_t = 20)]
+        #[arg(long, short = 'n', default_value_t = crate::status::DEFAULT_PACKETS)]
         limit: usize,
     },
 }

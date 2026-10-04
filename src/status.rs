@@ -290,6 +290,9 @@ pub fn read_log(log: &Path) -> Result<String, Error> {
     }
 }
 
+/// How many rejected packets `toon packet list` shows when it is not told.
+pub const DEFAULT_PACKETS: usize = 20;
+
 /// A packet the connector rejected, as its log line says.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Rejected {
@@ -302,10 +305,12 @@ pub struct Rejected {
 /// The packet the line says was rejected, or `None` for any other line, one that is not JSON
 /// and a reject that lacks a field. The connector's `packet rejected` line carries `message`
 /// twice, the event's first and the reject's after the `code`; a JSON map keeps the last, the
-/// reject's, so the event's is read from the text, where a reject's own text cannot imitate
-/// it: its quotes are escaped.
+/// reject's, so the line is recognised by its text instead, where a reject's own text cannot
+/// imitate the event's: its quotes are escaped. A line with no second `message` lacks the
+/// reject's, and the map would hand back the event's in its place.
 fn rejected(line: &str) -> Option<Rejected> {
-    if !line.contains(r#""fields":{"message":"packet rejected","#) {
+    let (_, after) = line.split_once(r#""fields":{"message":"packet rejected","#)?;
+    if !after.contains(r#""message":"#) {
         return None;
     }
     let line: Value = serde_json::from_str(line).ok()?;
@@ -321,13 +326,7 @@ fn rejected(line: &str) -> Option<Rejected> {
 
 /// The rejected packets in a connector's log, newest first, at most `limit`.
 pub fn rejected_packets(log: &str, limit: usize) -> Vec<Rejected> {
-    log.lines()
-        .filter_map(rejected)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .take(limit)
-        .collect()
+    log.lines().rev().filter_map(rejected).take(limit).collect()
 }
 
 #[cfg(test)]
@@ -357,7 +356,9 @@ mod rejected_tests {
     fn a_reject_missing_a_field_is_skipped() {
         let no_code = REJECT.replace(r#""code":"F02","#, "");
         let no_destination = REJECT.replace(r#""destination":"g.a","#, "");
-        let log = [no_code, no_destination].join("\n");
+        let no_message = REJECT.replace(r#","message":"no route""#, "");
+        let no_time = REJECT.replace(r#""timestamp":"2026-10-03T23:00:30.314592Z","#, "");
+        let log = [no_code, no_destination, no_message, no_time].join("\n");
         assert!(rejected_packets(&log, 20).is_empty());
     }
 
