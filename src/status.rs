@@ -265,19 +265,7 @@ pub fn logs(home: &Path, name: &str, lines: usize) -> Result<Report, Error> {
         });
     };
     let log = node::ConnectorFiles::of(home, app.connector).log;
-    let text = match std::fs::read(&log) {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-        // A TOON app that has never started has no log yet.
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(source) => {
-            return Err(Error {
-                nothing_sent: false,
-                unanswered: None,
-                code: ErrorCode::Io,
-                message: format!("{}: {source}.", log.display()),
-            })
-        }
-    };
+    let text = read_log(&log)?;
     let all: Vec<&str> = text.lines().collect();
     let shown = &all[all.len().saturating_sub(lines)..];
     Ok(Report {
@@ -285,4 +273,106 @@ pub fn logs(home: &Path, name: &str, lines: usize) -> Result<Report, Error> {
         json: json!({ "name": name, "toon_app": app.name, "log": log, "lines": shown }),
         text: shown.join("\n"),
     })
+}
+
+/// The text of a connector's log. A TOON app that has never started has no log yet, which
+/// reads as empty.
+pub fn read_log(log: &Path) -> Result<String, Error> {
+    match std::fs::read(log) {
+        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(source) => Err(Error {
+            nothing_sent: false,
+            unanswered: None,
+            code: ErrorCode::Io,
+            message: format!("{}: {source}.", log.display()),
+        }),
+    }
+}
+
+/// How many rejected packets `toon packet list` shows when it is not told.
+pub const DEFAULT_PACKETS: usize = 20;
+
+/// A packet the connector rejected, as its log line says.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Rejected {
+    pub time: String,
+    pub destination: String,
+    pub code: String,
+    pub message: String,
+}
+
+/// The packet the line says was rejected, or `None` for any other line, one that is not JSON
+/// and a reject that lacks a field. The connector's `packet rejected` line carries `message`
+/// twice, the event's first and the reject's after the `code`; a JSON map keeps the last, the
+/// reject's, so the line is recognised by its text instead, where a reject's own text cannot
+/// imitate the event's: its quotes are escaped. A line with no second `message` lacks the
+/// reject's, and the map would hand back the event's in its place.
+fn rejected(line: &str) -> Option<Rejected> {
+    let (_, after) = line.split_once(r#""fields":{"message":"packet rejected","#)?;
+    if !after.contains(r#""message":"#) {
+        return None;
+    }
+    let line: Value = serde_json::from_str(line).ok()?;
+    let field = |value: &Value, key: &str| value.get(key)?.as_str().map(str::to_owned);
+    let fields = line.get("fields")?;
+    Some(Rejected {
+        time: field(&line, "timestamp")?,
+        destination: field(line.get("span")?, "destination")?,
+        code: field(fields, "code")?,
+        message: field(fields, "message")?,
+    })
+}
+
+/// The rejected packets in a connector's log, newest first, at most `limit`.
+pub fn rejected_packets(log: &str, limit: usize) -> Vec<Rejected> {
+    log.lines().rev().filter_map(rejected).take(limit).collect()
+}
+
+#[cfg(test)]
+mod rejected_tests {
+    use super::*;
+
+    const REJECT: &str = r#"{"timestamp":"2026-10-03T23:00:30.314592Z","level":"INFO","fields":{"message":"packet rejected","code":"F02","message":"no route"},"target":"c","span":{"correlation_id":"x","destination":"g.a","name":"packet"},"spans":[]}"#;
+
+    #[test]
+    fn a_reject_among_other_lines_is_read() {
+        let log = format!(
+            "{}\nnot json\n{{\"other\":1}}\n{REJECT}\n",
+            r#"{"timestamp":"t","fields":{"message":"connector listening"}}"#
+        );
+        assert_eq!(
+            rejected_packets(&log, 20),
+            vec![Rejected {
+                time: "2026-10-03T23:00:30.314592Z".into(),
+                destination: "g.a".into(),
+                code: "F02".into(),
+                message: "no route".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_reject_missing_a_field_is_skipped() {
+        let no_code = REJECT.replace(r#""code":"F02","#, "");
+        let no_destination = REJECT.replace(r#""destination":"g.a","#, "");
+        let no_message = REJECT.replace(r#","message":"no route""#, "");
+        let no_time = REJECT.replace(r#""timestamp":"2026-10-03T23:00:30.314592Z","#, "");
+        let log = [no_code, no_destination, no_message, no_time].join("\n");
+        assert!(rejected_packets(&log, 20).is_empty());
+    }
+
+    #[test]
+    fn an_empty_log_has_no_rejects() {
+        assert!(rejected_packets("", 20).is_empty());
+    }
+
+    #[test]
+    fn newest_first_and_limited() {
+        let later = REJECT.replace("g.a", "g.b");
+        let log = format!("{REJECT}\n{later}\n");
+        let all = rejected_packets(&log, 20);
+        assert_eq!(all[0].destination, "g.b");
+        assert_eq!(rejected_packets(&log, 1).len(), 1);
+    }
 }

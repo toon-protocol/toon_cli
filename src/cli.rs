@@ -74,7 +74,7 @@ pub enum Command {
         #[command(subcommand)]
         command: LimitCommand,
     },
-    /// Count the packets the connector has carried, free: needs no passphrase
+    /// Count or list the packets the connector has carried, free: needs no passphrase
     Packet {
         #[command(subcommand)]
         command: PacketCommand,
@@ -740,6 +740,14 @@ pub enum PacketCommand {
     /// Print how many packets the connector fulfilled and rejected, the rejects by code and the
     /// fees earned, since it last started. Free: needs no passphrase and moves no money
     Count,
+    /// List the last packets the connector rejected, newest first, from its log: only
+    /// rejected packets are listed, `toon packet count` has the totals. Free: needs no
+    /// passphrase and moves no money; works while the agent node is stopped
+    List {
+        /// How many packets to show
+        #[arg(long, short = 'n', default_value_t = crate::status::DEFAULT_PACKETS)]
+        limit: usize,
+    },
 }
 
 #[derive(Debug, Subcommand)]

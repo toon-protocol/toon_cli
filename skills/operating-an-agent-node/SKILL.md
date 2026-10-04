@@ -195,6 +195,14 @@ connector, so a restart begins again at 0. With `--json` it prints `toon_app`, `
 (`fulfilled`, `rejected`), `rejects` and `fees_earned`, a decimal string as other amounts are. It fails with `not_running` when the agent
 node is stopped.
 
+`toon packet list` is free as well. It lists the last rejected packets of the connector, newest
+first, from its log: each line shows the time, the destination, the reject code and the reject
+message. `-n` / `--limit` says how many (20 by default). It works while the agent node is stopped,
+and lists rejects from before a restart. Fulfilled packets are not listed, only counted by
+`toon packet count`. With `--json` it prints `toon_app` and `packets`, each with `time`,
+`destination`, `outcome` (`rejected`), `code` and `message`; `packets` is `[]` when nothing was
+rejected.
+
 ## Channels
 
 `toon channel list` shows both directions with collateral and status. `toon channel open --terms

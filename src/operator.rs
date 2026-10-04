@@ -809,10 +809,54 @@ pub fn packet_count(home: &Path) -> Result<Report, Error> {
     })
 }
 
+/// `toon packet list`: the packets the connector rejected, read from its log, so it works
+/// while the agent node is stopped.
+pub fn packet_list(home: &Path, limit: usize) -> Result<Report, Error> {
+    let Some(state) = State::load(home)? else {
+        return Err(node::no_agent_node(home));
+    };
+    let app = crate::apps::toon_app(&state, TARGET.get().map(String::as_str))?;
+    let log = ConnectorFiles::of(home, app.connector).log;
+    let rejected = crate::status::rejected_packets(&crate::status::read_log(&log)?, limit);
+    let mut lines =
+        vec!["Only rejected packets are listed; `toon packet count` has the totals.".to_owned()];
+    if rejected.is_empty() && limit > 0 {
+        lines.push("No packet was rejected.".to_owned());
+    }
+    lines.extend(rejected.iter().map(|packet| {
+        format!(
+            "{} {} rejected {}: {}",
+            packet.time,
+            packet.destination,
+            packet.code,
+            // One packet to a line, whatever the reject's text holds.
+            packet.message.replace(['\r', '\n'], " ")
+        )
+    }));
+    let packets: Vec<Value> = rejected
+        .iter()
+        .map(|packet| {
+            json!({
+                "time": packet.time,
+                "destination": packet.destination,
+                "outcome": "rejected",
+                "code": packet.code,
+                "message": packet.message,
+            })
+        })
+        .collect();
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "toon_app": app.name, "packets": packets }),
+        text: lines.join("\n"),
+    })
+}
+
 /// `toon packet`.
 pub fn packet(home: &Path, command: &PacketCommand) -> Result<Report, Error> {
     match command {
         PacketCommand::Count => packet_count(home),
+        PacketCommand::List { limit } => packet_list(home, *limit),
     }
 }
 
