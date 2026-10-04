@@ -136,3 +136,22 @@ _Avoid_: Quote, offer
 **Probe**:
 A packet sent to learn what a path costs. It is expected to be rejected, and the reject states the path's cost: the fee of every connector that forwards it, and the terminating route's charge for the request sent. A probe can cost up to the amount it carries; by default it carries nothing and pays nothing. A probe that stopped at a connector it could not pay states a partial cost, the amount to carry to get past that connector. A probe whose amount covers the path's cost is delivered and paid for, as a send is.
 _Avoid_: Quote, dry run; using "probe" for asking one connector its terms
+
+### Watching what it carries
+
+**Packet history**:
+The recent packets a connector handled, newest first, for watching what an agent node is carrying now. It is not a record: it holds a bounded number of packets, and the totals are the packet counters'.
+_Avoid_: Packet log, ledger, audit trail; "packet explorer" for anything but the view that shows it
+
+**Direction**:
+Which way a connector carried one packet: delivered, forwarded or sent. Every packet in the packet history has exactly one.
+_Avoid_: In, out, inbound, outbound: a forwarded packet is both
+
+**Delivered**:
+A packet that arrived and ended at one of the agent node's own apps. The route's charge is earned if it is fulfilled.
+
+**Forwarded**:
+A packet that arrived from one side and left toward a peer. A fee is kept if it is fulfilled.
+
+**Sent**:
+A packet the operator originated: a send, a probe, a publish or a payment of a subscribe route.
