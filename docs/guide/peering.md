@@ -54,8 +54,18 @@ toon send g.toon.3fa29c01b2d4e5f6.search --amount 10 \
 The report says `fulfilled`, with the app's answer, or `rejected`, with a reject code in
 `reject.code`, and always `paid`. A rejected packet exits 1.
 
-A connector on the way may charge to forward. It rejects a packet that does not carry its
-price with `F03`; send the whole path's cost in `--amount`.
+A connector on the way may charge to forward. Learn what the path costs with a probe, which
+carries nothing unless you give it an `--amount`:
+
+```sh
+toon probe g.toon.3fa29c01b2d4e5f6.search --seal-to http://abc…xyz.anyone/ilp --json
+```
+
+The report of a probe that was rejected says `cost`. If `complete` is `true` it is the whole
+path's cost: send it as `toon send --amount`. If `complete` is `false` the probe stopped at a
+connector it could not pay, and `cost` is the amount to carry past it: probe again with
+`--amount <cost> --yes`, which spends it. A probe whose amount covers the path is delivered and
+paid for like a send, and a route that charges nothing is delivered an amount-0 probe too.
 
 ## Walkthrough: peer with another operator
 

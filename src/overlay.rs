@@ -17,9 +17,10 @@
 //! held by the process that started it.
 //!
 //! One test seam is beside `TOON_OVERLAY=loopback`, and has no effect on the real overlay:
-//! `TOON_OVERLAY_NAMES` is a comma-separated list of `<name>.anyone:<port>=<ip>:<port>`,
-//! each telling the stand-in that a `.anyone` name and port stand for a loopback address,
-//! so that a fake relay or connector a test started is reachable at a `.anyone` address.
+//! `TOON_OVERLAY_NAMES` is a comma-separated list of `<name>:<port>=<ip>:<port>`, each
+//! telling the stand-in that a name and port stand for a loopback address, so that a fake
+//! relay or connector a test started is reachable at a `.anyone` address, or at a clearnet
+//! name the real overlay would reach through an exit.
 //! The proxy that honours it is the one the list was in the environment of when it started.
 //! An address that is not loopback is ignored.
 //!
@@ -243,7 +244,7 @@ fn answers(proxy: SocketAddr) -> bool {
         && answer == [5, 0]
 }
 
-/// The `.anyone` names `list`, the value of `TOON_OVERLAY_NAMES`, says stand for loopback
+/// The names `list`, the value of `TOON_OVERLAY_NAMES`, says stand for loopback
 /// addresses.
 fn declared_names(list: &str) -> HashMap<(String, u16), SocketAddr> {
     let mut names = HashMap::new();
@@ -446,16 +447,15 @@ fn socks(
     client.read_exact(&mut port)?;
     let port = u16::from_be_bytes(port);
 
+    // What is published is the supervisor's onion endpoints and the names a test declared.
     let target = if request[1] != 1 {
         None
-    } else if host.ends_with(&format!(".{TLD}")) {
+    } else {
         published
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&(host.clone(), port))
             .copied()
-    } else {
-        None
     };
     let Some(target) = target else {
         // Not allowed by the ruleset: a stand-in, like the real daemon, refuses private addresses.

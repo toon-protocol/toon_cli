@@ -136,6 +136,51 @@ fn run() -> ExitCode {
             json,
         )
         .into(),
+        Command::Probe(args) => render(
+            home::resolve().and_then(|home| {
+                let amount: u128 = args.amount.into();
+                let probe = || {
+                    operator::probe(
+                        &home,
+                        &args.address,
+                        args.amount,
+                        args.seal_to.as_deref(),
+                        &args.method,
+                        &args.path,
+                        args.body.as_deref(),
+                    )
+                };
+                if amount == 0 {
+                    // Moves nothing: no `--yes`, and the limit is not touched.
+                    let mut report = probe()?;
+                    report.json["paid"] = json!(0);
+                    return Ok(report);
+                }
+                spending::spend_packets(&home, amount, args.yes, |packets| {
+                    let mut report = probe()
+                        .map_err(|error| operator::repriced(error, packets.moved(amount)))?;
+                    // Only a fulfilled probe paid its amount; a reject, whatever it states,
+                    // cost what the channels moved by.
+                    let delivered = report.json["outcome"] == "fulfilled";
+                    let paid = if delivered {
+                        amount
+                    } else {
+                        packets.moved(amount)
+                    };
+                    report.json["paid"] = json!(paid);
+                    if paid > 0 {
+                        report.text = if delivered {
+                            format!("{} It was paid for: {paid} base units.", report.text)
+                        } else {
+                            format!("{} It cost {paid} base units.", report.text)
+                        };
+                    }
+                    Ok((report, paid))
+                })
+            }),
+            json,
+        )
+        .into(),
         Command::Add(args) => render(
             home::resolve().and_then(|home| {
                 apps::add(

@@ -57,6 +57,9 @@ pub enum Command {
     },
     /// Send one packet to an address and say whether it was fulfilled or rejected
     Send(SendArgs),
+    /// Send a packet to learn what a path costs: with no amount it pays nothing, and says
+    /// what the path costs or, if a connector charges to forward, how much to carry past it
+    Probe(ProbeArgs),
     /// Manage peerings: the connectors this one forwards packets to
     Peer {
         #[command(subcommand)]
@@ -373,6 +376,32 @@ pub struct SendArgs {
     #[arg(long)]
     pub body: Option<std::path::PathBuf>,
     /// Confirm that this command moves money: without it nothing is sent
+    #[arg(long)]
+    pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ProbeArgs {
+    /// The ILP address the packet is bound for
+    pub address: String,
+    /// The amount the probe carries, in the token's base units: the most it can cost. With
+    /// none it carries nothing, and a route that charges nothing still receives the request
+    #[arg(long, default_value_t = 0)]
+    pub amount: u64,
+    /// The `/ilp` URL of the connector that terminates the packet, when it is not this
+    /// one: the payload is sealed to that connector's identity
+    #[arg(long)]
+    pub seal_to: Option<String>,
+    /// The request's method
+    #[arg(long, default_value = "POST")]
+    pub method: String,
+    /// The path and query the app receives, beneath the route's handler
+    #[arg(long, default_value = "/")]
+    pub path: String,
+    /// A file whose bytes are the request's body, sent as `application/json`
+    #[arg(long)]
+    pub body: Option<std::path::PathBuf>,
+    /// Confirm that a probe with an amount moves money: without it nothing is sent
     #[arg(long)]
     pub yes: bool,
 }
