@@ -461,6 +461,44 @@ fn with_no_peering_the_command_says_one_is_needed_with_its_deposit_and_creates_n
 }
 
 #[test]
+fn with_a_peering_toward_the_connector_the_command_asks_only_for_a_route() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    let peered = near.toon(&[
+        "peer",
+        "add",
+        &far.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+    ]);
+    assert_eq!(peered.exit_code, 0, "{}{}", peered.stdout, peered.stderr);
+    let id = near.toon(&["peer", "list", "--json"]).json()["peers"][0]["id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+
+    let run = subscribe(
+        &near,
+        &relay,
+        &["--filter", FILTER, "--amount", "2500", "--yes"],
+    );
+
+    let error = run.json()["error"].clone();
+    assert_eq!(error["code"], "peering_needed", "{error}");
+    assert_eq!(run.exit_code, 1);
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.contains(&format!("toon route add {SUBSCRIBE} --peer {id}")),
+        "{message}"
+    );
+    assert!(!message.contains("peer add"), "{message}");
+    assert!(!message.contains("--deposit"), "{message}");
+    assert_eq!(relay.posts(), 0);
+}
+
+#[test]
 fn with_no_peering_the_deposit_named_is_what_would_be_paid_not_what_is_credited() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);

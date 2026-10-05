@@ -263,3 +263,50 @@ fn a_total_past_the_limit_is_refused_and_nothing_is_written() {
     assert_eq!(wraps_at(&far), Vec::<Value>::new());
     assert_eq!(wraps_at(&near), Vec::<Value>::new());
 }
+
+#[test]
+fn with_a_peering_toward_the_connector_the_command_asks_only_for_a_route() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let relay = information_document(&far);
+    let peered = near.toon(&[
+        "peer",
+        "add",
+        &far.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+    ]);
+    assert_eq!(peered.exit_code, 0, "{}{}", peered.stdout, peered.stderr);
+    let id = near.toon(&["peer", "list", "--json"]).json()["peers"][0]["id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+
+    let run = near.toon(&[
+        "message",
+        "send",
+        ALICE,
+        "--content",
+        "across",
+        "--relay",
+        &relay,
+        "--yes",
+        "--json",
+    ]);
+
+    let error = run.json()["error"].clone();
+    assert_eq!(error["code"], "peering_needed", "{error}");
+    assert_eq!(run.exit_code, 1);
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.contains(&format!(
+            "toon route add {} --peer {id}",
+            far.machine.relay_prefix()
+        )),
+        "{message}"
+    );
+    assert!(!message.contains("peer add"), "{message}");
+    assert!(!message.contains("--deposit"), "{message}");
+}

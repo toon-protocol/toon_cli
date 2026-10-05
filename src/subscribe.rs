@@ -282,11 +282,11 @@ pub fn subscribe(
     let paid = packets as u128 * packet_amount as u128;
     let credit = packets as u128 * terms.price as u128;
     if !operator::forwards(home, &terms.address)? {
-        return Err(Error {
-            nothing_sent: false,
-            unanswered: None,
-            code: ErrorCode::PeeringNeeded,
-            message: format!(
+        return Err(operator::peering_needed(
+            home,
+            &terms.address,
+            &terms.connector_url,
+            format!(
                 "No peering of this agent node reaches {}, where {relay} sells its feed. A \
                  peering is needed, with a deposit of at least {paid} base units: run \
                  `{}` and then `toon route add {} --peer <id>`.",
@@ -294,7 +294,7 @@ pub fn subscribe(
                 operator::peer_add_command(&terms.connector_url, &paid.to_string(), ""),
                 terms.address
             ),
-        });
+        ));
     }
     if !yes {
         return Err(Error {

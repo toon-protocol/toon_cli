@@ -292,7 +292,7 @@ $E/toon event query ws://$ME:7100 \
 node's relay at its onion endpoint. Everything between the two crosses the overlay, from
 one hidden service to another. Before the `route add`, the publish fails with
 `peering_needed`, and its message names the `peer add`, with `--deposit <amount> --yes`,
-and the `route add` to run.
+and the `route add` to run (had a peering toward that connector existed, only the `route add`).
 
 A first publish over a cold link may be rejected, or fail with `send_failed`, at about
 the packet's expiry and not after it: a connector that forwards the packet stops waiting on

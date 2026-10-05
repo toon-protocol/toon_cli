@@ -626,18 +626,18 @@ fn publish_to(
         )));
     }
     if !operator::forwards(home, &edge.ilp_address)? {
-        return Err(Error {
-            nothing_sent: false,
-            unanswered: None,
-            code: ErrorCode::PeeringNeeded,
-            message: format!(
+        return Err(operator::peering_needed(
+            home,
+            &edge.ilp_address,
+            &edge.connector_url,
+            format!(
                 "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
                  needed: run `{}` and then `toon route add {} --peer <id>`.",
                 edge.ilp_address,
                 operator::peer_add_command(&edge.connector_url, "<amount>", ""),
                 edge.ilp_address
             ),
-        });
+        ));
     }
     if !yes {
         return Err(Error {

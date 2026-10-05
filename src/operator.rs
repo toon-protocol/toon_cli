@@ -347,6 +347,48 @@ pub fn forwards(home: &Path, address: &str) -> Result<bool, Error> {
     })
 }
 
+/// The id of the peering of this agent node that reaches the connector at `connector_url`,
+/// if one is recognised. The connector's listing carries no URL, so a peering is known by
+/// its id: the name of the network joined from that URL, or the label `peer add` derives.
+pub fn peering_toward(home: &Path, connector_url: &str) -> Result<Option<String>, Error> {
+    let surface = surface(home)?;
+    let ids: Vec<String> = read(&surface, "/peers")?
+        .iter()
+        .filter_map(|peer| peer["id"].as_str().map(str::to_owned))
+        .collect();
+    let mut candidates = Vec::new();
+    if let Some(state) = State::load(home)? {
+        if let (Some(joined), Some(url)) = (&state.joined, &state.connector_url) {
+            if url == connector_url {
+                candidates.push(joined.clone());
+            }
+        }
+    }
+    candidates.push(label(connector_url));
+    Ok(candidates.into_iter().find(|id| ids.contains(id)))
+}
+
+/// The `peering_needed` error of a command whose packet to `address` no route forwards.
+/// `without_peering` is its message when no peering reaches `connector_url`; when one does,
+/// the message asks only for a route over it. A peering that cannot be looked up is not
+/// recognised, so the lookup never changes the error.
+pub fn peering_needed(
+    home: &Path,
+    address: &str,
+    connector_url: &str,
+    without_peering: String,
+) -> Error {
+    let message = match peering_toward(home, connector_url) {
+        Ok(Some(id)) => format!(
+            "No route of this agent node forwards {address}, but its peering {id} already \
+             reaches {connector_url}: no new deposit is needed. Run \
+             `toon route add {address} --peer {id}`."
+        ),
+        Ok(None) | Err(_) => without_peering,
+    };
+    failed(ErrorCode::PeeringNeeded, message)
+}
+
 /// A channel's amount as the connector reports it, which is absent while it is opening or
 /// when the chain could not be read.
 fn amount(value: &Value) -> String {
@@ -1766,6 +1808,55 @@ pub fn route(home: &Path, command: &RouteCommand) -> Result<Report, Error> {
 /// The prefix a joined network's packets are forwarded under.
 const NETWORK_PREFIX: &str = "g.toon";
 
+/// Forward over the peering `name` each address the connector at `connector_url` publishes
+/// that the routes made so far do not cover. Returns every prefix forwarded, `g.toon`
+/// first, and a sentence for the report when some address was left unrouted.
+fn route_published(
+    home: &Path,
+    state: &State,
+    connector_url: &str,
+    name: &str,
+) -> (Vec<String>, String) {
+    let mut forwarded = vec![NETWORK_PREFIX.to_owned()];
+    let by_hand = |what: String| {
+        format!(" {what} Add a route by hand with `toon route add <address> --peer {name}`.")
+    };
+    let egress = Egress::of_state(home, state);
+    let mut addresses = match crate::describe::published_addresses(&egress, connector_url) {
+        Ok(addresses) => addresses,
+        Err(error) => {
+            return (
+                forwarded,
+                by_hand(format!(
+                    "The connector's own addresses were not routed: its self-description \
+                     could not be read ({}).",
+                    error.message.trim_end_matches('.')
+                )),
+            )
+        }
+    };
+    addresses.sort_by_key(String::len);
+    let mut failed_routes = Vec::new();
+    for address in addresses {
+        if forwarded.iter().any(|prefix| covers(prefix, &address)) {
+            continue;
+        }
+        match route_add(home, &address, name, 0) {
+            Ok(_) => forwarded.push(address),
+            Err(error) => failed_routes.push(format!("{address} ({})", error.message)),
+        }
+    }
+    let note = if failed_routes.is_empty() {
+        String::new()
+    } else {
+        by_hand(format!(
+            "These addresses of the connector were not routed: {}.",
+            failed_routes.join("; ")
+        ))
+    };
+    (forwarded, note)
+}
+
 /// `toon join`: peer toward the network's connector for `deposit`, forward the network's
 /// prefix over the peering, and read the network's relay. All of it is under the
 /// spending limit, as the one deposit.
@@ -1822,6 +1913,7 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
         let deposited = peered.deposited;
         let peered = peered.report;
         let routed = route_add(home, NETWORK_PREFIX, name, 0)?;
+        let (forwarded, unrouted) = route_published(home, &state, &connector_url, name);
         let relay = state.relay_url.clone();
         state.joined = Some(name.to_owned());
         if let Some(relay) = &relay {
@@ -1846,13 +1938,15 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
                     "network": name,
                     "peering": peered.json["peering"],
                     "route": routed.json["route"],
+                    "routes": forwarded,
                     "relay": relay,
                     "deposited": deposited,
                 }),
                 text: format!(
-                    "Joined {name}: peered with {connector_url} and forwarding {NETWORK_PREFIX} to it, {paid}. \
-                     {reading}\n\
+                    "Joined {name}: peered with {connector_url} and forwarding {} to it, {paid}. \
+                     {reading}{unrouted}\n\
                      Its connector forwards back to you only if its operator creates a peering toward you in return.",
+                    forwarded.join(", "),
                 ),
             },
             deposited,
