@@ -695,8 +695,9 @@ pub enum RelayCommand {
         #[arg(long)]
         yes: bool,
     },
-    /// List the balance and filter at each relay subscribed to, or with `--incoming` who
-    /// subscribed to this agent node's own relay and what they have left
+    /// List the balance and filter at each relay subscribed to, read from each relay now,
+    /// or with `--incoming` who subscribed to this agent node's own relay and what they have
+    /// left. It needs no passphrase while `toon relay subscribe` has kept the subscriber key
     Subscriptions {
         /// The subscribers of the agent node's own relay, which must be running
         #[arg(long)]
