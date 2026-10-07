@@ -162,7 +162,7 @@ impl AppRunner for ProcessRunner {
         let io =
             |path: &Path, error: std::io::Error| failed(format!("{}: {error}.", path.display()));
         fs::create_dir_all(&spec.data_dir).map_err(|error| io(&spec.data_dir, error))?;
-        let log = spec.data_dir.join("app.log");
+        let log = app_log(&spec.data_dir);
         let logs = File::options()
             .create(true)
             .append(true)
@@ -252,6 +252,28 @@ struct Container {
     address: SocketAddr,
     read: SocketAddr,
     stopped: bool,
+    /// Where the container's output is kept once it is gone.
+    log: PathBuf,
+}
+
+/// The file an app's own output is kept in, in its data directory.
+pub fn app_log(data_dir: &Path) -> PathBuf {
+    data_dir.join("app.log")
+}
+
+/// Append what the container wrote to its standard output and standard error to `log`, so
+/// that it outlives the container. A container that is not there keeps nothing.
+fn keep_output(name: &str, log: &Path) {
+    let Ok(output) = Command::new("docker").args(["logs", name]).output() else {
+        return;
+    };
+    if !output.status.success() {
+        return;
+    }
+    if let Ok(mut file) = File::options().create(true).append(true).open(log) {
+        let _ = file.write_all(&output.stdout);
+        let _ = file.write_all(&output.stderr);
+    }
 }
 
 fn docker(args: &[&str]) -> Result<String, String> {
@@ -301,11 +323,14 @@ impl AppRunner for ContainerRunner {
             .map_err(|error| failed(format!("{}: {error}.", spec.data_dir.display())))?;
         let data = fs::canonicalize(&spec.data_dir)
             .map_err(|error| failed(format!("{}: {error}.", spec.data_dir.display())))?;
-        // What a supervisor that was killed left behind.
+        let log = app_log(&spec.data_dir);
+        // What a supervisor that was killed left behind, its output kept first.
+        keep_output(&name, &log);
         let _ = docker(&["rm", "--force", &name]);
 
         let mut command = Command::new("docker");
-        command.args(["run", "--detach", "--rm", "--name", &name]);
+        // Not `--rm`: a container that exits by itself stays until `stop` has kept its output.
+        command.args(["run", "--detach", "--name", &name]);
         // Held until the relay answers, which it does once it has bound them.
         let claimed = if spec.relay {
             Some(free_ports()?)
@@ -341,6 +366,7 @@ impl AppRunner for ContainerRunner {
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             read: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             stopped: false,
+            log,
         };
         let published = |port: u16| {
             docker(&["port", &name, &format!("{port}/tcp")]).and_then(|ports| {
@@ -400,7 +426,7 @@ impl RunningApp for Container {
             return;
         }
         let _ = docker(&["stop", "--time", "10", &self.name]);
-        // `--rm` removes it once stopped; this is for one that was created and never ran.
+        keep_output(&self.name, &self.log);
         let _ = docker(&["rm", "--force", &self.name]);
     }
 }

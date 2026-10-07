@@ -142,10 +142,18 @@ pub enum Command {
     },
     /// Stop the agent node, and the unit that `up` installed
     Down,
-    /// Show the log of a TOON app or an app
+    /// Show the log of an app, or of the connector of a TOON app
+    ///
+    /// An app's name shows what the app wrote to its standard output and standard error.
+    /// A TOON app's name that is not an app's shows its connector's log. A name that is
+    /// both, as the default `relay` is, shows the app's. `--connector` shows the connector's
+    /// log of the TOON app the name belongs to.
     Logs {
         /// The name of a TOON app, or of an app behind one
         name: String,
+        /// Show the connector's log of the TOON app the name belongs to
+        #[arg(long)]
+        connector: bool,
         /// How many of the last lines to show
         #[arg(long, short = 'n', default_value_t = crate::status::DEFAULT_LINES)]
         lines: usize,

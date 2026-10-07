@@ -234,14 +234,14 @@ pub fn down(home: &Path) -> Result<Report, Error> {
 /// How many lines of a log `toon logs` shows when it is not told.
 pub const DEFAULT_LINES: usize = 100;
 
-/// The last `lines` lines of the log of the TOON app or app called `name`. An app's
-/// requests pass through the connector of its TOON app, so until an app runs as a
-/// process of its own, the connector's log is the app's log.
-pub fn logs(home: &Path, name: &str, lines: usize) -> Result<Report, Error> {
+/// The last `lines` lines of a log of the TOON app or app called `name`: the app's own
+/// output if `name` is an app and `connector` is not asked for, else the connector's log of
+/// the TOON app the name belongs to.
+pub fn logs(home: &Path, name: &str, connector: bool, lines: usize) -> Result<Report, Error> {
     let Some(state) = State::load(home)? else {
         return Err(node::no_agent_node(home));
     };
-    let Some(app) = state
+    let Some(toon) = state
         .toon_apps
         .iter()
         .find(|app| app.name == name || app.apps.iter().any(|behind| behind.name == name))
@@ -264,13 +264,44 @@ pub fn logs(home: &Path, name: &str, lines: usize) -> Result<Report, Error> {
             ),
         });
     };
-    let log = node::ConnectorFiles::of(home, app.connector).log;
+    // An app of that name, in the TOON app that has it. The name of an app is unique in an
+    // agent node, so an app behind another TOON app is the one asked for as well.
+    let app = state
+        .toon_apps
+        .iter()
+        .flat_map(|toon| toon.apps.iter())
+        .find(|app| app.name == name);
+    let (source, log) = match app {
+        Some(app) if !connector => {
+            if matches!(app.source, node::Source::Url(_)) {
+                return Err(Error {
+                    nothing_sent: true,
+                    unanswered: None,
+                    code: ErrorCode::UnknownName,
+                    message: format!(
+                        "The app {name} is served at a URL the supervisor does not run, so it \
+                         has no log here. `toon logs {name} --connector` shows the log of the \
+                         connector of {}.",
+                        toon.name
+                    ),
+                });
+            }
+            let data_dir = node::AppFiles::of(home, name).data_dir;
+            ("app", crate::runner::app_log(&data_dir))
+        }
+        _ => (
+            "connector",
+            node::ConnectorFiles::of(home, toon.connector).log,
+        ),
+    };
     let text = read_log(&log)?;
     let all: Vec<&str> = text.lines().collect();
     let shown = &all[all.len().saturating_sub(lines)..];
     Ok(Report {
         exit: Exit::Success,
-        json: json!({ "name": name, "toon_app": app.name, "log": log, "lines": shown }),
+        json: json!({
+            "name": name, "toon_app": toon.name, "source": source, "log": log, "lines": shown
+        }),
         text: shown.join("\n"),
     })
 }
