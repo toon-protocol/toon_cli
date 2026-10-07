@@ -566,5 +566,8 @@ fn status_reports_a_hand_made_peering_and_not_an_unconnected_node() {
     );
     let json = near.toon(&["status", "--json"]).json();
     assert!(json["agent_node"]["joined"].is_null());
-    assert_eq!(json["agent_node"]["peerings"][0]["id"], "far");
+    assert_eq!(
+        json["agent_node"]["peerings"],
+        serde_json::json!([{ "toon_app": "relay", "id": "far" }])
+    );
 }
