@@ -69,6 +69,10 @@ TOON app relay (ILP address g.toon.fb0e007c71750599): connector running on 127.0
 App relay of relay: running on 127.0.0.1:41733. Route g.toon.fb0e007c71750599.relay at price 1.
 ```
 
+An agent node that has joined no network but holds peerings made with `toon peer add` reads
+`No network joined. 1 peering: drew.` instead, and `status --json` lists them under
+`agent_node.peerings`, which is `null` while a connector does not answer.
+
 `status` exits 0 when everything is running and 1 when anything is not, so a script can
 check it with `toon status --json >/dev/null`.
 

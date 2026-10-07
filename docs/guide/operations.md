@@ -5,7 +5,7 @@
 ```sh
 toon up                  # install and start the systemd --user unit, then return
 toon up --foreground     # run the supervisor in this terminal instead
-toon status              # supervisor, each TOON app and app, restarts
+toon status              # supervisor, each TOON app and app, restarts, peerings
 toon logs relay          # the log of a TOON app or of an app
 toon logs echo -n 200    # the last 200 lines
 toon down                # stop everything, and the unit

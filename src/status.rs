@@ -37,12 +37,38 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             "not running"
         }
     )];
-    match &state.joined {
-        Some(network) => lines.push(format!(
+    // Asked of each running connector, as `toon peer list` does: unknown (`None`) as soon as
+    // one does not answer. A peering made with `peer add` does not set `joined`.
+    let peerings: Option<Vec<(&str, String)>> = state
+        .toon_apps
+        .iter()
+        .map(|app| {
+            crate::operator::peering_ids(home, &app.name).map(|ids| {
+                ids.into_iter()
+                    .map(|id| (app.name.as_str(), id))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(|all| all.into_iter().flatten().collect());
+    match (&state.joined, &peerings) {
+        (Some(network), _) => lines.push(format!(
             "Connected to {network}. Reading {}.",
             state.reads.join(", ")
         )),
-        None => lines.push(
+        (None, None) => lines.push(
+            "No network joined. Peerings are unknown while the connector is not running.".into(),
+        ),
+        (None, Some(held)) if !held.is_empty() => {
+            let ids: Vec<&str> = held.iter().map(|(_, id)| id.as_str()).collect();
+            lines.push(format!(
+                "No network joined. {} {}: {}.",
+                ids.len(),
+                if ids.len() == 1 { "peering" } else { "peerings" },
+                ids.join(", ")
+            ));
+        }
+        (None, Some(_)) => lines.push(
             "Unconnected: it has joined no network. `toon join <network> --deposit <amount> --yes` connects it."
                 .into(),
         ),
@@ -181,6 +207,10 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             "agent_node": {
                 "supervisor": { "running": supervisor_running, "socket": control::path(home) },
                 "joined": state.joined,
+                "peerings": peerings.map(|held| held
+                    .into_iter()
+                    .map(|(toon_app, id)| json!({ "toon_app": toon_app, "id": id }))
+                    .collect::<Vec<_>>()),
                 "reads": state.reads,
                 "toon_apps": toon_apps,
                 "subscriptions": subscriptions,
