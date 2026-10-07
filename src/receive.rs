@@ -184,12 +184,12 @@ pub fn time(seconds: u64) -> String {
     }
 }
 
-/// What a feed is doing, as a phrase for `status`. None for a feed no supervisor reports.
-pub fn describe_feed(feed: &Value) -> Option<String> {
+/// What a feed is doing, as a phrase for `status`: a null feed is one no supervisor reports.
+pub fn describe_feed(feed: &Value) -> String {
     if feed.is_null() {
-        return Some("not received: the supervisor is not running".to_owned());
+        return "not received: the supervisor is not running".to_owned();
     }
-    let mut text = feed["state"].as_str()?.to_owned();
+    let mut text = feed["state"].as_str().unwrap_or("state unknown").to_owned();
     text.push_str(&match feed["last_event_at"].as_u64() {
         Some(at) => format!(", last event at {}", time(at)),
         None => ", no event has arrived".to_owned(),
@@ -201,7 +201,7 @@ pub fn describe_feed(feed: &Value) -> Option<String> {
             feed["last_error"]["message"].as_str().unwrap_or_default()
         ));
     }
-    Some(text)
+    text
 }
 
 /// The receiving end of the subscriptions; it stops when it is dropped.

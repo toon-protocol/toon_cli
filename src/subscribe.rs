@@ -596,16 +596,15 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
             Read::Unanswered => {}
         }
         let mut item = entry.json();
-        let feed = crate::receive::feed_of(reply.as_ref(), &entry.relay);
-        item["feed"] = feed.clone();
+        item["feed"] = crate::receive::feed_of(reply.as_ref(), &entry.relay);
+        let feed_text = crate::receive::describe_feed(&item["feed"]);
         item["current"] = json!(current);
         item["exhausted"] = json!(entry.exhausted());
         shown.push(item);
         lines.push(format!(
-            "{}: {}balance {}, {} per event, filter {}{}{}",
+            "{}: {}; balance {}, {} per event, filter {}{}{}",
             entry.relay,
-            crate::receive::describe_feed(&feed)
-                .map_or_else(String::new, |feed| format!("{feed}; ")),
+            feed_text,
             entry.balance,
             entry.broadcast_price,
             entry.filter,

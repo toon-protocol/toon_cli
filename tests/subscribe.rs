@@ -1223,7 +1223,10 @@ fn feed(near: &Node) -> serde_json::Value {
 
 fn eventually_in_state(near: &Node, state: &str) -> serde_json::Value {
     eventually(|| feed(near)["state"] == state);
-    feed(near)
+    // Whatever the feed is doing, `status` of a running agent node succeeds.
+    let status = near.machine.toon(&["status", "--json"]);
+    assert_eq!(status.exit_code, 0, "{}{}", status.stdout, status.stderr);
+    status.json()["agent_node"]["subscriptions"][0]["feed"].clone()
 }
 
 #[test]
@@ -1372,4 +1375,23 @@ fn the_balance_read_time_changes_after_subscriptions_and_a_file_without_it_loads
     assert!(status["agent_node"]["subscriptions"][0]["balance_read_at"]
         .as_u64()
         .is_some());
+
+    // An older read time is replaced by the next one.
+    let mut file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    file["subscriptions"][0]["balance_read_at"] = json!(1);
+    std::fs::write(&path, file.to_string()).unwrap();
+    assert!(near
+        .machine
+        .toon(&["status"])
+        .stdout
+        .contains("read at 1 (unix time"));
+    near.toon(&["relay", "subscriptions"]);
+    let status = near.machine.toon(&["status", "--json"]).json();
+    assert!(
+        status["agent_node"]["subscriptions"][0]["balance_read_at"]
+            .as_u64()
+            .unwrap()
+            > 1
+    );
 }

@@ -148,7 +148,7 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             || "never read".to_owned(),
             |at| format!("read at {}", crate::receive::time(at)),
         );
-        let feed_text = crate::receive::describe_feed(&feed).unwrap_or_default();
+        let feed_text = crate::receive::describe_feed(&feed);
         lines.push(if exhausted {
             format!(
                 "Subscription at {}: {feed_text}; balance {} ({read}). `toon relay subscribe` tops it up.",
