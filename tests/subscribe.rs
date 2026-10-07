@@ -1214,10 +1214,6 @@ fn following_is_refused_before_anything_is_sent_or_counted() {
     assert_eq!(remaining(&near), before);
 }
 
-fn kept_path(near: &Node) -> std::path::PathBuf {
-    near.machine.agent_node_home().join("subscriptions.json")
-}
-
 fn status_subscription(near: &Node) -> serde_json::Value {
     near.machine.toon(&["status", "--json"]).json()["agent_node"]["subscriptions"][0].clone()
 }
@@ -1275,10 +1271,7 @@ fn subscriptions_needs_no_passphrase_while_the_subscriber_key_is_kept() {
     std::fs::remove_file(near.machine.agent_node_home().join("subscriber.key")).unwrap();
     let without = near.machine.toon(&["relay", "subscriptions", "--json"]);
     assert_eq!(without.exit_code, 1, "{}{}", without.stdout, without.stderr);
-    assert!(
-        without.stderr.contains("passphrase_missing")
-            || without.stdout.contains("passphrase_missing")
-    );
+    assert_eq!(without.json()["error"]["code"], "passphrase_missing");
     let with = near.toon(&["relay", "subscriptions", "--json"]);
     assert_eq!(with.exit_code, 0, "{}{}", with.stdout, with.stderr);
 }
@@ -1290,14 +1283,15 @@ fn a_relay_that_does_not_answer_leaves_read_at_and_an_entry_without_one_still_lo
     let (far, relay) = remote(&chain);
     peer_and_route(&near, &far);
     subscribed(&near, &relay, "1000");
-    let path = kept_path(&near);
+    let path = near.machine.agent_node_home().join("subscriptions.json");
     let mut file: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let read_at = file["subscriptions"][0]["read_at"].clone();
     assert!(read_at.is_u64(), "{file}");
     // A relay that answers nothing: nothing listens on port 1.
     file["subscriptions"][0]["relay"] = json!("ws://127.0.0.1:1");
-    std::fs::write(&path, file.to_string()).unwrap();
+    near.machine
+        .write_agent_node_file("subscriptions.json", file.to_string());
 
     let listed = near
         .machine
@@ -1306,32 +1300,47 @@ fn a_relay_that_does_not_answer_leaves_read_at_and_an_entry_without_one_still_lo
     assert_eq!(listed["subscriptions"][0]["current"], false, "{listed}");
     assert_eq!(listed["subscriptions"][0]["read_at"], read_at);
 
-    // An entry kept before the time was kept.
-    file["subscriptions"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("read_at");
-    std::fs::write(&path, file.to_string()).unwrap();
+    // Entries kept before the time was kept: the relay that answers, and one that does not.
+    let mut answering = file["subscriptions"][0].clone();
+    answering["relay"] = json!(relay.url());
+    let mut unanswering = file["subscriptions"][0].clone();
+    for entry in [&mut answering, &mut unanswering] {
+        entry.as_object_mut().unwrap().remove("read_at");
+    }
+    file["subscriptions"] = json!([answering, unanswering]);
+    near.machine
+        .write_agent_node_file("subscriptions.json", file.to_string());
+    let status = near.machine.toon(&["status", "--json"]).json();
+    assert_eq!(
+        status["agent_node"]["subscriptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|kept| kept["read_at"].clone())
+            .collect::<Vec<_>>(),
+        [json!(null), json!(null)],
+        "{status}"
+    );
+    let text = near.machine.toon(&["status"]).stdout;
+    assert_eq!(
+        text.matches("as last read at an unknown time").count(),
+        2,
+        "{text}"
+    );
     let listed = near
         .machine
         .toon(&["relay", "subscriptions", "--json"])
         .json();
     assert_eq!(
         listed["subscriptions"].as_array().unwrap().len(),
-        1,
+        2,
         "{listed}"
     );
-    assert_eq!(listed["subscriptions"][0]["read_at"], json!(null));
-    let status = near.machine.toon(&["status", "--json"]).json();
     assert_eq!(
-        status["agent_node"]["subscriptions"][0]["read_at"],
-        json!(null)
+        listed["subscriptions"][1]["read_at"],
+        json!(null),
+        "{listed}"
     );
-    assert!(near
-        .machine
-        .toon(&["status"])
-        .stdout
-        .contains("as last read at an unknown time"));
 }
 
 #[test]

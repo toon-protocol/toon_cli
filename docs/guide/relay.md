@@ -101,10 +101,6 @@ It reads the relay's subscribe price and broadcast price, shows what `--amount` 
 pays only with `--yes`, as whole packets of the subscribe price, over a peering. The
 subscription belongs to your **subscriber key**, not your agent identity.
 
-`toon relay subscriptions` reads the current balance from each relay and needs no passphrase.
-The balance in `toon status` is the last one read, with its time (`read_at`); `status` asks no
-relay.
-
 The supervisor then dials the feed and writes every event it carries into your own relay,
 and resumes it after a restart. When the balance runs out the subscription is marked
 `exhausted`. Top it up with the same command; leaving out `--filter` keeps the old one:
@@ -112,6 +108,10 @@ and resumes it after a restart. When the balance runs out the subscription is ma
 ```sh
 toon relay subscribe ws://bob…anyone:7100 --amount 500 --yes
 ```
+
+`toon relay subscriptions` reads the current balance from each relay and needs no passphrase.
+The balance in `toon status` is the last one read, with its time (`read_at`); `status` asks no
+relay.
 
 To watch what arrives, one event per line, read your own relay, which the subscription fills:
 
