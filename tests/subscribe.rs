@@ -31,7 +31,7 @@ impl Node {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        panic!("the connector has no read address");
+        panic!("the connector has no address");
     }
 
     fn toon(&self, args: &[&str]) -> Run {
