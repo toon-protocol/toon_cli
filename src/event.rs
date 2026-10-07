@@ -312,7 +312,8 @@ pub fn write_to(
 pub fn followed_keys(home: &Path) -> Result<Vec<String>, Error> {
     let state = node::State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
     let app = crate::subscribe::own_relay_app(&state)?;
-    let address = crate::subscribe::own_relay_address(home, &app.name)?;
+    let address =
+        crate::subscribe::own_relay_address(home, &app.name, crate::subscribe::RelayPort::Read)?;
     let identity = public_key(&*agent_secret(home)?)?;
     let filter = json!({ "kinds": [3], "authors": [identity] });
     let events = fetch(&Egress::of(home)?, &format!("ws://{address}"), &filter)?;
@@ -462,7 +463,8 @@ pub fn watch(filter: Option<&str>, following: bool) -> Result<Report, Error> {
     };
     let state = node::State::load(&home)?.ok_or_else(|| node::no_agent_node(&home))?;
     let app = crate::subscribe::own_relay_app(&state)?;
-    let address = crate::subscribe::own_relay_address(&home, &app.name)?;
+    let address =
+        crate::subscribe::own_relay_address(&home, &app.name, crate::subscribe::RelayPort::Read)?;
     let dialled = format!("ws://{address}");
 
     // A relay that sells its feed gives a live read to its operator: whoever answers its

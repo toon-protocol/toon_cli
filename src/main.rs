@@ -295,8 +295,12 @@ fn run() -> ExitCode {
         Command::Up { foreground: false } => {
             render(home::resolve().and_then(|home| install(&home)), json).into()
         }
-        Command::Logs { name, lines } => render(
-            home::resolve().and_then(|home| status::logs(&home, &name, lines)),
+        Command::Logs {
+            name,
+            connector,
+            lines,
+        } => render(
+            home::resolve().and_then(|home| status::logs(&home, &name, connector, lines)),
             json,
         )
         .into(),

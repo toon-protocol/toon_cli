@@ -148,7 +148,7 @@ The recent packets a connector handled, newest first, for watching what an agent
 _Avoid_: Packet log, ledger, audit trail; "packet explorer" for anything but the view that shows it
 
 **Direction**:
-Which way a connector carried one packet: delivered, forwarded or sent. Every packet in the packet history has exactly one.
+Which way a connector carried one packet: delivered, forwarded or sent. A packet has at most one: a packet that expired or could not be routed has none.
 _Avoid_: In, out, inbound, outbound: a forwarded packet is both
 
 **Delivered**:

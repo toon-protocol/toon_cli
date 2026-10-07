@@ -109,6 +109,10 @@ and resumes it after a restart. When the balance runs out the subscription is ma
 toon relay subscribe ws://bob…anyone:7100 --amount 500 --yes
 ```
 
+`toon relay subscriptions` reads the current balance from each relay and needs no passphrase.
+The balance in `toon status` is the last one read, with its time (`read_at`); `status` asks no
+relay.
+
 To watch what arrives, one event per line, read your own relay, which the subscription fills:
 
 ```sh
@@ -132,7 +136,7 @@ the relay closed the feed with `payment-required` or the balance is 0. It also r
 your own relay last accepted an event from the feed, and the last error with its time, which
 stays after the feed is `live` again until the supervisor stops. In `--json` that is `feed`
 (`state`, `since`, `last_event_at`, `last_error`), null when the supervisor is not running,
-and `balance_read_at`, the unix time the balance was last read from the relay; a subscription
+and `read_at`, the Unix time the balance was last read from the relay; a subscription
 kept before that was recorded has none. `status` needs no passphrase and its exit code does
 not depend on the feed. The state is kept in memory, so it starts over when the supervisor does.
 

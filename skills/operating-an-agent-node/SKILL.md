@@ -32,7 +32,8 @@ command here is missing from `toon --help`, the skill is out of date: trust `--h
   3 no agent node on this machine. `toon --help` lists them; the error codes to branch on are
   named where they arise below.
 - No command prompts or reads standard input. The wallet passphrase comes from the file named by
-  `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`, never from a flag.
+  `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`, never from a flag. `toon init` creates no
+  passphrase file: the operator chooses where it is and names it with `TOON_PASSPHRASE_FILE`.
 - `--app <name>` says which TOON app a command about a connector is about; the first one is the
   default. Amounts are in the token's base units.
 - Ask for help with `toon --help` or `toon <command> --help`; there is no `help` subcommand.
@@ -96,8 +97,12 @@ connector is running, or fail with `confirmation_required` and change nothing.
 2. Fund the wallet (next section).
 3. `toon up` starts the supervisor as a `systemd --user` unit. `toon up --foreground` runs it in
    the current process. `toon down` stops it.
-4. `toon status` reports the agent node, each TOON app and its apps, and how often the supervisor
-   restarted a connector. `toon logs <name>` shows the log of a TOON app or an app.
+4. `toon status` reports the agent node, each TOON app and its apps (for the relay, a write address and the
+   `ws://` URL it is read at, `read_address` in `--json`, which `toon event query <ws-url>` takes), and how often the supervisor
+   restarted a connector. `toon logs <app>` shows what an app wrote to its output, also after it
+   failed to start or while the agent node is stopped; `toon logs <name> --connector` shows the
+   connector's log of the TOON app the name belongs to, and so does `toon logs <TOON app>` when
+   no app has that name. An app served at a URL has no log of its own.
 5. `toon wallet show` lists the addresses by chain and the agent identity.
 
 ## Funding
@@ -204,6 +209,19 @@ and lists rejects from before a restart. Fulfilled packets are not listed, only 
 `destination`, `outcome` (`rejected`), `code` and `message`; `packets` is `[]` when nothing was
 rejected.
 
+`toon packet history` is free too. It lists the connector's recent packets, newest first, from its
+packet history, fulfilled and rejected alike, where `toon packet list` has only rejects from the
+log. A row shows the `time`, the `direction`, the `destination`, `from` (a peering or channel),
+`to` (a peering), the `amount`, the `fee` of a fulfilled forward, the `outcome` and, for a reject,
+its `code` and `message`. The direction is `delivered` (it ended at one of the connector's apps),
+`forwarded` (it arrived from one side and left toward a peer) or `sent` (you originated it); a
+packet that expired or could not be routed has none, and any field a row lacks is left out. The
+history is recent packets only (1,000) and is forgotten when the connector restarts;
+`toon packet count` has the totals. `-n` / `--limit` says how many (20 by default); `--app`
+chooses the TOON app. With `--json` it prints `toon_app`, `dropped` (rows the connector could not
+keep) and `packets`, `[]` when there are none. It fails with `not_running` when the agent node is
+stopped.
+
 ## Channels
 
 `toon channel list` shows both directions with collateral and status. `toon channel open --terms
@@ -280,12 +298,15 @@ not raise the amount step by step.
 relay: a prepaid balance at that relay, with one filter, drawn down for each event it sends.
 The supervisor writes those events into your own relay (ADR 0005). It needs a peering too, and
 without `--yes` it fails with `not_confirmed` and says what the relay charges. `toon relay
-subscriptions` shows the balance. To know whether the supervisor receives a subscription, read
+subscriptions` reads the current balance from each relay, and needs no passphrase once
+`subscribe` has run; the balance in `toon status` is the last one read, with its time
+(`read_at`). To know whether the supervisor receives a subscription, read
 `feed` in `toon status --json` (or in `toon relay subscriptions --json`): `state` is `connecting`,
 `live`, `retrying` or `exhausted`, `last_event_at` is when your own relay last accepted an event
 from it, and `last_error` says what went wrong; `feed` is null when the supervisor is not running.
-Do not infer delivery from your own relay holding or lacking an event. It is not the follow list, which is an event you publish. It is
-the same as publishing in one way: if a connector in between rejects its packets with `F03`,
+Do not infer delivery from your own relay holding or lacking an event. It is not the follow list,
+which is an event you publish. It is the same as publishing in one way: if a connector in
+between rejects its packets with `F03`,
 read `cost` from the rejected packet's report (`response.cost`) and state it with
 `--packet-amount <cost>`, treating `"complete": false` as a floor; `--amount` stays the total,
 paid as whole packets of that amount, and each packet still credits only the subscribe price.

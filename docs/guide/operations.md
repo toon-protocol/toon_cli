@@ -5,11 +5,18 @@
 ```sh
 toon up                  # install and start the systemd --user unit, then return
 toon up --foreground     # run the supervisor in this terminal instead
-toon status              # supervisor, each TOON app and app, restarts
-toon logs relay          # the log of a TOON app or of an app
+toon status              # supervisor, each TOON app and app, restarts, peerings
+toon logs echo           # what the app echo wrote to its output
+toon logs echo --connector  # the log of the connector echo is behind
 toon logs echo -n 200    # the last 200 lines
 toon down                # stop everything, and the unit
 ```
+
+`toon logs <name>` shows an app's own log if the name is an app's, and the connector's log if it
+is only a TOON app's. The default `relay` is both, so it shows the app's; `--connector` shows the
+connector's. The report says which in `source`. An app's log is kept in its data directory, an image
+app's once its container stops, so it is readable after a failed start and while the agent node is
+stopped. An app served at a URL has none.
 
 `toon up` writes `~/.config/systemd/user/toon-agent-node.service`, which runs
 `toon up --foreground`, and starts it. The supervisor:
@@ -26,7 +33,7 @@ To keep it running after you log out, let your user's services outlive the sessi
 loginctl enable-linger "$USER"
 ```
 
-## Counting and listing packets
+## Counting, listing and watching packets
 
 ```sh
 toon packet count          # fulfilled, rejected, rejects by code, fees earned
@@ -47,11 +54,31 @@ toon packet list -n 5 --json
 ```
 
 `toon packet list` is free too: it needs no passphrase and moves no money. It reads the connector's
-log, as `toon logs` does, so it works while the agent node is stopped, and the log keeps the
+log, as `toon logs --connector` does, so it works while the agent node is stopped, and the log keeps the
 rejects from before a restart. A line shows the time, the destination, the reject code and the
 reject message. Only rejected packets are listed: the connector logs a fulfilled packet only at
 `debug`, so `toon packet count` has those, as a count. `-n` / `--limit` says how many to show. A
 connector that has rejected nothing prints an empty list and exits 0.
+
+```sh
+toon packet history        # the last 20 packets the connector handled, newest first
+toon packet history -n 5 --json
+```
+
+`toon packet history` is free too: it needs no passphrase and moves no money. It reads the
+connector's packet history, which `toon` turns on at 1,000 packets in every connector config it
+writes, so an agent node set up earlier has it after its next `toon up`. Unlike `toon packet list`,
+which reads rejects from the log, it lists fulfilled and rejected packets alike, and a line shows
+the time, the packet's **direction**, the destination, the peering or channel it came `from` and
+the peering it went `to`, the amount, the fee of a fulfilled forward, the outcome and, for a
+reject, its code and message. The direction is `delivered` when the packet ended at one of the
+connector's apps, `forwarded` when it arrived from one side and left toward a peer, and `sent`
+when you originated it. A packet that expired or could not be routed has no direction, and a field
+a row lacks is left out. The history is recent packets only and is forgotten when the connector
+restarts; `toon packet count` has the totals. When the connector had to drop rows, the text says
+how many (`dropped` in `--json`). It needs the agent node running and fails with `not_running`
+otherwise. `-n` / `--limit` says how many to show; a connector that has handled nothing prints an
+empty list and exits 0.
 
 ## Scripting with `--json`
 
@@ -120,5 +147,6 @@ Change it with `toon` commands, not by hand. An edited `limits.json` stops every
 | `peering_needed` | Run the `peer add` (if the message prints one) and `route add` the message prints |
 | `overlay_unavailable` | The Anyone network did not carry: try again later |
 | `describe_failed` | The connector at that `/ilp` URL gave no self-description: check the URL, or try again later |
-| `connector_failed`, `app_failed` | `toon logs <name>` |
+| `connector_failed` | `toon logs <TOON app> --connector` |
+| `app_failed` | `toon logs <app>` |
 | `systemd_failed` | `systemctl --user status toon-agent-node` |

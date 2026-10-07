@@ -139,9 +139,9 @@ pub struct Kept {
     pub filter: Value,
     pub balance: u64,
     pub broadcast_price: u64,
-    /// When the balance was last read from the relay, in unix seconds. None for a
-    /// subscription kept before this was recorded.
-    pub balance_read_at: Option<u64>,
+    /// When a relay last stated the balance, in Unix seconds. None for an entry kept before
+    /// the time was kept.
+    pub read_at: Option<u64>,
 }
 
 impl Kept {
@@ -157,7 +157,7 @@ impl Kept {
             "filter": self.filter,
             "balance": self.balance,
             "broadcast_price": self.broadcast_price,
-            "balance_read_at": self.balance_read_at,
+            "read_at": self.read_at,
         })
     }
 
@@ -168,7 +168,7 @@ impl Kept {
             filter: value["filter"].clone(),
             balance: value["balance"].as_u64()?,
             broadcast_price: value["broadcast_price"].as_u64()?,
-            balance_read_at: value["balance_read_at"].as_u64(),
+            read_at: value["read_at"].as_u64(),
         })
     }
 
@@ -184,7 +184,7 @@ impl Kept {
             broadcast_price: answer["broadcast_price"]
                 .as_u64()
                 .filter(|price| *price > 0)?,
-            balance_read_at: Some(event::now()),
+            read_at: Some(event::now()),
         })
     }
 }
@@ -572,10 +572,14 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
     }
     let egress = Egress::of(home)?;
     let mut kept = load(home)?;
+    // The secret `subscribe` kept needs no passphrase; the wallet is opened only without it.
     let secret = if kept.is_empty() {
         None
     } else {
-        Some(subscriber_secret(home)?)
+        Some(match kept_secret(home) {
+            Some(secret) => zeroize::Zeroizing::new(secret),
+            None => subscriber_secret(home)?,
+        })
     };
     let reply = control::ask(home, "status");
     let mut shown = Vec::new();
@@ -591,7 +595,7 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
             // The filter is kept, for the next payment to open the subscription again with.
             Read::NotSubscribed => {
                 entry.balance = 0;
-                entry.balance_read_at = Some(event::now());
+                entry.read_at = Some(event::now());
             }
             Read::Unanswered => {}
         }
@@ -671,9 +675,23 @@ pub fn own_relay_app(state: &node::State) -> Result<&node::ToonApp, Error> {
         })
 }
 
-/// Where the running relay of the TOON app `app` listens, `host:port`, as the agent node's
-/// supervisor reports it. The relay not running is `not_running`.
-pub fn own_relay_address(home: &Path, app: &str) -> Result<String, Error> {
+/// Which of the two loopback ports of the own relay (ADR 0006) a caller means.
+#[derive(Clone, Copy)]
+pub enum RelayPort {
+    /// The write port, `address`: the operator's HTTP, such as the list of subscribers.
+    Write,
+    /// The read port, `read_address`: the NIP-01 websocket.
+    Read,
+}
+
+/// Where the running relay of the TOON app `app` listens on `port`, `host:port`, as the
+/// agent node's supervisor reports it. The relay not running, or reporting no such port, is
+/// `not_running`.
+pub fn own_relay_address(home: &Path, app: &str, port: RelayPort) -> Result<String, Error> {
+    let field = match port {
+        RelayPort::Write => "address",
+        RelayPort::Read => "read_address",
+    };
     let not_running = || Error {
         nothing_sent: false,
         unanswered: None,
@@ -691,7 +709,7 @@ pub fn own_relay_address(home: &Path, app: &str) -> Result<String, Error> {
         .flatten()
         .find(|reported| reported["name"] == node::RELAY)
         .filter(|reported| reported["running"] == true)
-        .and_then(|reported| reported["address"].as_str())
+        .and_then(|reported| reported[field].as_str())
         .map(str::to_owned)
         .ok_or_else(not_running)
 }
@@ -783,7 +801,7 @@ fn selling_relay(state: &node::State) -> Result<&node::ToonApp, Error> {
 
 /// The answer of the running relay of `app` to `GET /subscribers`.
 fn own_subscribers(home: &Path, app: &node::ToonApp) -> Result<Value, Error> {
-    let address = own_relay_address(home, &app.name).map_err(|mut error| {
+    let address = own_relay_address(home, &app.name, RelayPort::Write).map_err(|mut error| {
         error.message =
             "The relay is not running: `toon up` starts it, and it lists its subscribers.".into();
         error

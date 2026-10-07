@@ -205,6 +205,24 @@ fn a_second_toon_app_is_peered_both_ways_and_a_packet_crosses_each_way() {
         counted["packets"]["fulfilled"].as_u64() >= Some(1),
         "{counted}"
     );
+    // Its connector's history lists the packet it sent, read with `--app`.
+    let sent_back = (0..100)
+        .find_map(|_| {
+            let history = machine
+                .toon(&["--app", "second", "packet", "history", "--json"])
+                .json();
+            let found = history["packets"].as_array().is_some_and(|packets| {
+                packets
+                    .iter()
+                    .any(|p| p["direction"] == "sent" && p["destination"] == relay.as_str())
+            });
+            if !found {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            found.then_some(history)
+        })
+        .expect("the second connector's history lists the packet it sent");
+    assert_eq!(sent_back["toon_app"], "second", "{sent_back}");
 }
 
 #[test]

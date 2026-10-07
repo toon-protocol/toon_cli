@@ -52,12 +52,12 @@ impl Node {
         self.up = Some(up);
     }
 
-    /// The websocket URL of this agent node's own relay: the fake serves it on its write port.
+    /// The websocket URL of this agent node's own relay: the fake serves it on its read port.
     fn own_relay(&self) -> String {
         let status = self.machine.toon(&["status", "--json"]).json();
-        let address = status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
+        let address = status["agent_node"]["toon_apps"][0]["apps"][0]["read_address"]
             .as_str()
-            .unwrap_or_else(|| panic!("the relay has no address: {status}"));
+            .unwrap_or_else(|| panic!("the relay has no read address: {status}"));
         format!("ws://{address}")
     }
 
@@ -352,23 +352,24 @@ fn subscriptions_lists_the_balance_and_filter_at_each_relay() {
     let listed = near.toon(&["relay", "subscriptions", "--json"]);
 
     assert_eq!(listed.exit_code, 0, "{}{}", listed.stdout, listed.stderr);
-    let subscriptions = listed.json()["subscriptions"].clone();
+    let mut subscriptions = listed.json()["subscriptions"].clone();
+    assert!(subscriptions[0]["read_at"].is_u64(), "{subscriptions}");
+    subscriptions[0]["read_at"] = json!(null);
     let key = paid.json()["subscriber_key"].clone();
     assert_eq!(
         subscriptions,
         json!([{
+            "read_at": null,
             "relay": relay.url(),
             "subscriber_key": key,
             "filter": {"kinds":[1]},
             "balance": 2000,
             "broadcast_price": BROADCAST_PRICE,
-            "balance_read_at": subscriptions[0]["balance_read_at"],
             "feed": subscriptions[0]["feed"],
             "current": true,
             "exhausted": false,
         }])
     );
-    assert!(subscriptions[0]["balance_read_at"].as_u64().is_some());
     assert!(subscriptions[0]["feed"]["state"].is_string());
     assert_eq!(
         listed.json()["totals"],
@@ -1347,8 +1348,70 @@ fn without_a_supervisor_status_says_the_feed_is_not_received() {
     assert_eq!(listed.json()["subscriptions"][0]["feed"], json!(null));
 }
 
+fn status_subscription(near: &Node) -> serde_json::Value {
+    near.machine.toon(&["status", "--json"]).json()["agent_node"]["subscriptions"][0].clone()
+}
+
 #[test]
-fn the_balance_read_time_changes_after_subscriptions_and_a_file_without_it_loads() {
+fn status_marks_the_balance_as_last_read_and_only_subscriptions_reads_the_current_one() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote_debiting(&chain, 100);
+    peer_and_route(&near, &far);
+    subscribed(&near, &relay, "1000");
+    let before = status_subscription(&near);
+    let read_at = before["read_at"].as_u64().expect("a numeric read_at");
+    assert_eq!(before["balance"], 1000);
+    let text = near.machine.toon(&["status"]).stdout;
+    assert!(
+        text.contains(&format!(
+            "Subscription at {}: balance 1000, as last read at {read_at}",
+            relay.url()
+        )) && text.contains("`toon relay subscriptions`"),
+        "{text}"
+    );
+
+    eventually(|| relay.open_feeds() == 1);
+    relay.broadcast(event(7, 1));
+    near.wait_for_stored(event(7, 1)["id"].as_str().unwrap());
+    let after = status_subscription(&near);
+    assert_eq!(
+        (&after["balance"], &after["read_at"]),
+        (&json!(1000), &json!(read_at))
+    );
+
+    let listed = near.toon(&["relay", "subscriptions", "--json"]).json();
+    assert_eq!(listed["subscriptions"][0]["balance"], 900, "{listed}");
+    assert!(listed["subscriptions"][0]["read_at"].as_u64().unwrap() >= read_at);
+    let now = status_subscription(&near);
+    assert_eq!(now["balance"], 900);
+    assert!(now["read_at"].as_u64().unwrap() >= read_at);
+}
+
+#[test]
+fn subscriptions_needs_no_passphrase_while_the_subscriber_key_is_kept() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    subscribed(&near, &relay, "1000");
+
+    let run = near.machine.toon(&["relay", "subscriptions", "--json"]);
+
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    assert_eq!(run.json()["subscriptions"][0]["balance"], 1000);
+    assert_eq!(run.json()["subscriptions"][0]["current"], true);
+
+    std::fs::remove_file(near.machine.agent_node_home().join("subscriber.key")).unwrap();
+    let without = near.machine.toon(&["relay", "subscriptions", "--json"]);
+    assert_eq!(without.exit_code, 1, "{}{}", without.stdout, without.stderr);
+    assert_eq!(without.json()["error"]["code"], "passphrase_missing");
+    let with = near.toon(&["relay", "subscriptions", "--json"]);
+    assert_eq!(with.exit_code, 0, "{}{}", with.stdout, with.stderr);
+}
+
+#[test]
+fn a_relay_that_does_not_answer_leaves_read_at_and_an_entry_without_one_still_loads() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);
     let (far, relay) = remote(&chain);
@@ -1356,42 +1419,88 @@ fn the_balance_read_time_changes_after_subscriptions_and_a_file_without_it_loads
     subscribed(&near, &relay, "1000");
     let path = near.machine.agent_node_home().join("subscriptions.json");
     let mut file: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    file["subscriptions"][0]
-        .as_object_mut()
-        .unwrap()
-        .remove("balance_read_at");
-    std::fs::write(&path, file.to_string()).unwrap();
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let read_at = file["subscriptions"][0]["read_at"].clone();
+    assert!(read_at.is_u64(), "{file}");
+    // A relay that answers nothing: nothing listens on port 1.
+    file["subscriptions"][0]["relay"] = json!("ws://127.0.0.1:1");
+    near.machine
+        .write_agent_node_file("subscriptions.json", file.to_string());
 
+    let listed = near
+        .machine
+        .toon(&["relay", "subscriptions", "--json"])
+        .json();
+    assert_eq!(listed["subscriptions"][0]["current"], false, "{listed}");
+    assert_eq!(listed["subscriptions"][0]["read_at"], read_at);
+
+    // Entries kept before the time was kept: the relay that answers, and one that does not.
+    let mut answering = file["subscriptions"][0].clone();
+    answering["relay"] = json!(relay.url());
+    let mut unanswering = file["subscriptions"][0].clone();
+    for entry in [&mut answering, &mut unanswering] {
+        entry.as_object_mut().unwrap().remove("read_at");
+    }
+    file["subscriptions"] = json!([answering, unanswering]);
+    near.machine
+        .write_agent_node_file("subscriptions.json", file.to_string());
     let status = near.machine.toon(&["status", "--json"]).json();
     assert_eq!(
-        status["agent_node"]["subscriptions"][0]["balance_read_at"],
-        json!(null)
-    );
-    assert!(near.machine.toon(&["status"]).stdout.contains("never read"));
-
-    near.toon(&["relay", "subscriptions"]);
-    let status = near.machine.toon(&["status", "--json"]).json();
-    assert!(status["agent_node"]["subscriptions"][0]["balance_read_at"]
-        .as_u64()
-        .is_some());
-
-    // An older read time is replaced by the next one.
-    let mut file: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    file["subscriptions"][0]["balance_read_at"] = json!(1);
-    std::fs::write(&path, file.to_string()).unwrap();
-    assert!(near
-        .machine
-        .toon(&["status"])
-        .stdout
-        .contains("read at 1 (unix time"));
-    near.toon(&["relay", "subscriptions"]);
-    let status = near.machine.toon(&["status", "--json"]).json();
-    assert!(
-        status["agent_node"]["subscriptions"][0]["balance_read_at"]
-            .as_u64()
+        status["agent_node"]["subscriptions"]
+            .as_array()
             .unwrap()
-            > 1
+            .iter()
+            .map(|kept| kept["read_at"].clone())
+            .collect::<Vec<_>>(),
+        [json!(null), json!(null)],
+        "{status}"
     );
+    let text = near.machine.toon(&["status"]).stdout;
+    assert_eq!(
+        text.matches("as last read at an unknown time").count(),
+        2,
+        "{text}"
+    );
+    let listed = near
+        .machine
+        .toon(&["relay", "subscriptions", "--json"])
+        .json();
+    assert_eq!(
+        listed["subscriptions"].as_array().unwrap().len(),
+        2,
+        "{listed}"
+    );
+    assert_eq!(
+        listed["subscriptions"][1]["read_at"],
+        json!(null),
+        "{listed}"
+    );
+}
+
+#[test]
+fn subscriptions_help_says_no_passphrase_is_needed() {
+    let help = Machine::new()
+        .toon(&["relay", "subscriptions", "--help"])
+        .stdout;
+    assert!(help.contains("needs no passphrase"), "{help}");
+}
+
+#[test]
+fn an_older_read_time_is_replaced_by_the_next_read() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    subscribed(&near, &relay, "1000");
+    let path = near.machine.agent_node_home().join("subscriptions.json");
+    let mut file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    file["subscriptions"][0]["read_at"] = json!(1);
+    near.machine
+        .write_agent_node_file("subscriptions.json", file.to_string());
+    assert_eq!(status_subscription(&near)["read_at"], 1);
+
+    near.toon(&["relay", "subscriptions"]);
+
+    assert!(status_subscription(&near)["read_at"].as_u64().unwrap() > 1);
 }

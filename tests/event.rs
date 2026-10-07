@@ -36,12 +36,12 @@ impl Running {
         })
     }
 
-    /// The websocket URL of the relay: the fake serves it on its write port.
+    /// The websocket URL of the relay: the fake serves it on its read port.
     fn relay_url(&self) -> String {
         let status = self.machine.toon(&["status", "--json"]).json();
-        let address = status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
+        let address = status["agent_node"]["toon_apps"][0]["apps"][0]["read_address"]
             .as_str()
-            .unwrap_or_else(|| panic!("the relay has no address: {status}"));
+            .unwrap_or_else(|| panic!("the relay has no read address: {status}"));
         format!("ws://{address}")
     }
 
@@ -56,6 +56,31 @@ impl Running {
             .expect("the agent identity")
             .to_owned()
     }
+}
+
+#[test]
+fn the_relay_is_read_on_its_read_port_and_status_says_where() {
+    let node = running();
+    let status = node.machine.toon(&["status", "--json"]).json();
+    let relay = &status["agent_node"]["toon_apps"][0]["apps"][0];
+    let write = relay["address"].as_str().unwrap();
+    let read = relay["read_address"].as_str().unwrap();
+    assert_ne!(write, read);
+    let text = node.machine.toon(&["status"]).stdout;
+    assert!(text.contains(&format!("ws://{read}")), "{text}");
+
+    // The write port refuses a websocket upgrade, as the relay's image does.
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(write).unwrap();
+    write!(
+        stream,
+        "GET / HTTP/1.1\r\nHost: {write}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    )
+    .unwrap();
+    let mut answer = String::new();
+    let _ = stream.read_to_string(&mut answer);
+    assert!(answer.starts_with("HTTP/1.1 404"), "{answer}");
 }
 
 #[test]

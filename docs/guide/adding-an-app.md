@@ -24,7 +24,8 @@ Given as a container image, an app must:
   the agent node's home that survives restarts.
 
 The app is given no environment beyond `TOON_BLS_PORT` and `TOON_DATA_DIR`. An image that
-needs a secret or another variable to start fails with `app_failed`; `toon logs <app>` says why.
+needs a secret or another variable to start fails with `app_failed`; `toon logs <app>` shows what
+it wrote before it stopped.
 
 `toon` runs it with `docker`, its port published on loopback only: nothing reaches the app
 except through its connector.
@@ -102,6 +103,11 @@ toon send "$(jq -r .address add.json)" --amount 2 \
   --method POST --path '/say?loud=1' --body body.json --yes
 ```
 
+`toon logs echo` shows what the app wrote to its standard output and standard error, kept in its
+data directory once its container stops, so it also answers after a failed start or while the
+agent node is stopped. `toon logs echo --connector` shows the log of the connector it is behind,
+where its paid requests pass. An app added with `--url` is not run here and has no log.
+
 `--method` and `--path` are the request the app receives, and `--body` is a file sent as its
 `application/json` body; without them the request is an empty `POST /`. This, not the app's
 loopback address, is how you use it: a call to the loopback address is not paid.
@@ -174,4 +180,4 @@ It removes the app and its route and restarts the connector.
 | `name_taken` | A TOON app or an app of this agent node already has that name, or it is not usable |
 | `unknown_name` | `--to` does not name a TOON app of this agent node |
 | `one_relay` | The image is the relay's: an agent node runs one relay, the one `init` made |
-| `app_failed` | The app did not start or did not answer `/health`; `toon logs <app>` says why |
+| `app_failed` | The app did not start or did not answer `/health`; `toon logs <app>` shows what it wrote |

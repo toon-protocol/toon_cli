@@ -203,19 +203,152 @@ fn a_connector_that_exits_is_restarted_and_status_shows_it() {
     );
 }
 
+/// Write `text` as the log of the app `name`, as the process runner does.
+fn write_app_log(machine: &Machine, name: &str, text: &str) {
+    let data = machine
+        .agent_node_home()
+        .join("apps")
+        .join(name)
+        .join("data");
+    fs::create_dir_all(&data).unwrap();
+    fs::write(data.join("app.log"), text).unwrap();
+}
+
 #[test]
-fn logs_shows_the_log_of_the_relay_toon_app_and_app() {
+fn logs_of_a_name_that_is_a_toon_app_and_an_app_shows_the_apps_log_and_connector_asks_for_the_other(
+) {
     let chain = FakeChain::start();
     let machine = Machine::new();
     machine.init_on(&chain);
     let log = machine.agent_node_home().join("connectors/0/connector.log");
     fs::write(&log, "one\ntwo\nthree\n").unwrap();
+    write_app_log(&machine, "relay", "app one\napp two\napp three\n");
 
     let run = machine.toon(&["logs", "relay", "-n", "2"]);
-    assert_eq!(run.stdout, "two\nthree\n");
+    assert_eq!(run.stdout, "app two\napp three\n");
     assert_eq!(run.exit_code, 0);
     let json = machine.toon(&["logs", "relay", "--json"]).json();
+    assert_eq!(json["source"], "app");
+    assert_eq!(
+        json["lines"],
+        serde_json::json!(["app one", "app two", "app three"])
+    );
+    let json = machine
+        .toon(&["logs", "relay", "--connector", "--json"])
+        .json();
+    assert_eq!(json["source"], "connector");
     assert_eq!(json["lines"], serde_json::json!(["one", "two", "three"]));
+    let run = machine.toon(&["logs", "relay", "--connector", "-n", "2"]);
+    assert_eq!(run.stdout, "two\nthree\n");
+}
+
+#[test]
+fn logs_of_an_app_behind_another_toon_app_name_shows_its_log_or_its_connectors() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let added = machine.toon(&[
+        "add", "notes", "--to", "relay", "--image", "notes:1", "--yes", "--json",
+    ]);
+    assert_eq!(added.exit_code, 0, "{}", added.stdout);
+    let log = machine.agent_node_home().join("connectors/0/connector.log");
+    fs::write(&log, "connector line\n").unwrap();
+    write_app_log(&machine, "notes", "notes line\n");
+
+    let app = machine.toon(&["logs", "notes", "--json"]).json();
+    assert_eq!(app["source"], "app");
+    assert_eq!(app["toon_app"], "relay");
+    assert_eq!(app["lines"], serde_json::json!(["notes line"]));
+    let connector = machine
+        .toon(&["logs", "notes", "--connector", "--json"])
+        .json();
+    assert_eq!(connector["source"], "connector");
+    assert_eq!(connector["lines"], serde_json::json!(["connector line"]));
+}
+
+#[test]
+fn logs_of_a_toon_app_with_no_app_of_that_name_shows_the_connectors_log() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let added = machine.toon(&[
+        "add", "notes", "--to", "relay", "--image", "notes:1", "--yes", "--json",
+    ]);
+    assert_eq!(added.exit_code, 0, "{}", added.stdout);
+    let removed = machine.toon(&["remove", "relay", "--yes", "--json"]);
+    assert_eq!(removed.exit_code, 0, "{}", removed.stdout);
+    let log = machine.agent_node_home().join("connectors/0/connector.log");
+    fs::write(&log, "connector line\n").unwrap();
+
+    let json = machine.toon(&["logs", "relay", "--json"]).json();
+
+    assert_eq!(json["source"], "connector");
+    assert_eq!(json["toon_app"], "relay");
+    assert_eq!(json["lines"], serde_json::json!(["connector line"]));
+}
+
+#[test]
+fn logs_of_an_app_that_failed_to_start_shows_what_it_wrote_while_the_agent_node_is_stopped() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    fs::write(machine.agent_node_home().join("apps/fail-relay"), "").unwrap();
+    let up = machine.toon(&["up", "--foreground", "--json"]);
+    assert_eq!(up.json()["error"]["code"], "app_failed", "{}", up.stdout);
+
+    let run = machine.toon(&["logs", "relay", "--json"]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    assert_eq!(run.json()["source"], "app");
+    assert_eq!(
+        run.json()["lines"],
+        serde_json::json!(["fake relay: told not to start"])
+    );
+}
+
+#[test]
+fn logs_of_an_app_that_never_started_is_empty() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+
+    let json = machine.toon(&["logs", "relay", "--json"]).json();
+
+    assert_eq!(json["source"], "app");
+    assert_eq!(json["lines"], serde_json::json!([]));
+}
+
+#[test]
+fn logs_of_an_app_served_at_a_url_says_it_has_none_and_names_the_flag() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let added = machine.toon(&[
+        "add",
+        "remote",
+        "--to",
+        "relay",
+        "--url",
+        "http://127.0.0.1:9/inbox",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(added.exit_code, 0, "{}", added.stdout);
+
+    let run = machine.toon(&["logs", "remote", "--json"]);
+
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
+    assert!(
+        run.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--connector"),
+        "{}",
+        run.stdout
+    );
+    let connector = machine.toon(&["logs", "remote", "--connector", "--json"]);
+    assert_eq!(connector.exit_code, 0);
+    assert_eq!(connector.json()["source"], "connector");
 }
 
 #[test]

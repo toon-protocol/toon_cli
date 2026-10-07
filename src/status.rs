@@ -37,12 +37,38 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             "not running"
         }
     )];
-    match &state.joined {
-        Some(network) => lines.push(format!(
+    // Asked of each running connector, as `toon peer list` does: unknown (`None`) as soon as
+    // one does not answer. A peering made with `peer add` does not set `joined`.
+    let peerings: Option<Vec<(&str, String)>> = state
+        .toon_apps
+        .iter()
+        .map(|app| {
+            crate::operator::peering_ids(home, &app.name).map(|ids| {
+                ids.into_iter()
+                    .map(|id| (app.name.as_str(), id))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(|all| all.into_iter().flatten().collect());
+    match (&state.joined, &peerings) {
+        (Some(network), _) => lines.push(format!(
             "Connected to {network}. Reading {}.",
             state.reads.join(", ")
         )),
-        None => lines.push(
+        (None, None) => lines.push(
+            "No network joined. Peerings are unknown while the connector is not running.".into(),
+        ),
+        (None, Some(held)) if !held.is_empty() => {
+            let ids: Vec<&str> = held.iter().map(|(_, id)| id.as_str()).collect();
+            lines.push(format!(
+                "No network joined. {} {}: {}.",
+                ids.len(),
+                if ids.len() == 1 { "peering" } else { "peerings" },
+                ids.join(", ")
+            ));
+        }
+        (None, Some(_)) => lines.push(
             "Unconnected: it has joined no network. `toon join <network> --deposit <amount> --yes` connects it."
                 .into(),
         ),
@@ -104,12 +130,16 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                 let running = field("running") == true;
                 all_running &= running;
                 lines.push(format!(
-                    "App {name} of {}: {}{}. {route}",
+                    "App {name} of {}: {}{}.{} {route}",
                     app.name,
                     if running { "running" } else { "not running" },
                     field("address")
                         .as_str()
                         .map(|address| format!(" on {address}"))
+                        .unwrap_or_default(),
+                    field("read_address")
+                        .as_str()
+                        .map(|read| format!(" Read at ws://{read}."))
                         .unwrap_or_default()
                 ));
                 let image = match &behind.source {
@@ -144,26 +174,28 @@ pub fn status(home: &Path) -> Result<Report, Error> {
     for kept in all_kept {
         let exhausted = kept.exhausted();
         let feed = crate::receive::feed_of(reply.as_ref(), &kept.relay);
-        let read = kept.balance_read_at.map_or_else(
-            || "never read".to_owned(),
-            |at| format!("read at {}", crate::receive::time(at)),
+        let read = kept.read_at.map_or_else(
+            || "at an unknown time".to_owned(),
+            |at| format!("at {at} (Unix seconds)"),
         );
         let feed_text = crate::receive::describe_feed(&feed);
         lines.push(if exhausted {
             format!(
-                "Subscription at {}: {feed_text}; balance {} ({read}). `toon relay subscribe` tops it up.",
+                "Subscription at {}: exhausted (balance {}, as last read {read}); {feed_text}. \
+                 `toon relay subscribe` tops it up.",
                 kept.relay, kept.balance
             )
         } else {
             format!(
-                "Subscription at {}: {feed_text}; balance {} ({read}).",
+                "Subscription at {}: balance {}, as last read {read}; {feed_text}. \
+                 `toon relay subscriptions` reads the current one.",
                 kept.relay, kept.balance
             )
         });
         subscriptions.push(json!({
             "relay": kept.relay,
             "balance": kept.balance,
-            "balance_read_at": kept.balance_read_at,
+            "read_at": kept.read_at,
             "broadcast_price": kept.broadcast_price,
             "exhausted": exhausted,
             "feed": feed,
@@ -189,6 +221,10 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             "agent_node": {
                 "supervisor": { "running": supervisor_running, "socket": control::path(home) },
                 "joined": state.joined,
+                "peerings": peerings.map(|held| held
+                    .into_iter()
+                    .map(|(toon_app, id)| json!({ "toon_app": toon_app, "id": id }))
+                    .collect::<Vec<_>>()),
                 "reads": state.reads,
                 "toon_apps": toon_apps,
                 "subscriptions": subscriptions,
@@ -242,14 +278,14 @@ pub fn down(home: &Path) -> Result<Report, Error> {
 /// How many lines of a log `toon logs` shows when it is not told.
 pub const DEFAULT_LINES: usize = 100;
 
-/// The last `lines` lines of the log of the TOON app or app called `name`. An app's
-/// requests pass through the connector of its TOON app, so until an app runs as a
-/// process of its own, the connector's log is the app's log.
-pub fn logs(home: &Path, name: &str, lines: usize) -> Result<Report, Error> {
+/// The last `lines` lines of a log of the TOON app or app called `name`: the app's own
+/// output if `name` is an app and `connector` is not asked for, else the connector's log of
+/// the TOON app the name belongs to.
+pub fn logs(home: &Path, name: &str, connector: bool, lines: usize) -> Result<Report, Error> {
     let Some(state) = State::load(home)? else {
         return Err(node::no_agent_node(home));
     };
-    let Some(app) = state
+    let Some(toon) = state
         .toon_apps
         .iter()
         .find(|app| app.name == name || app.apps.iter().any(|behind| behind.name == name))
@@ -272,13 +308,44 @@ pub fn logs(home: &Path, name: &str, lines: usize) -> Result<Report, Error> {
             ),
         });
     };
-    let log = node::ConnectorFiles::of(home, app.connector).log;
+    // An app of that name, in the TOON app that has it. The name of an app is unique in an
+    // agent node, so an app behind another TOON app is the one asked for as well.
+    let app = state
+        .toon_apps
+        .iter()
+        .flat_map(|toon| toon.apps.iter())
+        .find(|app| app.name == name);
+    let (source, log) = match app {
+        Some(app) if !connector => {
+            if matches!(app.source, node::Source::Url(_)) {
+                return Err(Error {
+                    nothing_sent: true,
+                    unanswered: None,
+                    code: ErrorCode::UnknownName,
+                    message: format!(
+                        "The app {name} is served at a URL the supervisor does not run, so it \
+                         has no log here. `toon logs {name} --connector` shows the log of the \
+                         connector of {}.",
+                        toon.name
+                    ),
+                });
+            }
+            let data_dir = node::AppFiles::of(home, name).data_dir;
+            ("app", crate::runner::app_log(&data_dir))
+        }
+        _ => (
+            "connector",
+            node::ConnectorFiles::of(home, toon.connector).log,
+        ),
+    };
     let text = read_log(&log)?;
     let all: Vec<&str> = text.lines().collect();
     let shown = &all[all.len().saturating_sub(lines)..];
     Ok(Report {
         exit: Exit::Success,
-        json: json!({ "name": name, "toon_app": app.name, "log": log, "lines": shown }),
+        json: json!({
+            "name": name, "toon_app": toon.name, "source": source, "log": log, "lines": shown
+        }),
         text: shown.join("\n"),
     })
 }

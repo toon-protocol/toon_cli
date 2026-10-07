@@ -118,6 +118,12 @@ fn a_new_agent_node_is_unconnected_until_it_joins_and_then_reads_the_networks_re
         "ws://127.0.0.1:7100"
     );
     assert_eq!(after.json()["agent_node"]["joined"], "devnet");
+    assert_eq!(after.json()["agent_node"]["peerings"][0]["id"], "devnet");
+    let text = agent.machine.toon(&["status"]).stdout;
+    assert!(
+        text.contains("Connected to devnet. Reading ws://127.0.0.1:7100."),
+        "{text}"
+    );
 
     let left = agent.machine.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"]
         .clone();
