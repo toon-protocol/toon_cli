@@ -97,10 +97,10 @@ connector is running, or fail with `confirmation_required` and change nothing.
 3. `toon up` starts the supervisor as a `systemd --user` unit. `toon up --foreground` runs it in
    the current process. `toon down` stops it.
 4. `toon status` reports the agent node, each TOON app and its apps, and how often the supervisor
-   restarted a connector. `toon logs <app>` shows what an app wrote to its output, also after it failed to start or while the
-   agent node is stopped; `toon logs <name> --connector` shows the connector's log of the TOON app
-   the name belongs to, and so does `toon logs <TOON app>` when no app has that name. An app served
-   at a URL has no log of its own.
+   restarted a connector. `toon logs <app>` shows what an app wrote to its output, also after it
+   failed to start or while the agent node is stopped; `toon logs <name> --connector` shows the
+   connector's log of the TOON app the name belongs to, and so does `toon logs <TOON app>` when
+   no app has that name. An app served at a URL has no log of its own.
 5. `toon wallet show` lists the addresses by chain and the agent identity.
 
 ## Funding

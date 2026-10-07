@@ -267,6 +267,46 @@ fn logs_of_an_app_behind_another_toon_app_name_shows_its_log_or_its_connectors()
 }
 
 #[test]
+fn logs_of_a_toon_app_with_no_app_of_that_name_shows_the_connectors_log() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let added = machine.toon(&[
+        "add", "notes", "--to", "relay", "--image", "notes:1", "--yes", "--json",
+    ]);
+    assert_eq!(added.exit_code, 0, "{}", added.stdout);
+    let removed = machine.toon(&["remove", "relay", "--yes", "--json"]);
+    assert_eq!(removed.exit_code, 0, "{}", removed.stdout);
+    let log = machine.agent_node_home().join("connectors/0/connector.log");
+    fs::write(&log, "connector line\n").unwrap();
+
+    let json = machine.toon(&["logs", "relay", "--json"]).json();
+
+    assert_eq!(json["source"], "connector");
+    assert_eq!(json["toon_app"], "relay");
+    assert_eq!(json["lines"], serde_json::json!(["connector line"]));
+}
+
+#[test]
+fn logs_of_an_app_that_failed_to_start_shows_what_it_wrote_while_the_agent_node_is_stopped() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    fs::write(machine.agent_node_home().join("apps/fail-relay"), "").unwrap();
+    let up = machine.toon(&["up", "--foreground", "--json"]);
+    assert_eq!(up.json()["error"]["code"], "app_failed", "{}", up.stdout);
+
+    let run = machine.toon(&["logs", "relay", "--json"]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    assert_eq!(run.json()["source"], "app");
+    assert_eq!(
+        run.json()["lines"],
+        serde_json::json!(["fake relay: told not to start"])
+    );
+}
+
+#[test]
 fn logs_of_an_app_that_never_started_is_empty() {
     let chain = FakeChain::start();
     let machine = Machine::new();

@@ -261,19 +261,26 @@ pub fn app_log(data_dir: &Path) -> PathBuf {
     data_dir.join("app.log")
 }
 
-/// Append what the container wrote to its standard output and standard error to `log`, so
-/// that it outlives the container. A container that is not there keeps nothing.
+/// Append what the container wrote to its standard output and standard error to `log`, in
+/// the order it wrote them, so that it outlives the container. A container that is not there
+/// keeps nothing.
 fn keep_output(name: &str, log: &Path) {
-    let Ok(output) = Command::new("docker").args(["logs", name]).output() else {
+    // Else `docker logs` would write its own complaint into the app's log.
+    if docker(&["container", "inspect", name]).is_err() {
+        return;
+    }
+    let Ok(file) = File::options().create(true).append(true).open(log) else {
         return;
     };
-    if !output.status.success() {
+    let Ok(errors) = file.try_clone() else {
         return;
-    }
-    if let Ok(mut file) = File::options().create(true).append(true).open(log) {
-        let _ = file.write_all(&output.stdout);
-        let _ = file.write_all(&output.stderr);
-    }
+    };
+    let _ = Command::new("docker")
+        .args(["logs", name])
+        .stdin(Stdio::null())
+        .stdout(file)
+        .stderr(errors)
+        .status();
 }
 
 fn docker(args: &[&str]) -> Result<String, String> {
@@ -615,5 +622,21 @@ mod tests {
         assert!(get(app.write_address(), "/health")
             .is_some_and(|answer| answer.starts_with("HTTP/1.1 200")));
         app.stop();
+    }
+
+    /// An image whose container exits at once keeps what it wrote in the app's log, after
+    /// the container is gone. It needs docker and the `hello-world` image.
+    #[test]
+    #[ignore = "needs docker and a network to pull the hello-world image"]
+    fn a_container_that_fails_to_start_keeps_its_output() {
+        let data = tempfile::tempdir().unwrap();
+        let exits = spec(data.path(), "hello-world");
+
+        let error = ContainerRunner.start(&exits).err().unwrap();
+
+        assert_eq!(error.code, ErrorCode::AppFailed);
+        let kept = fs::read_to_string(app_log(data.path())).unwrap();
+        assert!(kept.contains("Hello from Docker!"), "{kept}");
+        assert!(docker(&["container", "inspect", &format!("toon-{}", exits.instance)]).is_err());
     }
 }

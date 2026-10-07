@@ -49,12 +49,13 @@ fn main() {
     let port = env::var("TOON_BLS_PORT").expect("TOON_BLS_PORT");
     let data = PathBuf::from(env::var("TOON_DATA_DIR").expect("TOON_DATA_DIR"));
     // `apps/fail-<name>` beside the app's directory makes that app not start, for a test of
-    // what a failed start leaves.
+    // what a failed start leaves. It says so first, as an app that fails says why.
     if let Some(apps) = data.parent().and_then(Path::parent) {
         let name = data.parent().and_then(Path::file_name).unwrap_or_default();
         let mut marker = std::ffi::OsString::from("fail-");
         marker.push(name);
         if apps.join(marker).exists() {
+            eprintln!("fake relay: told not to start");
             process::exit(1);
         }
     }
