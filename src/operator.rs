@@ -979,7 +979,15 @@ fn history_report(toon_app: &str, answer: &Value, limit: usize) -> Report {
             if dropped == 1 { "packet" } else { "packets" }
         ));
     }
-    if packets.is_empty() && limit > 0 {
+    // A connector started from a config written before `toon` turned the history on answers
+    // with it off: say so, rather than that it handled nothing.
+    if answer["enabled"] == false {
+        lines.push(
+            "The connector keeps no packet history: its config predates it. \
+             `toon down` and `toon up` start it with one."
+                .to_owned(),
+        );
+    } else if packets.is_empty() && limit > 0 {
         lines.push("The connector has handled no packet.".to_owned());
     }
     lines.extend(packets.iter().map(history_line));
@@ -2773,6 +2781,17 @@ toon_fees_earned_total 40\n";
         assert!(text.contains("recent packets only, forgotten when it restarts"));
         assert!(text.contains("`toon packet count`"));
         assert!(text.contains("handled no packet"));
+    }
+
+    #[test]
+    fn a_history_that_is_off_says_so_not_that_nothing_was_handled() {
+        let (json, text) = history(
+            serde_json::json!({ "enabled": false, "capacity": 0, "dropped": 0, "packets": [] }),
+            20,
+        );
+        assert_eq!(json["packets"], serde_json::json!([]));
+        assert!(text.contains("keeps no packet history"), "{text}");
+        assert!(!text.contains("handled no packet"), "{text}");
     }
 
     #[test]
