@@ -581,6 +581,7 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
             None => subscriber_secret(home)?,
         })
     };
+    let reply = control::ask(home, "status");
     let mut shown = Vec::new();
     let mut lines = Vec::new();
     for entry in &mut kept {
@@ -599,12 +600,15 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
             Read::Unanswered => {}
         }
         let mut item = entry.json();
+        item["feed"] = crate::receive::feed_of(reply.as_ref(), &entry.relay);
+        let feed_text = crate::receive::describe_feed(&item["feed"]);
         item["current"] = json!(current);
         item["exhausted"] = json!(entry.exhausted());
         shown.push(item);
         lines.push(format!(
-            "{}: balance {}, {} per event, filter {}{}{}",
+            "{}: {}; balance {}, {} per event, filter {}{}{}",
             entry.relay,
+            feed_text,
             entry.balance,
             entry.broadcast_price,
             entry.filter,

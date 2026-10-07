@@ -300,8 +300,13 @@ The supervisor writes those events into your own relay (ADR 0005). It needs a pe
 without `--yes` it fails with `not_confirmed` and says what the relay charges. `toon relay
 subscriptions` reads the current balance from each relay, and needs no passphrase once
 `subscribe` has run; the balance in `toon status` is the last one read, with its time
-(`read_at`). It is not the follow list, which is an event you publish. It is the same as
-publishing in one way: if a connector in between rejects its packets with `F03`,
+(`read_at`). To know whether the supervisor receives a subscription, read
+`feed` in `toon status --json` (or in `toon relay subscriptions --json`): `state` is `connecting`,
+`live`, `retrying` or `exhausted`, `last_event_at` is when your own relay last accepted an event
+from it, and `last_error` says what went wrong; `feed` is null when the supervisor is not running.
+Do not infer delivery from your own relay holding or lacking an event. It is not the follow list,
+which is an event you publish. It is the same as publishing in one way: if a connector in
+between rejects its packets with `F03`,
 read `cost` from the rejected packet's report (`response.cost`) and state it with
 `--packet-amount <cost>`, treating `"complete": false` as a floor; `--amount` stays the total,
 paid as whole packets of that amount, and each packet still credits only the subscribe price.

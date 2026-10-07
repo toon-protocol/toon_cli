@@ -493,12 +493,20 @@ pub fn watch(filter: Option<&str>, following: bool) -> Result<Report, Error> {
     let stop = std::sync::atomic::AtomicBool::new(false);
     let mut stdout = std::io::stdout().lock();
     let mut unwritten = false;
-    let ended = feed::listen(&dialled, &reading, &filter, None, &stop, |event| {
-        unwritten = writeln!(stdout, "{event}")
-            .and_then(|()| stdout.flush())
-            .is_err();
-        !unwritten
-    });
+    let ended = feed::listen(
+        &dialled,
+        &reading,
+        &filter,
+        None,
+        &stop,
+        |event| {
+            unwritten = writeln!(stdout, "{event}")
+                .and_then(|()| stdout.flush())
+                .is_err();
+            !unwritten
+        },
+        || {},
+    );
     let failed = |message: String| Error {
         nothing_sent: false,
         unanswered: None,

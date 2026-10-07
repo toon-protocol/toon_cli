@@ -365,10 +365,12 @@ fn subscriptions_lists_the_balance_and_filter_at_each_relay() {
             "filter": {"kinds":[1]},
             "balance": 2000,
             "broadcast_price": BROADCAST_PRICE,
+            "feed": subscriptions[0]["feed"],
             "current": true,
             "exhausted": false,
         }])
     );
+    assert!(subscriptions[0]["feed"]["state"].is_string());
     assert_eq!(
         listed.json()["totals"],
         json!({ "active": 1, "exhausted": 0 })
@@ -1214,6 +1216,138 @@ fn following_is_refused_before_anything_is_sent_or_counted() {
     assert_eq!(remaining(&near), before);
 }
 
+/// The `feed` of the first subscription in `toon status --json`.
+fn feed(near: &Node) -> serde_json::Value {
+    let status = near.machine.toon(&["status", "--json"]).json();
+    status["agent_node"]["subscriptions"][0]["feed"].clone()
+}
+
+fn eventually_in_state(near: &Node, state: &str) -> serde_json::Value {
+    eventually(|| feed(near)["state"] == state);
+    // Whatever the feed is doing, `status` of a running agent node succeeds.
+    let status = near.machine.toon(&["status", "--json"]);
+    assert_eq!(status.exit_code, 0, "{}{}", status.stdout, status.stderr);
+    status.json()["agent_node"]["subscriptions"][0]["feed"].clone()
+}
+
+#[test]
+fn status_says_whether_the_feed_is_live_and_when_the_last_event_arrived() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    subscribed(&near, &relay, "1000");
+
+    // No passphrase: `near.machine` has none in its environment.
+    let live = eventually_in_state(&near, "live");
+    assert_eq!(live["last_event_at"], json!(null));
+    assert_eq!(live["last_error"], json!(null));
+    let text = near.machine.toon(&["status"]);
+    assert!(
+        text.stdout.contains("live, no event has arrived"),
+        "{}",
+        text.stdout
+    );
+    assert!(text.stdout.contains("read at"), "{}", text.stdout);
+    assert!(!text.stdout.contains("received."), "{}", text.stdout);
+
+    relay.broadcast(event(7, 1));
+    near.wait_for_stored(event(7, 1)["id"].as_str().unwrap());
+    eventually(|| feed(&near)["last_event_at"].as_u64().is_some());
+    let listed = near.toon(&["relay", "subscriptions", "--json"]);
+    assert_eq!(listed.json()["subscriptions"][0]["feed"]["state"], "live");
+}
+
+#[test]
+fn a_relay_that_goes_away_is_retrying_with_the_reason_and_live_again_when_it_returns() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    subscribed(&near, &relay, "1000");
+    eventually_in_state(&near, "live");
+
+    relay.go_away();
+    let retrying = eventually_in_state(&near, "retrying");
+    let message = retrying["last_error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!message.is_empty());
+    assert!(retrying["last_error"]["at"].as_u64().is_some());
+
+    relay.come_back();
+    let live = eventually_in_state(&near, "live");
+    assert_eq!(live["last_error"]["message"], message.as_str());
+}
+
+#[test]
+fn a_relay_that_sends_no_challenge_is_retrying_with_that_reason() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    relay.send_no_challenge();
+    subscribed(&near, &relay, "1000");
+
+    // The feed waits 30 seconds for a challenge.
+    for _ in 0..600 {
+        if feed(&near)["state"] == "retrying" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let feed = feed(&near);
+    assert_eq!(feed["state"], "retrying", "{feed}");
+    assert!(feed["last_error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("sent no AUTH challenge"));
+}
+
+#[test]
+fn a_feed_closed_with_payment_required_is_exhausted() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote_debiting(&chain, 600);
+    peer_and_route(&near, &far);
+    subscribed(&near, &relay, "1000");
+    eventually_in_state(&near, "live");
+
+    relay.broadcast(event(8, 1));
+    relay.broadcast(event(9, 1));
+
+    let exhausted = eventually_in_state(&near, "exhausted");
+    assert!(exhausted["last_error"]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("payment-required:"));
+}
+
+#[test]
+fn without_a_supervisor_status_says_the_feed_is_not_received() {
+    let chain = AnvilChain::start();
+    let mut near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    subscribed(&near, &relay, "1000");
+    let down = near.machine.toon(&["down", "--json"]);
+    assert_eq!(down.exit_code, 0, "{}{}", down.stdout, down.stderr);
+    near.up = None;
+
+    let status = near.machine.toon(&["status"]);
+    assert!(
+        status
+            .stdout
+            .contains("not received: the supervisor is not running"),
+        "{}",
+        status.stdout
+    );
+    assert_eq!(feed(&near), json!(null));
+    let listed = near.toon(&["relay", "subscriptions", "--json"]);
+    assert_eq!(listed.json()["subscriptions"][0]["feed"], json!(null));
+}
+
 fn status_subscription(near: &Node) -> serde_json::Value {
     near.machine.toon(&["status", "--json"]).json()["agent_node"]["subscriptions"][0].clone()
 }
@@ -1349,4 +1483,24 @@ fn subscriptions_help_says_no_passphrase_is_needed() {
         .toon(&["relay", "subscriptions", "--help"])
         .stdout;
     assert!(help.contains("needs no passphrase"), "{help}");
+}
+
+#[test]
+fn an_older_read_time_is_replaced_by_the_next_read() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    peer_and_route(&near, &far);
+    subscribed(&near, &relay, "1000");
+    let path = near.machine.agent_node_home().join("subscriptions.json");
+    let mut file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    file["subscriptions"][0]["read_at"] = json!(1);
+    near.machine
+        .write_agent_node_file("subscriptions.json", file.to_string());
+    assert_eq!(status_subscription(&near)["read_at"], 1);
+
+    near.toon(&["relay", "subscriptions"]);
+
+    assert!(status_subscription(&near)["read_at"].as_u64().unwrap() > 1);
 }

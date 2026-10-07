@@ -45,6 +45,10 @@ struct State {
     open_feeds: usize,
     /// How many `REQ`s were opened and closed with `payment-required`.
     refused_feeds: usize,
+    /// While set, a feed that is open is dropped and a new one is hung up on.
+    away: bool,
+    /// While set, a feed opens without an `AUTH` challenge.
+    silent: bool,
 }
 
 /// The relay's TLS front: a listener that terminates TLS and hands the plain bytes to the
@@ -233,6 +237,21 @@ impl FakeRemoteRelay {
     /// Accept `event`: store it, and send it on every open `REQ` it is owed to.
     pub fn broadcast(&self, event: Value) {
         self.state.lock().unwrap().events.push(event);
+    }
+
+    /// Drop every feed and hang up on each new one, as a relay that has gone away.
+    pub fn go_away(&self) {
+        self.state.lock().unwrap().away = true;
+    }
+
+    /// Serve feeds again after `go_away`.
+    pub fn come_back(&self) {
+        self.state.lock().unwrap().away = false;
+    }
+
+    /// Open each new feed without an `AUTH` challenge.
+    pub fn send_no_challenge(&self) {
+        self.state.lock().unwrap().silent = true;
     }
 
     /// How many `REQ`s are open on a connection holding a subscription that has a balance.
@@ -485,7 +504,12 @@ impl FakeRemoteRelay {
         let say = |socket: &mut tungstenite::WebSocket<TcpStream>, frame: Value| {
             let _ = socket.send(tungstenite::Message::text(frame.to_string()));
         };
-        say(&mut socket, json!(["AUTH", challenge]));
+        if self.state.lock().unwrap().away {
+            return;
+        }
+        if !self.state.lock().unwrap().silent {
+            say(&mut socket, json!(["AUTH", challenge]));
+        }
 
         let mut key: Option<String> = None;
         // The `REQ` that is open, and how many events the relay had accepted when it
@@ -493,6 +517,9 @@ impl FakeRemoteRelay {
         let mut open: Option<(Value, Vec<Value>, usize)> = None;
         let mut counted = false;
         loop {
+            if self.state.lock().unwrap().away {
+                break;
+            }
             match socket.read() {
                 Ok(tungstenite::Message::Text(text)) => {
                     let Ok(Value::Array(frame)) = serde_json::from_str::<Value>(&text) else {

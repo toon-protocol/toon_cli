@@ -73,6 +73,10 @@ _Avoid_: Top up (as a separate action)
 What one packet of a subscribe is sent for. It is the subscribe price unless the operator states more, because a connector between the subscriber and the relay may charge to forward. A packet credits what the relay's subscribe route charged, whatever it was sent for.
 _Avoid_: Fee
 
+**Receive**:
+What the supervisor does with a subscription: it reads that relay's live feed as the subscriber and hands each event to the agent node's own relay. A feed is `connecting` until the relay's `EOSE`, then `live`; it is `retrying` while it waits to dial again, with the reason, and `exhausted` when the relay closed it with `payment-required` or the balance is 0. `toon status` and `toon relay subscriptions` report that state, the last event the own relay accepted and the last error.
+_Avoid_: Live reader, mirror, sync
+
 **Subscribe price**:
 What a relay's subscribe route charges for one packet, and so what the packet credits. Set by that relay's operator.
 
