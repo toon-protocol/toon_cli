@@ -894,11 +894,120 @@ pub fn packet_list(home: &Path, limit: usize) -> Result<Report, Error> {
     })
 }
 
+/// A row's text field, when the connector gave one.
+fn field(row: &Value, name: &str) -> Option<String> {
+    row.get(name)?.as_str().map(str::to_owned)
+}
+
+/// A row's whole-number field as the other reports write an amount: a string.
+fn amount_field(row: &Value, name: &str) -> Option<String> {
+    match row.get(name)? {
+        Value::Number(number) => Some(number.to_string()),
+        Value::String(text) => Some(text.clone()),
+        _ => None,
+    }
+}
+
+/// One row of the connector's packet history as `toon` reports it. A field the connector
+/// leaves out is left out, and a field `toon` does not know is not carried.
+fn history_row(row: &Value) -> Value {
+    let mut packet = serde_json::Map::new();
+    let mut put = |name: &str, value: Option<String>| {
+        if let Some(value) = value {
+            packet.insert(name.to_owned(), Value::String(value));
+        }
+    };
+    put("time", field(row, "time"));
+    put("direction", field(row, "direction"));
+    put("destination", field(row, "destination"));
+    // The payer is a peering when one forwarded the packet, else the channel it paid over.
+    put(
+        "from",
+        field(row, "from_peer").or_else(|| field(row, "from_channel")),
+    );
+    put("to", field(row, "to_peer"));
+    put("amount", amount_field(row, "amount"));
+    put("fee", amount_field(row, "fee"));
+    put("outcome", field(row, "outcome"));
+    put("code", field(row, "code"));
+    put("message", field(row, "message"));
+    Value::Object(packet)
+}
+
+/// A packet on one line of text: what the row has, in the order of the `--json` document.
+fn history_line(packet: &Value) -> String {
+    let text = |name: &str| packet.get(name).and_then(Value::as_str);
+    let mut words: Vec<String> = Vec::new();
+    words.extend(text("time").map(str::to_owned));
+    words.extend(text("direction").map(str::to_owned));
+    words.extend(text("destination").map(str::to_owned));
+    match (text("from"), text("to")) {
+        (Some(from), Some(to)) => words.push(format!("from {from} to {to}")),
+        (Some(from), None) => words.push(format!("from {from}")),
+        (None, Some(to)) => words.push(format!("to {to}")),
+        (None, None) => {}
+    }
+    words.extend(text("amount").map(|amount| format!("amount {amount}")));
+    words.extend(text("fee").map(|fee| format!("fee {fee}")));
+    words.extend(text("outcome").map(str::to_owned));
+    let mut line = words.join(" ");
+    match (text("code"), text("message")) {
+        (Some(code), Some(message)) => line.push_str(&format!(" {code}: {message}")),
+        (Some(code), None) => line.push_str(&format!(" {code}")),
+        (None, Some(message)) => line.push_str(&format!(" {message}")),
+        (None, None) => {}
+    }
+    // One packet to a line, whatever the reject's text holds.
+    line.replace(['\r', '\n'], " ")
+}
+
+/// The report of the connector's answer to `GET /packets`, its `limit` newest packets.
+fn history_report(toon_app: &str, answer: &Value, limit: usize) -> Report {
+    let packets: Vec<Value> = answer["packets"]
+        .as_array()
+        .map(|rows| rows.iter().take(limit).map(history_row).collect())
+        .unwrap_or_default();
+    let dropped = answer["dropped"].as_u64().unwrap_or(0);
+    let mut lines = vec![
+        "These are the connector's recent packets only, forgotten when it restarts; \
+         `toon packet count` has the totals."
+            .to_owned(),
+    ];
+    if dropped > 0 {
+        lines.push(format!(
+            "The connector dropped {dropped} {} it could not keep up with.",
+            if dropped == 1 { "packet" } else { "packets" }
+        ));
+    }
+    if packets.is_empty() && limit > 0 {
+        lines.push("The connector has handled no packet.".to_owned());
+    }
+    lines.extend(packets.iter().map(history_line));
+    Report {
+        exit: Exit::Success,
+        json: json!({ "toon_app": toon_app, "dropped": dropped, "packets": packets }),
+        text: lines.join("\n"),
+    }
+}
+
+/// `toon packet history`: the recent packets the connector handled, newest first, read from
+/// its packet history.
+pub fn packet_history(home: &Path, limit: usize) -> Result<Report, Error> {
+    let surface = surface(home)?;
+    let answer: Value = get(
+        &surface,
+        &format!("/packets?limit={limit}"),
+        reqwest::blocking::Response::json,
+    )?;
+    Ok(history_report(&surface.toon_app, &answer, limit))
+}
+
 /// `toon packet`.
 pub fn packet(home: &Path, command: &PacketCommand) -> Result<Report, Error> {
     match command {
         PacketCommand::Count => packet_count(home),
         PacketCommand::List { limit } => packet_list(home, *limit),
+        PacketCommand::History { limit } => packet_history(home, *limit),
     }
 }
 
@@ -1962,7 +2071,7 @@ mod tests {
         AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD,
         UNREAD_TIMEOUT,
     };
-    use super::{parse_packet_counts, PacketCounts};
+    use super::{history_report, parse_packet_counts, PacketCounts};
     use crate::cli::Chain;
     use crate::outcome::ErrorCode;
     use std::io::{Read, Write};
@@ -2546,5 +2655,136 @@ toon_fees_earned_total 40\n";
         let text = "toon_packets_total{route=\"x\",xoutcome=\"reject\",outcome=\"fulfill\"} 5 1700000000000\n";
         let counts = parse_packet_counts(text);
         assert_eq!((counts.fulfilled, counts.rejected), (5, 0));
+    }
+
+    fn history(answer: serde_json::Value, limit: usize) -> (serde_json::Value, String) {
+        let report = history_report("relay", &answer, limit);
+        (report.json, report.text)
+    }
+
+    #[test]
+    fn a_delivered_a_forwarded_and_a_sent_row_keep_their_direction() {
+        let (json, text) = history(
+            serde_json::json!({ "enabled": true, "capacity": 1000, "dropped": 0, "packets": [
+                { "time": "t3", "direction": "delivered", "destination": "g.a", "from_channel": "evm:0x1",
+                  "amount": 5, "outcome": "fulfilled" },
+                { "time": "t2", "direction": "forwarded", "destination": "g.b", "from_peer": "p",
+                  "to_peer": "q", "amount": 7, "outcome": "fulfilled" },
+                { "time": "t1", "direction": "sent", "destination": "g.c", "amount": 0,
+                  "outcome": "fulfilled" },
+            ]}),
+            20,
+        );
+        let directions: Vec<_> = json["packets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|packet| packet["direction"].as_str().unwrap())
+            .collect();
+        assert_eq!(directions, ["delivered", "forwarded", "sent"]);
+        assert_eq!(json["toon_app"], "relay");
+        assert_eq!(json["packets"][0]["from"], "evm:0x1");
+        assert_eq!(json["packets"][1]["from"], "p");
+        assert_eq!(json["packets"][1]["to"], "q");
+        assert_eq!(json["packets"][1]["amount"], "7");
+        assert!(text.contains("t2 forwarded g.b from p to q amount 7 fulfilled"));
+        assert!(text.contains("t1 sent g.c amount 0 fulfilled"));
+    }
+
+    #[test]
+    fn a_fulfilled_forward_shows_its_fee() {
+        let (json, text) = history(
+            serde_json::json!({ "dropped": 0, "packets": [
+                { "time": "t", "direction": "forwarded", "destination": "g.b", "from_peer": "a",
+                  "to_peer": "b", "amount": 1000, "fee": 10, "outcome": "fulfilled" },
+            ]}),
+            20,
+        );
+        assert_eq!(json["packets"][0]["fee"], "10");
+        assert!(text.contains("amount 1000 fee 10 fulfilled"));
+    }
+
+    #[test]
+    fn a_reject_shows_its_code_and_message() {
+        let (json, text) = history(
+            serde_json::json!({ "dropped": 0, "packets": [
+                { "time": "t", "direction": "sent", "destination": "g.nowhere", "amount": 0,
+                  "outcome": "rejected", "code": "F02", "message": "no route\nto destination" },
+            ]}),
+            20,
+        );
+        assert_eq!(json["packets"][0]["outcome"], "rejected");
+        assert_eq!(json["packets"][0]["code"], "F02");
+        assert_eq!(json["packets"][0]["message"], "no route\nto destination");
+        assert!(text.contains("rejected F02: no route to destination"));
+    }
+
+    #[test]
+    fn a_field_the_row_leaves_out_is_left_out_of_the_report() {
+        let (json, text) = history(
+            serde_json::json!({ "dropped": 0, "packets": [
+                { "time": "t", "destination": "g.x", "amount": 3, "outcome": "rejected", "code": "R00" },
+            ]}),
+            20,
+        );
+        let packet = json["packets"][0].as_object().unwrap();
+        for absent in ["direction", "from", "to", "fee", "message"] {
+            assert!(!packet.contains_key(absent), "{absent}");
+        }
+        assert!(!text.contains("null"));
+        assert!(text.contains("t g.x amount 3 rejected R00"));
+    }
+
+    #[test]
+    fn a_row_with_a_field_toon_does_not_know_is_printed_without_it() {
+        let (json, text) = history(
+            serde_json::json!({ "dropped": 0, "packets": [
+                { "time": "t", "direction": "sent", "destination": "g.x", "amount": 1,
+                  "outcome": "fulfilled", "correlation_id": "abc", "later": { "a": 1 } },
+            ]}),
+            20,
+        );
+        assert_eq!(
+            json["packets"][0],
+            serde_json::json!({ "time": "t", "direction": "sent", "destination": "g.x",
+                "amount": "1", "outcome": "fulfilled" })
+        );
+        assert!(!text.contains("abc"));
+    }
+
+    #[test]
+    fn a_dropped_count_is_carried_and_said() {
+        let (json, text) = history(serde_json::json!({ "dropped": 3, "packets": [] }), 20);
+        assert_eq!(json["dropped"], 3);
+        assert!(text.contains("dropped 3 packets"));
+        let (_, one) = history(serde_json::json!({ "dropped": 1, "packets": [] }), 20);
+        assert!(one.contains("dropped 1 packet "));
+        let (_, none) = history(serde_json::json!({ "dropped": 0, "packets": [] }), 20);
+        assert!(!none.contains("dropped"));
+    }
+
+    #[test]
+    fn an_empty_history_is_an_empty_list() {
+        let (json, text) = history(
+            serde_json::json!({ "enabled": true, "capacity": 1000, "dropped": 0, "packets": [] }),
+            20,
+        );
+        assert_eq!(json["packets"], serde_json::json!([]));
+        assert!(text.contains("recent packets only, forgotten when it restarts"));
+        assert!(text.contains("`toon packet count`"));
+        assert!(text.contains("handled no packet"));
+    }
+
+    #[test]
+    fn the_limit_keeps_the_newest_rows() {
+        let (json, _) = history(
+            serde_json::json!({ "dropped": 0, "packets": [
+                { "time": "new", "destination": "g.a", "amount": 1, "outcome": "fulfilled" },
+                { "time": "old", "destination": "g.b", "amount": 1, "outcome": "fulfilled" },
+            ]}),
+            1,
+        );
+        assert_eq!(json["packets"].as_array().unwrap().len(), 1);
+        assert_eq!(json["packets"][0]["time"], "new");
     }
 }

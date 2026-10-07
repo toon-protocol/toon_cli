@@ -204,6 +204,19 @@ and lists rejects from before a restart. Fulfilled packets are not listed, only 
 `destination`, `outcome` (`rejected`), `code` and `message`; `packets` is `[]` when nothing was
 rejected.
 
+`toon packet history` is free too. It lists the connector's recent packets, newest first, from its
+packet history, fulfilled and rejected alike, where `toon packet list` has only rejects from the
+log. A row shows the `time`, the `direction`, the `destination`, `from` (a peering or channel),
+`to` (a peering), the `amount`, the `fee` of a fulfilled forward, the `outcome` and, for a reject,
+its `code` and `message`. The direction is `delivered` (it ended at one of the connector's apps),
+`forwarded` (it arrived from one side and left toward a peer) or `sent` (you originated it); a
+packet that expired or could not be routed has none, and any field a row lacks is left out. The
+history is recent packets only (1,000) and is forgotten when the connector restarts;
+`toon packet count` has the totals. `-n` / `--limit` says how many (20 by default); `--app`
+chooses the TOON app. With `--json` it prints `toon_app`, `dropped` (rows the connector could not
+keep) and `packets`, `[]` when there are none. It fails with `not_running` when the agent node is
+stopped.
+
 ## Channels
 
 `toon channel list` shows both directions with collateral and status. `toon channel open --terms

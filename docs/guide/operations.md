@@ -26,7 +26,7 @@ To keep it running after you log out, let your user's services outlive the sessi
 loginctl enable-linger "$USER"
 ```
 
-## Counting and listing packets
+## Counting, listing and watching packets
 
 ```sh
 toon packet count          # fulfilled, rejected, rejects by code, fees earned
@@ -52,6 +52,26 @@ rejects from before a restart. A line shows the time, the destination, the rejec
 reject message. Only rejected packets are listed: the connector logs a fulfilled packet only at
 `debug`, so `toon packet count` has those, as a count. `-n` / `--limit` says how many to show. A
 connector that has rejected nothing prints an empty list and exits 0.
+
+```sh
+toon packet history        # the last 20 packets the connector handled, newest first
+toon packet history -n 5 --json
+```
+
+`toon packet history` is free too: it needs no passphrase and moves no money. It reads the
+connector's packet history, which `toon` turns on at 1,000 packets in every connector config it
+writes, so an agent node set up earlier has it after its next `toon up`. Unlike `toon packet list`,
+which reads rejects from the log, it lists fulfilled and rejected packets alike, and a line shows
+the time, the packet's **direction**, the destination, the peering or channel it came `from` and
+the peering it went `to`, the amount, the fee of a fulfilled forward, the outcome and, for a
+reject, its code and message. The direction is `delivered` when the packet ended at one of the
+connector's apps, `forwarded` when it arrived from one side and left toward a peer, and `sent`
+when you originated it. A packet that expired or could not be routed has no direction, and a field
+a row lacks is left out. The history is recent packets only and is forgotten when the connector
+restarts; `toon packet count` has the totals. When the connector had to drop rows, the text says
+how many (`dropped` in `--json`). It needs the agent node running and fails with `not_running`
+otherwise. `-n` / `--limit` says how many to show; a connector that has handled nothing prints an
+empty list and exits 0.
 
 ## Scripting with `--json`
 
