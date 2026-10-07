@@ -37,12 +37,38 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             "not running"
         }
     )];
-    match &state.joined {
-        Some(network) => lines.push(format!(
+    // Asked of each running connector, as `toon peer list` does: unknown (`None`) as soon as
+    // one does not answer. A peering made with `peer add` does not set `joined`.
+    let peerings: Option<Vec<(&str, String)>> = state
+        .toon_apps
+        .iter()
+        .map(|app| {
+            crate::operator::peering_ids(home, &app.name).map(|ids| {
+                ids.into_iter()
+                    .map(|id| (app.name.as_str(), id))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(|all| all.into_iter().flatten().collect());
+    match (&state.joined, &peerings) {
+        (Some(network), _) => lines.push(format!(
             "Connected to {network}. Reading {}.",
             state.reads.join(", ")
         )),
-        None => lines.push(
+        (None, None) => lines.push(
+            "No network joined. Peerings are unknown while the connector is not running.".into(),
+        ),
+        (None, Some(held)) if !held.is_empty() => {
+            let ids: Vec<&str> = held.iter().map(|(_, id)| id.as_str()).collect();
+            lines.push(format!(
+                "No network joined. {} {}: {}.",
+                ids.len(),
+                if ids.len() == 1 { "peering" } else { "peerings" },
+                ids.join(", ")
+            ));
+        }
+        (None, Some(_)) => lines.push(
             "Unconnected: it has joined no network. `toon join <network> --deposit <amount> --yes` connects it."
                 .into(),
         ),
@@ -104,12 +130,16 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                 let running = field("running") == true;
                 all_running &= running;
                 lines.push(format!(
-                    "App {name} of {}: {}{}. {route}",
+                    "App {name} of {}: {}{}.{} {route}",
                     app.name,
                     if running { "running" } else { "not running" },
                     field("address")
                         .as_str()
                         .map(|address| format!(" on {address}"))
+                        .unwrap_or_default(),
+                    field("read_address")
+                        .as_str()
+                        .map(|read| format!(" Read at ws://{read}."))
                         .unwrap_or_default()
                 ));
                 let image = match &behind.source {
@@ -150,13 +180,20 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             )
         } else {
             format!(
-                "Subscription at {}: balance {}, received.",
-                kept.relay, kept.balance
+                "Subscription at {}: balance {}, as last read {}. `toon relay subscriptions` \
+                 reads the current one.",
+                kept.relay,
+                kept.balance,
+                kept.read_at.map_or_else(
+                    || "at an unknown time".to_owned(),
+                    |at| format!("at {at} (Unix seconds)")
+                )
             )
         });
         subscriptions.push(json!({
             "relay": kept.relay,
             "balance": kept.balance,
+            "read_at": kept.read_at,
             "broadcast_price": kept.broadcast_price,
             "exhausted": exhausted,
         }));
@@ -181,6 +218,10 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             "agent_node": {
                 "supervisor": { "running": supervisor_running, "socket": control::path(home) },
                 "joined": state.joined,
+                "peerings": peerings.map(|held| held
+                    .into_iter()
+                    .map(|(toon_app, id)| json!({ "toon_app": toon_app, "id": id }))
+                    .collect::<Vec<_>>()),
                 "reads": state.reads,
                 "toon_apps": toon_apps,
                 "subscriptions": subscriptions,

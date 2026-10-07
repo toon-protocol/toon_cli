@@ -51,7 +51,7 @@ impl Node {
         assert_eq!(sent.exit_code, 0, "{}{}", sent.stdout, sent.stderr);
     }
 
-    /// The address the relay is written and read at.
+    /// The address the relay is written at.
     fn relay(&self) -> String {
         let status = self.machine.toon(&["status", "--json"]).json();
         status["agent_node"]["toon_apps"][0]["apps"][0]["address"]

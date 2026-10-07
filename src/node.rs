@@ -37,6 +37,9 @@ pub fn connector_address(segment: &str) -> String {
     format!("g.toon.{segment}")
 }
 
+/// How many recent packets every connector keeps for `toon packet history`. Not a setting.
+const PACKET_HISTORY: usize = 1_000;
+
 /// The address of an app behind the connector with `segment`, when the operator gave none.
 pub fn app_address(segment: &str, app: &str) -> String {
     format!("{}.{app}", connector_address(segment))
@@ -940,7 +943,7 @@ pub fn render(
     }
     if operator {
         config.push_str(&format!(
-            "\n[operator]\nbearer_token_file = {}\nwrite_keys_file = {}\n",
+            "\n[operator]\nbearer_token_file = {}\nwrite_keys_file = {}\npacket_history = {PACKET_HISTORY}\n",
             string(&files.bearer_token.to_string_lossy()),
             string(&files.write_keys.to_string_lossy()),
         ));

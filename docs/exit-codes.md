@@ -98,12 +98,14 @@ A failed command with `--json` prints:
 
 ## The wallet passphrase
 
-`toon init`, `toon wallet show`, `toon wallet balances`, `toon wallet backup`, `toon wallet restore` `toon event publish`, `toon message send` and `toon nip publish` read the passphrase from the file named by
+`toon init`, `toon wallet show`, `toon wallet balances`, `toon wallet backup`, `toon wallet restore`, `toon relay subscribe`, `toon event publish`, `toon message send` and `toon nip publish` read the passphrase from the file named by
 `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`. It is never a flag. One trailing
 newline in the file is not part of the passphrase.
 
 `toon wallet fund` reads the settlement keys the agent node holds, not the keystore, so it
-needs no passphrase.
+needs no passphrase. `toon relay subscriptions` reads the subscriber key's secret that
+`toon relay subscribe` kept in the agent node's home, and needs the passphrase only when that
+key is not kept (the file is absent or not a whole key).
 
 ## Network profiles and funding
 
@@ -247,8 +249,13 @@ its amount. A first subscription needs
 one to replace the old, and keeps the balance. `toon relay subscriptions` lists, per relay, the
 `balance`, `filter` and `subscriber_key`, read from the relay now (`current: true`; a relay
 that holds no subscription for the key answers a balance of 0) or as it last answered, and
-`exhausted`: whether the balance is below the broadcast price. `toon status` lists each
-subscription under `agent_node.subscriptions` with the same `exhausted`, as last kept.
+`exhausted`: whether the balance is below the broadcast price. Each item carries `read_at`,
+the Unix second a relay last stated the balance (the answer to a subscribe payment or to a
+balance read, a `404` included); for a relay that did not answer it is the earlier time. `toon
+status` asks no relay: it lists each subscription under `agent_node.subscriptions` with the
+same `exhausted` and `read_at`, as last kept, and its text line says the balance is as last
+read, and when, and names `toon relay subscriptions` as the command that reads the current one.
+An entry kept before `read_at` existed has `read_at: null`, and its line says the time is unknown.
 
 The supervisor receives every subscription that has a balance (ADR 0005). It dials the
 relay's live feed, answers its NIP-42 challenge with the subscriber key (`subscribe` keeps

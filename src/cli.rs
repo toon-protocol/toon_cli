@@ -77,7 +77,7 @@ pub enum Command {
         #[command(subcommand)]
         command: LimitCommand,
     },
-    /// Count or list the packets the connector has carried, free: needs no passphrase
+    /// Count, list or show the history of the packets the connector has carried, free: needs no passphrase
     Packet {
         #[command(subcommand)]
         command: PacketCommand,
@@ -703,8 +703,9 @@ pub enum RelayCommand {
         #[arg(long)]
         yes: bool,
     },
-    /// List the balance and filter at each relay subscribed to, or with `--incoming` who
-    /// subscribed to this agent node's own relay and what they have left
+    /// List the balance and filter at each relay subscribed to, read from each relay now,
+    /// or with `--incoming` who subscribed to this agent node's own relay and what they have
+    /// left. It needs no passphrase while `toon relay subscribe` has kept the subscriber key
     Subscriptions {
         /// The subscribers of the agent node's own relay, which must be running
         #[arg(long)]
@@ -781,6 +782,15 @@ pub enum PacketCommand {
     /// rejected packets are listed, `toon packet count` has the totals. Free: needs no
     /// passphrase and moves no money; works while the agent node is stopped
     List {
+        /// How many packets to show
+        #[arg(long, short = 'n', default_value_t = crate::status::DEFAULT_PACKETS)]
+        limit: usize,
+    },
+    /// List the connector's recent packets, newest first, each delivered, forwarded or sent,
+    /// fulfilled or rejected: the connector's packet history, which holds recent packets
+    /// only and is forgotten when it restarts; `toon packet count` has the totals. Free:
+    /// needs no passphrase and moves no money; needs the agent node running
+    History {
         /// How many packets to show
         #[arg(long, short = 'n', default_value_t = crate::status::DEFAULT_PACKETS)]
         limit: usize,

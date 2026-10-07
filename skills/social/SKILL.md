@@ -32,6 +32,9 @@ in them.
   `--following`, `authors` is the keys in your follow list (the newest kind 3 you signed, on your
   own relay, which must be running), and `--filter` is optional; a `--filter` that has `authors`
   is `usage`, and no follow list, or an empty one, is `no_follow_list`.
+- Your own relay is read at the `ws://host:port` that `toon status` prints for it (`read_address` of the
+  app `relay` in `toon status --json`); `toon event query <ws-url>` takes that URL. It is not the write
+  address the status also shows.
 - `toon event watch` prints the live events of your own relay, one JSON document to a line, as
   they arrive. It takes no relay URL, needs no subscription and pays nothing. Only events that
   arrive after it starts are printed: `event query` reads the stored ones. `--filter` is one
