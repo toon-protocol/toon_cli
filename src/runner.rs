@@ -162,7 +162,7 @@ impl AppRunner for ProcessRunner {
         let io =
             |path: &Path, error: std::io::Error| failed(format!("{}: {error}.", path.display()));
         fs::create_dir_all(&spec.data_dir).map_err(|error| io(&spec.data_dir, error))?;
-        let log = spec.data_dir.join("app.log");
+        let log = app_log(&spec.data_dir);
         let logs = File::options()
             .create(true)
             .append(true)
@@ -252,6 +252,35 @@ struct Container {
     address: SocketAddr,
     read: SocketAddr,
     stopped: bool,
+    /// Where the container's output is kept once it is gone.
+    log: PathBuf,
+}
+
+/// The file an app's own output is kept in, in its data directory.
+pub fn app_log(data_dir: &Path) -> PathBuf {
+    data_dir.join("app.log")
+}
+
+/// Append what the container wrote to its standard output and standard error to `log`, in
+/// the order it wrote them, so that it outlives the container. A container that is not there
+/// keeps nothing.
+fn keep_output(name: &str, log: &Path) {
+    // Else `docker logs` would write its own complaint into the app's log.
+    if docker(&["container", "inspect", name]).is_err() {
+        return;
+    }
+    let Ok(file) = File::options().create(true).append(true).open(log) else {
+        return;
+    };
+    let Ok(errors) = file.try_clone() else {
+        return;
+    };
+    let _ = Command::new("docker")
+        .args(["logs", name])
+        .stdin(Stdio::null())
+        .stdout(file)
+        .stderr(errors)
+        .status();
 }
 
 fn docker(args: &[&str]) -> Result<String, String> {
@@ -301,11 +330,14 @@ impl AppRunner for ContainerRunner {
             .map_err(|error| failed(format!("{}: {error}.", spec.data_dir.display())))?;
         let data = fs::canonicalize(&spec.data_dir)
             .map_err(|error| failed(format!("{}: {error}.", spec.data_dir.display())))?;
-        // What a supervisor that was killed left behind.
+        let log = app_log(&spec.data_dir);
+        // What a supervisor that was killed left behind, its output kept first.
+        keep_output(&name, &log);
         let _ = docker(&["rm", "--force", &name]);
 
         let mut command = Command::new("docker");
-        command.args(["run", "--detach", "--rm", "--name", &name]);
+        // Not `--rm`: a container that exits by itself stays until `stop` has kept its output.
+        command.args(["run", "--detach", "--name", &name]);
         // Held until the relay answers, which it does once it has bound them.
         let claimed = if spec.relay {
             Some(free_ports()?)
@@ -341,6 +373,7 @@ impl AppRunner for ContainerRunner {
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             read: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             stopped: false,
+            log,
         };
         let published = |port: u16| {
             docker(&["port", &name, &format!("{port}/tcp")]).and_then(|ports| {
@@ -400,7 +433,7 @@ impl RunningApp for Container {
             return;
         }
         let _ = docker(&["stop", "--time", "10", &self.name]);
-        // `--rm` removes it once stopped; this is for one that was created and never ran.
+        keep_output(&self.name, &self.log);
         let _ = docker(&["rm", "--force", &self.name]);
     }
 }
@@ -589,5 +622,21 @@ mod tests {
         assert!(get(app.write_address(), "/health")
             .is_some_and(|answer| answer.starts_with("HTTP/1.1 200")));
         app.stop();
+    }
+
+    /// An image whose container exits at once keeps what it wrote in the app's log, after
+    /// the container is gone. It needs docker and the `hello-world` image.
+    #[test]
+    #[ignore = "needs docker and a network to pull the hello-world image"]
+    fn a_container_that_fails_to_start_keeps_its_output() {
+        let data = tempfile::tempdir().unwrap();
+        let exits = spec(data.path(), "hello-world");
+
+        let error = ContainerRunner.start(&exits).err().unwrap();
+
+        assert_eq!(error.code, ErrorCode::AppFailed);
+        let kept = fs::read_to_string(app_log(data.path())).unwrap();
+        assert!(kept.contains("Hello from Docker!"), "{kept}");
+        assert!(docker(&["container", "inspect", &format!("toon-{}", exits.instance)]).is_err());
     }
 }

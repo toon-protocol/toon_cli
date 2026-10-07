@@ -6,10 +6,17 @@
 toon up                  # install and start the systemd --user unit, then return
 toon up --foreground     # run the supervisor in this terminal instead
 toon status              # supervisor, each TOON app and app, restarts, peerings
-toon logs relay          # the log of a TOON app or of an app
+toon logs echo           # what the app echo wrote to its output
+toon logs echo --connector  # the log of the connector echo is behind
 toon logs echo -n 200    # the last 200 lines
 toon down                # stop everything, and the unit
 ```
+
+`toon logs <name>` shows an app's own log if the name is an app's, and the connector's log if it
+is only a TOON app's. The default `relay` is both, so it shows the app's; `--connector` shows the
+connector's. The report says which in `source`. An app's log is kept in its data directory, an image
+app's once its container stops, so it is readable after a failed start and while the agent node is
+stopped. An app served at a URL has none.
 
 `toon up` writes `~/.config/systemd/user/toon-agent-node.service`, which runs
 `toon up --foreground`, and starts it. The supervisor:
@@ -47,7 +54,7 @@ toon packet list -n 5 --json
 ```
 
 `toon packet list` is free too: it needs no passphrase and moves no money. It reads the connector's
-log, as `toon logs` does, so it works while the agent node is stopped, and the log keeps the
+log, as `toon logs --connector` does, so it works while the agent node is stopped, and the log keeps the
 rejects from before a restart. A line shows the time, the destination, the reject code and the
 reject message. Only rejected packets are listed: the connector logs a fulfilled packet only at
 `debug`, so `toon packet count` has those, as a count. `-n` / `--limit` says how many to show. A
@@ -140,5 +147,6 @@ Change it with `toon` commands, not by hand. An edited `limits.json` stops every
 | `peering_needed` | Run the `peer add` (if the message prints one) and `route add` the message prints |
 | `overlay_unavailable` | The Anyone network did not carry: try again later |
 | `describe_failed` | The connector at that `/ilp` URL gave no self-description: check the URL, or try again later |
-| `connector_failed`, `app_failed` | `toon logs <name>` |
+| `connector_failed` | `toon logs <TOON app> --connector` |
+| `app_failed` | `toon logs <app>` |
 | `systemd_failed` | `systemctl --user status toon-agent-node` |
