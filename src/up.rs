@@ -32,7 +32,7 @@ use crate::inbox::Inbox;
 use crate::node::{self, App, AppFiles, ConnectorFiles, Reach, Source, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::overlay::{self, Edge};
-use crate::receive::{Receiver, Surroundings};
+use crate::receive::{Feeds, Receiver, Surroundings};
 use crate::runner::{self, AppRunner, AppSpec, RunningApp};
 
 /// How long a connector gets to exit once its supervisor is stopping, before it is killed.
@@ -100,6 +100,8 @@ struct Shared {
     sync: Mutex<Vec<Reload>>,
     /// The overlay's SOCKS5 proxy, once the supervisor has bootstrapped it.
     proxy: Mutex<Option<SocketAddr>>,
+    /// What each subscription's feed is doing.
+    feeds: Feeds,
 }
 
 impl Surroundings for Shared {
@@ -380,6 +382,7 @@ fn launch(
             units: Mutex::new(Vec::new()),
             sync: Mutex::new(Vec::new()),
             proxy: Mutex::new(None),
+            feeds: Feeds::default(),
         }),
         socket: socket.to_path_buf(),
         home: home.to_path_buf(),
@@ -393,7 +396,11 @@ fn launch(
         }
     }
     supervisor.reconcile(state);
-    supervisor.receiver = Some(Receiver::start(home, supervisor.shared.clone()));
+    supervisor.receiver = Some(Receiver::start(
+        home,
+        supervisor.shared.clone(),
+        supervisor.shared.feeds.clone(),
+    ));
     supervisor.inbox = Some(Inbox::start(home, supervisor.shared.clone()));
     let answering = Arc::clone(&supervisor.shared);
     thread::spawn(move || {
@@ -555,6 +562,7 @@ impl Shared {
         match request {
             "status" => json!({
                 "toon_apps": self.units().iter().map(|unit| unit.status()).collect::<Vec<_>>(),
+                "subscriptions": self.feeds.json(),
             }),
             // Start the connector of one TOON app again from the state as it now is, and
             // wait for the answer. Apps are started and stopped to match the state too.

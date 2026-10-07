@@ -202,6 +202,8 @@ pub struct Reading<'a> {
 
 /// Read the live feed of `relay` for the subscriber key `secret`, with `filter`, and call
 /// `on_event` for every event it sends, until it ends. `on_event` returns whether to go on.
+/// `on_live` is called once the relay has sent `EOSE`: from then on events arrive as they
+/// happen.
 pub fn read(
     relay: &str,
     secret: &[u8; 32],
@@ -209,15 +211,17 @@ pub fn read(
     proxy: Option<SocketAddr>,
     stop: &AtomicBool,
     on_event: impl FnMut(Value) -> bool,
+    on_live: impl FnMut(),
 ) -> Ended {
     let reading = Reading {
         login: Some((secret, relay)),
         live_only: false,
     };
-    listen(relay, &reading, filter, proxy, stop, on_event)
+    listen(relay, &reading, filter, proxy, stop, on_event, on_live)
 }
 
-/// Read the live feed of `relay` as `reading` says, until it ends.
+/// Read the live feed of `relay` as `reading` says, until it ends. `on_live` is called at
+/// the relay's `EOSE`.
 pub fn listen(
     relay: &str,
     reading: &Reading,
@@ -225,6 +229,7 @@ pub fn listen(
     proxy: Option<SocketAddr>,
     stop: &AtomicBool,
     mut on_event: impl FnMut(Value) -> bool,
+    mut on_live: impl FnMut(),
 ) -> Ended {
     let mut socket = match dial(relay, proxy) {
         Ok(socket) => socket,
@@ -290,7 +295,10 @@ pub fn listen(
             continue;
         };
         match (frame.first().and_then(Value::as_str), frame.get(1)) {
-            (Some("EOSE"), Some(id)) if id == SUBSCRIPTION => stored = false,
+            (Some("EOSE"), Some(id)) if id == SUBSCRIPTION => {
+                stored = false;
+                on_live();
+            }
             (Some("EVENT"), Some(id)) if id == SUBSCRIPTION => {
                 if stored {
                     continue;

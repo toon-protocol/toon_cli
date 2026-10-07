@@ -122,6 +122,20 @@ When a connector on the way charges to forward, state what one packet costs alon
 with `--packet-amount`; `--amount` stays the total, and each packet still credits only the
 subscribe price.
 
+Whether the supervisor receives a subscription is in `toon status` and in each row of
+`toon relay subscriptions`, and is not to be inferred from whether your own relay holds an
+event. Each subscription reports a state: `connecting` until the relay's `EOSE`, `live` once
+events are handed on as they arrive, `retrying` with the reason while it waits to dial again
+(the feed dropped or was closed, the relay sent no `AUTH` challenge, your own relay is not
+running, or the subscriber key's secret is not kept for the supervisor), and `exhausted` when
+the relay closed the feed with `payment-required` or the balance is 0. It also reports when
+your own relay last accepted an event from the feed, and the last error with its time, which
+stays after the feed is `live` again until the supervisor stops. In `--json` that is `feed`
+(`state`, `since`, `last_event_at`, `last_error`), null when the supervisor is not running,
+and `balance_read_at`, the unix time the balance was last read from the relay; a subscription
+kept before that was recorded has none. `status` needs no passphrase and its exit code does
+not depend on the feed. The state is kept in memory, so it starts over when the supervisor does.
+
 Both directions are counted. `toon status` reports the subscriptions this agent node holds
 (with a balance, and exhausted) and the subscriber keys of its own relay that hold a balance;
 the second is 0 while the relay sells no live feed, and unknown while it does not answer,

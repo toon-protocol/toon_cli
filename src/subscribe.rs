@@ -139,6 +139,9 @@ pub struct Kept {
     pub filter: Value,
     pub balance: u64,
     pub broadcast_price: u64,
+    /// When the balance was last read from the relay, in unix seconds. None for a
+    /// subscription kept before this was recorded.
+    pub balance_read_at: Option<u64>,
 }
 
 impl Kept {
@@ -154,6 +157,7 @@ impl Kept {
             "filter": self.filter,
             "balance": self.balance,
             "broadcast_price": self.broadcast_price,
+            "balance_read_at": self.balance_read_at,
         })
     }
 
@@ -164,6 +168,7 @@ impl Kept {
             filter: value["filter"].clone(),
             balance: value["balance"].as_u64()?,
             broadcast_price: value["broadcast_price"].as_u64()?,
+            balance_read_at: value["balance_read_at"].as_u64(),
         })
     }
 
@@ -179,6 +184,7 @@ impl Kept {
             broadcast_price: answer["broadcast_price"]
                 .as_u64()
                 .filter(|price| *price > 0)?,
+            balance_read_at: Some(event::now()),
         })
     }
 }
@@ -571,6 +577,7 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
     } else {
         Some(subscriber_secret(home)?)
     };
+    let reply = control::ask(home, "status");
     let mut shown = Vec::new();
     let mut lines = Vec::new();
     for entry in &mut kept {
@@ -582,16 +589,23 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
         match read {
             Read::Held(fresh) => *entry = fresh,
             // The filter is kept, for the next payment to open the subscription again with.
-            Read::NotSubscribed => entry.balance = 0,
+            Read::NotSubscribed => {
+                entry.balance = 0;
+                entry.balance_read_at = Some(event::now());
+            }
             Read::Unanswered => {}
         }
         let mut item = entry.json();
+        let feed = crate::receive::feed_of(reply.as_ref(), &entry.relay);
+        item["feed"] = feed.clone();
         item["current"] = json!(current);
         item["exhausted"] = json!(entry.exhausted());
         shown.push(item);
         lines.push(format!(
-            "{}: balance {}, {} per event, filter {}{}{}",
+            "{}: {}balance {}, {} per event, filter {}{}{}",
             entry.relay,
+            crate::receive::describe_feed(&feed)
+                .map_or_else(String::new, |feed| format!("{feed}; ")),
             entry.balance,
             entry.broadcast_price,
             entry.filter,

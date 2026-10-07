@@ -280,7 +280,11 @@ not raise the amount step by step.
 relay: a prepaid balance at that relay, with one filter, drawn down for each event it sends.
 The supervisor writes those events into your own relay (ADR 0005). It needs a peering too, and
 without `--yes` it fails with `not_confirmed` and says what the relay charges. `toon relay
-subscriptions` shows the balance. It is not the follow list, which is an event you publish. It is
+subscriptions` shows the balance. To know whether the supervisor receives a subscription, read
+`feed` in `toon status --json` (or in `toon relay subscriptions --json`): `state` is `connecting`,
+`live`, `retrying` or `exhausted`, `last_event_at` is when your own relay last accepted an event
+from it, and `last_error` says what went wrong; `feed` is null when the supervisor is not running.
+Do not infer delivery from your own relay holding or lacking an event. It is not the follow list, which is an event you publish. It is
 the same as publishing in one way: if a connector in between rejects its packets with `F03`,
 read `cost` from the rejected packet's report (`response.cost`) and state it with
 `--packet-amount <cost>`, treating `"complete": false` as a floor; `--amount` stays the total,

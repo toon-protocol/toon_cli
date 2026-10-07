@@ -143,22 +143,30 @@ pub fn status(home: &Path) -> Result<Report, Error> {
     let (active, exhausted_count) = crate::subscribe::totals(&all_kept);
     for kept in all_kept {
         let exhausted = kept.exhausted();
+        let feed = crate::receive::feed_of(reply.as_ref(), &kept.relay);
+        let read = kept.balance_read_at.map_or_else(
+            || "never read".to_owned(),
+            |at| format!("read at {}", crate::receive::time(at)),
+        );
+        let feed_text = crate::receive::describe_feed(&feed).unwrap_or_default();
         lines.push(if exhausted {
             format!(
-                "Subscription at {}: exhausted. `toon relay subscribe` tops it up.",
-                kept.relay
+                "Subscription at {}: {feed_text}; balance {} ({read}). `toon relay subscribe` tops it up.",
+                kept.relay, kept.balance
             )
         } else {
             format!(
-                "Subscription at {}: balance {}, received.",
+                "Subscription at {}: {feed_text}; balance {} ({read}).",
                 kept.relay, kept.balance
             )
         });
         subscriptions.push(json!({
             "relay": kept.relay,
             "balance": kept.balance,
+            "balance_read_at": kept.balance_read_at,
             "broadcast_price": kept.broadcast_price,
             "exhausted": exhausted,
+            "feed": feed,
         }));
     }
     // Asked of the running relay: unknown while it does not answer, which is not a failure.
