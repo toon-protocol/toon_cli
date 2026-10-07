@@ -658,9 +658,23 @@ pub fn own_relay_app(state: &node::State) -> Result<&node::ToonApp, Error> {
         })
 }
 
-/// Where the running relay of the TOON app `app` listens, `host:port`, as the agent node's
-/// supervisor reports it. The relay not running is `not_running`.
-pub fn own_relay_address(home: &Path, app: &str) -> Result<String, Error> {
+/// Which of the two loopback ports of the own relay (ADR 0006) a caller means.
+#[derive(Clone, Copy)]
+pub enum RelayPort {
+    /// The write port, `address`: the operator's HTTP, such as the list of subscribers.
+    Write,
+    /// The read port, `read_address`: the NIP-01 websocket.
+    Read,
+}
+
+/// Where the running relay of the TOON app `app` listens on `port`, `host:port`, as the
+/// agent node's supervisor reports it. The relay not running, or reporting no such port, is
+/// `not_running`.
+pub fn own_relay_address(home: &Path, app: &str, port: RelayPort) -> Result<String, Error> {
+    let field = match port {
+        RelayPort::Write => "address",
+        RelayPort::Read => "read_address",
+    };
     let not_running = || Error {
         nothing_sent: false,
         unanswered: None,
@@ -678,7 +692,7 @@ pub fn own_relay_address(home: &Path, app: &str) -> Result<String, Error> {
         .flatten()
         .find(|reported| reported["name"] == node::RELAY)
         .filter(|reported| reported["running"] == true)
-        .and_then(|reported| reported["address"].as_str())
+        .and_then(|reported| reported[field].as_str())
         .map(str::to_owned)
         .ok_or_else(not_running)
 }
@@ -770,7 +784,7 @@ fn selling_relay(state: &node::State) -> Result<&node::ToonApp, Error> {
 
 /// The answer of the running relay of `app` to `GET /subscribers`.
 fn own_subscribers(home: &Path, app: &node::ToonApp) -> Result<Value, Error> {
-    let address = own_relay_address(home, &app.name).map_err(|mut error| {
+    let address = own_relay_address(home, &app.name, RelayPort::Write).map_err(|mut error| {
         error.message =
             "The relay is not running: `toon up` starts it, and it lists its subscribers.".into();
         error

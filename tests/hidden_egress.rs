@@ -586,7 +586,7 @@ fn a_hidden_agent_node_holds_a_subscription_at_a_relay_on_this_machine_directly(
     let status = toon(&near.machine, &["status", "--json"]).json();
     let own = format!(
         "ws://{}",
-        status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
+        status["agent_node"]["toon_apps"][0]["apps"][0]["read_address"]
             .as_str()
             .unwrap_or_else(|| panic!("the relay has no address: {status}"))
     );

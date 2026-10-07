@@ -155,9 +155,9 @@ impl Node {
 
     fn own_relay(&self) -> String {
         let status = self.status();
-        let address = status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
+        let address = status["agent_node"]["toon_apps"][0]["apps"][0]["read_address"]
             .as_str()
-            .unwrap_or_else(|| panic!("the relay has no address: {status}"));
+            .unwrap_or_else(|| panic!("the relay has no read address: {status}"));
         format!("ws://{address}")
     }
 

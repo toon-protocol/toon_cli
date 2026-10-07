@@ -16,7 +16,7 @@
 //! input closes, as a supervisor's apps do.
 //!
 //! The event of a write, or a JSON body posted to `/`, is also stored in `events.log`,
-//! one per line, and a websocket client on the same port reads them back with a NIP-01
+//! one per line, and a websocket client on the read port (`TOON_RELAY_PORT`) reads them back with a NIP-01
 //! `REQ` (`ids`, `authors`, `kinds`, `#<letter>` tags and `limit` are honoured) and gets
 //! `EOSE` after the stored events. An addressable event replaces the earlier one at its
 //! address.
@@ -108,32 +108,40 @@ fn main() {
     }
 
     // The read port answers as the write port does, so a test can reach it through the
-    // overlay.
-    if let Ok(read) = env::var("TOON_RELAY_PORT") {
+    // overlay, and it alone serves NIP-01: the write port refuses a websocket upgrade with
+    // 404, as the relay's image does. Without a read port, the write port serves both.
+    let read_port = env::var("TOON_RELAY_PORT");
+    let write_websockets = read_port.is_err();
+    if let Ok(read) = read_port {
         let reads = TcpListener::bind(format!("127.0.0.1:{read}")).expect("bind the read port");
         let data = data.clone();
         thread::spawn(move || {
             for stream in reads.incoming().flatten() {
                 let data = data.clone();
-                thread::spawn(move || serve(stream, &data));
+                thread::spawn(move || serve(stream, &data, true));
             }
         });
     }
     let listener = TcpListener::bind(format!("127.0.0.1:{port}")).expect("bind");
     for stream in listener.incoming().flatten() {
         let data = data.clone();
-        thread::spawn(move || serve(stream, &data));
+        thread::spawn(move || serve(stream, &data, write_websockets));
     }
 }
 
-fn serve(stream: TcpStream, data: &Path) {
+fn serve(mut stream: TcpStream, data: &Path, websockets: bool) {
     let mut start = [0u8; 1024];
     let peeked = stream.peek(&mut start).unwrap_or(0);
     if String::from_utf8_lossy(&start[..peeked])
         .to_ascii_lowercase()
         .contains("upgrade: websocket")
     {
-        return websocket(stream, data);
+        if websockets {
+            return websocket(stream, data);
+        }
+        let _ = stream
+            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        return;
     }
     let mut reader = BufReader::new(stream);
     let mut request = String::new();

@@ -104,12 +104,16 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                 let running = field("running") == true;
                 all_running &= running;
                 lines.push(format!(
-                    "App {name} of {}: {}{}. {route}",
+                    "App {name} of {}: {}{}.{} {route}",
                     app.name,
                     if running { "running" } else { "not running" },
                     field("address")
                         .as_str()
                         .map(|address| format!(" on {address}"))
+                        .unwrap_or_default(),
+                    field("read_address")
+                        .as_str()
+                        .map(|read| format!(" Read at ws://{read}."))
                         .unwrap_or_default()
                 ));
                 let image = match &behind.source {

@@ -96,7 +96,8 @@ connector is running, or fail with `confirmation_required` and change nothing.
 2. Fund the wallet (next section).
 3. `toon up` starts the supervisor as a `systemd --user` unit. `toon up --foreground` runs it in
    the current process. `toon down` stops it.
-4. `toon status` reports the agent node, each TOON app and its apps, and how often the supervisor
+4. `toon status` reports the agent node, each TOON app and its apps (for the relay, a write address and the
+   `ws://` URL it is read at, `read_address` in `--json`, which `toon event query <ws-url>` takes), and how often the supervisor
    restarted a connector. `toon logs <name>` shows the log of a TOON app or an app.
 5. `toon wallet show` lists the addresses by chain and the agent identity.
 

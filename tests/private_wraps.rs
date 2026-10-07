@@ -11,9 +11,9 @@ use support::Machine;
 
 fn relay_url(machine: &Machine) -> String {
     let status = machine.toon(&["status", "--json"]).json();
-    let address = status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
+    let address = status["agent_node"]["toon_apps"][0]["apps"][0]["read_address"]
         .as_str()
-        .unwrap_or_else(|| panic!("the relay has no address: {status}"));
+        .unwrap_or_else(|| panic!("the relay has no read address: {status}"));
     format!("ws://{address}")
 }
 

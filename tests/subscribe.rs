@@ -31,7 +31,7 @@ impl Node {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        panic!("the connector has no address");
+        panic!("the connector has no read address");
     }
 
     fn toon(&self, args: &[&str]) -> Run {
@@ -52,12 +52,12 @@ impl Node {
         self.up = Some(up);
     }
 
-    /// The websocket URL of this agent node's own relay: the fake serves it on its write port.
+    /// The websocket URL of this agent node's own relay: the fake serves it on its read port.
     fn own_relay(&self) -> String {
         let status = self.machine.toon(&["status", "--json"]).json();
-        let address = status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
+        let address = status["agent_node"]["toon_apps"][0]["apps"][0]["read_address"]
             .as_str()
-            .unwrap_or_else(|| panic!("the relay has no address: {status}"));
+            .unwrap_or_else(|| panic!("the relay has no read address: {status}"));
         format!("ws://{address}")
     }
 
