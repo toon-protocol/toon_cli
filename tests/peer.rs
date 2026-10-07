@@ -531,3 +531,40 @@ fn the_connectors_replay_wording_is_pinned() {
         "the embedded connector no longer words a replay so: {text}"
     );
 }
+
+#[test]
+fn status_reports_a_hand_made_peering_and_not_an_unconnected_node() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+
+    let fresh = near.toon(&["status", "--json"]);
+    assert_eq!(
+        fresh.json()["agent_node"]["peerings"],
+        serde_json::json!([])
+    );
+    assert!(near.toon(&["status"]).stdout.contains("Unconnected:"));
+
+    let peered = near.toon(&[
+        "peer",
+        "add",
+        &far.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+        "--id",
+        "far",
+    ]);
+    assert_eq!(peered.exit_code, 0, "{}", peered.stderr);
+
+    let text = near.toon(&["status"]);
+    assert!(!text.stdout.contains("Unconnected"), "{}", text.stdout);
+    assert!(
+        text.stdout.contains("No network joined. 1 peering: far."),
+        "{}",
+        text.stdout
+    );
+    let json = near.toon(&["status", "--json"]).json();
+    assert!(json["agent_node"]["joined"].is_null());
+    assert_eq!(json["agent_node"]["peerings"][0]["id"], "far");
+}

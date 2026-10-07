@@ -716,6 +716,19 @@ pub fn peer_and_route_on(
     Ok(peered)
 }
 
+/// The ids of the peerings held by the connector of the TOON app `name`, or `None` when that
+/// connector does not answer. Never an error: `status` reports what it cannot read as unknown.
+pub fn peering_ids(home: &Path, name: &str) -> Option<Vec<String>> {
+    let surface = surface_of(home, Some(name)).ok()?;
+    let peers = read(&surface, "/peers").ok()?;
+    Some(
+        peers
+            .iter()
+            .filter_map(|peer| peer["id"].as_str().map(str::to_owned))
+            .collect(),
+    )
+}
+
 /// `toon peer list`: the connector's peerings.
 pub fn peer_list(home: &Path) -> Result<Report, Error> {
     let surface = surface(home)?;
