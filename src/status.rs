@@ -176,13 +176,20 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             )
         } else {
             format!(
-                "Subscription at {}: balance {}, received.",
-                kept.relay, kept.balance
+                "Subscription at {}: balance {}, as last read {}. `toon relay subscriptions` \
+                 reads the current one.",
+                kept.relay,
+                kept.balance,
+                kept.read_at.map_or_else(
+                    || "at an unknown time".to_owned(),
+                    |at| format!("at {at} (Unix seconds)")
+                )
             )
         });
         subscriptions.push(json!({
             "relay": kept.relay,
             "balance": kept.balance,
+            "read_at": kept.read_at,
             "broadcast_price": kept.broadcast_price,
             "exhausted": exhausted,
         }));

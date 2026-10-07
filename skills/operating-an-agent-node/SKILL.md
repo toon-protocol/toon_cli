@@ -32,7 +32,8 @@ command here is missing from `toon --help`, the skill is out of date: trust `--h
   3 no agent node on this machine. `toon --help` lists them; the error codes to branch on are
   named where they arise below.
 - No command prompts or reads standard input. The wallet passphrase comes from the file named by
-  `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`, never from a flag.
+  `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`, never from a flag. `toon init` creates no
+  passphrase file: the operator chooses where it is and names it with `TOON_PASSPHRASE_FILE`.
 - `--app <name>` says which TOON app a command about a connector is about; the first one is the
   default. Amounts are in the token's base units.
 - Ask for help with `toon --help` or `toon <command> --help`; there is no `help` subcommand.
@@ -293,8 +294,10 @@ not raise the amount step by step.
 relay: a prepaid balance at that relay, with one filter, drawn down for each event it sends.
 The supervisor writes those events into your own relay (ADR 0005). It needs a peering too, and
 without `--yes` it fails with `not_confirmed` and says what the relay charges. `toon relay
-subscriptions` shows the balance. It is not the follow list, which is an event you publish. It is
-the same as publishing in one way: if a connector in between rejects its packets with `F03`,
+subscriptions` reads the current balance from each relay, and needs no passphrase once
+`subscribe` has run; the balance in `toon status` is the last one read, with its time
+(`read_at`). It is not the follow list, which is an event you publish. It is the same as
+publishing in one way: if a connector in between rejects its packets with `F03`,
 read `cost` from the rejected packet's report (`response.cost`) and state it with
 `--packet-amount <cost>`, treating `"complete": false` as a floor; `--amount` stays the total,
 paid as whole packets of that amount, and each packet still credits only the subscribe price.

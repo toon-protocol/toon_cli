@@ -139,6 +139,9 @@ pub struct Kept {
     pub filter: Value,
     pub balance: u64,
     pub broadcast_price: u64,
+    /// When a relay last stated the balance, in Unix seconds. None for an entry kept before
+    /// the time was kept.
+    pub read_at: Option<u64>,
 }
 
 impl Kept {
@@ -154,6 +157,7 @@ impl Kept {
             "filter": self.filter,
             "balance": self.balance,
             "broadcast_price": self.broadcast_price,
+            "read_at": self.read_at,
         })
     }
 
@@ -164,6 +168,7 @@ impl Kept {
             filter: value["filter"].clone(),
             balance: value["balance"].as_u64()?,
             broadcast_price: value["broadcast_price"].as_u64()?,
+            read_at: value["read_at"].as_u64(),
         })
     }
 
@@ -179,6 +184,7 @@ impl Kept {
             broadcast_price: answer["broadcast_price"]
                 .as_u64()
                 .filter(|price| *price > 0)?,
+            read_at: Some(event::now()),
         })
     }
 }
@@ -566,10 +572,14 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
     }
     let egress = Egress::of(home)?;
     let mut kept = load(home)?;
+    // The secret `subscribe` kept needs no passphrase; the wallet is opened only without it.
     let secret = if kept.is_empty() {
         None
     } else {
-        Some(subscriber_secret(home)?)
+        Some(match kept_secret(home) {
+            Some(secret) => zeroize::Zeroizing::new(secret),
+            None => subscriber_secret(home)?,
+        })
     };
     let mut shown = Vec::new();
     let mut lines = Vec::new();
@@ -582,7 +592,10 @@ pub fn subscriptions(home: &Path) -> Result<Report, Error> {
         match read {
             Read::Held(fresh) => *entry = fresh,
             // The filter is kept, for the next payment to open the subscription again with.
-            Read::NotSubscribed => entry.balance = 0,
+            Read::NotSubscribed => {
+                entry.balance = 0;
+                entry.read_at = Some(event::now());
+            }
             Read::Unanswered => {}
         }
         let mut item = entry.json();
