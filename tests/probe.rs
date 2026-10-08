@@ -51,6 +51,21 @@ impl Node {
             .parse()
             .expect("a number")
     }
+
+    /// What the watermarks of the outbound channels add up to, as `toon channel list` shows.
+    fn outbound_watermark(&self) -> u128 {
+        let list = self.toon(&["channel", "list", "--json"]).json();
+        list["channels"]
+            .as_array()
+            .expect("channels")
+            .iter()
+            .filter(|channel| channel["direction"] == "outbound")
+            .map(|channel| match &channel["watermark"] {
+                serde_json::Value::String(text) => text.parse::<u128>().expect("a watermark"),
+                other => other.as_u64().expect("a watermark") as u128,
+            })
+            .sum()
+    }
 }
 
 /// An app that records each request it receives, head and body, and answers 201.
@@ -135,8 +150,7 @@ fn a_probe_of_a_route_its_direct_peer_terminates_states_the_price_and_pays_what_
     let before = near.remaining();
     let sealed = far.url();
 
-    // One base unit: a zero-value claim does not cross a peering at the pinned connector
-    // (the packet is answered `T01`), so this is the least a probe can carry here.
+    // One base unit, so that the probe pays for something.
     let run = near.toon(&[
         "probe",
         SUBSCRIBE,
@@ -167,6 +181,37 @@ fn a_probe_of_a_route_its_direct_peer_terminates_states_the_price_and_pays_what_
         "1",
         "--yes",
     ]);
+    assert_eq!(text.exit_code, 0);
+    assert!(
+        text.stdout
+            .contains(&format!("`toon send --amount {PRICE}`")),
+        "{}",
+        text.stdout
+    );
+}
+
+#[test]
+fn a_probe_with_no_amount_of_a_route_its_direct_peer_terminates_states_the_price_and_pays_nothing()
+{
+    let chain = AnvilChain::start();
+    let (near, far, relay) = beside_a_priced_route(&chain);
+    let before = near.remaining();
+    let watermark = near.outbound_watermark();
+    let sealed = far.url();
+
+    let run = near.toon(&["probe", SUBSCRIBE, "--seal-to", &sealed, "--json"]);
+
+    let report = run.json();
+    assert_eq!(report["outcome"], "rejected", "{report}");
+    assert_eq!(report["cost"], PRICE.to_string(), "{report}");
+    assert_eq!(report["complete"], true, "{report}");
+    assert_eq!(report["paid"], 0, "{report}");
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    assert_eq!(run.stderr, "");
+    assert_eq!(near.remaining(), before);
+    assert_eq!(near.outbound_watermark(), watermark);
+    assert_eq!(relay.posts(), 0);
+    let text = near.toon(&["probe", SUBSCRIBE, "--seal-to", &sealed]);
     assert_eq!(text.exit_code, 0);
     assert!(
         text.stdout
