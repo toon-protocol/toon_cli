@@ -163,6 +163,108 @@ fn a_query_that_matches_nothing_says_so() {
     assert_eq!(query.exit_code, 0);
 }
 
+fn sign(machine: &Machine, args: &[&str]) -> support::Run {
+    let mut all = vec!["event", "sign"];
+    all.extend_from_slice(args);
+    machine.toon_with(&all, |command| {
+        command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+    })
+}
+
+#[test]
+fn a_signed_event_is_printed_and_not_published() {
+    use k256::schnorr::signature::hazmat::PrehashVerifier;
+    use sha2::Digest;
+
+    let node = running();
+
+    let signed = sign(
+        &node.machine,
+        &[
+            "--kind",
+            "5301",
+            "--content",
+            "a job",
+            "--tags",
+            r#"[["i","https://example.com","url"]]"#,
+            "--json",
+        ],
+    );
+
+    assert_eq!(signed.exit_code, 0, "{}{}", signed.stdout, signed.stderr);
+    let event = signed.json()["event"].clone();
+    assert_eq!(event["pubkey"], node.agent_identity());
+    assert_eq!(event["kind"], 5301);
+    assert_eq!(event["content"], "a job");
+    assert_eq!(event["tags"][0][1], "https://example.com");
+    let serialized = serde_json::json!([
+        0,
+        event["pubkey"],
+        event["created_at"],
+        event["kind"],
+        event["tags"],
+        event["content"]
+    ])
+    .to_string();
+    let id = sha2::Sha256::digest(serialized.as_bytes());
+    assert_eq!(event["id"], hex::encode(id));
+    let key = hex::decode(event["pubkey"].as_str().unwrap()).unwrap();
+    let signature = hex::decode(event["sig"].as_str().unwrap()).unwrap();
+    k256::schnorr::VerifyingKey::from_bytes(&key)
+        .unwrap()
+        .verify_prehash(
+            &id,
+            &k256::schnorr::Signature::try_from(signature.as_slice()).unwrap(),
+        )
+        .expect("the signature is the agent identity's");
+
+    // The relay never saw it.
+    let query = node.machine.toon(&[
+        "event",
+        "query",
+        &node.relay_url(),
+        "--filter",
+        r#"{"kinds":[5301]}"#,
+        "--json",
+    ]);
+    assert_eq!(query.exit_code, 0, "{}", query.stdout);
+    assert_eq!(query.json()["events"], serde_json::json!([]));
+}
+
+#[test]
+fn sign_needs_no_running_agent_node_and_its_text_is_the_event_alone() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+
+    let signed = sign(&machine, &["--kind", "1", "--content", "offline"]);
+
+    assert_eq!(signed.exit_code, 0, "{}{}", signed.stdout, signed.stderr);
+    let event: Value = serde_json::from_str(&signed.stdout).expect("the event alone");
+    assert_eq!(event["content"], "offline");
+    assert!(event["sig"].is_string(), "{event}");
+}
+
+#[test]
+fn sign_on_a_machine_with_no_agent_node_says_so() {
+    let machine = Machine::new();
+
+    let run = machine.toon(&["event", "sign", "--kind", "1", "--json"]);
+
+    assert_eq!(run.json()["error"]["code"], "no_agent_node");
+    assert_eq!(run.exit_code, 3);
+}
+
+#[test]
+fn sign_refuses_tags_that_are_not_arrays_of_strings() {
+    let machine = Machine::new();
+
+    let run = machine.toon(&["event", "sign", "--kind", "1", "--tags", "[1]", "--json"]);
+
+    assert_eq!(run.json()["error"]["code"], "usage");
+    assert_eq!(run.exit_code, 2);
+}
+
 #[test]
 fn publish_needs_the_agent_node_to_be_running() {
     let chain = FakeChain::start();

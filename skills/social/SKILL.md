@@ -155,7 +155,8 @@ is the source: a relay or client that disagrees with a reference is following a 
   that wants you to authenticate before you read or write (as NIP-29 asks) is for the operator to
   satisfy, so treat a group that needs it as unavailable and say so.
 - `toon event publish` signs only with the agent identity and cannot encrypt; send a private
-  message with `toon message send`.
+  message with `toon message send`. `toon event sign` takes the same `--kind`, `--content` and
+  `--tags` and prints the signed event without publishing it.
 
 ## Left out, and why
 

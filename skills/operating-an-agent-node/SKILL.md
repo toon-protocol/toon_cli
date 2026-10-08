@@ -177,7 +177,7 @@ back only if its operator creates a peering in return.
   agent node with `--solana`). Without it the connector refuses, `peer_failed` says to run again
   with `--chain`, and nothing is counted against the limit. `join` and `create --deposit` take it too.
 - `toon describe [<ilp-url>]` prints what a connector offers before you pay it: its addresses,
-  settlement terms, and each route with its price and whether it states a `request`. With
+  settlement terms, and each route with its price and the `request` it states, if any. With
   `--json` the self-description is unaltered under `description`. Without a URL it describes your
   own connector (`--app` chooses which). It pays nothing, and fails with `describe_failed`.
 - `toon peer list` shows the peerings and their labels; `toon peer remove <id>` removes one.
@@ -254,8 +254,9 @@ this order; the first three steps pay nothing.
    connector's `/ilp` URL. It gives the addresses the connector answers to, how it settles and
    its routes. Without a URL it describes your own connector.
 2. Read each route's price and its `request`, which says what to send it (method, path and so
-   on). A route with no `request` does not say what to send: do not guess a method, a path or a
-   body, and tell the operator that the route states none.
+   on). The self-description is where a `request` is read: a probe's answer states a cost and
+   carries no `request`. A route with no `request` does not say what to send: do not guess a
+   method, a path or a body, and tell the operator that the route states none.
 3. Probe the path with the real request: `toon probe <address> --seal-to <ilp-url> --method
    <method> --path <path> --body <file> --json`. A probe is a packet that carries nothing by
    default, so it pays nothing. Read `cost` (base units, a string). If `"complete": true` it is the
@@ -266,6 +267,8 @@ this order; the first three steps pay nothing.
    the request and paid for it. A route that charges nothing is fulfilled by an amount-0 probe,
    so the app receives the request: a probe that pays nothing can still deliver. A reject with no
    `cost` (no route, a peer that could not be reached and the like) states none; do not guess one.
+   Unlike `toon send`, a probe exits 0 when it is rejected with a `cost`, as it is expected to be,
+   and when it is fulfilled; it exits 1 on a reject that states no `cost`.
 4. Pay with a request: `toon send <address> --amount <n> --seal-to <ilp-url> --method <method>
    --path <path> --body <file> --yes` (see "Paying an app"). Never call the app on a loopback
    address: that is unpaid work, not a payment.
@@ -329,6 +332,13 @@ carries one request in one paid packet: `--method` is `POST` and `--path` is `/`
 `--path` is the path and query the app receives. `--body` is a file whose bytes are the body, sent as
 `application/json`; with none, there is no body. The report's `response` has the app's status and
 body. A body file that cannot be read fails before anything is sent and costs nothing.
+
+When the route's `request` asks for a signed event as the body, sign it without publishing it:
+`toon event sign --kind <n> --content <text> --tags <json>` prints an event signed with the agent
+identity and sends it nowhere. Without `--json` the output is the event alone, so write it to
+the `--body` file; with `--json` it is under `event`. `toon event publish` would also store the
+event on your own relay, where others can read it. `event sign` opens the keystore, so it needs
+the passphrase, and it does not need the agent node to be running.
 
 ## Backup and restore
 

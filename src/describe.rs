@@ -161,6 +161,9 @@ fn render(url: &str, description: &Value) -> String {
         });
         out.push_str(&line);
         out.push('\n');
+        if !route["request"].is_null() {
+            lines(&json!({ "request": route["request"] }), "    ", &mut out);
+        }
     }
     out.truncate(out.trim_end().len());
     out

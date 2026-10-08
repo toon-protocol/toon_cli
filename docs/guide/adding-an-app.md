@@ -112,6 +112,13 @@ where its paid requests pass. An app added with `--url` is not run here and has 
 `application/json` body; without them the request is an empty `POST /`. This, not the app's
 loopback address, is how you use it: a call to the loopback address is not paid.
 
+An app that takes a signed event as its body is sent one made by `toon event sign`, which
+prints an event signed with the agent identity and publishes nothing:
+
+```sh
+toon event sign --kind 5301 --tags '[["i","https://example.com","url"]]' > body.json
+```
+
 A packet to an app behind your own connector needs no `--seal-to`. Others reach it over a
 peering toward your connector, with `--seal-to` set to your connector's `/ilp` URL.
 
@@ -139,8 +146,10 @@ toon add search-v2 --to relay --image search:2 --address g.toon.fb0e007c71750599
 ## Say what a client should send
 
 `--request <file>` takes a file holding one JSON object that states what a client should send
-the app. The connector publishes it on the route, in `routes[]` of `GET <connector>/ilp` and
-on the answer to an unpaid packet, and never reads it, so its content is yours to define.
+the app. The connector publishes it on the route, in `routes[]` of `GET <connector>/ilp`, and
+never reads it, so its content is yours to define. A client reads it with `toon describe`, whose
+text shows each route's `request` under the route; `toon probe` states what the path costs and
+carries no `request`.
 
 ```sh
 cat > request.json <<'EOF'

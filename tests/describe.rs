@@ -90,7 +90,7 @@ fn without_a_url_the_agent_nodes_own_connector_is_described() {
 fn the_text_names_each_route_with_its_price() {
     let url = answering(
         "200 OK",
-        r#"{"ilpAddress":"g.toon.x","batchSettlements":[{"chain":"evm:base:8453","token":"0xusdc"}],"routes":[{"prefix":"g.toon.x.relay","price":"7","pricePerKib":"3","request":{"a":1}},{"prefix":"g.toon.x.other","price":"9"}]}"#,
+        r#"{"ilpAddress":"g.toon.x","batchSettlements":[{"chain":"evm:base:8453","token":"0xusdc"}],"routes":[{"prefix":"g.toon.x.relay","price":"7","pricePerKib":"3","request":{"method":"POST","params":{"text":"a string"},"path":"/echo"}},{"prefix":"g.toon.x.other","price":"9"}]}"#,
     );
 
     let run = Machine::new().toon(&["describe", &url]);
@@ -108,8 +108,10 @@ fn the_text_names_each_route_with_its_price() {
         run.stdout
     );
     assert!(
-        run.stdout
-            .contains("g.toon.x.relay  price 7, 3 per KiB, states a request"),
+        run.stdout.contains(
+            "g.toon.x.relay  price 7, 3 per KiB, states a request\n    request:\n      \
+                 method: POST\n      params:\n        text: a string\n      path: /echo\n"
+        ),
         "{}",
         run.stdout
     );

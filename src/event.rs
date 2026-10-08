@@ -121,6 +121,23 @@ pub fn publish(
     write(home, event, amount)
 }
 
+/// `toon event sign`: sign an event with the agent identity and print it. Nothing is sent,
+/// so the agent node need not be running.
+pub fn sign_only(home: &Path, kind: u64, content: &str, tags: &str) -> Result<Report, Error> {
+    let tags = parse_tags(tags)?;
+    if node::State::load(home)?.is_none() {
+        return Err(node::no_agent_node(home));
+    }
+    let secret = agent_secret(home)?;
+    let event = sign(&secret, now(), kind, tags, content)?;
+    Ok(Report {
+        exit: Exit::Success,
+        // The event alone, so that the output is a `--body` file as it stands.
+        text: event.to_string(),
+        json: json!({ "event": event }),
+    })
+}
+
 /// The present time, in seconds since the epoch.
 pub fn now() -> u64 {
     SystemTime::now()
@@ -736,6 +753,11 @@ pub fn run(command: EventCommand) -> Result<Report, Error> {
             &tags,
             amount.unwrap_or(0),
         ),
+        EventCommand::Sign {
+            kind,
+            content,
+            tags,
+        } => sign_only(&home::resolve()?, kind, &content, &tags),
         EventCommand::Query {
             relay,
             filter,

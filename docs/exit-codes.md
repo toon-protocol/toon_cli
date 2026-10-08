@@ -98,7 +98,7 @@ A failed command with `--json` prints:
 
 ## The wallet passphrase
 
-`toon init`, `toon wallet show`, `toon wallet balances`, `toon wallet backup`, `toon wallet restore`, `toon relay subscribe`, `toon event publish`, `toon message send` and `toon nip publish` read the passphrase from the file named by
+`toon init`, `toon wallet show`, `toon wallet balances`, `toon wallet backup`, `toon wallet restore`, `toon relay subscribe`, `toon event publish`, `toon event sign`, `toon message send` and `toon nip publish` read the passphrase from the file named by
 `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`. It is never a flag. One trailing
 newline in the file is not part of the passphrase.
 
@@ -196,7 +196,9 @@ and sends the event to the agent node's own relay as an operator write: it exits
 `"outcome": "rejected"` when the packet is rejected, `"outcome": "refused"` when the relay
 answers with a status that is not 2xx, and `"outcome": "wrong_fulfilment"` when the packet is
 fulfilled but not by this connector. `toon event query` is a plain NIP-01 `REQ` and needs no
-passphrase; it reads from `ws://` and `wss://` relays.
+passphrase; it reads from `ws://` and `wss://` relays. `toon event sign` signs as `toon event
+publish` does and prints the event (alone as text, under `event` with `--json`): it sends
+nothing, pays nothing, and does not need the agent node to be running.
 
 `toon event publish --relay <relay-url>` publishes to a relay this agent node does not run. It
 reads the relay's NIP-11 information document (`GET` of the relay's URL as `http://`, or `https://` for a `wss://` relay, with

@@ -513,6 +513,18 @@ pub enum EventCommand {
         #[arg(long, requires = "relay")]
         yes: bool,
     },
+    /// Sign an event with the agent identity and print it: nothing is published or paid
+    Sign {
+        /// The event's kind
+        #[arg(long)]
+        kind: u64,
+        /// The event's content
+        #[arg(long, default_value = "")]
+        content: String,
+        /// The event's tags, as a JSON array of arrays of strings
+        #[arg(long, default_value = "[]")]
+        tags: String,
+    },
     /// Read the stored events of a relay that match a filter
     Query {
         /// The relay's websocket URL, `ws://host:port` or `wss://host:port`
