@@ -177,7 +177,7 @@ back only if its operator creates a peering in return.
   agent node with `--solana`). Without it the connector refuses, `peer_failed` says to run again
   with `--chain`, and nothing is counted against the limit. `join` and `create --deposit` take it too.
 - `toon describe [<ilp-url>]` prints what a connector offers before you pay it: its addresses,
-  settlement terms, and each route with its price and the `request` it states, if any. With
+  settlement terms, and each route with its price and the `request` it states, if any, as JSON. With
   `--json` the self-description is unaltered under `description`. Without a URL it describes your
   own connector (`--app` chooses which). It pays nothing, and fails with `describe_failed`.
 - `toon peer list` shows the peerings and their labels; `toon peer remove <id>` removes one.
@@ -268,7 +268,8 @@ this order; the first three steps pay nothing.
    so the app receives the request: a probe that pays nothing can still deliver. A reject with no
    `cost` (no route, a peer that could not be reached and the like) states none; do not guess one.
    Unlike `toon send`, a probe exits 0 when it is rejected with a `cost`, as it is expected to be,
-   and when it is fulfilled; it exits 1 on a reject that states no `cost`.
+   and when it is fulfilled; it exits 1 on a reject that states no `cost`, on a wrong
+   fulfilment and when no answer came.
 4. Pay with a request: `toon send <address> --amount <n> --seal-to <ilp-url> --method <method>
    --path <path> --body <file> --yes` (see "Paying an app"). Never call the app on a loopback
    address: that is unpaid work, not a payment.
@@ -338,7 +339,7 @@ When the route's `request` asks for a signed event as the body, sign it without 
 identity and sends it nowhere. Without `--json` the output is the event alone, so write it to
 the `--body` file; with `--json` it is under `event`. `toon event publish` would also store the
 event on your own relay, where others can read it. `event sign` opens the keystore, so it needs
-the passphrase, and it does not need the agent node to be running.
+the passphrase; the agent node must exist (`toon init`) and need not be running.
 
 ## Backup and restore
 

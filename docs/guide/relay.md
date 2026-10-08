@@ -14,6 +14,10 @@ toon event publish --kind 1 --content "tagged" --tags '[["t","toon"]]' --json
 It needs the passphrase, to sign, and costs you nothing: it is an operator write. The
 report's `outcome` is `published`, or `rejected`, `refused` or `wrong_fulfilment` with exit 1.
 
+`toon event sign` takes the same `--kind`, `--content` and `--tags`, and prints the signed event
+without publishing it: for an event that goes somewhere else, such as the body of a request to
+an app (`toon send --body`). The agent node need not be running.
+
 ## Read a relay
 
 `event query` is a plain NIP-01 `REQ` against any `ws://` or `wss://` relay. It needs no

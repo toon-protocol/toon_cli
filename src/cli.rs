@@ -65,7 +65,7 @@ pub enum Command {
         #[command(subcommand)]
         command: PeerCommand,
     },
-    /// Print what a connector offers, free: its addresses, settlement terms and routes with their prices
+    /// Print what a connector offers, free: its addresses, settlement terms and routes with their prices and the request each states
     Describe {
         /// The `/ilp` URL of the connector; this agent node's own connector if omitted
         url: Option<String>,

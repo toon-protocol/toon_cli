@@ -111,25 +111,24 @@ pub fn publish(
     tags: &str,
     amount: u64,
 ) -> Result<Report, Error> {
+    write(home, signed_now(home, kind, content, tags)?, amount)
+}
+
+/// An event signed now with the agent identity of the agent node in `home`.
+fn signed_now(home: &Path, kind: u64, content: &str, tags: &str) -> Result<Value, Error> {
     let tags = parse_tags(tags)?;
     if node::State::load(home)?.is_none() {
         return Err(node::no_agent_node(home));
     }
     let secret = agent_secret(home)?;
     keep_agent_secret(home, &secret)?;
-    let event = sign(&secret, now(), kind, tags, content)?;
-    write(home, event, amount)
+    sign(&secret, now(), kind, tags, content)
 }
 
 /// `toon event sign`: sign an event with the agent identity and print it. Nothing is sent,
 /// so the agent node need not be running.
-pub fn sign_only(home: &Path, kind: u64, content: &str, tags: &str) -> Result<Report, Error> {
-    let tags = parse_tags(tags)?;
-    if node::State::load(home)?.is_none() {
-        return Err(node::no_agent_node(home));
-    }
-    let secret = agent_secret(home)?;
-    let event = sign(&secret, now(), kind, tags, content)?;
+pub fn print_signed(home: &Path, kind: u64, content: &str, tags: &str) -> Result<Report, Error> {
+    let event = signed_now(home, kind, content, tags)?;
     Ok(Report {
         exit: Exit::Success,
         // The event alone, so that the output is a `--body` file as it stands.
@@ -757,7 +756,7 @@ pub fn run(command: EventCommand) -> Result<Report, Error> {
             kind,
             content,
             tags,
-        } => sign_only(&home::resolve()?, kind, &content, &tags),
+        } => print_signed(&home::resolve()?, kind, &content, &tags),
         EventCommand::Query {
             relay,
             filter,

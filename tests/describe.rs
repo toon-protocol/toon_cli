@@ -109,8 +109,8 @@ fn the_text_names_each_route_with_its_price() {
     );
     assert!(
         run.stdout.contains(
-            "g.toon.x.relay  price 7, 3 per KiB, states a request\n    request:\n      \
-                 method: POST\n      params:\n        text: a string\n      path: /echo\n"
+            "g.toon.x.relay  price 7, 3 per KiB, states a request\n    request: \
+             {\"method\":\"POST\",\"params\":{\"text\":\"a string\"},\"path\":\"/echo\"}\n"
         ),
         "{}",
         run.stdout

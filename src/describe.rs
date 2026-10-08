@@ -154,16 +154,16 @@ fn render(url: &str, description: &Value) -> String {
         if !route["pricePerKib"].is_null() {
             line.push_str(&format!(", {} per KiB", scalar(&route["pricePerKib"])));
         }
-        line.push_str(if route["request"].is_null() {
-            ", no request stated"
+        if route["request"].is_null() {
+            line.push_str(", no request stated\n");
         } else {
-            ", states a request"
-        });
-        out.push_str(&line);
-        out.push('\n');
-        if !route["request"].is_null() {
-            lines(&json!({ "request": route["request"] }), "    ", &mut out);
+            // As JSON, so that what the operator declared is read exactly.
+            line.push_str(&format!(
+                ", states a request\n    request: {}\n",
+                route["request"]
+            ));
         }
+        out.push_str(&line);
     }
     out.truncate(out.trim_end().len());
     out

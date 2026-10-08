@@ -146,10 +146,10 @@ toon add search-v2 --to relay --image search:2 --address g.toon.fb0e007c71750599
 ## Say what a client should send
 
 `--request <file>` takes a file holding one JSON object that states what a client should send
-the app. The connector publishes it on the route, in `routes[]` of `GET <connector>/ilp`, and
-never reads it, so its content is yours to define. A client reads it with `toon describe`, whose
-text shows each route's `request` under the route; `toon probe` states what the path costs and
-carries no `request`.
+the app. The connector publishes it on the route, in `routes[]` of `GET <connector>/ilp` and
+in its terms, and never reads it, so its content is yours to define. A client reads it with
+`toon describe`, which shows each route's `request` under the route. A probe is not how to read
+it: the reject `toon probe` reports states what the path costs and carries no `request`.
 
 ```sh
 cat > request.json <<'EOF'
