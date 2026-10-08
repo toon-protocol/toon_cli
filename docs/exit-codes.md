@@ -93,12 +93,12 @@ A failed command with `--json` prints:
 | `last_toon_app` | 1 | `toon destroy` was given the only TOON app: an agent node always has one |
 | `one_relay` | 1 | `toon create` or `toon add` was given the relay's image (any tag or digest of the repository this build pins): an agent node runs one relay, the one `toon init` created; nothing was changed |
 | `describe_failed` | 1 | `toon describe` got no self-description from the connector's `/ilp` URL: it did not answer, answered an error status, or answered something that is not a self-description (a JSON object with `routes`); nothing was paid |
-| `agent_key_not_kept` | 1 | `toon message list` found no kept secret of the agent identity in the agent node's home, so no private message has been opened: `toon event publish` and `toon message send` write it; nothing was read or sent |
+| `agent_key_not_kept` | 1 | `toon message list` found no kept secret of the agent identity in the agent node's home, so no private message has been opened: `toon event publish`, `toon event sign` and `toon message send` write it; nothing was read or sent |
 
 
 ## The wallet passphrase
 
-`toon init`, `toon wallet show`, `toon wallet balances`, `toon wallet backup`, `toon wallet restore`, `toon relay subscribe`, `toon event publish`, `toon message send` and `toon nip publish` read the passphrase from the file named by
+`toon init`, `toon wallet show`, `toon wallet balances`, `toon wallet backup`, `toon wallet restore`, `toon relay subscribe`, `toon event publish`, `toon event sign`, `toon message send` and `toon nip publish` read the passphrase from the file named by
 `TOON_PASSPHRASE_FILE`, else from `TOON_PASSPHRASE`. It is never a flag. One trailing
 newline in the file is not part of the passphrase.
 
@@ -196,7 +196,9 @@ and sends the event to the agent node's own relay as an operator write: it exits
 `"outcome": "rejected"` when the packet is rejected, `"outcome": "refused"` when the relay
 answers with a status that is not 2xx, and `"outcome": "wrong_fulfilment"` when the packet is
 fulfilled but not by this connector. `toon event query` is a plain NIP-01 `REQ` and needs no
-passphrase; it reads from `ws://` and `wss://` relays.
+passphrase; it reads from `ws://` and `wss://` relays. `toon event sign` signs as `toon event
+publish` does and prints the event (alone as text, under `event` with `--json`): it sends
+nothing, pays nothing, and does not need the agent node to be running.
 
 `toon event publish --relay <relay-url>` publishes to a relay this agent node does not run. It
 reads the relay's NIP-11 information document (`GET` of the relay's URL as `http://`, or `https://` for a `wss://` relay, with

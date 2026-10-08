@@ -65,7 +65,7 @@ pub enum Command {
         #[command(subcommand)]
         command: PeerCommand,
     },
-    /// Print what a connector offers, free: its addresses, settlement terms and routes with their prices
+    /// Print what a connector offers, free: its addresses, settlement terms and routes with their prices and the request each states
     Describe {
         /// The `/ilp` URL of the connector; this agent node's own connector if omitted
         url: Option<String>,
@@ -512,6 +512,18 @@ pub enum EventCommand {
         /// Confirm that this command moves money: without it nothing is paid
         #[arg(long, requires = "relay")]
         yes: bool,
+    },
+    /// Sign an event with the agent identity and print it: nothing is published or paid
+    Sign {
+        /// The event's kind
+        #[arg(long)]
+        kind: u64,
+        /// The event's content
+        #[arg(long, default_value = "")]
+        content: String,
+        /// The event's tags, as a JSON array of arrays of strings
+        #[arg(long, default_value = "[]")]
+        tags: String,
     },
     /// Read the stored events of a relay that match a filter
     Query {
