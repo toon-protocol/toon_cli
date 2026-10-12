@@ -6,11 +6,9 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-
-use std::io::Write;
 
 use crate::apps::Origin;
 use crate::cli::SecretArgs;
@@ -122,7 +120,17 @@ fn variable_value(file: &str, mut bytes: Vec<u8>) -> Result<String, Error> {
     Ok(value)
 }
 
-fn check_path(path: &str, allowances: &Allowances) -> Result<(), Error> {
+/// `path` without empty or `.` parts, as the container sees it.
+fn normal(path: &str) -> String {
+    path.split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .flat_map(|part| ["/", part])
+        .collect()
+}
+
+/// `path` as the container sees it, so one path is not given twice in two spellings, or
+/// `usage` if it cannot be mounted.
+fn check_path(path: &str, allowances: &Allowances) -> Result<String, Error> {
     let why = |why: &str| refused(format!("--secret-file {path}: {why}."));
     if !path.starts_with('/') {
         return Err(why("it must be an absolute path in the container"));
@@ -130,18 +138,21 @@ fn check_path(path: &str, allowances: &Allowances) -> Result<(), Error> {
     if path.contains([':', ',', '\n', '\0']) || path.split('/').any(|part| part == "..") {
         return Err(why("it must not hold `:`, `,`, a newline or `..`"));
     }
-    let bare = path.trim_end_matches('/');
+    let bare = normal(path);
     let under = |dir: &str| bare == dir || bare.starts_with(&format!("{dir}/"));
     if bare.is_empty()
         || under("/data")
         || under("/tmp")
-        || allowances.scratch.iter().any(|scratch| under(scratch))
+        || allowances
+            .scratch
+            .iter()
+            .any(|scratch| under(&normal(scratch)))
     {
         return Err(why(
             "the app writes to `/`, `/data`, `/tmp` and its scratch paths, so it cannot be mounted at or under them",
         ));
     }
-    Ok(())
+    Ok(bare)
 }
 
 impl Given {
@@ -185,15 +196,15 @@ impl Given {
         }
         for text in &flags.secret_file {
             let (path, file) = split("--secret-file", text)?;
-            check_path(path, allowances)?;
-            if given.secret_files.iter().any(|(known, _)| known == path) {
+            let path = check_path(path, allowances)?;
+            if given.secret_files.iter().any(|(known, _)| *known == path) {
                 return Err(refused(format!(
                     "--secret-file {path}: the path is given twice."
                 )));
             }
             given
                 .secret_files
-                .push((path.to_owned(), read("--secret-file", file)?));
+                .push((path, read("--secret-file", file)?));
         }
         Ok(given)
     }

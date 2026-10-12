@@ -185,11 +185,35 @@ fn status_shows_nothing_for_an_app_without_and_null_for_an_app_at_a_url() {
 #[test]
 fn a_home_written_before_variables_loads_with_none() {
     let (machine, _chain, _up) = running();
-    machine.toon(&["add", "plain", "--to", "relay", "--image", "n:1", "--yes"]);
-    let state = fs::read_to_string(machine.agent_node_home().join("state.json")).unwrap();
-    assert!(!state.contains("\"env\""), "{state}");
-    assert!(!state.contains("\"secrets\""), "{state}");
-    assert_eq!(app(&machine, "plain")["variables"], json!({}));
+    let key = file(&machine, "key", b"old-secret\n");
+    let run = machine.toon(&[
+        "add",
+        "plain",
+        "--to",
+        "relay",
+        "--image",
+        "n:1",
+        "--env",
+        "A=1",
+        "--secret",
+        &format!("KEY={key}"),
+        "--yes",
+    ]);
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    // The record as a home written before variables and secrets holds it: without them.
+    let path = machine.agent_node_home().join("state.json");
+    let mut state: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    for toon_app in state["toon_apps"].as_array_mut().unwrap() {
+        for app in toon_app["apps"].as_array_mut().unwrap() {
+            let record = app.as_object_mut().unwrap();
+            record.remove("env");
+            record.remove("secrets");
+        }
+    }
+    fs::write(&path, state.to_string()).unwrap();
+    let plain = app(&machine, "plain");
+    assert_eq!(plain["variables"], json!({}));
+    assert_eq!(plain["secrets"], json!({"variables": [], "files": []}));
 }
 
 #[test]
@@ -233,6 +257,10 @@ fn what_cannot_be_used_is_refused_and_changes_nothing() {
     let nul = file(&machine, "nul", b"a\0b");
     let lines = file(&machine, "lines", b"a\nb\n");
     let missing = machine.home().join("missing").display().to_string();
+    // A directory exists and cannot be read as a file, whoever runs the test.
+    let unreadable = machine.home().join("unreadable");
+    fs::create_dir_all(&unreadable).unwrap();
+    let unreadable = unreadable.display().to_string();
     let path = machine.agent_node_home().join("state.json");
     let before = fs::read_to_string(&path).unwrap();
     let cases: Vec<Vec<String>> = vec![
@@ -250,6 +278,9 @@ fn what_cannot_be_used_is_refused_and_changes_nothing() {
         ],
         vec!["--env".into(), "A=1".into(), "--env".into(), "A=2".into()],
         vec!["--secret".into(), format!("A={missing}")],
+        vec!["--secret".into(), format!("A={unreadable}")],
+        vec!["--secret-file".into(), format!("/k={missing}")],
+        vec!["--secret-file".into(), format!("/k={unreadable}")],
         vec!["--secret".into(), format!("A={empty}")],
         vec!["--secret".into(), format!("A={big}")],
         vec!["--secret".into(), format!("A={binary}")],
@@ -272,6 +303,12 @@ fn what_cannot_be_used_is_refused_and_changes_nothing() {
             format!("/k={good}"),
             "--secret-file".into(),
             format!("/k={good}"),
+        ],
+        vec![
+            "--secret-file".into(),
+            format!("/run/k={good}"),
+            "--secret-file".into(),
+            format!("//run/./k/={good}"),
         ],
         vec![
             "--env".into(),
@@ -302,7 +339,13 @@ fn what_cannot_be_used_is_refused_and_changes_nothing() {
             assert!(!secrets_dir(&machine, "notes").exists());
         }
     }
-    assert!(machine.toon(&["status", "--json"]).exit_code == 0);
+    let status = machine.toon(&["status", "--json"]);
+    assert_eq!(status.exit_code, 0, "{}", status.stdout);
+    let status = status.json();
+    assert_eq!(
+        status["agent_node"]["supervisor"]["running"], true,
+        "{status}"
+    );
 }
 
 #[test]

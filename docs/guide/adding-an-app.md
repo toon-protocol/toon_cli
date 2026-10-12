@@ -234,8 +234,9 @@ These are refused with `usage`, before anything is written, pulled or restarted:
 - a file that does not exist, cannot be read, is empty or is larger than 64 KiB;
 - for `--secret`, contents that are not UTF-8 or that hold a NUL byte or a newline other than the
   trailing one;
-- for `--secret-file`, a path that is not absolute, a path at or under `/data`, `/tmp` or one of
-  the app's `--scratch` paths, and a path given twice.
+- for `--secret-file`, a path that is not absolute or that holds `:`, `,` or `..`, a path at or
+  under `/data`, `/tmp` or one of the app's `--scratch` paths, and a path given twice, in any
+  spelling.
 
 A variable or a secret is not an allowance: it tells the app something and lets it reach nothing
 more. They are set when the app is added. To change one, remove the app and add it again; replacing

@@ -574,25 +574,21 @@ fn confinement_arguments(allowances: &Allowances, user: &str) -> Vec<String> {
     arguments
 }
 
-/// The arguments that give a container its environment: each by name, the value being in
-/// docker's own environment.
-fn env_arguments(env: &[(String, String)]) -> Vec<String> {
-    env.iter()
-        .flat_map(|(variable, _)| ["--env".to_owned(), variable.clone()])
-        .collect()
-}
-
-/// The arguments that mount each copy at its path in the container, read-only.
-fn mount_arguments(mounts: &[(PathBuf, String)]) -> Vec<String> {
-    mounts
+/// The arguments that give a container what `spec` starts it with beyond its data: each
+/// copy mounted read-only at its path, and each variable by name, the value being in
+/// docker's own environment, so a secret is never in the argument list that `ps` shows.
+fn given_arguments(spec: &AppSpec) -> Vec<String> {
+    let mounts = spec.mounts.iter().flat_map(|(copy, path)| {
+        [
+            "--volume".to_owned(),
+            format!("{}:{path}:ro", copy.display()),
+        ]
+    });
+    let env = spec
+        .env
         .iter()
-        .flat_map(|(copy, path)| {
-            [
-                "--volume".to_owned(),
-                format!("{}:{path}:ro", copy.display()),
-            ]
-        })
-        .collect()
+        .flat_map(|(variable, _)| ["--env".to_owned(), variable.clone()]);
+    mounts.chain(env).collect()
 }
 
 /// Where the container `name` is on the docker network `network`.
@@ -646,10 +642,8 @@ impl AppRunner for ContainerRunner {
             .arg("--volume")
             .arg(format!("{}:/data", data.display()))
             .args(["--env", "TOON_DATA_DIR=/data"])
-            .args(mount_arguments(&spec.mounts))
-            .args(env_arguments(&spec.env));
-        // `--env NAME` takes the value from this process's environment, so a secret is
-        // never in the argument list that `ps` shows.
+            .args(given_arguments(spec));
+        // The values `given_arguments` names, for docker to take from this process's environment.
         for (variable, value) in &spec.env {
             command.env(variable, value);
         }
@@ -895,19 +889,16 @@ mod tests {
 
     #[test]
     fn a_secret_file_is_a_read_only_mount_and_no_value_is_in_the_arguments() {
-        let env = vec![
+        let mut spec = spec(Path::new("/home/op/apps/notes/data"), "notes:1");
+        spec.env = vec![
             ("LOG_LEVEL".to_owned(), "debug-value".to_owned()),
             ("SIGNING_KEY".to_owned(), "hunter2-value".to_owned()),
         ];
-        let mounts = vec![(
+        spec.mounts = vec![(
             PathBuf::from("/home/op/apps/notes/secrets/file-0"),
             "/run/secrets/minter.key".to_owned(),
         )];
-        let mut arguments = run_arguments(None, &Allowances::default());
-        arguments.push(' ');
-        arguments.push_str(&mount_arguments(&mounts).join(" "));
-        arguments.push(' ');
-        arguments.push_str(&env_arguments(&env).join(" "));
+        let arguments = given_arguments(&spec).join(" ");
         assert!(
             arguments
                 .contains("--volume /home/op/apps/notes/secrets/file-0:/run/secrets/minter.key:ro"),
