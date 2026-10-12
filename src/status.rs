@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use crate::control;
 use crate::node::{self, State};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::runner;
 use crate::service;
 
 /// How long `down` waits for the supervisor to finish stopping.
@@ -125,6 +126,7 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                     return json!({
                         "name": name, "url": url, "running": null,
                         "prefix": behind.prefix, "price": behind.price,
+                        "confinement": null,
                     });
                 }
                 let running = field("running") == true;
@@ -146,7 +148,12 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                     node::Source::Image(image) => json!(image),
                     _ => Value::Null,
                 };
+                let relay = matches!(behind.source, node::Source::Relay);
+                if let Some(departures) = behind.allowances.departures() {
+                    lines.push(format!("  {name} is confined, and {departures}."));
+                }
                 json!({
+                    "confinement": behind.allowances.confinement(relay, &runner::caller()),
                     "name": name, "address": field("address"),
                     "read_address": field("read_address"), "running": running,
                     "image": image, "prefix": behind.prefix, "price": behind.price,

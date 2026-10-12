@@ -15,6 +15,7 @@ use serde_json::{json, Value};
 
 use crate::outcome::{Error, ErrorCode};
 use crate::profile::Profile;
+use crate::runner::Allowances;
 use crate::{derive, keystore, overlay, ports};
 
 /// The name of the first TOON app, the one whose connector fronts the relay, and of the
@@ -298,6 +299,8 @@ pub struct App {
     /// What a client should send the app, as the operator wrote it. The connector publishes
     /// it on the route and never reads it.
     pub request: Option<Value>,
+    /// What the operator allowed the app when adding it (ADR 0011).
+    pub allowances: Allowances,
 }
 
 impl App {
@@ -309,6 +312,7 @@ impl App {
             prefix: relay_write_prefix(segment),
             price: RELAY_WRITE_PRICE,
             request: None,
+            allowances: Allowances::default(),
         }
     }
 
@@ -321,6 +325,26 @@ impl App {
         let mut value = self.source_json();
         if let Some(request) = &self.request {
             value["request"] = request.clone();
+        }
+        if !self.allowances.is_default() {
+            let allowed = &self.allowances;
+            let mut allow = json!({});
+            if allowed.egress {
+                allow["egress"] = json!(true);
+            }
+            if !allowed.scratch.is_empty() {
+                allow["scratch"] = json!(allowed.scratch);
+            }
+            if let Some(memory) = allowed.memory {
+                allow["memory"] = json!(memory);
+            }
+            if let Some(cpus) = allowed.cpus {
+                allow["cpus"] = json!(cpus);
+            }
+            if let Some(pids) = allowed.pids {
+                allow["pids"] = json!(pids);
+            }
+            value["allow"] = allow;
         }
         value
     }
@@ -359,6 +383,21 @@ impl App {
                 .get("request")
                 .filter(|request| request.is_object())
                 .cloned(),
+            allowances: Allowances {
+                egress: value["allow"]["egress"].as_bool().unwrap_or(false),
+                scratch: value["allow"]["scratch"]
+                    .as_array()
+                    .map(|paths| {
+                        paths
+                            .iter()
+                            .filter_map(|path| path.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                memory: value["allow"]["memory"].as_u64(),
+                cpus: value["allow"]["cpus"].as_f64(),
+                pids: value["allow"]["pids"].as_u64(),
+            },
         })
     }
 }

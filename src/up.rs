@@ -332,6 +332,7 @@ fn start_app(
         env,
         data_dir: files.data_dir,
         relay: matches!(app.source, Source::Relay),
+        allowances: app.allowances.clone(),
     };
     runner.start(&spec).map(Some)
 }

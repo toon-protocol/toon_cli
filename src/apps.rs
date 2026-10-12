@@ -17,7 +17,7 @@ use serde_json::json;
 use crate::control;
 use crate::node::{self, App, Source, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
-use crate::runner;
+use crate::runner::{self, Allowances};
 
 /// How long a restart waits: an image is pulled and started, then the connector binds to
 /// its chain.
@@ -65,7 +65,29 @@ pub struct Add<'a> {
     pub price: u64,
     /// A file holding the JSON object that says what a client should send the app.
     pub request: Option<&'a Path>,
+    pub allowances: Allowances,
     pub yes: bool,
+}
+
+/// The allowances `toon add` and `toon create` were given, or `usage` if one cannot be
+/// used or the app is at a URL, which is not run and so has nothing to allow.
+pub fn allowances(origin: &Origin, flags: &crate::cli::AllowanceArgs) -> Result<Allowances, Error> {
+    let allowances = Allowances::parse(
+        flags.allow_egress,
+        &flags.scratch,
+        flags.memory.as_deref(),
+        flags.cpus.as_deref(),
+        flags.pids.as_deref(),
+    )?;
+    if matches!(origin, Origin::Url(_)) && !allowances.is_default() {
+        return Err(failed(
+            ErrorCode::Usage,
+            "--allow-egress, --scratch, --memory, --cpus and --pids allow something to an \
+             app that runs from an image; an app at a --url is not run."
+                .into(),
+        ));
+    }
+    Ok(allowances)
 }
 
 fn failed(code: ErrorCode, message: String) -> Error {
@@ -271,6 +293,7 @@ pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
         prefix: prefix.clone(),
         price: add.price,
         request,
+        allowances: add.allowances.clone(),
     });
     let restarted_now = apply(home, &state, &changed, add.to)?;
     Ok(Report {

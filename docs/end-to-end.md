@@ -256,6 +256,38 @@ sent again; the rejected packet costs nothing, so `paid` is 0 and sending it aga
 safe), and status showing `second` with two apps, both running. The last
 command is refused with `one_relay`: an agent node runs one relay.
 
+### What an app may and may not do
+
+These steps need real docker, which CI does not have, so a human runs them. They use
+`toon-e2e-app` and the images' own tools (`docker exec`); an image without a shell can be
+replaced by one that has `sh`, `touch` and `wget`.
+
+```sh
+$E/toon add other --to second --image toon-e2e-app --yes --json
+$E/toon add open --to second --image toon-e2e-app --allow-egress --scratch /scratch --yes --json
+$E/toon status --json | jq '.agent_node.toon_apps[].apps[] | {name, confinement}'
+docker ps --format '{{.Names}} {{.Ports}}'
+docker exec toon-<instance>-notes sh -c 'touch /data/ok /tmp/ok; touch /ok'      # last fails
+docker exec toon-<instance>-open sh -c 'touch /scratch/ok'
+docker exec toon-<instance>-notes sh -c 'grep Cap /proc/self/status'
+docker exec toon-<instance>-notes wget -T 3 -qO- http://<other's address>:3100/health
+docker exec toon-<instance>-notes wget -T 3 -qO- http://example.com
+docker exec toon-<instance>-open wget -T 3 -qO- http://example.com
+```
+
+**Expect**:
+
+- `confinement` as in the guide's defaults for `notes` and `other`, and `network: egress` with
+  `/scratch` among `writable` for `open`;
+- no port published for any of them;
+- the writes to `/data` and `/tmp` succeed and the write to `/` fails with a read-only error;
+  `/scratch` is writable in `open`;
+- `CapEff` and `CapBnd` all zeros;
+- two apps behind one connector cannot open a connection to each other: the `wget` between
+  `notes` and `other` fails;
+- `notes` reaches the internet not at all and `open` does;
+- the relay still starts and is paid: the publish steps above succeed.
+
 ### Another agent node publishes to this one's relay
 
 A second hidden agent node, in a home of its own, peers with the first at its onion

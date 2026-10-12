@@ -4,7 +4,7 @@ The relay asks the connector of its own TOON app where a write to it is paid (`T
 
 Docker's default bridge was rejected. A container on it cannot reach a listener on the host, on loopback or on the bridge gateway, where the host has a default-deny firewall (`ufw`): the connection times out. Making the connector listen off loopback so that the bridge could reach it would put a listener where ADR 0003 says none should be.
 
-Only the relay is started this way. An app from `toon add --image` or `toon create --image` stays on the bridge, with its port published on loopback.
+Only the relay is started this way. An app from `toon add --image` or `toon create --image` has a network of its own and is confined; see ADR 0011.
 
 ## Consequences
 

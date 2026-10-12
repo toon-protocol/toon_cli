@@ -174,6 +174,26 @@ pub enum SkillCommand {
     },
 }
 
+/// What an app run from an image may do beyond the confinement every app has (ADR 0011).
+#[derive(Debug, Args)]
+pub struct AllowanceArgs {
+    /// Allow the app to open connections out: it gets an ordinary network of its own
+    #[arg(long)]
+    pub allow_egress: bool,
+    /// A further writable path in the container, emptied on every restart; repeatable
+    #[arg(long, value_name = "PATH")]
+    pub scratch: Vec<String>,
+    /// The app's memory limit, such as 1g, in place of 512m
+    #[arg(long, value_name = "SIZE")]
+    pub memory: Option<String>,
+    /// The app's CPU limit, in place of 1
+    #[arg(long, value_name = "NUMBER")]
+    pub cpus: Option<String>,
+    /// The app's limit on processes, in place of 256
+    #[arg(long, value_name = "NUMBER")]
+    pub pids: Option<String>,
+}
+
 #[derive(Debug, Args)]
 pub struct AddArgs {
     /// A name for the app, unique in this agent node
@@ -197,6 +217,8 @@ pub struct AddArgs {
     /// connector publishes it on the route, and never reads it
     #[arg(long, value_name = "FILE")]
     pub request: Option<std::path::PathBuf>,
+    #[command(flatten)]
+    pub allow: AllowanceArgs,
     /// Go ahead although the connector restarts and drops packets in flight
     #[arg(long)]
     pub yes: bool,
@@ -204,6 +226,8 @@ pub struct AddArgs {
 
 #[derive(Debug, Args)]
 pub struct CreateArgs {
+    #[command(flatten)]
+    pub allow: AllowanceArgs,
     /// A name for the TOON app, and for the app behind it, unique in this agent node
     pub name: String,
     /// A container image to run as the app behind the new connector

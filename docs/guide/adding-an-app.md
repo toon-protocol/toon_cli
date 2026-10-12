@@ -27,8 +27,9 @@ The app is given no environment beyond `TOON_BLS_PORT` and `TOON_DATA_DIR`. An i
 needs a secret or another variable to start fails with `app_failed`; `toon logs <app>` shows what
 it wrote before it stopped.
 
-`toon` runs it with `docker`, its port published on loopback only: nothing reaches the app
-except through its connector.
+`toon` runs it with `docker`, confined, on a network of its own that publishes no port: nothing
+reaches the app except through its connector, and the app reaches nothing. See
+[What an app may and may not do](#what-an-app-may-and-may-not-do).
 
 Any answer is a paid answer. A `404` or a `400` is real work the payer asked for, so the
 packet is still fulfilled; status codes are for the payer to read, not a refund.
@@ -180,6 +181,47 @@ toon remove echo --yes
 ```
 
 It removes the app and its route and restarts the connector.
+
+## What an app may and may not do
+
+Every app runs confined (ADR 0011), and so does the relay, except that the relay stays on the
+host's network. An app has:
+
+- a docker network of its own, made when the app starts and removed when it stops. It is an
+  internal network: the app opens no connection out and reaches no other app. No port is
+  published; `toon` reaches the app at its container's address on that network;
+- no capabilities and no way to gain any;
+- the user and group of the process that runs `toon`, whatever the image names;
+- a read-only root filesystem. It can write only `/data`, a 64 MB `/tmp` and its scratch paths;
+- 512 MB of memory with no swap, 1 CPU and 256 processes.
+
+`toon status --json` reports this as `confinement` for each app.
+
+An operator can make an allowance for one app when adding it, with `toon add` or `toon create`
+(and only with `--image`; any of them with `--url` is refused with `usage`):
+
+| Flag | Allows | Example |
+| --- | --- | --- |
+| `--allow-egress` | The app opens connections out: its network is an ordinary one of its own | `toon add oracle --to relay --image oracle --allow-egress --yes` |
+| `--scratch <path>` | A further writable tmpfs at an absolute path in the container, emptied on every restart; repeatable | `--scratch /var/cache/app --scratch /run` |
+| `--memory <size>` | A memory limit in place of 512m | `--memory 2g` |
+| `--cpus <number>` | A CPU limit in place of 1 | `--cpus 0.5` |
+| `--pids <number>` | A limit on processes in place of 256 | `--pids 1024` |
+
+A value that cannot be used (a relative scratch path, `/data` or `/tmp` as one, a size that does
+not parse, zero) is refused with `usage` and nothing changes. The allowances are kept with the
+app across `toon down`, `toon up` and restarts. To change them, remove the app and add it again.
+
+There is no allowance for a capability, for another user or for running unconfined. An image
+that needs root or a capability is not supported, and fails with `app_failed`. Rootless docker is
+not supported: there the host cannot reach a container's address. Each app takes one docker
+network, and docker's default address pools hold about thirty.
+
+An app that was added before apps were confined has no allowances and is confined with the
+defaults from the next `toon up`. If it no longer starts, or its calls out now fail, it may need
+an allowance (most often `--allow-egress`) or a new image; remove it and add it again. When an
+app does not start or does not answer its health check, `app_failed` says it runs confined;
+`toon logs <app>` shows what it wrote.
 
 ## What it refuses
 
