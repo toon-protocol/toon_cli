@@ -30,8 +30,20 @@ The one process per machine that runs an agent node: it starts each connector as
 _Avoid_: Daemon, manager, orchestrator
 
 **Operator**:
-Whoever runs an agent node: a human, or an agent acting through the CLI.
+Whoever holds an agent node's wallet and runs it: a human, or an agent acting through the CLI. An agent that holds only an agent key is not the operator.
 _Avoid_: Admin, user
+
+**Agent key**:
+An operator write key with a scope and a spending limit, which the operator hands to an agent that does not hold the wallet. The agent works the agent node with it and can do nothing outside its scope.
+_Avoid_: API key, token, delegate key
+
+**Pending app**:
+An app an agent key asked to add that the supervisor has not started, because the operator has not yet approved it. An image outside the operator's list of trusted images is held this way, and so is every app at a URL. The operator approves it or refuses it.
+_Avoid_: Queued app, requested app, draft
+
+**Order**:
+A request to the supervisor signed with an agent key, as a write is a signed request to a connector. An order never moves money.
+_Avoid_: Command, call, RPC
 
 ### What the operator does
 
@@ -48,7 +60,7 @@ A connector's standing arrangement to forward packets to another connector, paid
 _Avoid_: Half-open peering, invite, handshake
 
 **Spending limit**:
-The most a wallet will pay out, per command and per day. Every command that moves money states its amount and is refused past the limit.
+The most that may be paid out, per command and per day. Every command that moves money states its amount and is refused past the limit. The wallet has one, which `toon` checks for the operator; each agent key has its own, which the connector checks.
 _Avoid_: Cap (the connector's word for the largest packet a peering carries), budget
 
 **Wallet**:
