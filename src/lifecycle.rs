@@ -31,6 +31,7 @@ pub struct Create<'a> {
     pub origin: Origin<'a>,
     pub price: u64,
     pub allowances: crate::runner::Allowances,
+    pub secrets: crate::secrets::Given,
     pub reach: Reach,
     pub accept_anyone_terms: bool,
     pub listen: &'a str,
@@ -92,6 +93,7 @@ fn remove_files(home: &Path, app: &ToonApp) {
     for behind in &app.apps {
         let _ = std::fs::remove_dir_all(node::AppFiles::of(home, &behind.name).data_dir);
         let _ = std::fs::remove_file(node::AppFiles::of(home, &behind.name).identity_key);
+        crate::secrets::forget(home, &behind.name);
     }
 }
 
@@ -206,21 +208,37 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
         evm: source.evm.clone(),
         solana: source.solana.clone(),
         plaintext_peers: source.plaintext_peers,
-        apps: vec![App {
-            name: create.name.to_owned(),
-            source: match create.origin {
-                Origin::Image(image) => Source::Image(image.to_owned()),
-                Origin::Url(url) => Source::Url(url.to_owned()),
-            },
-            prefix: prefix.clone(),
-            price: create.price,
-            request: None,
-            allowances: create.allowances.clone(),
+        apps: vec![{
+            let mut app = App {
+                name: create.name.to_owned(),
+                source: match create.origin {
+                    Origin::Image(image) => Source::Image(image.to_owned()),
+                    Origin::Url(url) => Source::Url(url.to_owned()),
+                },
+                prefix: prefix.clone(),
+                price: create.price,
+                request: None,
+                allowances: create.allowances.clone(),
+                variables: Default::default(),
+                secret_variables: Vec::new(),
+                secret_files: Vec::new(),
+            };
+            create.secrets.record(&mut app);
+            app
         }],
         relay: node::RelaySettings::default(),
     };
     let from = source.name.clone();
-    let make = || made(home, &state, &new, &*seed, create.deposit.is_some());
+    let make = || {
+        made(
+            home,
+            &state,
+            &new,
+            &*seed,
+            create.deposit.is_some(),
+            &create.secrets,
+        )
+    };
     let Some(deposit) = create.deposit else {
         let restarted = make()?;
         return Ok(created(home, &new, &from, restarted, Vec::new()));
@@ -310,6 +328,7 @@ fn made(
     new: &ToonApp,
     seed: &[u8],
     deposit: bool,
+    secrets: &crate::secrets::Given,
 ) -> Result<bool, Error> {
     let undo = |error: Error| {
         let _ = state.save(home);
@@ -326,6 +345,7 @@ fn made(
     };
     let mut changed = state.clone();
     changed.toon_apps.push(new.clone());
+    secrets.keep(home, &new.name).map_err(undo)?;
     wallet::write_connector_keys(home, seed, new).map_err(undo)?;
     wallet::write_onion_key(home, seed, new).map_err(undo)?;
     apps::check(home, &changed, &new.name).map_err(undo)?;

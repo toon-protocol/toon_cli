@@ -65,6 +65,12 @@ fn main() {
         format!("NOSTR_SECRET_KEY={key}\n"),
     )
     .expect("write");
+    // Every variable it was started with, for a test of what an app is given.
+    let mut all: Vec<String> = env::vars()
+        .map(|(name, value)| format!("{name}={value}\n"))
+        .collect();
+    all.sort();
+    fs::write(data.join("all-environment"), all.concat()).expect("write");
     let mut settings: Vec<String> = env::vars()
         .filter(|(name, _)| {
             (name.starts_with("TOON_RELAY_") && name != "TOON_RELAY_PORT")

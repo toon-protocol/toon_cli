@@ -126,7 +126,7 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                     return json!({
                         "name": name, "url": url, "running": null,
                         "prefix": behind.prefix, "price": behind.price,
-                        "confinement": null,
+                        "confinement": null, "variables": null, "secrets": null,
                     });
                 }
                 let running = field("running") == true;
@@ -152,7 +152,32 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                 if let Some(departures) = behind.allowances.departures() {
                     lines.push(format!("  {name} is confined, and {departures}."));
                 }
+                let given: Vec<String> = behind
+                    .variables
+                    .keys()
+                    .map(|name| format!("variable {name}"))
+                    .chain(
+                        behind
+                            .secret_variables
+                            .iter()
+                            .map(|name| format!("secret {name}")),
+                    )
+                    .chain(
+                        behind
+                            .secret_files
+                            .iter()
+                            .map(|path| format!("secret file {path}")),
+                    )
+                    .collect();
+                if !given.is_empty() {
+                    lines.push(format!("  {name} is started with {}.", given.join(", ")));
+                }
                 json!({
+                    "variables": behind.variables,
+                    "secrets": {
+                        "variables": behind.secret_variables,
+                        "files": behind.secret_files,
+                    },
                     "confinement": behind.allowances.confinement(relay, &runner::caller()),
                     "name": name, "address": field("address"),
                     "read_address": field("read_address"), "running": running,
