@@ -41,7 +41,7 @@ fn defaults(network: &str) -> Value {
     json!({
         "network": network, "user": caller(), "read_only": true,
         "writable": ["/data", "/tmp"], "capabilities": [],
-        "memory": 536870912, "cpus": 1.0, "pids": 256,
+        "memory": 536870912, "cpus": 1.0, "pids": 256, "runtime": null,
     })
 }
 
@@ -97,7 +97,7 @@ fn each_allowance_shows_in_the_confinement_and_holds_across_down_and_up() {
     let expected = json!({
         "network": "egress", "user": caller(), "read_only": true,
         "writable": ["/data", "/tmp", "/cache", "/run/app"], "capabilities": [],
-        "memory": 1073741824u64, "cpus": 0.5, "pids": 64,
+        "memory": 1073741824u64, "cpus": 0.5, "pids": 64, "runtime": null,
     });
     for _ in 0..2 {
         let up = machine.start(&["up", "--foreground", "--json"]);

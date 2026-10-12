@@ -288,11 +288,55 @@ image; an image is changed by removing the app and adding it again. When an
 app does not start or does not answer its health check, `app_failed` says it runs confined;
 `toon logs <app>` shows what it wrote.
 
+## A runtime for an app
+
+A confined app still shares the machine's kernel. A **runtime** starts its container under a
+sandbox such as gVisor's `runsc`, so that the kernel the app talks to is not the machine's.
+A runtime is not an allowance: it lets the app do nothing more, and an app with a runtime and
+nothing else has no allowances.
+
+```
+toon add oracle --to relay --image example.com/team/oracle --runtime runsc --yes
+```
+
+`--runtime <name>` on `toon add --image` and `toon create --image` starts that app's container
+with `docker run --runtime <name>`. It is kept with the app, so it holds across `toon down`,
+`toon up` and restarts, and `toon status --json` reports it as `confinement.runtime` (`null` for
+docker's own); plain `toon status` names it. `--runtime default` means docker's own runtime: no
+`--runtime` reaches docker. A name holds letters, digits, `.`, `_` and `-` and does not start
+with `-`; anything else, and `--runtime` with `--url`, is refused with `usage` and nothing changes.
+
+The agent node can have a runtime too. If the home holds `untrusted-runtime`, a text file you
+edit by hand (`toon init` does not write it), the first line that is not blank and does not
+start with `#` is its name:
+
+```
+# gVisor, for every image off the list of trusted images
+runsc
+```
+
+When you add or create an app from an image that is not on the list of trusted images
+(`trusted-images`, see agent-keys.md) and give no `--runtime`, the app gets the node's runtime.
+An explicit `--runtime`, `default` included, always wins. The list never refuses your add; this
+is the only thing it does to it. An unusable name in the file refuses the add with `usage`.
+
+The runtime is **settled when the app is added** and recorded with it. Editing or removing
+`untrusted-runtime`, or editing `trusted-images`, changes no app already added, and no app in a
+home made before runtimes. To change one app's, run `toon change <app> --runtime <name>` (or
+`--runtime default`); the app restarts alone, as for a change of a limit, and keeps its
+allowances, variables and secrets. The relay has no runtime: `toon change relay --runtime` is
+refused with `usage`.
+
+`toon` does not check that the runtime is installed. Where it is not, docker refuses to start
+the container and the add fails with `app_failed`, whose message names the runtime beside what
+docker said. Installing gVisor and registering `runsc` with docker is yours to do. An agent key
+cannot name a runtime and have the app added at once (see agent-keys.md).
+
 ## Change an app
 
 `toon change <app>` gives an app that is already added other variables, secrets or allowances and
 keeps everything else about it: its image, address, price, request and whatever no flag names. It
-takes the flags of `toon add` (`--allow-egress`, `--scratch`, `--memory`, `--cpus`, `--pids`,
+takes the flags of `toon add` (`--runtime`, `--allow-egress`, `--scratch`, `--memory`, `--cpus`, `--pids`,
 `--env`, `--secret`, `--secret-file`), with the same meaning and the same checks, and flags that
 take something away: `--no-allow-egress`, `--unset-scratch <path>`, `--unset-env <name>`,
 `--unset-secret <name>`, `--unset-secret-file <path>`. `--memory`, `--cpus` and `--pids` each

@@ -207,6 +207,7 @@ fn run() -> ExitCode {
                     (None, None) => unreachable!("clap requires one of them"),
                 };
                 let allowances = apps::allowances(&origin, &args.allow)?;
+                let runtime = apps::runtime(&home, &origin, args.runtime.as_deref())?;
                 let secrets = secrets::Given::parse(&origin, &args.secrets, &allowances)?;
                 apps::add(
                     &home,
@@ -215,6 +216,7 @@ fn run() -> ExitCode {
                         to: &args.to,
                         origin,
                         allowances,
+                        runtime,
                         secrets,
                         address: args.address.as_deref(),
                         price: args.price,
@@ -238,6 +240,7 @@ fn run() -> ExitCode {
                     (None, None) => unreachable!("clap requires one of them"),
                 };
                 let allowances = apps::allowances(&origin, &args.allow)?;
+                let runtime = apps::runtime(&home, &origin, args.runtime.as_deref())?;
                 let secrets = secrets::Given::parse(&origin, &args.secrets, &allowances)?;
                 lifecycle::create(
                     &home,
@@ -246,6 +249,7 @@ fn run() -> ExitCode {
                         from: app.as_deref(),
                         origin,
                         allowances,
+                        runtime,
                         secrets,
                         price: args.price,
                         reach: match &args.clearnet {
