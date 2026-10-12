@@ -42,7 +42,7 @@ A name and a value the operator gives one app, when adding it or by a change, wh
 _Avoid_: Setting (what the relay has), configuration, option
 
 **Secret**:
-A value the operator gives one app, when adding it or by a change, from a file of their own, that the agent node keeps and never shows. The app receives it as a variable or as a file it can only read. Only the operator supplies one; an agent key cannot.
+A value the operator gives one app, when adding it or by a change, from a file of their own, that the agent node keeps and never shows. The app receives it as a variable or as a file it can only read. Only the operator supplies one; an agent key cannot, but may name one an app needs for the operator to supply.
 _Avoid_: Credential, key (a secret may be anything), sealed (what the keystore does; a secret is not in it)
 
 **Supervisor**:
@@ -58,7 +58,7 @@ An operator write key with a scope and a spending limit, which the operator hand
 _Avoid_: API key, token, delegate key
 
 **Pending app**:
-An app an agent key asked to add that the supervisor has not started, because the operator has not yet approved it. An image outside the operator's list of trusted images is held this way, and so is every app at a URL. The operator approves it or refuses it.
+An app an agent key asked to add that the supervisor has not started, because the operator has not yet approved it. An image outside the operator's list of trusted images is held this way, and so is every app at a URL, and every app the agent key named a secret for. The operator approves it, supplying each secret it names, or refuses it.
 _Avoid_: Queued app, requested app, draft
 
 **Order**:
