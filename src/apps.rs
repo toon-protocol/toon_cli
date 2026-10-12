@@ -18,6 +18,7 @@ use crate::control;
 use crate::node::{self, App, Source, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::runner::{self, Allowances};
+use crate::trusted::repository;
 
 /// How long a restart waits: an image is pulled and started, then the connector binds to
 /// its chain.
@@ -45,8 +46,6 @@ impl Origin<'_> {
         }
     }
 }
-
-use crate::trusted::repository;
 
 /// What `toon add` was asked for.
 pub struct Add<'a> {
@@ -644,14 +643,21 @@ pub fn route_price(home: &Path, prefix: &str, price: u64, yes: bool) -> Result<R
 /// loaded before the other's change.
 static ORDERED: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn needs_operator(what: &str) -> Error {
+/// A refusal of what only the operator does: `what` was refused, and `instead` says how the
+/// operator does it with the home.
+fn needs_operator(what: &str, instead: &str) -> Error {
     Error {
         nothing_sent: true,
-        ..failed(
-            ErrorCode::NeedsOperator,
-            format!("{what} The operator must add it: run `toon add` with the home."),
-        )
+        ..failed(ErrorCode::NeedsOperator, format!("{what} {instead}"))
     }
+}
+
+/// A refusal of an app an agent key may not add at once.
+fn operator_adds(what: &str) -> Error {
+    needs_operator(
+        what,
+        "The operator must add it: run `toon add` with the home.",
+    )
 }
 
 fn not_granted(toon_app: &str) -> Error {
@@ -723,13 +729,13 @@ pub fn ordered_add(
     }
     origin.refuse_relay_image()?;
     let Origin::Image(image) = origin else {
-        return Err(needs_operator(
+        return Err(operator_adds(
             "An app at a URL is not added by an agent key: the connector would deliver to any \
              address the agent names.",
         ));
     };
     if !crate::trusted::is_trusted(home, image)? {
-        return Err(needs_operator(&format!(
+        return Err(operator_adds(&format!(
             "The image {} is not on the list of trusted images.",
             repository(image)
         )));
@@ -738,12 +744,12 @@ pub fn ordered_add(
         .iter()
         .any(|field| listed(body, field))
     {
-        return Err(needs_operator(
+        return Err(operator_adds(
             "An allowance is the operator's to give: a trusted image is trusted as shipped.",
         ));
     }
     if listed(body, "env") {
-        return Err(needs_operator(
+        return Err(operator_adds(
             "A variable is the operator's to give: a trusted image is trusted as shipped, not \
              under a configuration an agent chooses.",
         ));
@@ -801,7 +807,7 @@ pub fn ordered_remove(
     let behind = state
         .toon_apps
         .iter()
-        .filter(|toon_app| granted.iter().any(|app| *app == toon_app.name))
+        .filter(|toon_app| granted.contains(&toon_app.name))
         .flat_map(|toon_app| toon_app.apps.iter())
         .find(|behind| behind.name == name)
         .ok_or_else(|| {
@@ -811,9 +817,10 @@ pub fn ordered_remove(
             )
         })?;
     if behind.source == Source::Relay {
-        return Err(needs_operator(&format!(
-            "The relay {name} is not removed by an agent key."
-        )));
+        return Err(needs_operator(
+            &format!("The relay {name} is not removed by an agent key."),
+            "Only the operator removes it: run `toon remove` with the home.",
+        ));
     }
     let report = remove(home, name, body["yes"].as_bool().unwrap_or(false))?;
     Ok(serde_json::json!({ "result": report.json, "text": report.text }))

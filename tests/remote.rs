@@ -585,6 +585,12 @@ fn an_agent_key_removes_any_app_but_the_relay() {
     let relay = node.agent(&key, &["remove", "relay", "--yes", "--json"]);
     assert_eq!(relay.exit_code, 1, "{}{}", relay.stdout, relay.stderr);
     assert_eq!(error_code(&relay), "needs_operator");
+    let message = relay.json()["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(message.contains("toon remove"), "{message}");
+    assert!(!message.contains("toon add"), "{message}");
     assert!(apps_behind(&node, &key, "relay").contains(&"relay".to_owned()));
 
     let nothing = node.agent(&key, &["remove", "ghost", "--yes", "--json"]);
