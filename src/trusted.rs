@@ -106,8 +106,8 @@ pub fn is_trusted(home: &Path, image: &str) -> Result<bool, Error> {
 }
 
 /// The runtime the home names for every image off the list, or `None` if the file is not
-/// there or names none. `toon init` never writes it. A name docker could take for a flag is
-/// `usage`.
+/// there or names none. `toon init` never writes it. A name docker cannot take, such as one
+/// it would read as a flag, is `usage`.
 pub fn untrusted_runtime(home: &Path) -> Result<Option<String>, Error> {
     let file = home.join(RUNTIME_FILE_NAME);
     let text = match std::fs::read_to_string(&file) {

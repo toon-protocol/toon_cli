@@ -551,7 +551,7 @@ fn an_agent_key_cannot_name_a_runtime_and_have_the_app_added_at_once() {
 
     // An agent key's change is the operator's.
     let change = node.agent(&key, &["change", "boxed", "--runtime", "default", "--json"]);
-    assert_ne!(change.exit_code, 0, "{}", change.stdout);
+    assert_eq!(error_code(&change), "needs_home", "{}", change.stdout);
 
     let approved = node.machine.toon(&["approve", "boxed", "--json"]);
     assert_eq!(

@@ -65,24 +65,29 @@ pub struct Add<'a> {
     pub yes: bool,
 }
 
-/// The runtime a flag names: `None` if none was given, `Some(None)` for `default`, which is
-/// docker's own, and `usage` for a name docker cannot take or for an app at a URL, which is
-/// not run.
+/// The runtime a flag names for an app that is run: `None` if none was given, `Some(None)`
+/// for `default`, which is docker's own, and `usage` for a name docker cannot take.
+fn flag_runtime(flag: Option<&str>) -> Result<Option<Option<String>>, Error> {
+    match flag {
+        None => Ok(None),
+        Some("default") => Ok(Some(None)),
+        Some(name) => {
+            crate::runner::check_runtime(name)?;
+            Ok(Some(Some(name.to_owned())))
+        }
+    }
+}
+
+/// The runtime a flag names for an app added from `origin`, as `flag_runtime`, and `usage`
+/// for an app at a URL, which is not run.
 fn named_runtime(origin: &Origin, flag: Option<&str>) -> Result<Option<Option<String>>, Error> {
-    let Some(name) = flag else {
-        return Ok(None);
-    };
-    if matches!(origin, Origin::Url(_)) {
+    if flag.is_some() && matches!(origin, Origin::Url(_)) {
         return Err(failed(
             ErrorCode::Usage,
             "--runtime names how a container is started; an app at a --url is not run.".into(),
         ));
     }
-    if name == "default" {
-        return Ok(Some(None));
-    }
-    crate::runner::check_runtime(name)?;
-    Ok(Some(Some(name.to_owned())))
+    flag_runtime(flag)
 }
 
 /// The runtime an operator's add settles on, to be kept with the app: the one named, or
@@ -473,7 +478,7 @@ pub fn change(home: &Path, args: &crate::cli::ChangeArgs) -> Result<Report, Erro
             "The relay has no runtime: it is the project's own image.".into(),
         ));
     }
-    let runtime = named_runtime(&Origin::Image(name), args.runtime.as_deref())?;
+    let runtime = flag_runtime(args.runtime.as_deref())?;
     let secrets_named = !args.secrets.env.is_empty()
         || !args.secrets.secret.is_empty()
         || !args.secrets.secret_file.is_empty()

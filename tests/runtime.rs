@@ -115,31 +115,57 @@ fn the_nodes_runtime_applies_to_an_image_off_the_list_unless_default_is_named() 
     assert_eq!(runtime(&machine, "later"), Value::Null);
 }
 
+/// The app `name` as `toon status --json` says, its runtime set to docker's own.
+fn without_runtime(machine: &Machine, name: &str) -> Value {
+    let status = machine.toon(&["status", "--json"]).json();
+    let mut app = status["agent_node"]["toon_apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|app| app["apps"].as_array().unwrap().iter())
+        .find(|app| app["name"] == name)
+        .unwrap_or_else(|| panic!("no app {name}: {status}"))
+        .clone();
+    app["confinement"]["runtime"] = Value::Null;
+    app
+}
+
 #[test]
 fn change_sets_and_clears_the_runtime_and_keeps_what_else_the_app_has() {
     let (machine, _chain, _up) = running();
+    let key = machine.home().join("key");
+    fs::write(&key, "a-key\n").unwrap();
+    let secret = format!("KEY={}", key.display());
     let added = add(
         &machine,
         "boxed",
         OFF_LIST,
-        &["--allow-egress", "--memory", "1g", "--env", "A=b"],
+        &[
+            "--allow-egress",
+            "--memory",
+            "1g",
+            "--env",
+            "A=b",
+            "--secret",
+            &secret,
+        ],
     );
     assert_eq!(added.exit_code, 0, "{}", added.stdout);
-    let before = confinement(&machine, "boxed");
+    let before = without_runtime(&machine, "boxed");
+    assert_eq!(before["variables"]["A"], "b", "{before}");
 
     let set = machine.toon(&["change", "boxed", "--runtime", "runsc", "--yes", "--json"]);
     assert_eq!(set.exit_code, 0, "{}{}", set.stdout, set.stderr);
-    let after = confinement(&machine, "boxed");
-    assert_eq!(after["runtime"], "runsc");
-    assert_eq!(after["network"], before["network"]);
-    assert_eq!(after["memory"], before["memory"]);
+    assert_eq!(runtime(&machine, "boxed"), "runsc");
+    assert_eq!(without_runtime(&machine, "boxed"), before);
 
     let again = machine.toon(&["change", "boxed", "--runtime", "runsc", "--yes", "--json"]);
     assert_eq!(error_code(&again), "usage");
 
     let cleared = machine.toon(&["change", "boxed", "--runtime", "default", "--yes", "--json"]);
     assert_eq!(cleared.exit_code, 0, "{}{}", cleared.stdout, cleared.stderr);
-    assert_eq!(confinement(&machine, "boxed"), before);
+    assert_eq!(runtime(&machine, "boxed"), Value::Null);
+    assert_eq!(without_runtime(&machine, "boxed"), before);
 }
 
 #[test]
@@ -190,10 +216,19 @@ fn an_unusable_name_a_url_and_the_relay_are_refused_and_change_nothing() {
 
 #[test]
 fn a_home_written_before_runtimes_loads_with_none() {
-    let (machine, _chain, _up) = running();
-    add(&machine, "notes", OFF_LIST, &[]);
+    let (machine, _chain, up) = running();
+    add(&machine, "notes", OFF_LIST, &["--runtime", "runsc"]);
+    assert_eq!(machine.toon(&["down", "--json"]).exit_code, 0);
+    drop(up);
+    // A record from before this change has no `runtime`.
     let path = machine.agent_node_home().join("state.json");
-    let state: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-    assert!(state["toon_apps"][0]["apps"][1].get("runtime").is_none());
+    let mut state: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    for app in state["toon_apps"][0]["apps"].as_array_mut().unwrap() {
+        app.as_object_mut().unwrap().remove("runtime");
+    }
+    fs::write(&path, state.to_string()).unwrap();
+
+    let _up = machine.start(&["up", "--foreground", "--json"]);
     assert_eq!(runtime(&machine, "notes"), Value::Null);
+    assert_eq!(runtime(&machine, "relay"), Value::Null);
 }
