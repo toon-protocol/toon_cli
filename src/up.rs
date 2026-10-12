@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use sha2::Digest;
 
+use crate::agent_key::Key;
 use crate::anon;
 use crate::connector::{self, Startup};
 use crate::control;
@@ -30,6 +31,7 @@ use crate::egress::Egress;
 use crate::funding;
 use crate::inbox::Inbox;
 use crate::node::{self, App, AppFiles, ConnectorFiles, Reach, Source, State, ToonApp};
+use crate::order;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::overlay::{self, Edge};
 use crate::receive::{Feeds, Receiver, Surroundings};
@@ -50,6 +52,14 @@ const LONGEST_RESTART_DELAY: Duration = Duration::from_secs(30);
 /// A connector that ran this long was healthy, so its next restart starts over at the
 /// shortest delay.
 const HEALTHY: Duration = Duration::from_secs(60);
+
+/// How many lines of a connector's log a `logs` order returns if it does not say, and the most
+/// it may ask for.
+const DEFAULT_LOG_LINES: u64 = 100;
+const MOST_LOG_LINES: u64 = 1000;
+
+/// How much of the end of a log a `logs` order reads.
+const TAIL_BYTES: u64 = 256 * 1024;
 
 /// An app behind the connector, as the control socket reports it.
 struct AppStatus {
@@ -425,6 +435,11 @@ fn launch(
             answering.answer(request, toon_app)
         })
     });
+    let ordered = Arc::clone(&supervisor.shared);
+    let order_home = home.to_path_buf();
+    order::serve(home, move |key, order| {
+        ordered.order(&order_home, key, order)
+    });
     Ok(supervisor)
 }
 
@@ -609,9 +624,91 @@ impl Shared {
         }
     }
 
+    /// Answer an order `key` signed, which has been authorised. It names only the TOON apps
+    /// `key` is granted on, and no file path.
+    fn order(&self, home: &Path, key: &Key, order: order::Order) -> Value {
+        let granted = |name: &str| key.toon_apps.iter().any(|app| app == name);
+        match order.name {
+            "status" => json!({
+                "toon_apps": self
+                    .units()
+                    .iter()
+                    .filter(|unit| granted(&unit.toon_app))
+                    .map(|unit| unit.status())
+                    .collect::<Vec<_>>(),
+            }),
+            "logs" => {
+                let refused = |code: &str, message: String| json!({ "error": { "code": code, "message": message } });
+                let toon_app = match order.body["toon_app"].as_str() {
+                    Some(name) => name.to_owned(),
+                    None => match key.toon_apps.as_slice() {
+                        [only] => only.clone(),
+                        _ => {
+                            return refused(
+                                "usage",
+                                "This key is granted on several TOON apps: name one as \
+                                 \"toon_app\"."
+                                    .to_owned(),
+                            )
+                        }
+                    },
+                };
+                if !granted(&toon_app) {
+                    return refused(
+                        "unknown_name",
+                        format!("This key is not granted on the TOON app {toon_app}."),
+                    );
+                }
+                let lines = order.body["lines"]
+                    .as_u64()
+                    .map_or(DEFAULT_LOG_LINES, |lines| lines.min(MOST_LOG_LINES));
+                let connector = State::load(home).ok().flatten().and_then(|state| {
+                    state
+                        .toon_apps
+                        .iter()
+                        .find(|app| app.name == toon_app)
+                        .map(|app| app.connector)
+                });
+                match connector {
+                    Some(connector) => json!({
+                        "toon_app": toon_app,
+                        "lines": tail(&ConnectorFiles::of(home, connector).log, lines as usize),
+                    }),
+                    None => refused(
+                        "unknown_name",
+                        format!("No TOON app {toon_app} in this agent node."),
+                    ),
+                }
+            }
+            _ => json!({ "error": { "code": "usage", "message": "unknown order" } }),
+        }
+    }
+
     fn units(&self) -> MutexGuard<'_, Vec<Arc<UnitShared>>> {
         self.units.lock().expect("the connectors' state")
     }
+}
+
+/// The last `lines` lines of the file at `path`, reading no more than its final `TAIL_BYTES`.
+fn tail(path: &Path, lines: usize) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = File::open(path) else {
+        return Vec::new();
+    };
+    let length = file.metadata().map_or(0, |meta| meta.len());
+    let start = length.saturating_sub(TAIL_BYTES);
+    let mut bytes = Vec::new();
+    if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut bytes).is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    let mut all: Vec<&str> = text.lines().collect();
+    // A read that began mid-file began mid-line.
+    if start > 0 && !all.is_empty() {
+        all.remove(0);
+    }
+    let from = all.len().saturating_sub(lines);
+    all[from..].iter().map(|line| (*line).to_owned()).collect()
 }
 
 impl UnitShared {

@@ -27,6 +27,7 @@ mod nip;
 mod nip44;
 mod node;
 mod operator;
+mod order;
 mod outcome;
 mod overlay;
 mod ports;
