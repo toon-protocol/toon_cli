@@ -77,6 +77,13 @@ fn main() {
         .collect();
     all.sort();
     fs::write(data.join("all-environment"), all.concat()).expect("write");
+    // One line for every time it was started, for a test of how often an app restarts.
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(data.join("starts"))
+        .and_then(|mut starts| starts.write_all(b"started\n"))
+        .expect("write");
     let mut settings: Vec<String> = env::vars()
         .filter(|(name, _)| {
             (name.starts_with("TOON_RELAY_") && name != "TOON_RELAY_PORT")

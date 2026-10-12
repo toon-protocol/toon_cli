@@ -396,9 +396,15 @@ impl SecretChange {
     /// the earlier directory is set aside, not deleted, until `Staged::commit`.
     pub fn stage(&self, home: &Path, before: &App, after: &App) -> Result<Staged, Error> {
         let files = AppFiles::of(home, &after.name);
+        // A change stopped between setting the copies aside and putting the new ones in
+        // place left the only copies aside: they come back before anything else.
+        let set_aside = aside(&files.secrets_dir);
+        if set_aside.exists() && !files.secrets_dir.exists() {
+            let _ = fs::rename(&set_aside, &files.secrets_dir);
+        }
         let staged = Staged {
             dir: files.secrets_dir.clone(),
-            aside: aside(&files.secrets_dir),
+            aside: set_aside,
             new: files.secrets_dir.with_file_name("secrets.new"),
             had_before: files.secrets_dir.exists(),
         };

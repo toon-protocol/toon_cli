@@ -480,12 +480,14 @@ pub fn change(home: &Path, args: &crate::cli::ChangeArgs) -> Result<Report, Erro
             .map(|p| format!("scratch {p}")),
     );
     for (limit, given) in [
-        ("memory", args.allow.memory.is_some()),
-        ("cpus", args.allow.cpus.is_some()),
-        ("pids", args.allow.pids.is_some()),
+        ("memory", &args.allow.memory),
+        ("cpus", &args.allow.cpus),
+        ("pids", &args.allow.pids),
     ] {
-        if given {
-            set.push(limit.into());
+        match given.as_deref() {
+            Some("default") => unset.push(limit.into()),
+            Some(_) => set.push(limit.into()),
+            None => {}
         }
     }
     set.extend(
@@ -511,6 +513,23 @@ pub fn change(home: &Path, args: &crate::cli::ChangeArgs) -> Result<Report, Erro
     );
     unset.extend(secrets.unset_env.iter().map(|n| format!("variable {n}")));
     unset.extend(secrets.unset_secret.iter().map(|n| format!("secret {n}")));
+    // A name given as the other kind replaces what the app had by that name.
+    unset.extend(
+        secrets
+            .given
+            .variables
+            .keys()
+            .filter(|n| before.secret_variables.contains(n))
+            .map(|n| format!("secret {n}")),
+    );
+    unset.extend(
+        secrets
+            .given
+            .secret_variables
+            .iter()
+            .filter(|(n, _)| before.variables.contains_key(n))
+            .map(|(n, _)| format!("variable {n}")),
+    );
     unset.extend(
         secrets
             .unset_secret_file

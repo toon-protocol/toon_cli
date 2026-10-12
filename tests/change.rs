@@ -143,12 +143,14 @@ fn a_secret_is_replaced_and_everything_else_stays() {
 fn several_changes_apply_with_one_restart() {
     let (machine, _chain, _up) = running();
     with_notes(&machine);
-    let restarts = |machine: &Machine| {
-        machine.toon(&["status", "--json"]).json()["agent_node"]["toon_apps"][0]["connector"]
-            ["restarts"]
-            .clone()
+    // The fake app writes one line to `starts` each time it is started.
+    let starts = |machine: &Machine| {
+        fs::read_to_string(apps_dir(machine, "notes").join("data").join("starts"))
+            .unwrap_or_default()
+            .lines()
+            .count()
     };
-    let before = restarts(&machine);
+    let before = starts(&machine);
 
     let run = machine.toon(&[
         "change",
@@ -165,7 +167,7 @@ fn several_changes_apply_with_one_restart() {
 
     assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
     assert_eq!(run.json()["unset"], json!(["variable B"]));
-    assert_eq!(restarts(&machine), before);
+    assert_eq!(starts(&machine), before + 1);
     let notes = app(&machine, "notes");
     assert_eq!(notes["variables"], json!({"A": "1", "C": "3"}));
     assert_eq!(notes["confinement"]["memory"], 2u64 << 30);
@@ -193,6 +195,10 @@ fn a_limit_goes_back_to_its_default_and_egress_is_taken_away() {
     ]);
 
     assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    assert_eq!(
+        run.json()["unset"],
+        json!(["egress", "scratch /cache", "memory"])
+    );
     let confinement = app(&machine, "notes")["confinement"].clone();
     assert_eq!(confinement["memory"], 536870912);
     assert_eq!(confinement["network"], "none");
@@ -219,6 +225,9 @@ fn a_name_is_one_thing_the_app_is_started_with() {
     ]);
 
     assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    let report = run.json();
+    assert_eq!(report["set"], json!(["variable KEY", "secret A"]));
+    assert_eq!(report["unset"], json!(["secret KEY", "variable A"]));
     let notes = app(&machine, "notes");
     assert_eq!(notes["variables"], json!({"B": "2", "KEY": "plain"}));
     assert_eq!(
