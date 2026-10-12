@@ -104,3 +104,45 @@ does not verify or has expired, and a signature it has already answered. It refu
 the scope (`error.scope`). A refused order does not spend its signature. An order it cannot
 carry out, such as logs of a TOON app the key is not granted on, is answered `400`. Every
 refusal is `{"error": {"code", "message"}}`.
+
+## Running `toon` with an agent key
+
+`TOON_AGENT_KEY=<key file>` or `--agent-key <key file>` makes `toon` run as the agent: it reads
+the key file and nothing else. It never looks for a home or a keystore, even if `$HOME` holds
+one, and it holds no bearer token. A command goes out either as an order to the supervisor
+(`status`, `logs`) or as a signed write to the operator surface of a TOON app the key file
+names (`send`, `peer add`). The reads those need are signed with the key too.
+
+```sh
+export TOON_AGENT_KEY=/run/secrets/agent-key.json
+toon status
+toon logs relay --connector -n 20
+toon send g.toon.<segment>.relay --amount 10 --yes
+toon peer add https://other.example/ilp --deposit 1000 --yes
+toon limit show
+```
+
+| Command | What it does with a key |
+|---|---|
+| `toon status` | The `status` order: only the TOON apps the key is granted on |
+| `toon logs <toon app>` | The `logs` order: that TOON app's connector log (an app's own log is not offered) |
+| `toon send` | A packet originated by a write signed with the key (`send` scope); sealed to the TOON app's connector unless `--seal-to` names another, dialled directly |
+| `toon peer add` | A peering written with the key (`peer` scope) |
+| `toon limit show` | The key's spending limit and what is left of today's, read from each connector the key file names (`--app` picks one) |
+
+`--app <toon app>` picks which TOON app's connector `send` and `peer add` use. Without it, the
+key file's only TOON app is used, else `relay`.
+
+- `--yes` is still required to pay; without it nothing is sent (`not_confirmed`).
+- `toon` keeps no count of spending in this mode. The connector counts and refuses: a write over
+  the key's spending limit (or deposit limit) exits with `spending_limit`; one outside the
+  key's scope says `scope` in the connector's refusal, with the code of the command
+  (`send_failed`, `peer_failed`).
+- After `toon agent-key revoke` the same key file is refused by the supervisor and by every
+  connector, for reads and writes.
+- Every other command answers `needs_home` (exit 1) before anything else is tried, and the
+  message names the command and says the operator must run it: `wallet`, `limit set`, `init`,
+  `create`, `up`, `down`, `agent-key`, and also, until their tickets land, `add`, `remove`,
+  `route`, `event` and `message`.
+- An agent whose loopback cannot reach the supervisor's order address needs a tunnel the
+  deployer provides; reaching an agent node on another host is not offered.

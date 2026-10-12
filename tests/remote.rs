@@ -1,0 +1,329 @@
+mod support;
+
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use support::fake_chain::FakeChain;
+use support::{Foreground, Machine, Run, PASSPHRASE};
+
+/// An agent node that is up, and a home of nobody's for the agent to run in.
+struct Node {
+    machine: Machine,
+    nowhere: tempfile::TempDir,
+    _chain: FakeChain,
+    _up: Foreground,
+}
+
+fn node() -> Node {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    let init = machine.init_on(&chain);
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let created = machine.toon_with(
+        &[
+            "create",
+            "second",
+            "--image",
+            "second:1",
+            "--no-peer",
+            "--clearnet",
+            "second.example.com",
+            "--json",
+        ],
+        |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        },
+    );
+    assert_eq!(created.exit_code, 0, "{}{}", created.stdout, created.stderr);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+    Node {
+        machine,
+        nowhere: tempfile::tempdir().expect("a directory"),
+        _chain: chain,
+        _up: up,
+    }
+}
+
+impl Node {
+    /// Create an agent key and return its key file and public half.
+    fn create(&self, extra: &[&str]) -> (PathBuf, String) {
+        let mut args = vec!["agent-key", "create", "--json"];
+        args.extend_from_slice(extra);
+        let run = self.machine.toon_with(&args, |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        });
+        assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+        let json = run.json();
+        (
+            PathBuf::from(json["key_file"].as_str().expect("key file")),
+            json["agent_key"]["public_key"].as_str().unwrap().to_owned(),
+        )
+    }
+
+    /// Run `toon` as the agent does: `HOME` holds no agent node, and the key file is named
+    /// in the environment.
+    fn agent(&self, key: &Path, args: &[&str]) -> Run {
+        self.agent_in(self.nowhere.path(), key, args)
+    }
+
+    fn agent_in(&self, home: &Path, key: &Path, args: &[&str]) -> Run {
+        let run = |attempt: &mut dyn FnMut() -> Run| {
+            // The supervisor binds its order address a moment after the key is made.
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let run = attempt();
+                if run.exit_code != 1
+                    || !run.stdout.contains("did not answer")
+                    || Instant::now() > deadline
+                {
+                    return run;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        };
+        run(&mut || {
+            self.machine.toon_with(args, |command| {
+                command.env("HOME", home).env("TOON_AGENT_KEY", key);
+            })
+        })
+    }
+}
+
+#[test]
+fn status_and_logs_work_with_a_key_file_and_a_home_that_holds_no_agent_node() {
+    let node = node();
+    let (key, _) = node.create(&["--scope", "status,logs"]);
+
+    let status = node.agent(&key, &["status", "--json"]);
+    assert_eq!(status.exit_code, 0, "{}{}", status.stdout, status.stderr);
+    let apps = status.json()["toon_apps"].clone();
+    assert_eq!(apps[0]["name"], "relay", "{apps}");
+    assert_eq!(apps.as_array().unwrap().len(), 1);
+    assert!(!status
+        .stdout
+        .contains(node.machine.home().to_str().unwrap()));
+    assert!(!node.nowhere.path().join(".toon").exists());
+
+    let text = node.agent(&key, &["status"]);
+    assert_eq!(text.exit_code, 0, "{}{}", text.stdout, text.stderr);
+    assert!(
+        text.stdout.contains("relay: connector running"),
+        "{}",
+        text.stdout
+    );
+
+    let logs = node.agent(&key, &["logs", "relay", "--connector", "--json", "-n", "5"]);
+    assert_eq!(logs.exit_code, 0, "{}{}", logs.stdout, logs.stderr);
+    assert!(logs.json()["lines"].is_array());
+
+    let unknown = node.agent(&key, &["logs", "nowhere", "--json"]);
+    assert_eq!(unknown.exit_code, 1);
+    assert_eq!(unknown.json()["error"]["code"], "unknown_name");
+}
+
+#[test]
+fn the_flag_selects_the_key_too() {
+    let node = node();
+    let (key, _) = node.create(&["--scope", "status"]);
+    let run = node.machine.toon_with(
+        &["--agent-key", key.to_str().unwrap(), "status", "--json"],
+        |command| {
+            command.env("HOME", node.nowhere.path());
+        },
+    );
+    // Retry once the supervisor listens.
+    let run = if run.exit_code == 0 {
+        run
+    } else {
+        thread::sleep(Duration::from_secs(1));
+        node.machine.toon_with(
+            &["--agent-key", key.to_str().unwrap(), "status", "--json"],
+            |command| {
+                command.env("HOME", node.nowhere.path());
+            },
+        )
+    };
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+}
+
+#[test]
+fn a_home_that_exists_is_not_read() {
+    let node = node();
+    // A key granted on the second TOON app only: the home's own status would list both.
+    let (key, _) = node.create(&["--scope", "status", "--toon-app", "second"]);
+    let run = node.agent_in(node.machine.home(), &key, &["status", "--json"]);
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    let apps = run.json()["toon_apps"].clone();
+    assert_eq!(apps.as_array().unwrap().len(), 1, "{apps}");
+    assert_eq!(apps[0]["name"], "second");
+
+    let wallet = node.agent_in(node.machine.home(), &key, &["wallet", "show", "--json"]);
+    assert_eq!(wallet.exit_code, 1);
+    assert_eq!(wallet.json()["error"]["code"], "needs_home");
+}
+
+#[test]
+fn a_command_that_needs_the_home_says_so_and_sends_nothing() {
+    let node = node();
+    let commands: [&[&str]; 9] = [
+        &["wallet", "show"],
+        &["limit", "set", "--max-per-day", "1"],
+        &["init"],
+        &["create", "third", "--image", "third:1", "--deposit", "1"],
+        &["up"],
+        &["down"],
+        &["wallet", "backup", "--out", "backup.json"],
+        &["wallet", "restore", "backup.json"],
+        &["agent-key", "list"],
+    ];
+    for command in commands {
+        let mut args = command.to_vec();
+        args.push("--json");
+        // Even with no key file to read: `needs_home` comes before anything else is tried.
+        let run = node.agent(Path::new("/nonexistent/agent-key.json"), &args);
+        assert_eq!(
+            run.exit_code, 1,
+            "{command:?}: {}{}",
+            run.stdout, run.stderr
+        );
+        let error = run.json()["error"].clone();
+        assert_eq!(error["code"], "needs_home", "{command:?}: {error}");
+        let named = match command[0] {
+            "wallet" | "limit" | "agent-key" => command[..2].join(" "),
+            other => other.to_owned(),
+        };
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("`toon {named}`")),
+            "{command:?}: {error}"
+        );
+        assert!(error["message"].as_str().unwrap().contains("operator"));
+    }
+    assert!(!node.nowhere.path().join(".toon").exists());
+}
+
+#[test]
+fn a_send_without_yes_is_refused_as_it_is_with_the_home() {
+    let node = node();
+    let (key, _) = node.create(&[]);
+    let relay = node.machine.relay_prefix();
+    let run = node.agent(&key, &["send", &relay, "--amount", "1", "--json"]);
+    assert_eq!(run.exit_code, 1);
+    assert_eq!(run.json()["error"]["code"], "not_confirmed");
+}
+
+#[test]
+fn a_send_and_what_is_left_of_the_limit_are_the_connectors() {
+    let node = node();
+    let (key, public) = node.create(&["--max-per-command", "5", "--max-per-day", "100"]);
+    let relay = node.machine.relay_prefix();
+
+    let sent = node.agent(&key, &["send", &relay, "--amount", "0", "--yes", "--json"]);
+    assert_eq!(sent.exit_code, 0, "{}{}", sent.stdout, sent.stderr);
+    assert_eq!(sent.json()["outcome"], "fulfilled");
+
+    let before = node.agent(&key, &["limit", "show", "--json"]);
+    assert_eq!(before.exit_code, 0, "{}{}", before.stdout, before.stderr);
+    let limits = before.json()["limits"]["relay"].clone();
+    assert_eq!(limits["per_command"], "5", "{limits}");
+    assert_eq!(limits["per_day"], "100");
+    assert_eq!(limits["remaining_today"], "100");
+
+    let over = node.agent(&key, &["send", &relay, "--amount", "6", "--yes", "--json"]);
+    assert_eq!(over.exit_code, 1, "{}{}", over.stdout, over.stderr);
+    assert_eq!(
+        over.json()["error"]["code"],
+        "spending_limit",
+        "{}",
+        over.stdout
+    );
+
+    let spent = node.agent(&key, &["send", &relay, "--amount", "3", "--yes", "--json"]);
+    assert!(spent.exit_code <= 1, "{}{}", spent.stdout, spent.stderr);
+    let after = node.agent(&key, &["limit", "show"]);
+    assert_eq!(after.exit_code, 0, "{}{}", after.stdout, after.stderr);
+    assert!(
+        after
+            .stdout
+            .contains("per command 5, per day 100, remaining today 97"),
+        "{}",
+        after.stdout
+    );
+    assert!(!public.is_empty());
+}
+
+#[test]
+fn a_peering_outside_the_keys_scope_or_limit_is_refused_by_the_connector() {
+    let node = node();
+    let (no_peer, _) = node.create(&["--scope", "status,send"]);
+    let run = node.agent(
+        &no_peer,
+        &[
+            "peer",
+            "add",
+            "http://127.0.0.1:1/ilp",
+            "--deposit",
+            "5",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
+    let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
+    assert!(message.contains("scope"), "{message}");
+
+    let unconfirmed = node.agent(
+        &no_peer,
+        &[
+            "peer",
+            "add",
+            "http://127.0.0.1:1/ilp",
+            "--deposit",
+            "5",
+            "--json",
+        ],
+    );
+    assert_eq!(unconfirmed.json()["error"]["code"], "not_confirmed");
+}
+
+#[test]
+fn a_revoked_key_is_refused_by_the_supervisor_and_the_connector() {
+    let node = node();
+    let (key, public) = node.create(&[]);
+    let relay = node.machine.relay_prefix();
+    for args in [
+        vec!["status", "--json"],
+        vec!["limit", "show", "--json"],
+        vec!["send", &relay, "--amount", "0", "--yes", "--json"],
+    ] {
+        let run = node.agent(&key, &args);
+        assert_eq!(run.exit_code, 0, "{args:?}: {}{}", run.stdout, run.stderr);
+    }
+
+    let revoked = node.machine.toon(&["agent-key", "revoke", &public]);
+    assert_eq!(revoked.exit_code, 0, "{}{}", revoked.stdout, revoked.stderr);
+
+    for args in [
+        vec!["status", "--json"],
+        vec!["logs", "relay", "--json"],
+        vec!["limit", "show", "--json"],
+        vec!["send", &relay, "--amount", "0", "--yes", "--json"],
+        vec![
+            "peer",
+            "add",
+            "http://127.0.0.1:1/ilp",
+            "--deposit",
+            "1",
+            "--yes",
+            "--json",
+        ],
+    ] {
+        let run = node.agent(&key, &args);
+        assert_eq!(run.exit_code, 1, "{args:?}: {}{}", run.stdout, run.stderr);
+        assert!(run.json()["error"].is_object(), "{args:?}: {}", run.stdout);
+    }
+}

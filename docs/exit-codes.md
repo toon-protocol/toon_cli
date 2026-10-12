@@ -88,12 +88,13 @@ A failed command with `--json` prints:
 | `peering_needed` | 1 | `toon event publish --relay`, `toon message send --relay` or `toon relay subscribe` found no route that forwards the relay's `ilp_address`; nothing was paid and nothing was created. If no peering of this agent node reaches the relay's `connector_url`, the message prints the `toon peer add <connector_url> --deposit <amount> --yes` to run (for `subscribe`, with the deposit it would take in place of `<amount>`), then `toon route add`. If one does (the network joined from that URL, or a peering whose id is the label `peer add` derives from it), the message names only `toon route add <address> --peer <id>` and says no new deposit is needed |
 | `no_follow_list` | 1 | `toon event query --following` or `toon relay subscribe --following` found no follow list of the agent identity on the agent node's own relay, or one with no keys; nothing was sent or paid |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
-| `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; the message says which limit and how much remains |
+| `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; with an agent key, the connector refused the write for the key's spending limit (or deposit limit); the message says which limit and how much remains |
 | `funds_held` | 1 | `toon destroy` did nothing: a channel of the TOON app still holds funds, or its channels could not be read; the message names each |
 | `last_toon_app` | 1 | `toon destroy` was given the only TOON app: an agent node always has one |
 | `one_relay` | 1 | `toon create` or `toon add` was given the relay's image (any tag or digest of the repository this build pins): an agent node runs one relay, the one `toon init` created; nothing was changed |
 | `describe_failed` | 1 | `toon describe` got no self-description from the connector's `/ilp` URL: it did not answer, answered an error status, or answered something that is not a self-description (a JSON object with `routes`); nothing was paid |
 | `agent_key_not_kept` | 1 | `toon message list` found no kept secret of the agent identity in the agent node's home, so no private message has been opened: `toon event publish`, `toon event sign` and `toon message send` write it; nothing was read or sent |
+| `needs_home` | 1 | `toon` was run with an agent key (`--agent-key` or `TOON_AGENT_KEY`) and the command needs the agent node's home, which an agent key never reads: the message names the command and says the operator must run it; nothing was sent |
 
 
 ## The wallet passphrase

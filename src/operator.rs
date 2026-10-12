@@ -31,6 +31,9 @@ pub struct Surface {
     toon_app: String,
     bearer_token: PathBuf,
     write_key: PathBuf,
+    /// An agent key's secret (ADR 0010), when this surface is reached with one. It signs
+    /// every write and every read, and there is no bearer token or write key file.
+    held: Option<Zeroizing<[u8; 32]>>,
     /// Whether the connector may peer toward a plain `http://` address.
     plaintext_peers: bool,
     /// What the connector's key must hold for gas, to name when a write is refused for it.
@@ -89,6 +92,7 @@ pub fn surface_of(home: &Path, name: Option<&str>) -> Result<Surface, Error> {
         toon_app: app.name.clone(),
         bearer_token: ConnectorFiles::of(home, app.connector).bearer_token,
         write_key: node::operator_key(home),
+        held: None,
         plaintext_peers: app.plaintext_peers,
         gas: GasRefusal::of(home, state.network, app),
     })
@@ -97,6 +101,12 @@ pub fn surface_of(home: &Path, name: Option<&str>) -> Result<Surface, Error> {
 /// A read of the connector's operator surface: `path`, with the bearer token.
 fn read(surface: &Surface, path: &str) -> Result<Vec<Value>, Error> {
     get(surface, path, reqwest::blocking::Response::json)
+}
+
+/// `GET /write-keys`: every key that may sign a write, with its scope, its expiry and what its
+/// limits have counted today (ADR 0078 decision 11).
+pub fn write_keys(surface: &Surface) -> Result<Vec<Value>, Error> {
+    read(surface, "/write-keys")
 }
 
 /// A read of the connector's operator surface that answers text: `path`, with the bearer token.
@@ -110,17 +120,43 @@ fn get<T>(
     path: &str,
     body: impl FnOnce(reqwest::blocking::Response) -> reqwest::Result<T>,
 ) -> Result<T, Error> {
-    let token = std::fs::read_to_string(&surface.bearer_token).map_err(|source| {
-        failed(
-            ErrorCode::Io,
-            format!("{}: {source}.", surface.bearer_token.display()),
-        )
-    })?;
     let url = format!("{}{path}", surface.url);
-    reqwest::blocking::Client::builder()
+    let request = |client: reqwest::blocking::Client| -> Result<_, Error> {
+        if surface.held.is_some() {
+            // The agent holds no bearer token: its read is signed, over the path alone.
+            let keypair = surface.keypair()?;
+            let created = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_secs());
+            let (signature_input, signature, content_digest) =
+                connector_operator::signing::sign_request(
+                    &keypair,
+                    "GET",
+                    path.split('?').next().unwrap_or(path),
+                    b"",
+                    created,
+                    Some(created + SIGNATURE_TTL),
+                );
+            return Ok(client
+                .get(&url)
+                .header("content-digest", content_digest)
+                .header("signature-input", signature_input)
+                .header("signature", signature)
+                .send());
+        }
+        let token = std::fs::read_to_string(&surface.bearer_token).map_err(|source| {
+            failed(
+                ErrorCode::Io,
+                format!("{}: {source}.", surface.bearer_token.display()),
+            )
+        })?;
+        Ok(client.get(&url).bearer_auth(token.trim()).send())
+    };
+    let client = reqwest::blocking::Client::builder()
         .timeout(PATIENCE)
         .build()
-        .and_then(|client| client.get(&url).bearer_auth(token.trim()).send())
+        .map_err(|error| failed(ErrorCode::ConnectorFailed, format!("GET {url}: {error}.")))?;
+    request(client)?
         .and_then(|response| response.error_for_status())
         .and_then(body)
         .map_err(|error| failed(ErrorCode::ConnectorFailed, format!("GET {url}: {error}.")))
@@ -201,7 +237,7 @@ fn write_text(
     body: String,
     patience: Duration,
 ) -> Result<(u16, String), Error> {
-    let keypair = write_keypair(&surface.write_key)?;
+    let keypair = surface.keypair()?;
     let url = format!("{}{path}", surface.url);
     let client = reqwest::blocking::Client::builder()
         .timeout(patience)
@@ -471,12 +507,63 @@ fn refusal(status: u16, text: &str) -> String {
 /// the write's signature before it does anything, so such a write moved nothing.
 fn refused(code: ErrorCode, status: u16, text: &str) -> Error {
     Error {
-        nothing_sent: status == 401,
-        ..failed(code, refusal(status, text))
+        nothing_sent: status == 401 || limit_or_scope(status, text),
+        ..failed(
+            if limit_refused(status, text) {
+                ErrorCode::SpendingLimit
+            } else {
+                code
+            },
+            refusal(status, text),
+        )
     }
 }
 
+/// Whether the connector refused a write for an agent key's spending limit or deposit
+/// limit (ADR 0078 decision 9): a `403` whose text starts with the reason.
+fn limit_refused(status: u16, text: &str) -> bool {
+    status == 403
+        && ["spending-limit:", "deposit-limit:"]
+            .iter()
+            .any(|reason| text.trim().starts_with(reason))
+}
+
+/// Whether the connector refused a write before doing anything, for the key's scope, expiry
+/// or limit: a `403` names the reason first (ADR 0078 decision 9).
+fn limit_or_scope(status: u16, text: &str) -> bool {
+    limit_refused(status, text)
+        || (status == 403
+            && ["scope:", "expiry:"]
+                .iter()
+                .any(|reason| text.trim().starts_with(reason)))
+}
+
 impl Surface {
+    /// The surface of the connector at `url` of the TOON app `toon_app`, reached with an
+    /// agent key's `secret` and no home: reads and writes are signed, and nothing about the
+    /// agent node is known beyond that.
+    pub fn of_agent_key(url: &str, toon_app: &str, secret: [u8; 32]) -> Self {
+        Self {
+            url: url.trim_end_matches('/').to_owned(),
+            toon_app: toon_app.to_owned(),
+            bearer_token: PathBuf::new(),
+            write_key: PathBuf::new(),
+            held: Some(Zeroizing::new(secret)),
+            plaintext_peers: false,
+            gas: None,
+        }
+    }
+
+    /// The keypair that signs this surface's writes: the agent key's, or the wallet's operator
+    /// write key.
+    fn keypair(&self) -> Result<ed25519_dalek_v1::Keypair, Error> {
+        match &self.held {
+            Some(secret) => keypair_of(&secret[..])
+                .ok_or_else(|| failed(ErrorCode::Usage, "The agent key is not 32 bytes.".into())),
+            None => write_keypair(&self.write_key),
+        }
+    }
+
     /// The `unfunded` refusal if the connector refused a write for lack of gas.
     fn refused_for_gas(&self, status: u16, text: &str) -> Option<Error> {
         self.gas
@@ -1120,6 +1207,12 @@ pub fn route_remove(home: &Path, prefix: &str) -> Result<Report, Error> {
 
 /// The wallet's operator write key, the 32 bytes `init` wrote, as the keypair the
 /// connector's request signing takes.
+fn keypair_of(raw: &[u8]) -> Option<ed25519_dalek_v1::Keypair> {
+    let secret = ed25519_dalek_v1::SecretKey::from_bytes(raw).ok()?;
+    let public = ed25519_dalek_v1::PublicKey::from(&secret);
+    Some(ed25519_dalek_v1::Keypair { secret, public })
+}
+
 fn write_keypair(path: &Path) -> Result<ed25519_dalek_v1::Keypair, Error> {
     let unusable = |reason: String| failed(ErrorCode::Io, format!("{}: {reason}.", path.display()));
     let raw = Zeroizing::new(std::fs::read(path).map_err(|source| unusable(source.to_string()))?);
@@ -1654,10 +1747,13 @@ fn identity(egress: &Egress, seal_to: &str) -> Result<[u8; 65], Error> {
 /// refused before any packet is originated with 401 (its signature) and 400 (a packet that
 /// did not decode), so nothing was sent; any other failing status stays counted.
 fn packet_write_refused(status: reqwest::StatusCode, body: &[u8]) -> Error {
+    let text = String::from_utf8_lossy(body);
+    // A key past its spending limit, outside its scope or expired is refused `403` before
+    // anything is originated (ADR 0078 decision 9).
     let nothing_sent = matches!(
         status,
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::BAD_REQUEST
-    );
+    ) || limit_or_scope(status.as_u16(), &text);
     let note = if status == reqwest::StatusCode::BAD_REQUEST {
         NOTHING_SENT_400
     } else {
@@ -1666,10 +1762,14 @@ fn packet_write_refused(status: reqwest::StatusCode, body: &[u8]) -> Error {
     Error {
         nothing_sent,
         ..failed(
-            ErrorCode::SendFailed,
+            if limit_refused(status.as_u16(), &text) {
+                ErrorCode::SpendingLimit
+            } else {
+                ErrorCode::SendFailed
+            },
             format!(
                 "The connector refused the write with {status}: {}{note}",
-                String::from_utf8_lossy(body).trim()
+                text.trim()
             ),
         )
     }
@@ -1689,16 +1789,36 @@ pub fn dispatch_with_headers(
     headers: Vec<(String, String)>,
     body: Vec<u8>,
 ) -> Result<Answer, Error> {
+    dispatch_with_headers_on(
+        &surface(home)?,
+        destination,
+        amount,
+        public,
+        (method, target),
+        headers,
+        body,
+    )
+}
+
+/// [`dispatch_with_headers`] through the connector whose operator surface is `surface`.
+pub fn dispatch_with_headers_on(
+    surface: &Surface,
+    destination: &str,
+    amount: u64,
+    public: &[u8; 65],
+    (method, target): (&str, &str),
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+) -> Result<Answer, Error> {
     use connector_domain::{EnvelopeRequest, EnvelopeResponse, Fulfill, Prepare, Reject};
     use connector_signer::giftwrap::{derive_fulfillment, open_response, seal_request};
 
-    let surface = surface(home)?;
     let send_failed = |message: String| failed(ErrorCode::SendFailed, message);
     let not_sent = |message: String| Error {
         nothing_sent: true,
         ..send_failed(message)
     };
-    let keypair = write_keypair(&surface.write_key).map_err(|error| Error {
+    let keypair = surface.keypair().map_err(|error| Error {
         nothing_sent: true,
         ..error
     })?;
@@ -1847,13 +1967,62 @@ fn send_packet(
     body: Option<&Path>,
     probing: bool,
 ) -> Result<Report, Error> {
+    send_packet_with(destination, amount, target, probing, |target| {
+        dispatch(home, destination, amount, seal_to, method, target, body)
+    })
+}
+
+/// `toon send` through an agent key (ADR 0010): the packet is formed here and originated by
+/// a signed write of the connector at `surface`, sealed to `seal_to` or to that connector.
+/// The agent node's home is never read, and the request leaves directly.
+pub fn send_as_agent(
+    surface: &Surface,
+    destination: &str,
+    amount: u64,
+    seal_to: Option<&str>,
+    (method, target): (&str, &str),
+    body: Option<&Path>,
+) -> Result<Report, Error> {
+    let not_sent = |message: String| Error {
+        nothing_sent: true,
+        ..failed(ErrorCode::SendFailed, message)
+    };
+    let body = match body {
+        Some(path) => std::fs::read(path)
+            .map_err(|error| not_sent(format!("{} could not be read: {error}.", path.display())))?,
+        None => Vec::new(),
+    };
+    let seal_to = seal_to.map_or_else(|| format!("{}/ilp", surface.url), str::to_owned);
+    let public = identity(&Egress::direct(), &seal_to)?;
+    send_packet_with(destination, amount, target, false, |target| {
+        dispatch_with_headers_on(
+            surface,
+            destination,
+            amount,
+            &public,
+            (method, target),
+            vec![("content-type".to_owned(), "application/json".to_owned())],
+            body,
+        )
+    })
+}
+
+/// [`send_packet`], the packet sent by `dispatch` once the target is relative to the
+/// route's handler.
+fn send_packet_with(
+    destination: &str,
+    amount: u64,
+    target: &str,
+    probing: bool,
+    dispatch: impl FnOnce(&str) -> Result<Answer, Error>,
+) -> Result<Report, Error> {
     // The connector takes the target relative to the route's handler, and `--path` names
     // it from the handler's root.
     let target = match target.strip_prefix('/') {
         Some("") | None => target,
         Some(relative) => relative,
     };
-    let answer = dispatch(home, destination, amount, seal_to, method, target, body)?;
+    let answer = dispatch(target)?;
     if matches!(answer, Answer::Unanswered) {
         // `toon send` reads the watermarks, which only its caller can.
         return Err(unanswered_cost(u128::from(amount), None));
@@ -2170,6 +2339,7 @@ mod tests {
             toon_app: "relay".to_owned(),
             bearer_token: home.join("token"),
             write_key,
+            held: None,
             plaintext_peers: true,
             gas: None,
         }
