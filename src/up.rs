@@ -25,6 +25,7 @@ use sha2::Digest;
 
 use crate::agent_key::Key;
 use crate::anon;
+use crate::apps;
 use crate::connector::{self, Startup};
 use crate::control;
 use crate::egress::Egress;
@@ -574,6 +575,11 @@ fn spawn(files: &ConnectorFiles) -> Result<Started, Error> {
     Err(failed(refusal))
 }
 
+/// An order that could not be carried out, as the answer says so.
+fn refused(error: Error) -> order::Refusal {
+    order::Refusal::bad_order(error.code.as_str(), error.message)
+}
+
 /// Ask `queue`'s consumer to carry out a request, and wait for the answer.
 fn wait_for(queue: &Mutex<Vec<Reload>>) -> Value {
     let (answer, answered) = mpsc::channel();
@@ -679,6 +685,8 @@ impl Shared {
                     )),
                 }
             }
+            "add" => apps::ordered_add(home, &key.toon_apps, &order.body).map_err(refused),
+            "remove" => apps::ordered_remove(home, &key.toon_apps, &order.body).map_err(refused),
             _ => Err(order::Refusal::bad_order(
                 "usage",
                 "No such order.".to_owned(),

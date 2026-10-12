@@ -26,9 +26,13 @@ use sha2::{Digest, Sha256};
 
 use crate::agent_key::{Key, Record};
 
-/// The orders the supervisor answers, by path, with the scope each one needs (which also
-/// names it).
-const ORDERS: [(&str, &str); 2] = [("/orders/status", "status"), ("/orders/logs", "logs")];
+/// The orders the supervisor answers, by path, with the scope each one needs and its name.
+const ORDERS: [(&str, &str, &str); 4] = [
+    ("/orders/status", "status", "status"),
+    ("/orders/logs", "logs", "logs"),
+    ("/orders/add", "apps", "add"),
+    ("/orders/remove", "apps", "remove"),
+];
 
 /// The components a signature covers: exactly these, as a connector's write signature does.
 const COVERED: [&str; 3] = ["@method", "@path", "content-digest"];
@@ -316,10 +320,10 @@ impl Orders {
         answer: &Answer,
     ) -> Response {
         let path = uri.path();
-        let Some(scope) = ORDERS
+        let Some((scope, name)) = ORDERS
             .iter()
-            .find(|(order, _)| *order == path)
-            .map(|(_, scope)| *scope)
+            .find(|(order, _, _)| *order == path)
+            .map(|(_, scope, name)| (*scope, *name))
         else {
             return (
                 StatusCode::NOT_FOUND,
@@ -352,8 +356,7 @@ impl Orders {
                 }
             }
         };
-        // An order is named for the scope it needs.
-        match answer(&key, Order { name: scope, body }) {
+        match answer(&key, Order { name, body }) {
             Ok(answer) => Json(answer).into_response(),
             Err(refusal) => refusal.response(),
         }

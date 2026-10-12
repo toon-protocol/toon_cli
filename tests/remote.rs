@@ -398,3 +398,256 @@ fn a_peering_is_written_with_the_key() {
     assert_eq!(peered.json()["peering"]["id"], "far", "{}", peered.stdout);
     assert!(!nowhere.path().join(".toon").exists());
 }
+
+/// The names of the apps behind the TOON app `toon_app`, as `toon status` with `key` shows.
+fn apps_behind(node: &Node, key: &Path, toon_app: &str) -> Vec<String> {
+    let status = node.agent(key, &["status", "--json"]);
+    assert_eq!(status.exit_code, 0, "{}{}", status.stdout, status.stderr);
+    status.json()["toon_apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|app| app["name"] == toon_app)
+        .map(|app| {
+            app["apps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|app| app["name"].as_str().unwrap().to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn error_code(run: &Run) -> String {
+    run.json()["error"]["code"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[test]
+fn an_agent_key_adds_an_image_on_the_list_and_removes_it() {
+    let node = node();
+    let (key, _) = node.create(&["--scope", "status,apps"]);
+
+    for (name, image) in [
+        ("plain", "ghcr.io/toon-protocol/echo"),
+        ("tagged", "ghcr.io/toon-protocol/echo:2.1"),
+        (
+            "pinned",
+            "ghcr.io/toon-protocol/echo@sha256:0123456789012345678901234567890123456789012345678901234567890123",
+        ),
+    ] {
+        let add = node.agent(
+            &key,
+            &["add", name, "--to", "relay", "--image", image, "--yes", "--json"],
+        );
+        assert_eq!(add.exit_code, 0, "{image}: {}{}", add.stdout, add.stderr);
+        assert_eq!(add.json()["added"], name);
+        assert_eq!(add.json()["toon_app"], "relay");
+    }
+    let behind = apps_behind(&node, &key, "relay");
+    for name in ["plain", "tagged", "pinned"] {
+        assert!(behind.contains(&name.to_owned()), "{behind:?}");
+    }
+
+    let remove = node.agent(&key, &["remove", "tagged", "--yes", "--json"]);
+    assert_eq!(remove.exit_code, 0, "{}{}", remove.stdout, remove.stderr);
+    assert_eq!(remove.json()["removed"], "tagged");
+    assert!(!apps_behind(&node, &key, "relay").contains(&"tagged".to_owned()));
+
+    // The same confirmation the home asks for.
+    let unconfirmed = node.agent(&key, &["remove", "plain", "--json"]);
+    assert_eq!(error_code(&unconfirmed), "confirmation_required");
+    assert!(apps_behind(&node, &key, "relay").contains(&"plain".to_owned()));
+}
+
+#[test]
+fn an_agent_key_does_not_add_what_the_operator_has_not_trusted() {
+    let node = node();
+    let (key, _) = node.create(&["--scope", "status,apps"]);
+
+    let refused: [&[&str]; 8] = [
+        &["--image", "docker.io/someone/else:1"],
+        &["--image", "ghcr.io/toon-protocolx/echo"],
+        &["--url", "http://127.0.0.1:9999"],
+        &["--image", "ghcr.io/toon-protocol/echo", "--allow-egress"],
+        &["--image", "ghcr.io/toon-protocol/echo", "--memory", "1g"],
+        &[
+            "--image",
+            "ghcr.io/toon-protocol/echo",
+            "--scratch",
+            "/tmp/x",
+        ],
+        &["--image", "ghcr.io/toon-protocol/echo", "--env", "A=b"],
+        &["--image", "ghcr.io/toon-protocol/echo", "--cpus", "2"],
+    ];
+    for flags in refused {
+        let mut args = vec!["add", "nope", "--to", "relay", "--yes", "--json"];
+        args.extend_from_slice(flags);
+        let run = node.agent(&key, &args);
+        assert_eq!(run.exit_code, 1, "{flags:?}: {}{}", run.stdout, run.stderr);
+        assert_eq!(
+            error_code(&run),
+            "needs_operator",
+            "{flags:?}: {}",
+            run.stdout
+        );
+        assert!(
+            run.json()["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("operator must add it"),
+            "{flags:?}"
+        );
+    }
+    assert_eq!(apps_behind(&node, &key, "relay"), vec!["relay".to_owned()]);
+
+    // A secret is refused with `needs_home`, and its file is not read.
+    let secret = node.agent(
+        &key,
+        &[
+            "add",
+            "nope",
+            "--to",
+            "relay",
+            "--image",
+            "ghcr.io/toon-protocol/echo",
+            "--yes",
+            "--secret",
+            "TOKEN=/nonexistent/file",
+            "--json",
+        ],
+    );
+    assert_eq!(error_code(&secret), "needs_home", "{}", secret.stdout);
+    assert_eq!(apps_behind(&node, &key, "relay"), vec!["relay".to_owned()]);
+}
+
+#[test]
+fn the_operator_edits_the_list_and_the_home_is_never_checked_against_it() {
+    let node = node();
+    let (key, _) = node.create(&["--scope", "status,apps"]);
+    let list = node.machine.agent_node_home().join("trusted-images");
+    let seeded = std::fs::read_to_string(&list).expect("`toon init` writes the list");
+    assert!(seeded.contains("ghcr.io/toon-protocol/*"), "{seeded}");
+
+    let args = [
+        "add",
+        "team",
+        "--to",
+        "relay",
+        "--image",
+        "example.com/team/app:1",
+        "--yes",
+        "--json",
+    ];
+    assert_eq!(error_code(&node.agent(&key, &args)), "needs_operator");
+
+    std::fs::write(&list, "# mine\nexample.com/team/*\n").unwrap();
+    let added = node.agent(&key, &args);
+    assert_eq!(added.exit_code, 0, "{}{}", added.stdout, added.stderr);
+
+    // The seed is replaced, not kept: the operator's file is the list.
+    let gone = node.agent(
+        &key,
+        &[
+            "add",
+            "echo",
+            "--to",
+            "relay",
+            "--image",
+            "ghcr.io/toon-protocol/echo",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(error_code(&gone), "needs_operator");
+
+    // With the home, an image not on the list is added as before.
+    let home = node.machine.toon(&[
+        "add",
+        "other",
+        "--to",
+        "relay",
+        "--image",
+        "docker.io/someone/else:1",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(home.exit_code, 0, "{}{}", home.stdout, home.stderr);
+}
+
+#[test]
+fn an_agent_key_removes_any_app_but_the_relay() {
+    let node = node();
+    let (key, _) = node.create(&["--scope", "status,apps"]);
+    let relay = node.agent(&key, &["remove", "relay", "--yes", "--json"]);
+    assert_eq!(relay.exit_code, 1, "{}{}", relay.stdout, relay.stderr);
+    assert_eq!(error_code(&relay), "needs_operator");
+    assert!(apps_behind(&node, &key, "relay").contains(&"relay".to_owned()));
+
+    let nothing = node.agent(&key, &["remove", "ghost", "--yes", "--json"]);
+    assert_eq!(error_code(&nothing), "unknown_name");
+}
+
+#[test]
+fn an_add_or_remove_needs_the_scope_and_a_toon_app_the_key_is_granted_on() {
+    let node = node();
+    let (without, _) = node.create(&["--scope", "status"]);
+    let add = node.agent(
+        &without,
+        &[
+            "add",
+            "x",
+            "--to",
+            "relay",
+            "--image",
+            "ghcr.io/toon-protocol/echo",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(add.exit_code, 1, "{}{}", add.stdout, add.stderr);
+    assert!(add.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("'apps'"));
+    let remove = node.agent(&without, &["remove", "relay", "--yes", "--json"]);
+    assert_eq!(remove.exit_code, 1);
+    assert!(remove.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("'apps'"));
+
+    // Granted on the relay's TOON app only: `second` and the app behind it are not its.
+    let (key, _) = node.create(&["--scope", "status,apps"]);
+    let add = node.agent(
+        &key,
+        &[
+            "add",
+            "x",
+            "--to",
+            "second",
+            "--image",
+            "ghcr.io/toon-protocol/echo",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(add.exit_code, 1, "{}{}", add.stdout, add.stderr);
+    assert_eq!(error_code(&add), "unknown_name");
+    let remove = node.agent(&key, &["remove", "second", "--yes", "--json"]);
+    assert_eq!(error_code(&remove), "unknown_name");
+
+    let status = node.machine.toon(&["status", "--json"]).json();
+    let names: Vec<String> = status["agent_node"]["toon_apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|app| app["apps"].as_array().unwrap().iter())
+        .map(|app| app["name"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(names.contains(&"second".to_owned()), "{names:?}");
+    assert!(!names.contains(&"x".to_owned()), "{names:?}");
+}
