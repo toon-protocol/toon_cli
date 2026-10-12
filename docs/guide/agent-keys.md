@@ -51,8 +51,9 @@ holds only orders is on no connector's list, because a connector's list takes on
 limits if omitted. The connector holds them: it counts what the key sends in packets and
 what peering and channel writes deposit, per write and per UTC day, so the limit holds
 although the agent never opens the home. A key granted on several TOON apps has the limit on
-each, so it can spend that much per day on each. `--max-restarts` is how many times a day
-the key may restart an app (ten if omitted). `--expires` is an RFC 3339 time after which the
+each, so it can spend that much per day on each. `--max-restarts` is how many times an hour
+the key may restart a connector, which setting a route's price does (six if omitted; change
+it with `toon agent-key set`). Past it the order is refused with `rate_limited`. `--expires` is an RFC 3339 time after which the
 connector refuses the key.
 
 ## Which TOON apps
@@ -139,6 +140,7 @@ toon limit show
 | `toon peer add` | A peering written with the key (`peer` scope) |
 | `toon add --image <image> --to <toon app>` | The `add` order (`apps` scope): the app is added at once if its image is on the list of trusted images, as `toon add` does with the home. Any other image, and every `--url`, becomes a pending app and answers `approval_pending` |
 | `toon remove <app>` | The `remove` order (`apps` scope): any app behind a TOON app the key is granted on, but the relay |
+| `toon route price <prefix> <price> --yes` | The `route-price` order: sets the price of the route to an app on a TOON app the key is granted on, and restarts that connector. Under the key's restart limit: past it, `rate_limited`, and the message says when the next restart is allowed |
 | `toon event publish` | The `sign` order, then the packet is sent with the key (`send` scope) to the relay of the TOON app, so the connector counts `--amount` against the key. `--relay` needs the home |
 | `toon event sign` | The `sign` order: prints the signed event and sends nothing |
 | `toon message send` | The `seal` order, then each wrap is sent with the key as above. `--relay` needs the home |
@@ -157,8 +159,8 @@ key file's only TOON app is used, else `relay`.
   connector, for reads and writes.
 - Every other command answers `needs_home` (exit 1) before anything else is tried, and the
   message names the command and says the operator must run it: `wallet`, `limit set`, `init`,
-  `create`, `up`, `down`, `agent-key`, and also, until their tickets land, `route`,
-  `event query`, `event watch`, `nip` and the subscribe commands, and `event publish` and `message send` with `--relay`.
+  `create`, `up`, `down`, `agent-key`, and also, until their tickets land, `route` (except
+  `route price`), `event query`, `event watch`, `nip` and the subscribe commands, and `event publish` and `message send` with `--relay`.
 - An agent whose loopback cannot reach the supervisor's order address needs a tunnel the
   deployer provides; reaching an agent node on another host is not offered.
 

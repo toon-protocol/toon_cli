@@ -6,6 +6,8 @@ A network that leads nowhere is one of docker's internal networks, and docker pu
 
 An operator can make an allowance for one app when adding it: that it may open connections out, a further scratch path that is emptied on every restart, or other limits. An app allowed to open connections out gets an ordinary network of its own in place of the internal one. There is no allowance for a capability, for another user, or for running unconfined.
 
+A confined app still shares the machine's kernel. So an operator can name a runtime for one app, such as gVisor's `runsc`, and one for the agent node, which every image outside the list of trusted images (ADR 0010) is started under. A runtime is not an allowance: it lets the app do nothing more. The runtime is settled when the app is added and kept with it, so an edit to the list or to the node's runtime moves no app that is already added.
+
 We chose this over a network per app with connections out left open, which keeps apps apart from each other but lets an image nobody has read reach the internet and whatever the host leaves listening. We chose the operator's user over the image's own because a root that has lost its capabilities cannot write a `/data` the operator owns, and a `/data` made writable by anyone, or a kept capability, is a weaker confinement to explain.
 
 ## Consequences
@@ -18,4 +20,8 @@ We chose this over a network per app with connections out left open, which keeps
 - Confinement applies to every app from the next `toon up`, with no record of which apps predate it. An app that ran before and no longer starts needs an allowance or a new image.
 - An allowance is set when the app is added, and the operator can change it afterwards without removing the app. A change restarts the app. Its connector learns where an app is only when it starts, so the supervisor keeps the app's network while the app restarts alone and reads its address again afterwards: the connector restarts only if the app came back somewhere else. Docker usually hands the same address back, and when it does not the connector restarts as it does for an app that is added. We chose this over a subnet per app that `toon` picks and records, which would fix the address but must be kept clear of docker's own pools and the operator's networks.
 - The relay can be given other limits on memory, CPU and processes by a change, and no other allowance: it is on the host's network, and its paths are the project's own.
+- The node's runtime is the one place the list of trusted images touches an operator's own add. It never refuses one: the operator names another runtime, or docker's own, for that app.
+- An agent key cannot name a runtime and have the app added at once: a name may be a runtime that confines less than docker's own. Such an add is held as a pending app.
+- The relay is given no runtime: it is the project's own image.
+- `toon` does not check that a runtime is installed. Where it is not, docker refuses to start the app and it fails with `app_failed`.
 - Docker gives a capability only to root, so with the operator's user and no new privileges a capability allowance could not work even if one were wanted.

@@ -14,7 +14,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
-use crate::cli::{AddArgs, Command, EventCommand, LimitCommand, MessageCommand, PeerCommand};
+use crate::cli::{
+    AddArgs, Command, EventCommand, LimitCommand, MessageCommand, PeerCommand, RouteCommand,
+};
 use crate::event;
 use crate::message;
 use crate::operator::{self, PeerAdd, Surface};
@@ -22,6 +24,9 @@ use crate::outcome::{Error, ErrorCode, Exit, Report};
 
 /// How long an order waits for the supervisor.
 const PATIENCE: Duration = Duration::from_secs(30);
+
+/// How long an order that restarts a connector waits: as long as the operator's own command.
+const RESTART_PATIENCE: Duration = Duration::from_secs(300);
 
 fn failed(code: ErrorCode, message: String) -> Error {
     Error {
@@ -197,7 +202,7 @@ fn now() -> u64 {
 
 /// Send `body` as the order `name` to the supervisor, signed with the key, and return its
 /// answer.
-fn order(key: &KeyFile, name: &str, body: &Value) -> Result<Value, Error> {
+fn order(key: &KeyFile, name: &str, body: &Value, patience: Duration) -> Result<Value, Error> {
     let path = format!("/orders/{name}");
     let url = format!("{}{path}", key.supervisor);
     let text = if body.is_null() {
@@ -216,7 +221,7 @@ fn order(key: &KeyFile, name: &str, body: &Value) -> Result<Value, Error> {
         )
     };
     let client = reqwest::blocking::Client::builder()
-        .timeout(PATIENCE)
+        .timeout(patience)
         .build()
         .map_err(unreachable)?;
     let keypair = key.keypair();
@@ -270,7 +275,7 @@ fn order(key: &KeyFile, name: &str, body: &Value) -> Result<Value, Error> {
 }
 
 fn status(key: &KeyFile) -> Result<Report, Error> {
-    let reply = order(key, "status", &Value::Null)?;
+    let reply = order(key, "status", &Value::Null, PATIENCE)?;
     let toon_apps = reply["toon_apps"].as_array().cloned().unwrap_or_default();
     let mut all_running = true;
     let mut lines = Vec::new();
@@ -328,7 +333,12 @@ fn status(key: &KeyFile) -> Result<Report, Error> {
 }
 
 fn logs(key: &KeyFile, name: &str, lines: usize) -> Result<Report, Error> {
-    let reply = order(key, "logs", &json!({ "toon_app": name, "lines": lines }))?;
+    let reply = order(
+        key,
+        "logs",
+        &json!({ "toon_app": name, "lines": lines }),
+        PATIENCE,
+    )?;
     let shown: Vec<&str> = reply["lines"]
         .as_array()
         .into_iter()
@@ -350,7 +360,7 @@ fn logs(key: &KeyFile, name: &str, lines: usize) -> Result<Report, Error> {
 /// An order that changes the apps: its answer is what the command would have reported with
 /// the home.
 fn changing(key: &KeyFile, name: &str, body: &Value) -> Result<Report, Error> {
-    let reply = order(key, name, body)?;
+    let reply = order(key, name, body, RESTART_PATIENCE)?;
     Ok(Report {
         exit: Exit::Success,
         json: reply["result"].clone(),
@@ -494,7 +504,7 @@ fn signed(
     if let Some(name) = toon_app {
         body["toon_app"] = json!(name);
     }
-    order(key, "sign", &body)
+    order(key, "sign", &body, PATIENCE)
 }
 
 fn event_sign(key: &KeyFile, kind: u64, content: &str, tags: &str) -> Result<Report, Error> {
@@ -534,7 +544,7 @@ fn message_send(key: &KeyFile, app: Option<&str>, mut body: Value) -> Result<Rep
     let surface = key.surface(app)?;
     message::send_sealed(
         &body,
-        |body| order(key, "seal", body),
+        |body| order(key, "seal", body, PATIENCE),
         |wrap, relay| {
             let answer = operator::write_as_agent(&surface, relay, 0, event::write_body(wrap))?;
             event::written(wrap.clone(), answer, 0)
@@ -543,7 +553,7 @@ fn message_send(key: &KeyFile, app: Option<&str>, mut body: Value) -> Result<Rep
 }
 
 fn message_list(key: &KeyFile, body: &Value) -> Result<Report, Error> {
-    let mut reply = order(key, "messages", body)?;
+    let mut reply = order(key, "messages", body, PATIENCE)?;
     let text = reply["text"].as_str().unwrap_or_default().to_owned();
     if let Some(object) = reply.as_object_mut() {
         object.remove("text");
@@ -610,6 +620,36 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
                 },
             )?
             .report)
+        }
+        Command::Route {
+            command: RouteCommand::Price { prefix, price, yes },
+        } => {
+            if !yes {
+                return Err(failed(
+                    ErrorCode::ConfirmationRequired,
+                    "This restarts the connector of the TOON app the route is behind, and drops \
+                     the packets it holds in flight. Run it again with `--yes` to go ahead."
+                        .into(),
+                ));
+            }
+            let mut body = json!({ "prefix": prefix, "price": price });
+            if let Some(app) = app {
+                body["toon_app"] = json!(app);
+            }
+            let reply = order(
+                &KeyFile::load(path)?,
+                "route-price",
+                &body,
+                RESTART_PATIENCE,
+            )?;
+            let toon_app = reply["toon_app"].as_str().unwrap_or("?").to_owned();
+            Ok(Report {
+                exit: Exit::Success,
+                text: format!(
+                    "The route {prefix} costs {price}. The connector of {toon_app} restarted."
+                ),
+                json: reply,
+            })
         }
         Command::Limit {
             command: LimitCommand::Show,

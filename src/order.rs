@@ -28,11 +28,12 @@ use crate::agent_key::{Key, Record};
 
 /// The orders the supervisor answers, by name (`/orders/<name>`), with the scope each one
 /// needs. `sign` and `seal` both sign as the agent identity, so both need `sign`.
-const ORDERS: [(&str, &str); 7] = [
+const ORDERS: [(&str, &str); 8] = [
     ("status", "status"),
     ("logs", "logs"),
     ("add", "apps"),
     ("remove", "apps"),
+    ("route-price", "route-price"),
     ("sign", "sign"),
     ("seal", "sign"),
     ("messages", "read-messages"),
@@ -88,6 +89,23 @@ impl Refusal {
             status: 403,
             code,
             message,
+            scope: None,
+        }
+    }
+
+    /// An authorised order that was carried out as far as it was allowed to: `error` is why
+    /// it went no further.
+    pub fn of_error(error: &crate::outcome::Error) -> Self {
+        use crate::outcome::ErrorCode;
+        let status = match error.code {
+            ErrorCode::RateLimited => 429,
+            ErrorCode::UnknownName | ErrorCode::Usage | ErrorCode::ConfirmationRequired => 400,
+            _ => 500,
+        };
+        Self {
+            status,
+            code: error.code.as_str(),
+            message: error.message.clone(),
             scope: None,
         }
     }

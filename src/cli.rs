@@ -812,7 +812,8 @@ pub struct AgentKeyCreateArgs {
     /// The most a UTC day's commands may pay together; the wallet's limit if omitted
     #[arg(long)]
     pub max_per_day: Option<u64>,
-    /// How many times a day the key may restart an app
+    /// How many times an hour the key may restart a connector, by setting a route's price; 6
+    /// if omitted
     #[arg(long)]
     pub max_restarts: Option<u32>,
     /// When the key stops working, as an RFC 3339 time; never if omitted
@@ -839,7 +840,7 @@ pub struct AgentKeySetArgs {
     /// The most a UTC day's commands may pay together
     #[arg(long)]
     pub max_per_day: Option<u64>,
-    /// How many times a day the key may restart an app
+    /// How many times an hour the key may restart a connector, by setting a route's price
     #[arg(long)]
     pub max_restarts: Option<u32>,
     /// When the key stops working, as an RFC 3339 time

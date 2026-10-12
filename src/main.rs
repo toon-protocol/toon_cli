@@ -37,6 +37,7 @@ mod receive;
 mod relay;
 mod relay_url;
 mod remote;
+mod restarts;
 mod runner;
 mod secrets;
 mod service;
