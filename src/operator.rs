@@ -1460,27 +1460,29 @@ fn stated_cost_sentence(code: &str, cost: u128, flag: &str, probe: bool) -> Stri
 const NOTHING_SENT_400: &str = " Nothing was sent or paid.";
 
 /// Whether the `Debug` of the connector's `SendError` is its `Transport` variant for a
-/// packet write answered 400.
-fn refused_with_400(variant: &str) -> bool {
-    variant.starts_with("Transport") && variant.contains("reason: \"400 ")
+/// packet write answered `status`, which is worded `401 Unauthorized -- ...`.
+fn refused_with(variant: &str, status: &str) -> bool {
+    variant.starts_with("Transport") && variant.contains(&format!("reason: \"{status} "))
 }
 
 /// Whether the `Debug` of the connector's `SendError` is its `Transport` variant for a
-/// packet write answered 401 or 400, which is worded `401 Unauthorized -- ...`. The
-/// connector authenticates the write, and decodes the packet, before it originates
-/// anything, so a 401 or a 400 means none was sent.
+/// packet write answered 400.
+fn refused_with_400(variant: &str) -> bool {
+    refused_with(variant, "400")
+}
+
+/// Whether the `Debug` of the connector's `SendError` is its `Transport` variant for a
+/// packet write answered 401 or 400. The connector authenticates the write, and decodes
+/// the packet, before it originates anything, so a 401 or a 400 means none was sent.
 fn refused_before_origin(variant: &str) -> bool {
-    variant.starts_with("Transport")
-        && ["401 ", "400 "]
-            .iter()
-            .any(|status| variant.contains(&format!("reason: \"{status}")))
+    refused_with(variant, "401") || refused_with_400(variant)
 }
 
 /// Whether the connector's `send` failed before it wrote to the operator surface: its
 /// arguments were refused, the operator key could not be read, the identity to seal to
-/// could not be fetched, the packet could not be sealed, or the write was refused with 401 or 400. Any
-/// other `Transport` failure may come after the packet left, and an answer not understood
-/// does, so neither is here.
+/// could not be fetched, the packet could not be sealed, or the write was refused with 401
+/// or 400. Any other `Transport` failure may come after the packet left, and an answer not
+/// understood does, so neither is here.
 ///
 /// The connector keeps `SendError` private, so its variant is read from its `Debug`.
 fn before_sending(error: &connector_cli::CliError) -> bool {
@@ -1656,7 +1658,7 @@ fn packet_write_refused(status: reqwest::StatusCode, body: &[u8]) -> Error {
         status,
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::BAD_REQUEST
     );
-    let sent_nothing = if status == reqwest::StatusCode::BAD_REQUEST {
+    let note = if status == reqwest::StatusCode::BAD_REQUEST {
         NOTHING_SENT_400
     } else {
         ""
@@ -1666,7 +1668,7 @@ fn packet_write_refused(status: reqwest::StatusCode, body: &[u8]) -> Error {
         ..failed(
             ErrorCode::SendFailed,
             format!(
-                "The connector refused the write with {status}: {}{sent_nothing}",
+                "The connector refused the write with {status}: {}{note}",
                 String::from_utf8_lossy(body).trim()
             ),
         )
