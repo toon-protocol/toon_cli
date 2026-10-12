@@ -288,6 +288,7 @@ fn start_app(
     onion: Option<&str>,
 ) -> Result<Option<Box<dyn RunningApp>>, Error> {
     let files = AppFiles::of(home, &app.name);
+    let mut mounted = Vec::new();
     let (image, env) = match &app.source {
         Source::Url(_) => return Ok(None),
         // The relay's own Nostr identity is the wallet's, in hex.
@@ -324,12 +325,17 @@ fn start_app(
             env.push(("TOON_WRITE_ILP_ADDRESS".to_owned(), app.prefix.clone()));
             (env!("TOON_RELAY_IMAGE").to_owned(), env)
         }
-        Source::Image(image) => (image.clone(), Vec::new()),
+        Source::Image(image) => {
+            let (env, mounts) = crate::secrets::for_start(home, app)?;
+            mounted = mounts;
+            (image.clone(), env)
+        }
     };
     let spec = AppSpec {
         instance: format!("{}-{}", instance(home), app.name),
         image,
         env,
+        mounts: mounted,
         data_dir: files.data_dir,
         relay: matches!(app.source, Source::Relay),
         allowances: app.allowances.clone(),

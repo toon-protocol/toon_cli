@@ -194,6 +194,22 @@ pub struct AllowanceArgs {
     pub pids: Option<String>,
 }
 
+/// The variables and secrets an app is started with (ADR 0012).
+#[derive(Debug, Args)]
+pub struct SecretArgs {
+    /// A variable the app is started with, as NAME=value; repeatable
+    #[arg(long, value_name = "NAME=VALUE")]
+    pub env: Vec<String>,
+    /// A secret the app is started with as the variable NAME, set to the contents of FILE
+    /// less one trailing newline; repeatable
+    #[arg(long, value_name = "NAME=FILE")]
+    pub secret: Vec<String>,
+    /// A secret mounted read-only at PATH in the container, holding the bytes of FILE;
+    /// repeatable
+    #[arg(long, value_name = "PATH=FILE")]
+    pub secret_file: Vec<String>,
+}
+
 #[derive(Debug, Args)]
 pub struct AddArgs {
     /// A name for the app, unique in this agent node
@@ -219,6 +235,8 @@ pub struct AddArgs {
     pub request: Option<std::path::PathBuf>,
     #[command(flatten)]
     pub allow: AllowanceArgs,
+    #[command(flatten)]
+    pub secrets: SecretArgs,
     /// Go ahead although the connector restarts and drops packets in flight
     #[arg(long)]
     pub yes: bool,
@@ -228,6 +246,8 @@ pub struct AddArgs {
 pub struct CreateArgs {
     #[command(flatten)]
     pub allow: AllowanceArgs,
+    #[command(flatten)]
+    pub secrets: SecretArgs,
     /// A name for the TOON app, and for the app behind it, unique in this agent node
     pub name: String,
     /// A container image to run as the app behind the new connector

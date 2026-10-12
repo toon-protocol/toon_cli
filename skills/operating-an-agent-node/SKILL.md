@@ -145,8 +145,13 @@ An image given with `--image` must:
 - answer `GET /health` with `200` within two minutes of starting,
 - keep what it must not lose under `/data` (`TOON_DATA_DIR`).
 
-The app is given no environment beyond `TOON_BLS_PORT` and `TOON_DATA_DIR`. An image that needs
-a secret or another variable to start fails with `app_failed`; `toon logs <app>` says why. Do not
+The app is given `TOON_BLS_PORT`, `TOON_DATA_DIR` and what the operator adds it with: `--env
+NAME=value`, `--secret NAME=<file>` (a variable with the file's contents less one trailing newline;
+anyone who can use docker can read it) and `--secret-file <path>=<file>` (the file mounted
+read-only at `<path>`). Each is repeatable, only with `--image`, and refused with `usage` for a
+name beginning `TOON_`, a bad name or path, or an empty, unreadable or over-64-KiB file. Only the
+operator supplies a secret. To change one, remove the app and add it again; a backup holds none.
+An image that needs another variable to start fails with `app_failed`; `toon logs <app>` says why. Do not
 assume a published image meets this: the one image known to run unchanged is the minimal app in
 [Adding an app](https://github.com/toon-protocol/toon_cli/blob/main/docs/guide/adding-an-app.md),
 built with `docker build`; the end-to-end run adds an app built the same way.

@@ -246,6 +246,9 @@ pub struct AppSpec {
     /// The environment the app is started with. It may carry secrets, so a runner does
     /// not put it on a command line.
     pub env: Vec<(String, String)>,
+    /// Files of the machine the app finds read-only in its container: the copy and the
+    /// path. A runner with no container ignores them.
+    pub mounts: Vec<(PathBuf, String)>,
     /// Where the app keeps what it must not lose.
     pub data_dir: PathBuf,
     /// Whether the app is the relay. A container runner starts the relay on the host's
@@ -571,6 +574,27 @@ fn confinement_arguments(allowances: &Allowances, user: &str) -> Vec<String> {
     arguments
 }
 
+/// The arguments that give a container its environment: each by name, the value being in
+/// docker's own environment.
+fn env_arguments(env: &[(String, String)]) -> Vec<String> {
+    env.iter()
+        .flat_map(|(variable, _)| ["--env".to_owned(), variable.clone()])
+        .collect()
+}
+
+/// The arguments that mount each copy at its path in the container, read-only.
+fn mount_arguments(mounts: &[(PathBuf, String)]) -> Vec<String> {
+    mounts
+        .iter()
+        .flat_map(|(copy, path)| {
+            [
+                "--volume".to_owned(),
+                format!("{}:{path}:ro", copy.display()),
+            ]
+        })
+        .collect()
+}
+
 /// Where the container `name` is on the docker network `network`.
 fn container_ip(name: &str, network: &str) -> Result<Ipv4Addr, String> {
     let format = format!("{{{{(index .NetworkSettings.Networks \"{network}\").IPAddress}}}}");
@@ -621,11 +645,13 @@ impl AppRunner for ContainerRunner {
             .args(confinement_arguments(&spec.allowances, &caller()))
             .arg("--volume")
             .arg(format!("{}:/data", data.display()))
-            .args(["--env", "TOON_DATA_DIR=/data"]);
+            .args(["--env", "TOON_DATA_DIR=/data"])
+            .args(mount_arguments(&spec.mounts))
+            .args(env_arguments(&spec.env));
         // `--env NAME` takes the value from this process's environment, so a secret is
         // never in the argument list that `ps` shows.
         for (variable, value) in &spec.env {
-            command.args(["--env", variable]).env(variable, value);
+            command.env(variable, value);
         }
         let output = command
             .arg(&spec.image)
@@ -740,6 +766,7 @@ mod tests {
             instance: format!("contract-{}", std::process::id()),
             image: image.into(),
             env: vec![("NOSTR_SECRET_KEY".into(), "02".repeat(32))],
+            mounts: Vec::new(),
             data_dir: data_dir.to_path_buf(),
             relay: false,
             allowances: Allowances::default(),
@@ -864,6 +891,33 @@ mod tests {
             assert!(arguments.contains(expected), "{expected}: {arguments}");
         }
         assert!(!arguments.contains("--publish"), "{arguments}");
+    }
+
+    #[test]
+    fn a_secret_file_is_a_read_only_mount_and_no_value_is_in_the_arguments() {
+        let env = vec![
+            ("LOG_LEVEL".to_owned(), "debug-value".to_owned()),
+            ("SIGNING_KEY".to_owned(), "hunter2-value".to_owned()),
+        ];
+        let mounts = vec![(
+            PathBuf::from("/home/op/apps/notes/secrets/file-0"),
+            "/run/secrets/minter.key".to_owned(),
+        )];
+        let mut arguments = run_arguments(None, &Allowances::default());
+        arguments.push(' ');
+        arguments.push_str(&mount_arguments(&mounts).join(" "));
+        arguments.push(' ');
+        arguments.push_str(&env_arguments(&env).join(" "));
+        assert!(
+            arguments
+                .contains("--volume /home/op/apps/notes/secrets/file-0:/run/secrets/minter.key:ro"),
+            "{arguments}"
+        );
+        assert!(arguments.contains("--env LOG_LEVEL"), "{arguments}");
+        assert!(arguments.contains("--env SIGNING_KEY"), "{arguments}");
+        for value in ["debug-value", "hunter2-value"] {
+            assert!(!arguments.contains(value), "{arguments}");
+        }
     }
 
     #[test]

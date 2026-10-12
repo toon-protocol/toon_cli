@@ -66,6 +66,7 @@ pub struct Add<'a> {
     /// A file holding the JSON object that says what a client should send the app.
     pub request: Option<&'a Path>,
     pub allowances: Allowances,
+    pub secrets: crate::secrets::Given,
     pub yes: bool,
 }
 
@@ -287,15 +288,23 @@ pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
     };
     confirm(add.yes, add.to)?;
     let mut changed = state.clone();
-    changed.toon_apps[index].apps.push(App {
+    let mut app = App {
         name: add.name.to_owned(),
         source,
         prefix: prefix.clone(),
         price: add.price,
         request,
         allowances: add.allowances.clone(),
-    });
-    let restarted_now = apply(home, &state, &changed, add.to)?;
+        variables: Default::default(),
+        secret_variables: Vec::new(),
+        secret_files: Vec::new(),
+    };
+    add.secrets.record(&mut app);
+    changed.toon_apps[index].apps.push(app);
+    add.secrets.keep(home, add.name)?;
+    let restarted_now = apply(home, &state, &changed, add.to).inspect_err(|_| {
+        crate::secrets::forget(home, add.name);
+    })?;
     Ok(Report {
         exit: Exit::Success,
         json: json!({
@@ -369,6 +378,7 @@ pub fn remove(home: &Path, name: &str, yes: bool) -> Result<Report, Error> {
     let mut changed = state.clone();
     let gone = changed.toon_apps[index].apps.remove(position);
     let restarted_now = apply(home, &state, &changed, &toon_app)?;
+    crate::secrets::forget(home, name);
     Ok(Report {
         exit: Exit::Success,
         json: json!({

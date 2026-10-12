@@ -13,6 +13,9 @@ The file holds the mnemonic and the address key of every onion endpoint, sealed 
 wallet passphrase. It refuses to overwrite a file. Keep the file and the passphrase in
 different places: either alone is useless, together they are everything.
 
+A backup holds keys and nothing about your apps. Apps, their variables and their secrets are not
+in it: after a restore, add each app again from your own files.
+
 Back up again after `toon create`, so the new TOON app's onion key is in it.
 
 ## Restore from a backup

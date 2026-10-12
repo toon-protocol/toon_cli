@@ -288,6 +288,27 @@ docker exec toon-<instance>-open wget -T 3 -qO- http://example.com
 - `notes` reaches the internet not at all and `open` does;
 - the relay still starts and is paid: the publish steps above succeed.
 
+### An app's variables and secrets
+
+This needs real docker, which CI does not have, so a human runs it, with `toon-e2e-app` or an
+image that has `sh`, `cat` and `touch`.
+
+```sh
+printf 'not-a-real-key' > /tmp/e2e-secret
+$E/toon add keyed --to second --image toon-e2e-app --env LOG_LEVEL=debug \
+  --secret-file /run/secrets/e2e.key=/tmp/e2e-secret --yes --json
+docker exec toon-<instance>-keyed cat /run/secrets/e2e.key
+docker exec toon-<instance>-keyed sh -c 'echo x > /run/secrets/e2e.key'
+docker inspect toon-<instance>-keyed | grep -c not-a-real-key
+$E/toon status --json | jq '.agent_node.toon_apps[].apps[] | select(.name=="keyed") | {variables, secrets}'
+```
+
+**Expect**:
+
+- the `cat` prints `not-a-real-key`, and the write fails with a read-only error;
+- `grep -c` prints `0`: `docker inspect` shows no contents, only the bind mount;
+- `status` shows `LOG_LEVEL` and `/run/secrets/e2e.key` and no contents.
+
 ### Another agent node publishes to this one's relay
 
 A second hidden agent node, in a home of its own, peers with the first at its onion

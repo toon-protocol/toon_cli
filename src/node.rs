@@ -5,6 +5,7 @@
 //! a connector is about to start, so a hand edit of it does not survive. The keys a
 //! connector reads are files the wallet's keys are written to, once, at `init`.
 
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::net::SocketAddr;
@@ -301,6 +302,14 @@ pub struct App {
     pub request: Option<Value>,
     /// What the operator allowed the app when adding it (ADR 0011).
     pub allowances: Allowances,
+    /// The variables the operator gave the app (ADR 0012).
+    pub variables: BTreeMap<String, String>,
+    /// The names of the secrets given as variables. Their contents are in the home, in
+    /// `AppFiles::secrets_dir`, and never here.
+    pub secret_variables: Vec<String>,
+    /// The paths in the container of the secrets given as files, in the order the copies
+    /// are numbered.
+    pub secret_files: Vec<String>,
 }
 
 impl App {
@@ -313,6 +322,9 @@ impl App {
             price: RELAY_WRITE_PRICE,
             request: None,
             allowances: Allowances::default(),
+            variables: BTreeMap::new(),
+            secret_variables: Vec::new(),
+            secret_files: Vec::new(),
         }
     }
 
@@ -345,6 +357,13 @@ impl App {
                 allow["pids"] = json!(pids);
             }
             value["allow"] = allow;
+        }
+        if !self.variables.is_empty() {
+            value["env"] = json!(self.variables);
+        }
+        if !self.secret_variables.is_empty() || !self.secret_files.is_empty() {
+            value["secrets"] =
+                json!({ "variables": self.secret_variables, "files": self.secret_files });
         }
         value
     }
@@ -398,8 +417,33 @@ impl App {
                 cpus: value["allow"]["cpus"].as_f64(),
                 pids: value["allow"]["pids"].as_u64(),
             },
+            variables: value["env"]
+                .as_object()
+                .map(|variables| {
+                    variables
+                        .iter()
+                        .filter_map(|(name, value)| {
+                            Some((name.clone(), value.as_str()?.to_owned()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            secret_variables: strings(&value["secrets"]["variables"]),
+            secret_files: strings(&value["secrets"]["files"]),
         })
     }
+}
+
+fn strings(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// `request` as the value of a TOML inline table, or why a TOML table cannot carry it.
@@ -531,6 +575,8 @@ impl ConnectorFiles {
 pub struct AppFiles {
     pub identity_key: PathBuf,
     pub data_dir: PathBuf,
+    /// Where the copies of the app's secrets are kept: not under the data directory.
+    pub secrets_dir: PathBuf,
 }
 
 impl AppFiles {
@@ -539,6 +585,7 @@ impl AppFiles {
         Self {
             identity_key: dir.join("identity.key"),
             data_dir: dir.join("data"),
+            secrets_dir: dir.join("secrets"),
         }
     }
 }

@@ -26,9 +26,10 @@ Given as a container image, an app must:
 - keep anything it must not lose under **`/data`** (`TOON_DATA_DIR`), which is a directory in
   the agent node's home that survives restarts.
 
-The app is given no environment beyond `TOON_BLS_PORT` and `TOON_DATA_DIR`. An image that
-needs a secret or another variable to start fails with `app_failed`; `toon logs <app>` shows what
-it wrote before it stopped.
+The app is given `TOON_BLS_PORT` and `TOON_DATA_DIR`, and whatever variables and secrets you
+add it with ([Variables and secrets](#variables-and-secrets)). An image that needs another
+variable to start fails with `app_failed`; `toon logs <app>` shows what it wrote before it
+stopped.
 
 `toon` runs it with `docker`, confined, on a network of its own that publishes no port: nothing
 reaches the app except through its connector, and the app reaches nothing. See
@@ -184,6 +185,62 @@ toon remove echo --yes
 ```
 
 It removes the app and its route and restarts the connector.
+
+## Variables and secrets
+
+An app that calls a chain or signs anything needs a key, and an image may read its settings from
+its environment. Give them when adding the app, with `toon add` or `toon create` and only with
+`--image` (any of them with `--url` is refused with `usage`). Each flag is repeatable.
+
+| Flag | The app is started with | Example |
+| --- | --- | --- |
+| `--env NAME=value` | the variable `NAME` set to `value`: everything after the first `=`, which may be empty | `--env LOG_LEVEL=debug` |
+| `--secret NAME=<file>` | the variable `NAME` set to the contents of your file, less one trailing newline | `--secret SIGNING_KEY=./signing.key` |
+| `--secret-file <path>=<file>` | your file's bytes, unchanged, mounted read-only at `<path>` in the container | `--secret-file /run/secrets/minter.key=./minter.key` |
+
+```sh
+toon add minter --to relay --image minter:1 --env LOG_LEVEL=debug \
+  --secret SIGNING_KEY=./signing.key --secret-file /run/secrets/minter.key=./minter.key --yes
+```
+
+A variable is kept in the app's record in the agent node's home, and `toon status` shows its
+name and `toon status --json` its value. A secret is copied into the app's `secrets` directory in
+the home, outside `/data`, in a file only your account can read (mode 0600, in a directory of mode
+0700). The record holds its name or its path in the container, never its contents, and no output,
+log line or error message of `toon` carries them. The copy is what the app is started with every
+time, across `toon down`, `toon up` and restarts, although you delete your own file. Removing the
+app removes the copies.
+
+`toon status --json` shows, for each app:
+
+```json
+"variables": { "LOG_LEVEL": "debug" },
+"secrets": { "variables": ["SIGNING_KEY"], "files": ["/run/secrets/minter.key"] }
+```
+
+with empty values for an app that has none, and `null` for both for an app at a URL.
+
+Which form to use for a secret: one given with `--secret` is a variable of the container, and
+**anyone who can use docker on the machine can read it** (`docker inspect`). One given with
+`--secret-file` is a file the app can only read, and docker does not show it. Use the file where
+the image can read one. Whoever can read the agent node's home can read both, as they can already
+sign as the agent.
+
+These are refused with `usage`, before anything is written, pulled or restarted:
+
+- a name that is not a letter or `_` followed by letters, digits and `_`, a name that begins
+  `TOON_` (those belong to the contract between `toon` and an app), and a name given twice across
+  `--env` and `--secret`;
+- a file that does not exist, cannot be read, is empty or is larger than 64 KiB;
+- for `--secret`, contents that are not UTF-8 or that hold a NUL byte or a newline other than the
+  trailing one;
+- for `--secret-file`, a path that is not absolute, a path at or under `/data`, `/tmp` or one of
+  the app's `--scratch` paths, and a path given twice.
+
+A variable or a secret is not an allowance: it tells the app something and lets it reach nothing
+more. They are set when the app is added. To change one, remove the app and add it again; replacing
+a leaked secret means the same, and it restarts the connector. The relay takes none: what it is
+started with comes from its settings and the agent identity. An agent key cannot supply a secret.
 
 ## What an app may and may not do
 

@@ -34,6 +34,7 @@ mod receive;
 mod relay;
 mod relay_url;
 mod runner;
+mod secrets;
 mod service;
 mod skill;
 mod spending;
@@ -189,6 +190,7 @@ fn run() -> ExitCode {
                     (None, None) => unreachable!("clap requires one of them"),
                 };
                 let allowances = apps::allowances(&origin, &args.allow)?;
+                let secrets = secrets::Given::parse(&origin, &args.secrets, &allowances)?;
                 apps::add(
                     &home,
                     &apps::Add {
@@ -196,6 +198,7 @@ fn run() -> ExitCode {
                         to: &args.to,
                         origin,
                         allowances,
+                        secrets,
                         address: args.address.as_deref(),
                         price: args.price,
                         request: args.request.as_deref(),
@@ -214,6 +217,7 @@ fn run() -> ExitCode {
                     (None, None) => unreachable!("clap requires one of them"),
                 };
                 let allowances = apps::allowances(&origin, &args.allow)?;
+                let secrets = secrets::Given::parse(&origin, &args.secrets, &allowances)?;
                 lifecycle::create(
                     &home,
                     &lifecycle::Create {
@@ -221,6 +225,7 @@ fn run() -> ExitCode {
                         from: app.as_deref(),
                         origin,
                         allowances,
+                        secrets,
                         price: args.price,
                         reach: match &args.clearnet {
                             Some(hostname) => node::Reach::Clearnet {
