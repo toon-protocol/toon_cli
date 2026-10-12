@@ -1032,13 +1032,46 @@ fn pending_count(node: &Node, key: &Path) -> usize {
 fn an_agent_key_names_a_secret_and_the_operator_supplies_it_on_approval() {
     let node = node();
     let (key, _) = node.create(&["--scope", "status,apps"]);
+    let (other_key, _) = node.create(&["--scope", "status,apps"]);
+    for (name, flag, value) in [
+        ("alone", "--secret", "KEY"),
+        ("mounted", "--secret-file", "/run/secrets/k"),
+    ] {
+        let run = node.agent(
+            &key,
+            &[
+                "add",
+                name,
+                "--to",
+                "relay",
+                "--image",
+                "ghcr.io/toon-protocol/echo",
+                flag,
+                value,
+                "--json",
+            ],
+        );
+        assert_eq!(
+            error_code(&run),
+            "approval_pending",
+            "{name}: {}",
+            run.stdout
+        );
+        assert!(pending_entry(&node, &key, name).is_some());
+    }
     let both = ["--secret", "KEY", "--secret-file", "/run/secrets/k"];
     for _ in 0..2 {
         let run = agent_add(&node, &key, &both);
         assert_eq!(error_code(&run), "approval_pending", "{}", run.stdout);
     }
     assert_eq!(apps_behind(&node, &key, "relay"), vec!["relay".to_owned()]);
-    assert_eq!(pending_count(&node, &key), 1);
+    assert_eq!(pending_count(&node, &key), 3);
+    assert!(pending_entry(&node, &other_key, "named").is_none());
+    let log = node.up.stderr();
+    assert!(
+        log.contains("naming secret KEY, secret file /run/secrets/k"),
+        "{log}"
+    );
     let shown = pending_entry(&node, &key, "named").unwrap();
     assert_eq!(shown["secrets"]["variables"], serde_json::json!(["KEY"]));
     assert_eq!(
@@ -1046,10 +1079,14 @@ fn an_agent_key_names_a_secret_and_the_operator_supplies_it_on_approval() {
         serde_json::json!(["/run/secrets/k"])
     );
     let operator = node.machine.toon(&["status", "--json"]).json();
-    assert_eq!(
-        operator["agent_node"]["pending_apps"][0]["secrets"]["variables"][0],
-        "KEY"
-    );
+    let pending = operator["agent_node"]["pending_apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|app| app["name"] == "named")
+        .cloned()
+        .unwrap();
+    assert_eq!(pending["secrets"], shown["secrets"]);
     let text = node.machine.toon(&["status"]).stdout;
     assert!(text.contains("secret KEY") && text.contains("secret file /run/secrets/k"));
 
@@ -1067,6 +1104,33 @@ fn an_agent_key_names_a_secret_and_the_operator_supplies_it_on_approval() {
     let mounted = format!("/run/secrets/k={bytes}");
     let other = format!("OTHER={value}");
     let broken = format!("/run/secrets/k={empty}");
+    let large = write("large", &vec![b'x'; 64 * 1024 + 1]);
+    let oversized = format!("/run/secrets/k={large}");
+    let absent = format!("/run/secrets/k={}", dir.path().join("absent").display());
+    let message = |run: &Run| run.json()["error"]["message"].as_str().unwrap().to_owned();
+    let none = node.machine.toon(&["approve", "named", "--json"]);
+    assert!(
+        message(&none).contains("--secret KEY")
+            && message(&none).contains("--secret-file /run/secrets/k"),
+        "{}",
+        none.stdout
+    );
+    let unasked = node.machine.toon(&[
+        "approve",
+        "named",
+        "--secret",
+        &variable,
+        "--secret",
+        &other,
+        "--secret-file",
+        &mounted,
+        "--json",
+    ]);
+    assert!(
+        message(&unasked).contains("Not asked for: --secret OTHER"),
+        "{}",
+        unasked.stdout
+    );
     let attempts: Vec<Vec<&str>> = vec![
         vec!["approve", "named", "--json"],
         vec!["approve", "named", "--secret", &variable, "--json"],
@@ -1088,6 +1152,24 @@ fn an_agent_key_names_a_secret_and_the_operator_supplies_it_on_approval() {
             &variable,
             "--secret-file",
             &broken,
+            "--json",
+        ],
+        vec![
+            "approve",
+            "named",
+            "--secret",
+            &variable,
+            "--secret-file",
+            &oversized,
+            "--json",
+        ],
+        vec![
+            "approve",
+            "named",
+            "--secret",
+            &variable,
+            "--secret-file",
+            &absent,
             "--json",
         ],
     ];
@@ -1140,6 +1222,17 @@ fn an_agent_key_names_a_secret_and_the_operator_supplies_it_on_approval() {
         .unwrap();
     assert_eq!(app["secrets"]["variables"][0], "KEY");
     assert_eq!(app["secrets"]["files"][0], "/run/secrets/k");
+    let operator = node.machine.toon(&["status", "--json"]).json();
+    let added = operator["agent_node"]["toon_apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|t| t["apps"].as_array().unwrap().iter())
+        .find(|app| app["name"] == "named")
+        .cloned()
+        .unwrap();
+    assert_eq!(added["secrets"], app["secrets"]);
+    assert!(!node.up.stderr().contains("s3cret"));
     let record = std::fs::read_to_string(node.machine.agent_node_home().join("pending-apps.json"))
         .unwrap_or_default();
     assert!(!record.contains("s3cret"));
@@ -1200,6 +1293,19 @@ fn an_approval_with_a_secret_is_refused_for_an_app_that_names_none() {
     let (key, _) = node.create(&["--scope", "status,apps"]);
     let run = agent_add(&node, &key, &["--env", "A=b"]);
     assert_eq!(error_code(&run), "approval_pending");
+    // As a record written before secrets were named holds it.
+    let record = node.machine.agent_node_home().join("pending-apps.json");
+    let mut old: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+    let mut stripped = 0;
+    strip_secrets(&mut old, &mut stripped);
+    assert_eq!(stripped, 2, "{old}");
+    std::fs::write(&record, old.to_string()).unwrap();
+    let shown = pending_entry(&node, &key, "named").unwrap();
+    assert_eq!(
+        shown["secrets"],
+        serde_json::json!({ "variables": [], "files": [] })
+    );
     let file = node.nowhere.path().join("f");
     std::fs::write(&file, "x").unwrap();
     let given = format!("K={}", file.display());
@@ -1214,4 +1320,22 @@ fn an_approval_with_a_secret_is_refused_for_an_app_that_names_none() {
         "{}{}",
         approved.stdout, approved.stderr
     );
+}
+
+/// Take every `secret` and `secret_file` field out of `value`, counting them.
+fn strip_secrets(value: &mut serde_json::Value, stripped: &mut usize) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for field in ["secret", "secret_file"] {
+                *stripped += usize::from(fields.remove(field).is_some());
+            }
+            fields
+                .values_mut()
+                .for_each(|value| strip_secrets(value, stripped));
+        }
+        serde_json::Value::Array(values) => values
+            .iter_mut()
+            .for_each(|value| strip_secrets(value, stripped)),
+        _ => {}
+    }
 }

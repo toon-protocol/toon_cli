@@ -118,7 +118,8 @@ pub enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Add a pending app, exactly as the agent key asked for it: this restarts the connector
+    /// Add a pending app, exactly as the agent key asked for it, with a file for each secret it
+    /// names: this restarts the connector
     Approve {
         /// The pending app's name, as `toon status` shows it
         app: String,
@@ -248,13 +249,13 @@ pub struct SecretArgs {
     #[arg(long, value_name = "NAME=VALUE")]
     pub env: Vec<String>,
     /// A secret the app is started with as the variable NAME, set to the contents of FILE
-    /// less one trailing newline; repeatable. With an agent key, just NAME: it names a
-    /// secret the app needs, and the operator gives the file on `toon approve`
+    /// less one trailing newline; repeatable. With an agent key, `toon add` takes just NAME: it
+    /// names a secret the app needs, and the operator gives the file on `toon approve`
     #[arg(long, value_name = "NAME=FILE")]
     pub secret: Vec<String>,
     /// A secret mounted read-only at PATH in the container, holding the bytes of FILE;
-    /// repeatable. With an agent key, just PATH: it names a secret the app needs, and the
-    /// operator gives the file on `toon approve`
+    /// repeatable. With an agent key, `toon add` takes just PATH: it names a secret the app
+    /// needs, and the operator gives the file on `toon approve`
     #[arg(long, value_name = "PATH=FILE")]
     pub secret_file: Vec<String>,
 }
