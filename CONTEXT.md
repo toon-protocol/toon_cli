@@ -33,6 +33,10 @@ _Avoid_: Sandbox (a network profile), hardening, isolation
 One thing an operator lets one app do beyond its confinement, such as opening connections out.
 _Avoid_: Grant (what an agent key is given), permission, exception
 
+**Runtime**:
+The program docker hands one app's container to, which stands between the app and the machine's kernel. The operator names one for an app, or one for every image outside the list of trusted images; an app with none has docker's own. Not an allowance: it lets the app do nothing more. The relay has none.
+_Avoid_: Sandbox (a network profile), engine, the async runtime of the code
+
 **Variable**:
 A name and a value the operator gives one app, when adding it or by a change, which the app is started with every time. Its value may be shown. Not an allowance: it tells the app something and lets it reach nothing more.
 _Avoid_: Setting (what the relay has), configuration, option
@@ -68,7 +72,7 @@ Put a new app behind the connector of a TOON app that already exists.
 _Avoid_: Spawn, deploy, attach
 
 **Change**:
-Give an app that is already added other variables, secrets or allowances, keeping everything about it that the operator does not name. Only the operator changes an app; an agent key cannot.
+Give an app that is already added other variables, secrets or allowances, or another runtime, keeping everything about it that the operator does not name. Only the operator changes an app; an agent key cannot.
 _Avoid_: Set, configure (what is done to the relay's settings), update, edit
 
 **Create**:
