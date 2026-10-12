@@ -1,0 +1,19 @@
+# An app's secret is kept in the home and reaches it as a variable or a file
+
+An app that calls a chain or signs anything needs a key, and an app was started with nothing but its port and its data directory. So an operator can give an app variables and secrets when adding it. A variable is a name and a value kept in the agent node's configuration, where `toon status` may show it. A secret is copied from a file of the operator's into the agent node's home, in a file only the operator's account can read, outside the directory the app writes to. Its value is in no configuration, output, log or error message of `toon`.
+
+The supervisor starts and restarts apps and has no passphrase, so a secret sealed in the keystore could not reach an app that restarts unattended. That is the reasoning of ADR 0008, and the same place is used. We chose a copy over recording the path of the operator's file, which would let a secret be changed by editing that file but leaves the home short of what the agent node needs to start.
+
+A secret reaches the app in one of two forms, chosen per secret: as a variable, or as a file mounted read-only at a path in the container. We chose both over the mounted file alone, which is the form that `docker inspect` does not show, because an image that reads a key from a variable cannot be given it any other way and an operator does not always control the image.
+
+A variable or a secret is not an allowance (ADR 0011). An allowance loosens what an app can reach or use; these tell it something and loosen nothing. They share the allowance's lifecycle: set when the app is added, and changed by removing the app and adding it again.
+
+## Consequences
+
+- Whoever can read the agent node's home can read every app's secrets, as they can already sign as the agent (ADR 0008).
+- A secret passed as a variable can be read by anyone who can use docker on the machine. The mounted form cannot be read that way.
+- Only the operator supplies a secret. An add from an agent key that carries one is refused, and one that carries a variable is held as a pending app even for a trusted image (ADR 0010), since a trusted image is trusted as shipped and not under any configuration an agent chooses.
+- Replacing a leaked secret means removing the app and adding it again, which restarts its connector.
+- A backup holds the agent node's keys and nothing about its apps, so variables and secrets are not in it. After a restore the operator adds each app again from their own files.
+- Names beginning `TOON_` belong to the contract between `toon` and an app, and an operator cannot set one.
+- The relay takes no variable or secret from the operator. What it is started with comes from its settings and the agent identity.

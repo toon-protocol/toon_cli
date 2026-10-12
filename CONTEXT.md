@@ -33,6 +33,14 @@ _Avoid_: Sandbox (a network profile), hardening, isolation
 One thing an operator lets one app do beyond its confinement, such as opening connections out.
 _Avoid_: Grant (what an agent key is given), permission, exception
 
+**Variable**:
+A name and a value the operator gives one app when adding it, which the app is started with every time. Its value may be shown. Not an allowance: it tells the app something and lets it reach nothing more.
+_Avoid_: Setting (what the relay has), configuration, option
+
+**Secret**:
+A value the operator gives one app when adding it, from a file of their own, that the agent node keeps and never shows. The app receives it as a variable or as a file it can only read. Only the operator supplies one; an agent key cannot.
+_Avoid_: Credential, key (a secret may be anything), sealed (what the keystore does; a secret is not in it)
+
 **Supervisor**:
 The one process per machine that runs an agent node: it starts each connector as a child process of the same binary and keeps it running.
 _Avoid_: Daemon, manager, orchestrator
