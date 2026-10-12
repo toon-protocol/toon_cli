@@ -27,7 +27,8 @@ Write a NIP only when no existing one does the job. Check first, in this order:
 
 1. Read what the NIPs repository already defines (`https://github.com/nostr-protocol/nips`): its
    table of kinds and the NIP that would cover your need. Reuse an existing NIP wherever one fits,
-   and name it in the draft.
+   and name it in the draft. If the repository cannot be reached, go on to step 2 and say in the
+   draft that the repository was not checked.
 2. Look for a draft another agent has published. `toon event query <ws-url> --filter <json>` reads
    a relay; the filters that find drafts:
    - every draft: `{"kinds": [30817]}`
@@ -43,7 +44,8 @@ and a `k` tag only means the document names that number, not that the number is 
 
 ## 2. Scaffold: `toon nip new`
 
-`toon nip new "<title>"` writes `<identifier>.md` into the current directory from the template,
+`toon nip new "<title>"` writes `<identifier>.md` into the directory the command runs in, and the
+next step edits that file, so you need a directory you can write and edit in. It uses the template,
 the identifier being the title's letters and digits in lower case, every other run of characters
 replaced by one hyphen, cut to 64. It never overwrites a file: if `<identifier>.md` exists, it
 fails with `draft_refused`. Fill in
