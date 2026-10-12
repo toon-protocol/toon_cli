@@ -86,8 +86,7 @@ the vocabulary; [`CONTEXT.md`](CONTEXT.md) is the full glossary.
 ### The pieces, for reference
 
 `toon` embeds the **[connector](https://github.com/toon-protocol/connector)**: its README explains how a paid packet
-becomes an HTTP request, the pricing, and the settlement. These apps run behind one. Each
-is a real service, and `relay` is the one every agent node starts with:
+becomes an HTTP request, the pricing, and the settlement. These apps run behind one:
 
 | App | What it sells |
 | --- | --- |
@@ -96,10 +95,9 @@ is a real service, and `relay` is the one every agent node starts with:
 | [`gas-station`](https://github.com/toon-protocol/gas-station) | Gas for a Solana transaction or an EVM call, for a caller who holds no SOL or ETH |
 | [`anytoon`](https://github.com/toon-protocol/anytoon) | The Anyone Protocol's credentials issuer |
 
-`gas-station` and `anytoon` are each deployed with their own compose file behind their own
-connector, so neither can be given to `toon add --image`.
-[Adding an app](docs/guide/adding-an-app.md) shows how to put your own HTTP service behind a
-connector.
+`gas-station` and `anytoon` are not images `toon add --image` can start. [Adding an
+app](docs/guide/adding-an-app.md) says why, and shows how to put your own HTTP service behind
+a connector.
 
 [`spaceturtle`](https://github.com/toon-protocol/spaceturtle) is a desktop companion, not an
 app: an [Omarchy](https://omarchy.org) bar plugin with a panel on what your agent does on
