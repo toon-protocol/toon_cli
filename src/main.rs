@@ -45,6 +45,7 @@ mod spending;
 mod status;
 mod subscribe;
 mod tls;
+mod trusted;
 mod up;
 mod wallet;
 
@@ -216,7 +217,11 @@ fn run() -> ExitCode {
                         secrets,
                         address: args.address.as_deref(),
                         price: args.price,
-                        request: args.request.as_deref(),
+                        request: args
+                            .request
+                            .as_deref()
+                            .map(apps::read_request)
+                            .transpose()?,
                         yes: args.yes,
                     },
                 )

@@ -14,7 +14,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
-use crate::cli::{Command, LimitCommand, PeerCommand, RouteCommand};
+use crate::cli::{
+    AddArgs, Command, EventCommand, LimitCommand, MessageCommand, PeerCommand, RouteCommand,
+};
+use crate::event;
+use crate::message;
 use crate::operator::{self, PeerAdd, Surface};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 
@@ -109,7 +113,13 @@ impl KeyFile {
     /// The operator surface of the TOON app `app`, or of the only one the file names, or of
     /// `relay`.
     fn surface(&self, app: Option<&str>) -> Result<Surface, Error> {
-        let (name, url) = match app {
+        let (name, url) = self.choose(app)?;
+        Ok(Surface::of_agent_key(url, name, *self.secret))
+    }
+
+    /// The name and operator-surface address of the TOON app a command works on.
+    fn choose(&self, app: Option<&str>) -> Result<&(String, String), Error> {
+        Ok(match app {
             Some(name) => self
                 .toon_apps
                 .iter()
@@ -128,8 +138,7 @@ impl KeyFile {
                         )
                     })?,
             },
-        };
-        Ok(Surface::of_agent_key(url, name, *self.secret))
+        })
     }
 }
 
@@ -259,13 +268,7 @@ fn order(key: &KeyFile, name: &str, body: &Value, patience: Duration) -> Result<
     Err(Error {
         nothing_sent: true,
         ..failed(
-            match code {
-                "unknown_name" => ErrorCode::UnknownName,
-                "usage" => ErrorCode::Usage,
-                "rate_limited" => ErrorCode::RateLimited,
-                "confirmation_required" => ErrorCode::ConfirmationRequired,
-                _ => ErrorCode::ConnectorFailed,
-            },
+            ErrorCode::from_name(code).unwrap_or(ErrorCode::ConnectorFailed),
             format!("The supervisor refused the order with {status} ({code}): {message}"),
         )
     })
@@ -336,6 +339,56 @@ fn logs(key: &KeyFile, name: &str, lines: usize) -> Result<Report, Error> {
         }),
         text: shown.join("\n"),
     })
+}
+
+/// An order that changes the apps: its answer is what the command would have reported with
+/// the home.
+fn changing(key: &KeyFile, name: &str, body: &Value) -> Result<Report, Error> {
+    let reply = order(key, name, body, RESTART_PATIENCE)?;
+    Ok(Report {
+        exit: Exit::Success,
+        json: reply["result"].clone(),
+        text: reply["text"].as_str().unwrap_or_default().to_owned(),
+    })
+}
+
+fn add(key: &KeyFile, args: &AddArgs) -> Result<Report, Error> {
+    // A secret is the operator's, and its file is never read here.
+    if !args.secrets.secret.is_empty() || !args.secrets.secret_file.is_empty() {
+        return Err(Error {
+            nothing_sent: true,
+            ..failed(
+                ErrorCode::NeedsHome,
+                "`toon add --secret` needs the agent node's home, which an agent key never \
+                 reads. Only the operator supplies a secret."
+                    .into(),
+            )
+        });
+    }
+    let request = match &args.request {
+        Some(file) => Some(crate::apps::read_request(file)?),
+        None => None,
+    };
+    changing(
+        key,
+        "add",
+        &json!({
+            "name": args.app,
+            "to": args.to,
+            "image": args.image,
+            "url": args.url,
+            "address": args.address,
+            "price": args.price,
+            "request": request,
+            "allow_egress": args.allow.allow_egress,
+            "scratch": args.allow.scratch,
+            "memory": args.allow.memory,
+            "cpus": args.allow.cpus,
+            "pids": args.allow.pids,
+            "env": args.secrets.env,
+            "yes": args.yes,
+        }),
+    )
 }
 
 /// A command that moves money states its amount and says `--yes`, as it does with the home.
@@ -417,6 +470,85 @@ fn limit_show(key: &KeyFile, app: Option<&str>) -> Result<Report, Error> {
     })
 }
 
+/// `toon event sign` and `toon event publish` with an agent key: the supervisor signs with
+/// the agent identity (the `sign` order) and the agent publishes, if it does, with the agent
+/// key, which the connector counts. The secret is never here.
+fn signed(
+    key: &KeyFile,
+    toon_app: Option<&str>,
+    kind: u64,
+    content: &str,
+    tags: &str,
+) -> Result<Value, Error> {
+    let mut body = json!({
+        "kind": kind,
+        "content": content,
+        "tags": event::parse_tags(tags)?,
+    });
+    if let Some(name) = toon_app {
+        body["toon_app"] = json!(name);
+    }
+    order(key, "sign", &body, PATIENCE)
+}
+
+fn event_sign(key: &KeyFile, kind: u64, content: &str, tags: &str) -> Result<Report, Error> {
+    let event = signed(key, None, kind, content, tags)?["event"].clone();
+    Ok(Report {
+        exit: Exit::Success,
+        text: event.to_string(),
+        json: json!({ "event": event }),
+    })
+}
+
+fn event_publish(
+    key: &KeyFile,
+    app: Option<&str>,
+    (kind, content, tags): (u64, &str, &str),
+    amount: u64,
+) -> Result<Report, Error> {
+    let (name, _) = key.choose(app)?;
+    let reply = signed(key, Some(name), kind, content, tags)?;
+    let event = reply["event"].clone();
+    let relay = reply["relay"].as_str().ok_or_else(unexpected)?;
+    let answer =
+        operator::write_as_agent(&key.surface(app)?, relay, amount, event::write_body(&event))?;
+    event::written(event, answer, amount)
+}
+
+fn unexpected() -> Error {
+    failed(
+        ErrorCode::ConnectorFailed,
+        "The supervisor's answer was not understood.".into(),
+    )
+}
+
+fn message_send(key: &KeyFile, app: Option<&str>, mut body: Value) -> Result<Report, Error> {
+    let (name, _) = key.choose(app)?;
+    body["toon_app"] = json!(name);
+    let surface = key.surface(app)?;
+    message::send_sealed(
+        &body,
+        |body| order(key, "seal", body, PATIENCE),
+        |wrap, relay| {
+            let answer = operator::write_as_agent(&surface, relay, 0, event::write_body(wrap))?;
+            event::written(wrap.clone(), answer, 0)
+        },
+    )
+}
+
+fn message_list(key: &KeyFile, body: &Value) -> Result<Report, Error> {
+    let mut reply = order(key, "messages", body, PATIENCE)?;
+    let text = reply["text"].as_str().unwrap_or_default().to_owned();
+    if let Some(object) = reply.as_object_mut() {
+        object.remove("text");
+    }
+    Ok(Report {
+        exit: Exit::Success,
+        json: reply,
+        text,
+    })
+}
+
 /// Run `command` with the agent key at `path` and no home.
 pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, Error> {
     match command {
@@ -433,6 +565,12 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
                  {name} --connector`."
             ),
         )),
+        Command::Add(args) => add(&KeyFile::load(path)?, &args),
+        Command::Remove { app, yes } => changing(
+            &KeyFile::load(path)?,
+            "remove",
+            &json!({ "app": app, "yes": yes }),
+        ),
         Command::Send(args) => {
             confirmed(args.amount.into(), args.yes)?;
             let surface = KeyFile::load(path)?.surface(app)?;
@@ -500,6 +638,56 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
         Command::Limit {
             command: LimitCommand::Show,
         } => limit_show(&KeyFile::load(path)?, app),
+        Command::Event {
+            command:
+                EventCommand::Sign {
+                    kind,
+                    content,
+                    tags,
+                },
+        } => event_sign(&KeyFile::load(path)?, kind, &content, &tags),
+        Command::Event {
+            command:
+                EventCommand::Publish {
+                    kind,
+                    content,
+                    tags,
+                    amount,
+                    relay: None,
+                    yes: _,
+                },
+        } => event_publish(
+            &KeyFile::load(path)?,
+            app,
+            (kind, &content, &tags),
+            amount.unwrap_or(0),
+        ),
+        Command::Message {
+            command:
+                MessageCommand::Send {
+                    recipients,
+                    content,
+                    reply_to,
+                    subject,
+                    relay: None,
+                    yes: _,
+                },
+        } => message_send(
+            &KeyFile::load(path)?,
+            app,
+            json!({
+                "recipients": recipients,
+                "content": content,
+                "reply_to": reply_to,
+                "subject": subject,
+            }),
+        ),
+        Command::Message {
+            command: MessageCommand::List { with, since, limit },
+        } => message_list(
+            &KeyFile::load(path)?,
+            &json!({ "with": with, "since": since, "limit": limit }),
+        ),
         other => Err(needs_home(&other)),
     }
 }

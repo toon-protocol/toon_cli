@@ -97,6 +97,15 @@ that is not loopback is never bound.
 |---|---|---|---|
 | `POST /orders/status` | `status` | none | The TOON apps the key is granted on, with their connector and apps. No file paths. |
 | `POST /orders/logs` | `logs` | `{"toon_app": NAME, "lines": N}`, both optional | The last lines of that TOON app's connector log. |
+| `POST /orders/add` | `apps` | `{"name", "to", "image", "address", "price", "request", "yes"}`, and the flags `toon add` takes that an agent key may not use | What `toon add` reports, as `{"result", "text"}`. See the list of trusted images below. |
+| `POST /orders/remove` | `apps` | `{"app", "yes"}` | What `toon remove` reports, as `{"result", "text"}`. |
+| `POST /orders/sign` | `sign` | `{"kind": N, "content": "", "tags": [], "toon_app": NAME}`, `toon_app` optional | `{"event": <signed event>, "relay": <the relay's write address>}`, the relay when `toon_app` is named. Any kind: signing is not bounded by it. |
+| `POST /orders/seal` | `sign` | `{"recipients": [...], "content": "", "reply_to", "subject", "toon_app"}` | The rumor and the sealed, signed wraps of a private message (`to_recipients`, `to_sender`), and the relay as above. Nothing is sent. |
+| `POST /orders/messages` | `read-messages` | `{"with": [...], "since": N, "limit": N}`, all optional | What `toon message list` prints with the home, and its `text`. |
+
+No answer holds the agent identity's secret. The supervisor signs with the copy kept in the
+home (ADR 0008); `toon agent-key create` and `set` keep it when the scope holds `sign` or
+`read-messages`. An order that finds none is answered `agent_key_not_kept`.
 
 The supervisor reads the record on every order, so a revoke or a change takes effect on the
 next one. It refuses, with `401`, an unsigned order, a key not on the record, a signature that
@@ -129,7 +138,13 @@ toon limit show
 | `toon logs <toon app> --connector` | The `logs` order: that TOON app's connector log. An app's own log is not offered, so without `--connector` it answers `usage` |
 | `toon send` | A packet originated by a write signed with the key (`send` scope); sealed to the TOON app's connector unless `--seal-to` names another, dialled directly |
 | `toon peer add` | A peering written with the key (`peer` scope) |
+| `toon add --image <image> --to <toon app>` | The `add` order (`apps` scope): the app is added at once if its image is on the list of trusted images, as `toon add` does with the home. Any other image, and every `--url`, is refused with `needs_operator` |
+| `toon remove <app>` | The `remove` order (`apps` scope): any app behind a TOON app the key is granted on, but the relay |
 | `toon route price <prefix> <price> --yes` | The `route-price` order: sets the price of the route to an app on a TOON app the key is granted on, and restarts that connector. Under the key's restart limit: past it, `rate_limited`, and the message says when the next restart is allowed |
+| `toon event publish` | The `sign` order, then the packet is sent with the key (`send` scope) to the relay of the TOON app, so the connector counts `--amount` against the key. `--relay` needs the home |
+| `toon event sign` | The `sign` order: prints the signed event and sends nothing |
+| `toon message send` | The `seal` order, then each wrap is sent with the key as above. `--relay` needs the home |
+| `toon message list` | The `messages` order (`read-messages` scope) |
 | `toon limit show` | The key's spending limit and what is left of today's, read from each connector the key file names (`--app` picks one) |
 
 `--app <toon app>` picks which TOON app's connector `send` and `peer add` use. Without it, the
@@ -144,7 +159,34 @@ key file's only TOON app is used, else `relay`.
   connector, for reads and writes.
 - Every other command answers `needs_home` (exit 1) before anything else is tried, and the
   message names the command and says the operator must run it: `wallet`, `limit set`, `init`,
-  `create`, `up`, `down`, `agent-key`, and also, until their tickets land, `add`, `remove`,
-  `route` (except `route price`), `event` and `message`.
+  `create`, `up`, `down`, `agent-key`, and also, until their tickets land, `route` (except
+  `route price`), `event query`, `event watch`, `nip` and the subscribe commands, and `event publish` and `message send` with `--relay`.
 - An agent whose loopback cannot reach the supervisor's order address needs a tunnel the
   deployer provides; reaching an agent node on another host is not offered.
+
+## The list of trusted images
+
+The home holds `trusted-images`, a text file `toon init` writes seeded with one line,
+`ghcr.io/toon-protocol/*`. It decides what an agent key may add at once. The operator edits it
+with any editor; the supervisor reads it on every add, so a change needs no restart. A home
+that has no such file trusts the seed, and an empty file trusts nothing.
+
+```text
+# Blank lines and lines that start with # are ignored.
+ghcr.io/toon-protocol/*          # every repository below that prefix
+example.com:5000/team/app        # exactly this repository
+```
+
+- An entry is a repository, or a prefix ending in `/*`. A line that is neither is ignored.
+- An image matches by its repository, so `ghcr.io/toon-protocol/echo`, `…/echo:1.2` and
+  `…/echo@sha256:…` are one entry's. A `..` or empty path part never matches.
+- The list is checked for an agent key only. An operator running `toon add` with the home is
+  never checked against it.
+
+An add by an agent key, with `apps` in its scope and granted on the TOON app it goes behind
+(`--to`), is added at once only if its image is on the list **and** it carries no allowance
+(`--allow-egress`, `--scratch`, `--memory`, `--cpus`, `--pids`) and no variable (`--env`): a
+trusted image is trusted as shipped. Anything else, and every `--url`, is refused with
+`needs_operator`, and nothing is pulled, started or routed; the operator adds the app with
+the home. A secret (`--secret`, `--secret-file`) is refused with `needs_home`. `toon remove`
+with a key refuses the relay with `needs_operator`.

@@ -180,6 +180,8 @@ pub fn init(home: &Path, options: &node::Options, restore: bool) -> Result<Repor
         discard_toon_apps(home);
         return Err(error);
     }
+    // Where it cannot be written, a home without the list trusts its seed all the same.
+    let _ = crate::trusted::seed(home);
     let (needs, funding_text) = funding::requirements(home, &state)?;
     let hidden = state.toon_apps.iter().any(|app| app.reach == Reach::Hidden);
     let changed = restore && hidden;
