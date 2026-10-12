@@ -2008,6 +2008,27 @@ pub fn send_as_agent(
     })
 }
 
+/// One packet of `amount` carrying the event write `body` (a relay's write route) to
+/// `destination`, originated by a signed write of the connector at `surface` and sealed to
+/// that connector. The agent node's home is never read (ADR 0010).
+pub fn write_as_agent(
+    surface: &Surface,
+    destination: &str,
+    amount: u64,
+    body: String,
+) -> Result<Answer, Error> {
+    let public = identity(&Egress::direct(), &format!("{}/ilp", surface.url))?;
+    dispatch_with_headers_on(
+        surface,
+        destination,
+        amount,
+        &public,
+        ("POST", "/"),
+        vec![("content-type".to_owned(), "application/json".to_owned())],
+        body.into_bytes(),
+    )
+}
+
 /// [`send_packet`], the packet sent by `dispatch` once the target is relative to the
 /// route's handler.
 fn send_packet_with(

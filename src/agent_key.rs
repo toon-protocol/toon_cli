@@ -281,13 +281,22 @@ fn state(home: &Path) -> Result<State, Error> {
     State::load(home)?.ok_or_else(|| node::no_agent_node(home))
 }
 
-/// Open the keystore, to prove the passphrase; nothing is kept of what is in it.
-fn require_passphrase(home: &Path) -> Result<(), Error> {
+/// Open the keystore, to prove the passphrase, and keep the agent identity's secret for the
+/// supervisor when `scope` lets the key sign or read messages: the supervisor has no
+/// passphrase to derive it with (ADR 0008).
+fn require_passphrase(home: &Path, scope: &[String]) -> Result<(), Error> {
     if !keystore::exists(home) {
         return Err(keystore::no_wallet(home));
     }
     let passphrase = keystore::passphrase()?;
-    keystore::open(home, &passphrase).map(|_| ())
+    let phrase = keystore::open(home, &passphrase)?;
+    if scope
+        .iter()
+        .any(|name| name == "sign" || name == "read-messages")
+    {
+        crate::event::keep_agent_secret_of(home, &phrase)?;
+    }
+    Ok(())
 }
 
 /// The scope as given, checked: the default if none was.
@@ -376,8 +385,8 @@ pub fn run(home: &Path, command: &AgentKeyCommand) -> Result<Report, Error> {
 
 fn create(home: &Path, args: &AgentKeyCreateArgs) -> Result<Report, Error> {
     let state = state(home)?;
-    require_passphrase(home)?;
     let scope = parse_scope(&args.scope)?;
+    require_passphrase(home, &scope)?;
     if let Some(expires) = &args.expires {
         check_expiry(expires)?;
     }
@@ -517,13 +526,13 @@ fn list(home: &Path) -> Result<Report, Error> {
 
 fn set(home: &Path, args: &AgentKeySetArgs) -> Result<Report, Error> {
     let state = state(home)?;
-    require_passphrase(home)?;
     let mut record = Record::load(home)?;
     let index = record.find(&args.public_key)?;
     let mut key = record.keys[index].clone();
     if !args.scope.is_empty() {
         key.scope = parse_scope(&args.scope)?;
     }
+    require_passphrase(home, &key.scope)?;
     if let Some(expires) = &args.expires {
         check_expiry(expires)?;
         key.expires = Some(expires.clone());
