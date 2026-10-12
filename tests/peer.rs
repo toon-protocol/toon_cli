@@ -485,6 +485,27 @@ fn a_packet_the_connector_refuses_with_401_is_not_counted() {
     assert_eq!(remaining_today(&near), remaining);
 }
 
+#[test]
+fn a_packet_the_connector_refuses_with_400_is_not_counted() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let remaining = remaining_today(&near);
+
+    let run = near.toon(&[
+        "send",
+        "g.toon.segment.relay/whatever",
+        "--amount",
+        "1800",
+        "--yes",
+        "--json",
+    ]);
+
+    assert_eq!(run.json()["error"]["code"], "send_failed", "{}", run.stdout);
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
+    assert!(run.stdout.contains("Nothing was sent"), "{}", run.stdout);
+    assert_eq!(remaining_today(&near), remaining);
+}
+
 /// The repeat of a write is keyed on the connector's wording for a replayed signature
 /// (`operator::REPLAYED`). This signs one write and sends it twice to the running
 /// connector, so a pin move that rewords the refusal fails here instead of ending the

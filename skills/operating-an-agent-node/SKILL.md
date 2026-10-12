@@ -64,8 +64,9 @@ connector's outbound channels moved by across it: possibly its whole amount, sho
 the report, counted against the limit, and visible as the outbound `watermark` in
 `toon channel list`. A packet your own connector rejected before signing costs nothing. A
 payment whose packet was never sent is not counted either (the key could not be read, the
-identity to seal to could not be fetched, the packet could not be sealed, or the connector's `send` refused its
-arguments); any other failure stays counted, because the packet may have left.
+identity to seal to could not be fetched, the packet could not be sealed, the connector's `send` refused its
+arguments, or the connector answered the packet write with 400 or 401, as it does for an address
+that is not an ILP address); any other failure stays counted, because the packet may have left.
 
 `toon channel open` and `toon channel fund` also put collateral in a channel; they take no
 `--yes`, so state the deposit deliberately and check `toon limit show` and `toon wallet balances`
