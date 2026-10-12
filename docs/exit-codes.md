@@ -95,7 +95,8 @@ A failed command with `--json` prints:
 | `describe_failed` | 1 | `toon describe` got no self-description from the connector's `/ilp` URL: it did not answer, answered an error status, or answered something that is not a self-description (a JSON object with `routes`); nothing was paid |
 | `agent_key_not_kept` | 1 | `toon message list` found no kept secret of the agent identity in the agent node's home, so no private message has been opened: `toon event publish`, `toon event sign` and `toon message send` write it; nothing was read or sent |
 | `needs_home` | 1 | `toon` was run with an agent key (`--agent-key` or `TOON_AGENT_KEY`) and the command needs the agent node's home, which an agent key never reads: the message names the command and says the operator must run it; nothing was sent |
-| `needs_operator` | 1 | An agent key asked to add or remove an app that only the operator may: an image not on the list of trusted images, an app at a `--url`, an image added with an allowance (`--allow-egress`, `--scratch`, `--memory`, `--cpus`, `--pids`) or a variable (`--env`), or the relay; nothing was pulled, started, routed or removed |
+| `needs_operator` | 1 | An agent key asked for what only the operator may do: to remove the relay, or to add a ninth app while it has eight pending; nothing was removed, recorded, pulled, started or routed |
+| `approval_pending` | 1 | An agent key asked to add an app that only the operator may add at once: an image not on the list of trusted images, an app at a `--url`, or an image added with an allowance (`--allow-egress`, `--scratch`, `--memory`, `--cpus`, `--pids`) or a variable (`--env`). The app is recorded as a pending app, named in the message, for the operator to `toon approve` or `toon refuse`; nothing was pulled, started or routed. The same add again gives the same answer and records nothing more. |
 
 
 ## The wallet passphrase

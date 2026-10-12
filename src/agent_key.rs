@@ -564,6 +564,7 @@ fn revoke(home: &Path, public: &str) -> Result<Report, Error> {
     record.keys.remove(index);
     record.save(home)?;
     write_lists(home, &state)?;
+    crate::pending::drop_key(home, public)?;
     Ok(Report {
         exit: Exit::Success,
         json: json!({ "revoked": public }),

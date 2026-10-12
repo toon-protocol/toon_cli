@@ -37,6 +37,7 @@ use crate::node::{self, App, AppFiles, ConnectorFiles, Reach, Source, State, Too
 use crate::order;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::overlay::{self, Edge};
+use crate::pending;
 use crate::receive::{Feeds, Receiver, Surroundings};
 use crate::runner::{self, AppRunner, AppSpec, Place, RunningApp};
 
@@ -619,6 +620,14 @@ impl Shared {
             // Start the connector of each TOON app the state holds that does not run, and
             // stop each one that is no longer in it.
             "sync" => wait_for(&self.sync),
+            // The operator decided on a pending app, from the CLI: the supervisor logs it.
+            "approved" | "refused" => {
+                eprintln!(
+                    "The operator {request} the pending app {}.",
+                    toon_app.unwrap_or_default()
+                );
+                json!({ "noted": true })
+            }
             "down" => {
                 self.stop.store(true, Ordering::SeqCst);
                 json!({ "stopping": true })
@@ -638,6 +647,12 @@ impl Shared {
                     .iter()
                     .filter(|unit| granted(&unit.toon_app))
                     .map(|unit| unit.status())
+                    .collect::<Vec<_>>(),
+                // Only what this key asked for.
+                "pending_apps": pending::of_key(home, &key.public)
+                    .map_err(refused)?
+                    .iter()
+                    .map(pending::Entry::shown)
                     .collect::<Vec<_>>(),
             })),
             "logs" => {
@@ -682,7 +697,9 @@ impl Shared {
                     )),
                 }
             }
-            "add" => apps::ordered_add(home, &key.toon_apps, &order.body).map_err(refused),
+            "add" => {
+                apps::ordered_add(home, &key.public, &key.toon_apps, &order.body).map_err(refused)
+            }
             "remove" => apps::ordered_remove(home, &key.toon_apps, &order.body).map_err(refused),
             "sign" => {
                 let relay = relay_for(home, key, &order.body)?;

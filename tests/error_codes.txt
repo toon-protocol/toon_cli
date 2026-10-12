@@ -39,3 +39,4 @@ describe_failed
 agent_key_not_kept
 needs_home
 needs_operator
+approval_pending

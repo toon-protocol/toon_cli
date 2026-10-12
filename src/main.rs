@@ -30,6 +30,7 @@ mod operator;
 mod order;
 mod outcome;
 mod overlay;
+mod pending;
 mod ports;
 mod profile;
 mod receive;
@@ -275,6 +276,16 @@ fn run() -> ExitCode {
         .into(),
         Command::Remove { app, yes } => render(
             home::resolve().and_then(|home| apps::remove(&home, &app, yes)),
+            json,
+        )
+        .into(),
+        Command::Approve { app } => render(
+            home::resolve().and_then(|home| apps::approve(&home, &app)),
+            json,
+        )
+        .into(),
+        Command::Refuse { app, reason } => render(
+            home::resolve().and_then(|home| apps::refuse(&home, &app, reason.as_deref())),
             json,
         )
         .into(),

@@ -300,13 +300,58 @@ fn status(key: &KeyFile) -> Result<Report, Error> {
     if toon_apps.is_empty() {
         lines.push("This key is granted on no TOON app that the supervisor runs.".into());
     }
+    let pending_apps = reply["pending_apps"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for app in &pending_apps {
+        let what = match (app["image"].as_str(), app["url"].as_str()) {
+            (Some(image), _) => format!("image {image}"),
+            (_, Some(url)) => format!("the app at {url}"),
+            _ => "an app".to_owned(),
+        };
+        let mut asked: Vec<String> = Vec::new();
+        let allowances = &app["allowances"];
+        if allowances["allow_egress"] == true {
+            asked.push("egress".into());
+        }
+        for path in allowances["scratch"].as_array().into_iter().flatten() {
+            asked.push(format!("scratch {}", path.as_str().unwrap_or_default()));
+        }
+        for limit in ["memory", "cpus", "pids"] {
+            if let Some(value) = allowances[limit].as_str() {
+                asked.push(format!("{limit} {value}"));
+            }
+        }
+        for variable in app["variables"].as_array().into_iter().flatten() {
+            asked.push(format!(
+                "variable {}",
+                variable.as_str().unwrap_or_default()
+            ));
+        }
+        let with = if asked.is_empty() {
+            String::new()
+        } else {
+            format!(", with {}", asked.join(", "))
+        };
+        let state = app["status"].as_str().unwrap_or("pending");
+        let why = app["reason"]
+            .as_str()
+            .map(|reason| format!(": {reason}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "{}: {state}{why} ({what} behind {}{with}).",
+            app["name"].as_str().unwrap_or("?"),
+            app["to"].as_str().unwrap_or("?")
+        ));
+    }
     Ok(Report {
         exit: if all_running {
             Exit::Success
         } else {
             Exit::Failure
         },
-        json: json!({ "agent_key": key.public, "toon_apps": toon_apps }),
+        json: json!({ "agent_key": key.public, "toon_apps": toon_apps, "pending_apps": pending_apps }),
         text: lines.join("\n"),
     })
 }
