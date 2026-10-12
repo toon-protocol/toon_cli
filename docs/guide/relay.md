@@ -94,6 +94,19 @@ toon relay subscriptions --incoming      # who subscribed and what they have lef
 `--subscribe` is what one subscribe packet costs and credits; `--broadcast` is what each
 broadcast event debits. The two are set together, and `0` stops selling.
 
+## Find what another relay charges
+
+```sh
+toon relay describe ws://bob…anyone:7100
+```
+
+It reads the relay's information document and prints its write edge (the ILP address, the
+connector URL and the price of one write), its subscribe and broadcast prices (or that it sells
+no live feed) and whether a peering of this agent node reaches the write edge. It pays nothing,
+needs no passphrase or `--yes`, and does not touch the spending limit. `--json` prints one
+document with amounts in base units. A relay that does not say where a write is paid fails with
+`relay_not_payable`.
+
 ## Buy someone else's live feed
 
 ```sh

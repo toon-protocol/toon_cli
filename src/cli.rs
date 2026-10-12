@@ -734,6 +734,11 @@ pub enum RelayCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Print what another relay charges, from its information document, and pay nothing
+    Describe {
+        /// The relay's websocket URL, `ws://host:port` or `wss://host:port`
+        relay: String,
+    },
     /// Subscribe to another relay's paid live feed, or top a subscription up
     Subscribe {
         /// The relay's websocket URL, `ws://host:port` or `wss://host:port`

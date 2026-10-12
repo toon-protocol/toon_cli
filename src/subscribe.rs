@@ -52,13 +52,23 @@ struct Terms {
     broadcast_price: u64,
 }
 
+/// The subscribe route, subscribe price and broadcast price in a relay's information
+/// document, or `None` when it does not sell its feed.
+pub fn feed_terms(document: &Value) -> Option<(String, u64, u64)> {
+    let subscription = &document["toon_subscription"];
+    let positive = |value: &Value| value.as_u64().filter(|number| *number > 0);
+    let address = subscription["ilp_address"]
+        .as_str()
+        .filter(|text| !text.is_empty())?;
+    Some((
+        address.to_owned(),
+        positive(&subscription["price"])?,
+        positive(&subscription["broadcast_price"])?,
+    ))
+}
+
 fn terms(egress: &Egress, relay: &str) -> Result<Terms, Error> {
     let document = event::information_document(egress, relay)?;
-    let subscription = &document["toon_subscription"];
-    fn text(value: &Value) -> Option<&str> {
-        value.as_str().filter(|text| !text.is_empty())
-    }
-    let positive = |value: &Value| value.as_u64().filter(|number| *number > 0);
     let edge = event::edge_fields(&document["toon"]).map_err(|missing| {
         event::unpayable(format!(
             "The information document of {relay} does not say where its feed is paid for: \
@@ -66,19 +76,15 @@ fn terms(egress: &Egress, relay: &str) -> Result<Terms, Error> {
              `connector_seal_key` of 65 bytes of hex and a `price`, and has {missing}."
         ))
     })?;
-    match (
-        text(&subscription["ilp_address"]),
-        positive(&subscription["price"]),
-        positive(&subscription["broadcast_price"]),
-    ) {
-        (Some(address), Some(price), Some(broadcast_price)) => Ok(Terms {
+    match feed_terms(&document) {
+        Some((address, price, broadcast_price)) => Ok(Terms {
             connector_url: edge.connector_url,
             seal_key: edge.seal_key,
-            address: address.to_owned(),
+            address,
             price,
             broadcast_price,
         }),
-        _ => Err(event::unpayable(format!(
+        None => Err(event::unpayable(format!(
             "The information document of {relay} has no `toon_subscription` with an \
              `ilp_address`, a `price` and a `broadcast_price` above 0, so it does not sell \
              its feed."

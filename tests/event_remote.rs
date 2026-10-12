@@ -78,7 +78,12 @@ fn information_document(far: &Node) -> String {
 
 /// A relay's information document with `toon` as given, served for any request.
 fn document(toon: Value) -> String {
-    let body = json!({ "name": "far", "toon": toon }).to_string();
+    serve(json!({ "name": "far", "toon": toon }))
+}
+
+/// A relay's information document as given, served for any request.
+fn serve(body: Value) -> String {
+    let body = body.to_string();
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let address = listener.local_addr().expect("address");
     thread::spawn(move || {
@@ -825,4 +830,75 @@ fn with_a_peering_toward_the_connector_the_command_asks_only_for_a_route() {
     assert!(!message.contains("--deposit"), "{message}");
     let peers = near.toon(&["peer", "list", "--json"]).json();
     assert_eq!(peers["peers"].as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn relay_describe_prints_the_prices_and_whether_a_peering_reaches_the_relay() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let relay = serve(json!({
+        "name": "far",
+        "toon": {
+            "ilp_address": far.machine.relay_prefix(),
+            "connector_url": far.url(),
+            "connector_seal_key": support::seal_key(&far.url()),
+            "price": PRICE,
+        },
+        "toon_subscription": {
+            "ilp_address": "g.toon.subscribe",
+            "price": 1000,
+            "broadcast_price": 10,
+        },
+    }));
+    // No passphrase is set: the command pays nothing.
+    let limits = || near.machine.toon(&["limit", "show", "--json"]).json();
+    let before = limits();
+    let describe = || near.machine.toon(&["relay", "describe", &relay, "--json"]);
+
+    let run = describe();
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    let shown = run.json();
+    assert_eq!(shown["write"]["price"], PRICE);
+    assert_eq!(shown["write"]["ilp_address"], far.machine.relay_prefix());
+    assert_eq!(shown["write"]["connector_url"], far.url());
+    assert_eq!(shown["feed"]["selling"], true);
+    assert_eq!(shown["feed"]["ilp_address"], "g.toon.subscribe");
+    assert_eq!(shown["feed"]["subscribe_price"], 1000);
+    assert_eq!(shown["feed"]["broadcast_price"], 10);
+    assert_eq!(shown["peering"], false);
+    assert_eq!(limits(), before);
+
+    peer_and_route(&near, &far);
+    let after = limits();
+    assert_eq!(describe().json()["peering"], true);
+    assert_eq!(limits(), after);
+}
+
+#[test]
+fn relay_describe_of_a_relay_that_sells_no_feed_says_so() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let relay = information_document(&far);
+    let run = near.machine.toon(&["relay", "describe", &relay, "--json"]);
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    assert_eq!(run.json()["feed"]["selling"], false);
+    let text = near.machine.toon(&["relay", "describe", &relay]);
+    assert_eq!(text.exit_code, 0);
+    assert!(
+        text.stdout.contains("sells no live feed"),
+        "{}",
+        text.stdout
+    );
+}
+
+#[test]
+fn relay_describe_without_a_usable_toon_object_is_not_payable() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let relay = serve(json!({ "name": "far" }));
+    let run = near.machine.toon(&["relay", "describe", &relay, "--json"]);
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
+    assert_eq!(run.json()["error"]["code"], "relay_not_payable");
 }
