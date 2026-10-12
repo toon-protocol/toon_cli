@@ -34,11 +34,11 @@ One thing an operator lets one app do beyond its confinement, such as opening co
 _Avoid_: Grant (what an agent key is given), permission, exception
 
 **Variable**:
-A name and a value the operator gives one app when adding it, which the app is started with every time. Its value may be shown. Not an allowance: it tells the app something and lets it reach nothing more.
+A name and a value the operator gives one app, when adding it or by a change, which the app is started with every time. Its value may be shown. Not an allowance: it tells the app something and lets it reach nothing more.
 _Avoid_: Setting (what the relay has), configuration, option
 
 **Secret**:
-A value the operator gives one app when adding it, from a file of their own, that the agent node keeps and never shows. The app receives it as a variable or as a file it can only read. Only the operator supplies one; an agent key cannot.
+A value the operator gives one app, when adding it or by a change, from a file of their own, that the agent node keeps and never shows. The app receives it as a variable or as a file it can only read. Only the operator supplies one; an agent key cannot.
 _Avoid_: Credential, key (a secret may be anything), sealed (what the keystore does; a secret is not in it)
 
 **Supervisor**:
@@ -66,6 +66,10 @@ _Avoid_: Command, call, RPC
 **Add**:
 Put a new app behind the connector of a TOON app that already exists.
 _Avoid_: Spawn, deploy, attach
+
+**Change**:
+Give an app that is already added other variables, secrets or allowances, keeping everything about it that the operator does not name. Only the operator changes an app; an agent key cannot.
+_Avoid_: Set, configure (what is done to the relay's settings), update, edit
 
 **Create**:
 Start a new TOON app: a new connector with its own identity and keys, and an app behind it.

@@ -16,5 +16,6 @@ We chose this over a network per app with connections out left open, which keeps
 - Rootless docker is not supported: there the host cannot reach a container's address.
 - Each app takes one docker network, and docker's default address pools hold about thirty.
 - Confinement applies to every app from the next `toon up`, with no record of which apps predate it. An app that ran before and no longer starts needs an allowance or a new image.
-- An allowance is set when the app is added. To change it, remove the app and add it again; the relay, which cannot be removed, keeps the defaults.
+- An allowance is set when the app is added, and the operator can change it afterwards without removing the app. A change restarts the app and its connector: the connector learns where an app is only when it starts, and a restarted app is somewhere else.
+- The relay can be given other limits on memory, CPU and processes by a change, and no other allowance: it is on the host's network, and its paths are the project's own.
 - Docker gives a capability only to root, so with the operator's user and no new privileges a capability allowance could not work even if one were wanted.
