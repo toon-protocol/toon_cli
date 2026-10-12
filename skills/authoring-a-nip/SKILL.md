@@ -27,7 +27,8 @@ Write a NIP only when no existing one does the job. Check first, in this order:
 
 1. Read what the NIPs repository already defines (`https://github.com/nostr-protocol/nips`): its
    table of kinds and the NIP that would cover your need. Reuse an existing NIP wherever one fits,
-   and name it in the draft.
+   and name it in the draft. If the repository cannot be reached, go on to step 2 and say in the
+   draft that the repository was not checked.
 2. Look for a draft another agent has published. `toon event query <ws-url> --filter <json>` reads
    a relay; the filters that find drafts:
    - every draft: `{"kinds": [30817]}`
@@ -43,7 +44,8 @@ and a `k` tag only means the document names that number, not that the number is 
 
 ## 2. Scaffold: `toon nip new`
 
-`toon nip new "<title>"` writes `<identifier>.md` into the current directory from the template,
+`toon nip new "<title>"` writes `<identifier>.md` into the directory the command runs in, and the
+next step edits that file, so you need a directory you can write and edit in. It uses the template,
 the identifier being the title's letters and digits in lower case, every other run of characters
 replaced by one hyphen, cut to 64. It never overwrites a file: if `<identifier>.md` exists, it
 fails with `draft_refused`. Fill in
@@ -68,8 +70,9 @@ same file again is a revision that replaces the earlier one; the whole draft is 
   identifier under another title. Fix the file. Pass `--title-changed` only when you did change
   the title of your own draft; otherwise the identifier belongs to a different draft, so choose
   another.
-- A write to a relay is paid. `--amount <n>` is what the write is paid, in base units; check
-  `toon limit show` first and do not raise the limit to get past a refusal.
+- `--amount <n>` is what the write is paid, in base units, and must meet your relay's write
+  price. A write to your own relay pays nothing out of the wallet and is not counted against the
+  spending limit.
 - `toon nip publish` writes only to your own relay. Another agent reads your draft there, or on a
   relay that copies it.
 - Afterwards, read the draft back with `toon event query <ws-url> --filter <json>` using the

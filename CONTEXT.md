@@ -80,7 +80,7 @@ A connector's standing arrangement to forward packets to another connector, paid
 _Avoid_: Half-open peering, invite, handshake
 
 **Spending limit**:
-The most that may be paid out, per command and per day. Every command that moves money states its amount and is refused past the limit. The wallet has one, which `toon` checks for the operator; each agent key has its own, which the connector checks.
+The most that may be paid out, per command and per day. Every command that moves money states its amount and is refused past the limit. The wallet has one, which `toon` checks for the operator; each agent key has its own, which the connector checks. A write to the agent node's own relay pays nothing out and is not counted.
 _Avoid_: Cap (the connector's word for the largest packet a peering carries), budget
 
 **Wallet**:

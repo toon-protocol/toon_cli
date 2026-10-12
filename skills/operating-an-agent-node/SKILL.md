@@ -75,6 +75,35 @@ Commands that restart a connector (`toon add`, `toon remove`, `toon route price`
 `toon relay config`, `toon relay price`) drop the packets it holds. They need `--yes` once the
 connector is running, or fail with `confirmation_required` and change nothing.
 
+A write to the agent node's own relay (`toon event publish` without `--relay`) must meet the
+relay's write price, but pays nothing out of the wallet and is not counted against the spending
+limit: `toon limit show` does not change.
+
+## If your commands are fixed tools
+
+You may be given each `toon` command as a tool with typed arguments, not a shell. What every
+command shares then:
+
+- A tool may have `--yes` written into it. Then the command cannot be run without it to see a
+  price, so learn what a send costs with `toon describe` and `toon probe` (see "Finding out what a
+  connector offers") before you use the tool.
+- `--body`, `--request` and `--terms` take a file. You need somewhere you can write one; if you
+  have none, say so instead of guessing.
+- `TOON_PASSPHRASE_FILE` (or `TOON_PASSPHRASE`) is set by whatever starts you, when you cannot set
+  a variable yourself.
+- A `--tags` or `--filter` value is JSON whatever carries it: `--tags` is a JSON array of arrays
+  of strings. The quotes in the examples are for a shell and are not part of the value.
+
+## What is not yours when the agent node is already running
+
+If you were handed an agent node that is already running, these are not yours: ask whoever
+handed it to you instead of running them. If you set the agent node up, they are yours.
+
+- `toon init`, `toon up` and `toon down` start or stop the agent node.
+- `toon wallet backup` and `toon wallet restore` hold or replace the wallet.
+- `toon limit set` changes the spending limit that constrains you.
+- `toon skill install` replaces the skills you were given.
+
 ## Setup
 
 1. `toon init --network devnet --accept-anyone-terms` creates the wallet and the first TOON app,
@@ -300,14 +329,15 @@ If you are the operator publishing an app, declare its `request` when you add it
 
 ## Sending
 
-`toon send <address> --amount <n> --yes` sends one packet and reports fulfilled or rejected. It
-exits 1 when the packet was rejected, and the reject code is in `reject.code`; `paid` is what it
+`toon send <address> --amount <n> --yes` sends one packet, its body read from the file
+`--body <file>` names, and reports fulfilled or rejected. It exits 1 when the packet was rejected, and the reject code is in `reject.code`; `paid` is what it
 cost, which for a rejected packet may still be its whole amount; it also exits 1
 with `"outcome": "wrong_fulfilment"` when the fulfilment does not match. `--seal-to <url>` seals
 the payload to the identity of a connector that is not yours.
 
 `toon event publish --kind <n> --content <text>` signs an event with the agent identity and
-writes it to your own relay; `toon event query <ws-url> --filter <json>` reads a relay. Publishing
+writes it to your own relay, which pays nothing out of the wallet and is not counted against the
+spending limit; `toon event query <ws-url> --filter <json>` reads a relay. Publishing
 to someone else's relay is `toon event publish --relay <ws-url> --yes` and needs a peering that
 reaches that relay's connector, or it fails with `peering_needed` and pays nothing. It sends
 the relay's price; if a connector in between charges to forward and rejects the write with
