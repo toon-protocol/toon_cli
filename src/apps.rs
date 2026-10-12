@@ -736,8 +736,11 @@ fn asked(body: &serde_json::Value, to: &str, origin: &Origin) -> Result<serde_js
     }))
 }
 
-/// The allowances and variables a recorded ask carries, parsed as `toon add` parses its flags.
-fn parse_ask(ask: &serde_json::Value) -> Result<(Allowances, crate::secrets::Given), Error> {
+/// Where a recorded ask's app comes from, and the allowances and variables it carries, parsed
+/// as `toon add` parses its flags.
+fn parse_ask(
+    ask: &serde_json::Value,
+) -> Result<(Origin<'_>, Allowances, crate::secrets::Given), Error> {
     let origin = match (ask["image"].as_str(), ask["url"].as_str()) {
         (Some(image), None) => Origin::Image(image),
         (None, Some(url)) => Origin::Url(url),
@@ -765,7 +768,7 @@ fn parse_ask(ask: &serde_json::Value) -> Result<(Allowances, crate::secrets::Giv
         },
         &allowances,
     )?;
-    Ok((allowances, secrets))
+    Ok((origin, allowances, secrets))
 }
 
 /// An add an agent key may not make at once: recorded as a pending app, for the operator to
@@ -910,17 +913,7 @@ pub fn approve(home: &Path, app: &str) -> Result<Report, Error> {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let entry = crate::pending::find_pending(home, app)?;
     let ask = &entry.ask;
-    let origin = match (ask["image"].as_str(), ask["url"].as_str()) {
-        (Some(image), None) => Origin::Image(image),
-        (None, Some(url)) => Origin::Url(url),
-        _ => {
-            return Err(failed(
-                ErrorCode::Io,
-                format!("The pending app {app} names an image or a URL, and not both."),
-            ))
-        }
-    };
-    let (allowances, secrets) = parse_ask(ask)?;
+    let (origin, allowances, secrets) = parse_ask(ask)?;
     let to = ask["to"].as_str().unwrap_or_default();
     let report = add(
         home,

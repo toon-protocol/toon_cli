@@ -289,7 +289,7 @@ fn locked<T>(home: &Path, change: impl FnOnce() -> Result<T, Error>) -> Result<T
 }
 
 /// Run `change` while holding the advisory lock at `file`.
-fn locked_by<T>(file: &Path, change: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+pub fn locked_by<T>(file: &Path, change: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
     let lock: File = OpenOptions::new()
         .write(true)
         .create(true)

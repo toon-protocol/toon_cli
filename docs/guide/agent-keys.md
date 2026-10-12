@@ -202,7 +202,10 @@ only the ones that key asked for, as `pending`, or as `refused` with the operato
   connector, as `toon add --yes` does. Approving does not put the image on the list of trusted
   images; that is an edit to the `trusted-images` file.
 - `toon refuse <app> [--reason <text>]` (home only) records the refusal. The app is not added.
-  The key may ask again, which replaces the refusal with a new pending app.
+  The key may ask again, which replaces the refusal with a new pending app. The home keeps
+  the latest 8 refusals of each key and forgets older ones.
+- A name held by a pending app is not taken by another key's add, nor by the same key's add
+  of something else: both answer `name_taken`.
 - With an agent key both answer `needs_home`.
 
 Pending apps do not expire. Revoking a key drops its pending apps, and so does adding an app

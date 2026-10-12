@@ -13,7 +13,7 @@ struct Node {
     machine: Machine,
     nowhere: tempfile::TempDir,
     _chain: FakeChain,
-    _up: Foreground,
+    up: Foreground,
 }
 
 fn node() -> Node {
@@ -43,7 +43,7 @@ fn node() -> Node {
         machine,
         nowhere: tempfile::tempdir().expect("a directory"),
         _chain: chain,
-        _up: up,
+        up,
     }
 }
 
@@ -847,6 +847,22 @@ fn approve_adds_the_app_as_asked_and_refuse_records_why() {
     assert_eq!(approved.json()["toon_app"], "relay");
     assert!(apps_behind(&node, &key, "relay").contains(&"held".to_owned()));
     assert!(pending_entry(&node, &key, "held").is_none());
+    let seen = node.agent(&key, &["status", "--json"]);
+    let app = seen.json()["toon_apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|toon_app| toon_app["name"] == "relay")
+        .and_then(|toon_app| {
+            toon_app["apps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|app| app["name"] == "held")
+                .cloned()
+        })
+        .expect("the key sees the app");
+    assert_eq!(app["running"], true, "{app}");
     let operator = node.machine.toon(&["status", "--json"]);
     let app = operator.json()["agent_node"]["toon_apps"][0]["apps"]
         .as_array()
@@ -857,6 +873,7 @@ fn approve_adds_the_app_as_asked_and_refuse_records_why() {
         .expect("the operator sees the app");
     assert_eq!(app["image"], "docker.io/someone/else:1");
     assert_eq!(app["variables"]["A"], "b");
+    assert_eq!(app["running"], true, "{app}");
 
     let refused =
         node.machine
@@ -876,6 +893,17 @@ fn approve_adds_the_app_as_asked_and_refuse_records_why() {
     // Neither is pending now.
     let again = node.machine.toon(&["approve", "declined", "--json"]);
     assert_eq!(error_code(&again), "unknown_name");
+
+    // The supervisor logged each pending app and what the operator decided.
+    let log = node.up.stderr();
+    for line in [
+        "Pending app held",
+        "Pending app declined",
+        "The operator approved the pending app held.",
+        "The operator refused the pending app declined.",
+    ] {
+        assert!(log.contains(line), "{line}: {log}");
+    }
 }
 
 #[test]
@@ -930,6 +958,21 @@ fn a_key_sees_only_its_own_pending_apps_and_revoking_drops_them() {
 #[test]
 fn with_the_home_an_add_of_the_same_image_is_not_held() {
     let node = node();
+    let (key, _) = node.create(&["--scope", "status,apps"]);
+    let held = node.agent(
+        &key,
+        &[
+            "add",
+            "held",
+            "--to",
+            "relay",
+            "--image",
+            "docker.io/someone/else:1",
+            "--json",
+        ],
+    );
+    assert_eq!(error_code(&held), "approval_pending", "{}", held.stdout);
+
     let home = node.machine.toon(&[
         "add",
         "direct",
@@ -941,4 +984,22 @@ fn with_the_home_an_add_of_the_same_image_is_not_held() {
         "--json",
     ]);
     assert_eq!(home.exit_code, 0, "{}{}", home.stdout, home.stderr);
+    assert_eq!(home.json()["added"], "direct");
+    assert!(apps_behind(&node, &key, "relay").contains(&"direct".to_owned()));
+    // The pending app is still the operator's to decide.
+    assert!(pending_entry(&node, &key, "held").is_some_and(|app| app["status"] == "pending"));
+
+    // Adding the pending app's name with the home settles it.
+    let settled = node.machine.toon(&[
+        "add",
+        "held",
+        "--to",
+        "relay",
+        "--image",
+        "docker.io/someone/else:1",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(settled.exit_code, 0, "{}{}", settled.stdout, settled.stderr);
+    assert!(pending_entry(&node, &key, "held").is_none());
 }

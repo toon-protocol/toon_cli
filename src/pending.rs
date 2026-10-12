@@ -25,6 +25,13 @@ fn path(home: &Path) -> PathBuf {
     home.join(FILE_NAME)
 }
 
+/// Run `change` on the record while holding the lock that serialises its writers: the
+/// supervisor records an ask, while `toon approve`, `toon refuse`, `toon add` and
+/// `toon agent-key revoke` change the record from processes of their own.
+fn locked<T>(home: &Path, change: impl FnOnce() -> Result<T, Error>) -> Result<T, Error> {
+    crate::spending::locked_by(&home.join("pending-apps.lock"), change)
+}
+
 fn failed(code: ErrorCode, message: String) -> Error {
     Error {
         code,
@@ -101,38 +108,10 @@ impl Entry {
 
     /// One line of text for `shown`.
     pub fn line(&self) -> String {
-        let what = match (self.ask["image"].as_str(), self.ask["url"].as_str()) {
-            (Some(image), _) => format!("image {image}"),
-            (_, Some(url)) => format!("the app at {url}"),
-            _ => "an app".to_owned(),
-        };
-        let mut asked: Vec<String> = Vec::new();
-        if self.ask["allow_egress"] == true {
-            asked.push("egress".into());
-        }
-        for path in self.ask["scratch"].as_array().into_iter().flatten() {
-            asked.push(format!("scratch {}", path.as_str().unwrap_or_default()));
-        }
-        for field in ["memory", "cpus", "pids"] {
-            if let Some(value) = self.ask[field].as_str() {
-                asked.push(format!("{field} {value}"));
-            }
-        }
-        for variable in self.ask["env"].as_array().into_iter().flatten() {
-            asked.push(format!(
-                "variable {}",
-                variable.as_str().unwrap_or_default()
-            ));
-        }
-        let with = if asked.is_empty() {
-            String::new()
-        } else {
-            format!(", with {}", asked.join(", "))
-        };
         let head = format!(
-            "{}: {what} behind {}{with}, asked for by the agent key {}",
+            "{}: {}, asked for by the agent key {}",
             self.app,
-            self.ask["to"].as_str().unwrap_or("?"),
+            asked(&self.shown()),
             self.key
         );
         match &self.refused {
@@ -141,6 +120,44 @@ impl Entry {
             Some(reason) => format!("{head}; refused: {reason}"),
         }
     }
+}
+
+/// What a pending app asks for, from what `Entry::shown` shows: the image or URL, the TOON
+/// app, the allowances and the variables.
+pub fn asked(shown: &Value) -> String {
+    let what = match (shown["image"].as_str(), shown["url"].as_str()) {
+        (Some(image), _) => format!("image {image}"),
+        (_, Some(url)) => format!("the app at {url}"),
+        _ => "an app".to_owned(),
+    };
+    let allowances = &shown["allowances"];
+    let mut with: Vec<String> = Vec::new();
+    if allowances["allow_egress"] == true {
+        with.push("egress".into());
+    }
+    for path in allowances["scratch"].as_array().into_iter().flatten() {
+        with.push(format!("scratch {}", path.as_str().unwrap_or_default()));
+    }
+    for limit in ["memory", "cpus", "pids"] {
+        if let Some(value) = allowances[limit].as_str() {
+            with.push(format!("{limit} {value}"));
+        }
+    }
+    for variable in shown["variables"].as_array().into_iter().flatten() {
+        with.push(format!(
+            "variable {}",
+            variable.as_str().unwrap_or_default()
+        ));
+    }
+    let with = if with.is_empty() {
+        String::new()
+    } else {
+        format!(", with {}", with.join(", "))
+    };
+    format!(
+        "{what} behind {}{with}",
+        shown["to"].as_str().unwrap_or("?")
+    )
 }
 
 pub fn load(home: &Path) -> Result<Vec<Entry>, Error> {
@@ -198,6 +215,10 @@ pub enum Recorded {
 /// more. A name that another ask holds, or a ninth pending app, is refused. A refused ask of
 /// the same key under the name is replaced.
 pub fn record(home: &Path, key: &str, app: &str, ask: Value) -> Result<Recorded, Error> {
+    locked(home, || record_locked(home, key, app, ask))
+}
+
+fn record_locked(home: &Path, key: &str, app: &str, ask: Value) -> Result<Recorded, Error> {
     let mut entries = load(home)?;
     if let Some(held) = entries.iter().find(|entry| entry.app == app) {
         if held.key == key && held.pending() {
@@ -266,53 +287,67 @@ pub fn find_pending(home: &Path, app: &str) -> Result<Entry, Error> {
         .iter()
         .find(|entry| entry.app == app && entry.pending())
         .cloned()
-        .ok_or_else(|| {
-            let waiting: Vec<&str> = entries
-                .iter()
-                .filter(|entry| entry.pending())
-                .map(|entry| entry.app.as_str())
-                .collect();
-            failed(
-                ErrorCode::UnknownName,
-                if waiting.is_empty() {
-                    format!("No app is pending: {app} is not waiting for the operator.")
-                } else {
-                    format!(
-                        "No app called {app} is pending. These are: {}.",
-                        waiting.join(", ")
-                    )
-                },
+        .ok_or_else(|| not_pending(&entries, app))
+}
+
+fn not_pending(entries: &[Entry], app: &str) -> Error {
+    let waiting: Vec<&str> = entries
+        .iter()
+        .filter(|entry| entry.pending())
+        .map(|entry| entry.app.as_str())
+        .collect();
+    failed(
+        ErrorCode::UnknownName,
+        if waiting.is_empty() {
+            format!("No app is pending: {app} is not waiting for the operator.")
+        } else {
+            format!(
+                "No app called {app} is pending. These are: {}.",
+                waiting.join(", ")
             )
-        })
+        },
+    )
 }
 
 /// Take the pending app `app` out of the record, once it is added.
 pub fn forget(home: &Path, app: &str) -> Result<(), Error> {
-    let mut entries = load(home)?;
-    entries.retain(|entry| !(entry.app == app && entry.pending()));
-    save(home, &entries)
+    locked(home, || {
+        let mut entries = load(home)?;
+        let before = entries.len();
+        entries.retain(|entry| !(entry.app == app && entry.pending()));
+        if entries.len() == before {
+            return Ok(());
+        }
+        save(home, &entries)
+    })
 }
 
 /// Record that the operator refused the pending app `app`.
 pub fn refuse(home: &Path, app: &str, reason: Option<&str>) -> Result<Entry, Error> {
-    let mut entries = load(home)?;
-    let entry = entries
-        .iter_mut()
-        .find(|entry| entry.app == app && entry.pending())
-        .ok_or_else(|| find_pending(home, app).expect_err("the app is not pending"))?;
-    entry.refused = Some(reason.unwrap_or_default().trim().to_owned());
-    let refused = entry.clone();
-    save(home, &entries)?;
-    Ok(refused)
+    locked(home, || {
+        let mut entries = load(home)?;
+        let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| entry.app == app && entry.pending())
+        else {
+            return Err(not_pending(&entries, app));
+        };
+        entry.refused = Some(reason.unwrap_or_default().trim().to_owned());
+        let refused = entry.clone();
+        save(home, &entries)?;
+        Ok(refused)
+    })
 }
 
 /// Drop everything the agent key `key` asked for: it is revoked.
 pub fn drop_key(home: &Path, key: &str) -> Result<(), Error> {
-    let mut entries = load(home)?;
-    let before = entries.len();
-    entries.retain(|entry| entry.key != key);
-    if entries.len() == before {
-        return Ok(());
-    }
-    save(home, &entries)
+    locked(home, || {
+        let mut entries = load(home)?;
+        let before = entries.len();
+        entries.retain(|entry| entry.key != key);
+        if entries.len() == before {
+            return Ok(());
+        }
+        save(home, &entries)
+    })
 }
