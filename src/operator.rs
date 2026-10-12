@@ -1455,18 +1455,34 @@ fn stated_cost_sentence(code: &str, cost: u128, flag: &str, probe: bool) -> Stri
     }
 }
 
+/// What a refusal with 400 adds to its message: the connector answers a packet write with 400
+/// only when the packet did not decode, before it originates anything.
+const NOTHING_SENT_400: &str = " Nothing was sent or paid.";
+
 /// Whether the `Debug` of the connector's `SendError` is its `Transport` variant for a
-/// packet write answered 401, which is worded `401 Unauthorized -- ...`. The connector
-/// authenticates the write before it forms a packet, so none was sent.
-fn refused_with_401(variant: &str) -> bool {
-    variant.starts_with("Transport") && variant.contains("reason: \"401 ")
+/// packet write answered `status`, which is worded `401 Unauthorized -- ...`.
+fn refused_with(variant: &str, status: &str) -> bool {
+    variant.starts_with("Transport") && variant.contains(&format!("reason: \"{status} "))
+}
+
+/// Whether the `Debug` of the connector's `SendError` is its `Transport` variant for a
+/// packet write answered 400.
+fn refused_with_400(variant: &str) -> bool {
+    refused_with(variant, "400")
+}
+
+/// Whether the `Debug` of the connector's `SendError` is its `Transport` variant for a
+/// packet write answered 401 or 400. The connector authenticates the write, and decodes
+/// the packet, before it originates anything, so a 401 or a 400 means none was sent.
+fn refused_before_origin(variant: &str) -> bool {
+    refused_with(variant, "401") || refused_with_400(variant)
 }
 
 /// Whether the connector's `send` failed before it wrote to the operator surface: its
 /// arguments were refused, the operator key could not be read, the identity to seal to
-/// could not be fetched, the packet could not be sealed, or the write was refused with 401. Any
-/// other `Transport` failure may come after the packet left, and an answer not understood
-/// does, so neither is here.
+/// could not be fetched, the packet could not be sealed, or the write was refused with 401
+/// or 400. Any other `Transport` failure may come after the packet left, and an answer not
+/// understood does, so neither is here.
 ///
 /// The connector keeps `SendError` private, so its variant is read from its `Debug`.
 fn before_sending(error: &connector_cli::CliError) -> bool {
@@ -1477,7 +1493,7 @@ fn before_sending(error: &connector_cli::CliError) -> bool {
             ["KeyFile", "Identity", "Seal"]
                 .iter()
                 .any(|name| variant.starts_with(name))
-                || refused_with_401(&variant)
+                || refused_before_origin(&variant)
         }
         _ => false,
     }
@@ -1574,6 +1590,11 @@ pub fn dispatch(
         .map_err(|error| {
             let mut failure = send_failed(error.to_string());
             failure.nothing_sent = before_sending(&error);
+            if matches!(&error, connector_cli::CliError::Send(send)
+                if refused_with_400(&format!("{send:?}")))
+            {
+                failure.message.push_str(NOTHING_SENT_400);
+            }
             failure
         })
         .and_then(|command| match command {
@@ -1627,6 +1648,31 @@ fn identity(egress: &Egress, seal_to: &str) -> Result<[u8; 65], Error> {
         .and_then(|key| hex::decode(key.trim_start_matches("0x")).ok())
         .and_then(|key| key.try_into().ok())
         .ok_or_else(|| not_sent(format!("{identity_url} has no 65-byte `publicKey`.")))
+}
+
+/// A packet write the connector answered with a failing `status`, as an error. The write is
+/// refused before any packet is originated with 401 (its signature) and 400 (a packet that
+/// did not decode), so nothing was sent; any other failing status stays counted.
+fn packet_write_refused(status: reqwest::StatusCode, body: &[u8]) -> Error {
+    let nothing_sent = matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::BAD_REQUEST
+    );
+    let note = if status == reqwest::StatusCode::BAD_REQUEST {
+        NOTHING_SENT_400
+    } else {
+        ""
+    };
+    Error {
+        nothing_sent,
+        ..failed(
+            ErrorCode::SendFailed,
+            format!(
+                "The connector refused the write with {status}: {}{note}",
+                String::from_utf8_lossy(body).trim()
+            ),
+        )
+    }
 }
 
 /// Send one packet like [`dispatch`] does, but sealed to the key `public` itself, which
@@ -1711,14 +1757,7 @@ pub fn dispatch_with_headers(
         Err(error) => return Err(send_failed(error.to_string())),
     };
     if !status.is_success() {
-        return Err(Error {
-            // The write is refused before any packet is formed.
-            nothing_sent: status == reqwest::StatusCode::UNAUTHORIZED,
-            ..send_failed(format!(
-                "The connector refused the write with {status}: {}",
-                String::from_utf8_lossy(&bytes).trim()
-            ))
-        });
+        return Err(packet_write_refused(status, &bytes));
     }
     let undecodable = |reason: String| {
         send_failed(format!(
@@ -2630,6 +2669,45 @@ mod tests {
         assert!(before_sending(&connector_cli::CliError::Usage(
             String::new()
         )));
+    }
+
+    #[test]
+    fn a_packet_write_answered_400_or_401_sent_nothing_and_any_other_failure_may_have() {
+        use reqwest::StatusCode;
+        for status in [StatusCode::BAD_REQUEST, StatusCode::UNAUTHORIZED] {
+            let error = super::packet_write_refused(status, b"bad address");
+            assert_eq!(error.code, ErrorCode::SendFailed);
+            assert!(crate::spending::failed_before_paying(&error), "{status}");
+        }
+        let error = super::packet_write_refused(StatusCode::BAD_REQUEST, b"bad address");
+        assert!(
+            error.message.contains("Nothing was sent or paid."),
+            "{}",
+            error.message
+        );
+        for status in [
+            StatusCode::FORBIDDEN,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_GATEWAY,
+        ] {
+            let error = super::packet_write_refused(status, b"");
+            assert!(!crate::spending::failed_before_paying(&error), "{status}");
+        }
+    }
+
+    #[test]
+    fn the_connectors_400_and_401_on_a_packet_write_are_told_from_its_debug() {
+        use super::{refused_before_origin, refused_with_400};
+        let transport = |status: &str| {
+            format!("Transport {{ url: \"http://x\", reason: \"{status} -- nope\" }}")
+        };
+        assert!(refused_before_origin(&transport("400 Bad Request")));
+        assert!(refused_before_origin(&transport("401 Unauthorized")));
+        assert!(!refused_before_origin(&transport(
+            "500 Internal Server Error"
+        )));
+        assert!(refused_with_400(&transport("400 Bad Request")));
+        assert!(!refused_with_400(&transport("401 Unauthorized")));
     }
 
     #[test]
