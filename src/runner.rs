@@ -50,6 +50,28 @@ const TMP_SIZE: &str = "64m";
 const CONFINED: &str = "The app runs confined: see \"What an app may and may not do\" in \
      docs/guide/adding-an-app.md for the allowances.";
 
+/// `usage` unless `name` is one docker can take as the name of a runtime: not empty, not
+/// starting with `-`, and only letters, digits, `.`, `_` and `-`.
+pub fn check_runtime(name: &str) -> Result<(), Error> {
+    if !name.is_empty()
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Ok(());
+    }
+    Err(Error {
+        code: ErrorCode::Usage,
+        message: format!(
+            "The runtime \"{name}\" is not a name: it holds letters, digits, `.`, `_` and `-`, \
+             and does not start with `-`."
+        ),
+        nothing_sent: false,
+        unanswered: None,
+    })
+}
+
 /// What an operator allowed one app when adding it (ADR 0011). Kept with the app in the
 /// home. The default allows nothing.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -307,7 +329,7 @@ impl Allowances {
     /// How `toon status --json` says an app is confined: what the supervisor starts it
     /// with, derived from the allowances and not read back from docker. `user` is the
     /// `uid:gid` of the process that runs `toon`.
-    pub fn confinement(&self, relay: bool, user: &str) -> serde_json::Value {
+    pub fn confinement(&self, relay: bool, user: &str, runtime: Option<&str>) -> serde_json::Value {
         let mut writable = vec!["/data".to_owned(), "/tmp".to_owned()];
         writable.extend(self.scratch.iter().cloned());
         serde_json::json!({
@@ -319,6 +341,7 @@ impl Allowances {
             "memory": self.memory(),
             "cpus": self.cpus(),
             "pids": self.pids(),
+            "runtime": runtime,
         })
     }
 
@@ -387,6 +410,9 @@ pub struct AppSpec {
     pub relay: bool,
     /// What the operator allowed the app. The relay always has the defaults.
     pub allowances: Allowances,
+    /// The runtime docker starts the container under, `None` for docker's own. The relay
+    /// never has one, and a runner that starts a local process ignores it.
+    pub runtime: Option<String>,
     /// Where the app was before it was stopped to start again alone, if it was.
     pub place: Option<Place>,
 }
@@ -706,6 +732,24 @@ fn network_arguments(relay_ports: Option<(u16, u16)>, network: &str) -> Vec<Stri
     }
 }
 
+/// ", under the runtime X" for an app that has one, for a message that names the app's image.
+fn under(runtime: Option<&str>) -> String {
+    runtime.map_or_else(String::new, |runtime| {
+        format!(", under the runtime {runtime}")
+    })
+}
+
+/// The `app_failed` message for a container docker did not start: names the runtime the app
+/// was to run under, beside what docker said. Where the runtime is not installed, that is
+/// what docker refuses.
+fn start_failure(image: &str, runtime: Option<&str>, docker_said: &str) -> String {
+    format!(
+        "docker could not start {image}{}: {} {CONFINED}",
+        under(runtime),
+        docker_said.trim()
+    )
+}
+
 /// How `docker network create` makes an app's network: internal, unless the app may open
 /// connections out.
 fn network_create_arguments(egress: bool, network: &str) -> Vec<String> {
@@ -718,8 +762,13 @@ fn network_create_arguments(egress: bool, network: &str) -> Vec<String> {
 }
 
 /// What confines every container, the relay's too: no capabilities, the caller's user, a
-/// read-only root with `/tmp` and the scratch paths writable, and limits.
-fn confinement_arguments(allowances: &Allowances, user: &str) -> Vec<String> {
+/// read-only root with `/tmp` and the scratch paths writable, and limits. The runtime the
+/// app was added with, if it has one, is the only thing here that is not an allowance.
+fn confinement_arguments(
+    allowances: &Allowances,
+    runtime: Option<&str>,
+    user: &str,
+) -> Vec<String> {
     let memory = allowances.memory().to_string();
     let mut arguments: Vec<String> = [
         "--cap-drop",
@@ -737,6 +786,9 @@ fn confinement_arguments(allowances: &Allowances, user: &str) -> Vec<String> {
     .collect();
     for path in &allowances.scratch {
         arguments.extend(["--tmpfs".to_owned(), path.clone()]);
+    }
+    if let Some(runtime) = runtime {
+        arguments.extend(["--runtime".to_owned(), runtime.to_owned()]);
     }
     arguments.extend([
         "--memory".to_owned(),
@@ -827,7 +879,11 @@ impl AppRunner for ContainerRunner {
             .map(|(write, read)| (write.port, read.port));
         command
             .args(network_arguments(relay_ports, &name))
-            .args(confinement_arguments(&spec.allowances, &caller()))
+            .args(confinement_arguments(
+                &spec.allowances,
+                spec.runtime.as_deref(),
+                &caller(),
+            ))
             .arg("--volume")
             .arg(format!("{}:/data", data.display()))
             .args(["--env", "TOON_DATA_DIR=/data"])
@@ -845,10 +901,10 @@ impl AppRunner for ContainerRunner {
             if let (Some(network), false) = (&network, kept) {
                 let _ = docker(&["network", "rm", network]);
             }
-            return Err(failed(format!(
-                "docker could not start {}: {} {CONFINED}",
-                spec.image,
-                String::from_utf8_lossy(&output.stderr).trim()
+            return Err(failed(start_failure(
+                &spec.image,
+                spec.runtime.as_deref(),
+                &String::from_utf8_lossy(&output.stderr),
             )));
         }
         let mut container = Container {
@@ -888,8 +944,10 @@ impl AppRunner for ContainerRunner {
             let logs = docker(&["logs", "--tail", "20", &name]).unwrap_or_default();
             container.stop();
             return Err(failed(format!(
-                "The app {} ({}): {why}. {logs} {CONFINED}",
-                spec.instance, spec.image
+                "The app {} ({}{}): {why}. {logs} {CONFINED}",
+                spec.instance,
+                spec.image,
+                under(spec.runtime.as_deref())
             )));
         }
         // Up: the network is this container's now, kept or not.
@@ -974,6 +1032,7 @@ mod tests {
             data_dir: data_dir.to_path_buf(),
             relay: false,
             allowances: Allowances::default(),
+            runtime: None,
             place: None,
         }
     }
@@ -1132,8 +1191,16 @@ mod tests {
     const USER: &str = "1000:1000";
 
     fn run_arguments(relay_ports: Option<(u16, u16)>, allowances: &Allowances) -> String {
+        run_arguments_under(relay_ports, allowances, None)
+    }
+
+    fn run_arguments_under(
+        relay_ports: Option<(u16, u16)>,
+        allowances: &Allowances,
+        runtime: Option<&str>,
+    ) -> String {
         let mut arguments = network_arguments(relay_ports, "toon-x");
-        arguments.extend(confinement_arguments(allowances, USER));
+        arguments.extend(confinement_arguments(allowances, runtime, USER));
         arguments.join(" ")
     }
 
@@ -1202,6 +1269,45 @@ mod tests {
     }
 
     #[test]
+    fn a_runtime_is_a_plain_name() {
+        for name in [
+            "runsc",
+            "kata-runtime",
+            "io.containerd.runsc.v1",
+            "a_b",
+            "9",
+        ] {
+            assert!(check_runtime(name).is_ok(), "{name}");
+        }
+        for name in ["", "-x", "--rm", "a b", "a/b", "a;b", "é", "a=b"] {
+            assert_eq!(
+                check_runtime(name).unwrap_err().code,
+                ErrorCode::Usage,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_runtime_reaches_the_arguments_only_when_the_app_has_one() {
+        let defaults = Allowances::default();
+        let under = run_arguments_under(None, &defaults, Some("runsc"));
+        assert!(under.contains("--runtime runsc"), "{under}");
+        assert_confined(&under);
+        assert!(!run_arguments(None, &defaults).contains("--runtime"));
+        // The relay is given none.
+        assert!(!run_arguments(Some((4100, 4101)), &defaults).contains("--runtime"));
+    }
+
+    #[test]
+    fn a_container_that_did_not_start_names_its_runtime() {
+        let message = start_failure("example/app:1", Some("runsc"), "unknown runtime\n");
+        assert!(message.contains("under the runtime runsc"), "{message}");
+        assert!(message.contains("unknown runtime"), "{message}");
+        assert!(!start_failure("example/app:1", None, "x").contains("runtime"));
+    }
+
+    #[test]
     fn an_apps_network_is_internal_unless_it_may_open_connections_out() {
         let closed = network_create_arguments(false, "toon-x");
         assert_eq!(closed, ["network", "create", "--internal", "toon-x"]);
@@ -1266,25 +1372,26 @@ mod tests {
 
     #[test]
     fn the_confinement_follows_the_allowances() {
-        let defaults = Allowances::default().confinement(false, USER);
+        let defaults = Allowances::default().confinement(false, USER, None);
         assert_eq!(
             defaults,
             serde_json::json!({
                 "network": "none", "user": USER, "read_only": true,
                 "writable": ["/data", "/tmp"], "capabilities": [],
-                "memory": 536870912, "cpus": 1.0, "pids": 256,
+                "memory": 536870912, "cpus": 1.0, "pids": 256, "runtime": null,
             })
         );
         let allowed = Allowances::parse(true, &["/cache".into()], Some("1g"), None, None).unwrap();
-        let record = allowed.confinement(false, USER);
+        let record = allowed.confinement(false, USER, Some("runsc"));
         assert_eq!(record["network"], "egress");
         assert_eq!(
             record["writable"],
             serde_json::json!(["/data", "/tmp", "/cache"])
         );
         assert_eq!(record["memory"], 1073741824u64);
+        assert_eq!(record["runtime"], "runsc");
         assert_eq!(
-            Allowances::default().confinement(true, USER)["network"],
+            Allowances::default().confinement(true, USER, None)["network"],
             "host"
         );
     }

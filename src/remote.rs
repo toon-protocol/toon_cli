@@ -396,6 +396,7 @@ fn add(key: &KeyFile, args: &AddArgs) -> Result<Report, Error> {
             "address": args.address,
             "price": args.price,
             "request": request,
+            "runtime": args.runtime,
             "allow_egress": args.allow.allow_egress,
             "scratch": args.allow.scratch,
             "memory": args.allow.memory,

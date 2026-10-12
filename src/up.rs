@@ -357,6 +357,7 @@ fn start_app(
         data_dir: files.data_dir,
         relay: matches!(app.source, Source::Relay),
         allowances: app.allowances.clone(),
+        runtime: app.runtime.clone(),
         place,
     };
     runner.start(&spec).map(Some)
@@ -1161,6 +1162,7 @@ impl Unit {
             let changed = old.is_some_and(|old| {
                 old.source != behind.source
                     || old.allowances != behind.allowances
+                    || old.runtime != behind.runtime
                     || old.variables != behind.variables
                     || old.secret_variables != behind.secret_variables
                     || old.secret_files != behind.secret_files

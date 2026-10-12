@@ -8,7 +8,10 @@
 //! seeded with `ghcr.io/toon-protocol/*`; an operator edits it by hand. A home without the
 //! file trusts that seed, and an empty file trusts nothing.
 //!
-//! Only an agent key's add is checked against the list. An operator with the home never is.
+//! Only an agent key's add is checked against the list, to decide whether it is added at
+//! once. An operator's add is never refused by it: the one thing the list does to an operator
+//! is to decide whether the node's runtime applies to the app (ADR 0011). The node's runtime
+//! is the first line of `untrusted-runtime` that is not blank and does not start with `#`.
 
 use std::path::{Path, PathBuf};
 
@@ -18,6 +21,7 @@ use crate::outcome::{Error, ErrorCode};
 pub const SEED: &str = "ghcr.io/toon-protocol/*";
 
 const FILE_NAME: &str = "trusted-images";
+const RUNTIME_FILE_NAME: &str = "untrusted-runtime";
 
 pub fn path(home: &Path) -> PathBuf {
     home.join(FILE_NAME)
@@ -101,9 +105,51 @@ pub fn is_trusted(home: &Path, image: &str) -> Result<bool, Error> {
     }
 }
 
+/// The runtime the home names for every image off the list, or `None` if the file is not
+/// there or names none. `toon init` never writes it. A name docker cannot take, such as one
+/// it would read as a flag, is `usage`.
+pub fn untrusted_runtime(home: &Path) -> Result<Option<String>, Error> {
+    let file = home.join(RUNTIME_FILE_NAME);
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(Error {
+                code: ErrorCode::Io,
+                message: format!("{}: {source}.", file.display()),
+                nothing_sent: false,
+                unanswered: None,
+            })
+        }
+    };
+    let Some(name) = first_name(&text) else {
+        return Ok(None);
+    };
+    crate::runner::check_runtime(name)
+        .map(|()| Some(name.to_owned()))
+        .map_err(|mut error| {
+            error.message = format!("{}: {}", file.display(), error.message);
+            error
+        })
+}
+
+/// The first line of `text` that is not blank and does not start with `#`.
+fn first_name(text: &str) -> Option<&str> {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_nodes_runtime_is_the_first_line_that_names_one() {
+        assert_eq!(first_name("# gVisor\n\n  runsc \nkata\n"), Some("runsc"));
+        assert_eq!(first_name("# only a comment\n\n"), None);
+        assert_eq!(first_name(""), None);
+    }
 
     #[test]
     fn an_image_matches_by_its_repository() {

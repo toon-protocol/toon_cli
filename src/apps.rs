@@ -58,8 +58,51 @@ pub struct Add<'a> {
     /// The JSON object that says what a client should send the app.
     pub request: Option<serde_json::Value>,
     pub allowances: Allowances,
+    /// The runtime the app is started under, already settled (see `runtime`); `None` for
+    /// docker's own.
+    pub runtime: Option<String>,
     pub secrets: crate::secrets::Given,
     pub yes: bool,
+}
+
+/// The runtime a flag names for an app that is run: `None` if none was given, `Some(None)`
+/// for `default`, which is docker's own, and `usage` for a name docker cannot take.
+fn flag_runtime(flag: Option<&str>) -> Result<Option<Option<String>>, Error> {
+    match flag {
+        None => Ok(None),
+        Some("default") => Ok(Some(None)),
+        Some(name) => {
+            crate::runner::check_runtime(name)?;
+            Ok(Some(Some(name.to_owned())))
+        }
+    }
+}
+
+/// The runtime a flag names for an app added from `origin`, as `flag_runtime`, and `usage`
+/// for an app at a URL, which is not run.
+fn named_runtime(origin: &Origin, flag: Option<&str>) -> Result<Option<Option<String>>, Error> {
+    if flag.is_some() && matches!(origin, Origin::Url(_)) {
+        return Err(failed(
+            ErrorCode::Usage,
+            "--runtime names how a container is started; an app at a --url is not run.".into(),
+        ));
+    }
+    flag_runtime(flag)
+}
+
+/// The runtime an operator's add settles on, to be kept with the app: the one named, or
+/// `None` for `default`; otherwise the node's, if the image is off the list of trusted
+/// images; otherwise `None`. The list never refuses the add.
+pub fn runtime(home: &Path, origin: &Origin, flag: Option<&str>) -> Result<Option<String>, Error> {
+    if let Some(named) = named_runtime(origin, flag)? {
+        return Ok(named);
+    }
+    match origin {
+        Origin::Image(image) if !crate::trusted::is_trusted(home, image)? => {
+            crate::trusted::untrusted_runtime(home)
+        }
+        _ => Ok(None),
+    }
 }
 
 /// The allowances `toon add` and `toon create` were given, or `usage` if one cannot be
@@ -318,6 +361,7 @@ pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
         price: add.price,
         request,
         allowances: add.allowances.clone(),
+        runtime: add.runtime.clone(),
         variables: Default::default(),
         secret_variables: Vec::new(),
         secret_files: Vec::new(),
@@ -428,16 +472,23 @@ pub fn change(home: &Path, args: &crate::cli::ChangeArgs) -> Result<Report, Erro
         args.allow.cpus.as_deref(),
         args.allow.pids.as_deref(),
     )?;
+    if before.source == Source::Relay && args.runtime.is_some() {
+        return Err(failed(
+            ErrorCode::Usage,
+            "The relay has no runtime: it is the project's own image.".into(),
+        ));
+    }
+    let runtime = flag_runtime(args.runtime.as_deref())?;
     let secrets_named = !args.secrets.env.is_empty()
         || !args.secrets.secret.is_empty()
         || !args.secrets.secret_file.is_empty()
         || !args.unset_env.is_empty()
         || !args.unset_secret.is_empty()
         || !args.unset_secret_file.is_empty();
-    if allowance_change.is_empty() && !secrets_named {
+    if allowance_change.is_empty() && !secrets_named && runtime.is_none() {
         return Err(failed(
             ErrorCode::Usage,
-            format!("Nothing to change: give {name} a flag, such as --env, --secret or --memory."),
+            format!("Nothing to change: give {name} a flag, such as --env, --secret, --memory or --runtime."),
         ));
     }
     if before.source == Source::Relay && (allowance_change.more_than_limits() || secrets_named) {
@@ -460,6 +511,9 @@ pub fn change(home: &Path, args: &crate::cli::ChangeArgs) -> Result<Report, Erro
     };
     let mut app = secrets.applied(before, &allowances)?;
     app.allowances = allowances;
+    if let Some(runtime) = &runtime {
+        app.runtime = runtime.clone();
+    }
     if app == *before {
         return Err(failed(
             ErrorCode::Usage,
@@ -477,6 +531,11 @@ pub fn change(home: &Path, args: &crate::cli::ChangeArgs) -> Result<Report, Erro
     match egress {
         Some(true) => set.push("egress".into()),
         Some(false) => unset.push("egress".into()),
+        None => {}
+    }
+    match &runtime {
+        Some(Some(runtime)) => set.push(format!("runtime {runtime}")),
+        Some(None) => unset.push("runtime".into()),
         None => {}
     }
     set.extend(
@@ -741,6 +800,7 @@ fn asked(body: &serde_json::Value, to: &str, origin: &Origin) -> Result<serde_js
         "address": text(body, "address")?,
         "price": price,
         "request": request,
+        "runtime": text(body, "runtime")?,
         "allow_egress": body["allow_egress"].as_bool().unwrap_or(false),
         "scratch": strings(body, "scratch")?,
         "memory": text(body, "memory")?,
@@ -773,6 +833,7 @@ fn parse_ask(
         pids: text(ask, "pids")?.map(str::to_owned),
     };
     let allowances = allowances(&origin, &flags)?;
+    named_runtime(&origin, ask["runtime"].as_str())?;
     let secrets = crate::secrets::Given::parse(
         &origin,
         &crate::cli::SecretArgs {
@@ -874,9 +935,17 @@ pub fn ordered_add(
         Origin::Url(_) => false,
         Origin::Image(image) => {
             crate::trusted::is_trusted(home, image)?
-                && !["allow_egress", "scratch", "memory", "cpus", "pids", "env"]
-                    .iter()
-                    .any(|field| listed(body, field))
+                && ![
+                    "runtime",
+                    "allow_egress",
+                    "scratch",
+                    "memory",
+                    "cpus",
+                    "pids",
+                    "env",
+                ]
+                .iter()
+                .any(|field| listed(body, field))
         }
     };
     if !at_once {
@@ -908,6 +977,7 @@ pub fn ordered_add(
             price,
             request,
             allowances: Allowances::default(),
+            runtime: None,
             secrets: Default::default(),
             yes: body["yes"].as_bool().unwrap_or(false),
         },
@@ -928,6 +998,9 @@ pub fn approve(home: &Path, app: &str) -> Result<Report, Error> {
     let entry = crate::pending::find_pending(home, app)?;
     let ask = &entry.ask;
     let (origin, allowances, secrets) = parse_ask(ask)?;
+    // The operator's approval is an operator's add: no runtime asked for leaves the node's
+    // to apply.
+    let runtime = runtime(home, &origin, ask["runtime"].as_str())?;
     let to = ask["to"].as_str().unwrap_or_default();
     let report = add(
         home,
@@ -942,6 +1015,7 @@ pub fn approve(home: &Path, app: &str) -> Result<Report, Error> {
                 request => Some(request.clone()),
             },
             allowances,
+            runtime,
             secrets,
             // Approving is the operator's say-so for the restart.
             yes: true,

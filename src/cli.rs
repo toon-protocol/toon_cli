@@ -272,6 +272,10 @@ pub struct AddArgs {
     /// connector publishes it on the route, and never reads it
     #[arg(long, value_name = "FILE")]
     pub request: Option<std::path::PathBuf>,
+    /// The runtime docker starts the app's container under, such as `runsc`; `default` is
+    /// docker's own. Not an allowance: it lets the app do nothing more
+    #[arg(long, value_name = "NAME")]
+    pub runtime: Option<String>,
     #[command(flatten)]
     pub allow: AllowanceArgs,
     #[command(flatten)]
@@ -285,6 +289,9 @@ pub struct AddArgs {
 pub struct ChangeArgs {
     /// The app's name
     pub app: String,
+    /// Start the app under another runtime from now on, or `default` for docker's own
+    #[arg(long, value_name = "NAME")]
+    pub runtime: Option<String>,
     #[command(flatten)]
     pub allow: AllowanceArgs,
     #[command(flatten)]
@@ -312,6 +319,10 @@ pub struct ChangeArgs {
 
 #[derive(Debug, Args)]
 pub struct CreateArgs {
+    /// The runtime docker starts the app's container under, such as `runsc`; `default` is
+    /// docker's own. Not an allowance: it lets the app do nothing more
+    #[arg(long, value_name = "NAME")]
+    pub runtime: Option<String>,
     #[command(flatten)]
     pub allow: AllowanceArgs,
     #[command(flatten)]

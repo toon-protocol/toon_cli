@@ -99,6 +99,7 @@ impl Entry {
                 "pids": self.ask["pids"],
             },
             "variables": self.ask["env"],
+            "runtime": self.ask["runtime"],
         });
         if let Some(reason) = &self.refused {
             shown["reason"] = json!((!reason.is_empty()).then_some(reason));
@@ -142,6 +143,9 @@ pub fn asked(shown: &Value) -> String {
         if let Some(value) = allowances[limit].as_str() {
             with.push(format!("{limit} {value}"));
         }
+    }
+    if let Some(runtime) = shown["runtime"].as_str() {
+        with.push(format!("runtime {runtime}"));
     }
     for variable in shown["variables"].as_array().into_iter().flatten() {
         with.push(format!(

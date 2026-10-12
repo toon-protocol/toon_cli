@@ -352,6 +352,42 @@ fn destroy_stops_and_removes_a_toon_app_that_holds_nothing() {
 }
 
 #[test]
+fn a_toon_app_is_created_with_a_runtime_for_its_app() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+
+    let created = with_passphrase(
+        &machine,
+        &[
+            "create",
+            "second",
+            "--image",
+            "second:1",
+            "--runtime",
+            "runsc",
+            "--no-peer",
+            "--clearnet",
+            "second.example.com",
+            "--json",
+        ],
+    );
+
+    assert_eq!(created.exit_code, 0, "{}", created.stdout);
+    let status = machine.toon(&["status", "--json"]).json();
+    let second = status["agent_node"]["toon_apps"]
+        .as_array()
+        .and_then(|apps| apps.iter().find(|app| app["name"] == "second"))
+        .unwrap_or_else(|| panic!("no TOON app second: {status}"));
+    assert_eq!(
+        second["apps"][0]["confinement"]["runtime"], "runsc",
+        "{status}"
+    );
+}
+
+#[test]
 fn a_toon_app_is_created_while_the_agent_node_is_down_and_up_starts_it() {
     let chain = FakeChain::start();
     let machine = Machine::new();

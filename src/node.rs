@@ -302,6 +302,9 @@ pub struct App {
     pub request: Option<Value>,
     /// What the operator allowed the app when adding it (ADR 0011).
     pub allowances: Allowances,
+    /// The runtime docker starts the app's container under, `None` for docker's own. Settled
+    /// when the app is added (ADR 0011). Not an allowance, so it is kept beside them.
+    pub runtime: Option<String>,
     /// The variables the operator gave the app (ADR 0012).
     pub variables: BTreeMap<String, String>,
     /// The names of the secrets given as variables. Their contents are in the home, in
@@ -325,6 +328,7 @@ impl App {
             price: RELAY_WRITE_PRICE,
             request: None,
             allowances: Allowances::default(),
+            runtime: None,
             variables: BTreeMap::new(),
             secret_variables: Vec::new(),
             secret_files: Vec::new(),
@@ -361,6 +365,9 @@ impl App {
                 allow["pids"] = json!(pids);
             }
             value["allow"] = allow;
+        }
+        if let Some(runtime) = &self.runtime {
+            value["runtime"] = json!(runtime);
         }
         if !self.variables.is_empty() {
             value["env"] = json!(self.variables);
@@ -425,6 +432,7 @@ impl App {
                 cpus: value["allow"]["cpus"].as_f64(),
                 pids: value["allow"]["pids"].as_u64(),
             },
+            runtime: value["runtime"].as_str().map(str::to_owned),
             variables: value["env"]
                 .as_object()
                 .map(|variables| {

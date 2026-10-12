@@ -288,6 +288,24 @@ docker exec toon-<instance>-open wget -T 3 -qO- http://example.com
 - `notes` reaches the internet not at all and `open` does;
 - the relay still starts and is paid: the publish steps above succeed.
 
+### An app under another runtime
+
+A human runs this on a machine with gVisor installed and registered with docker as `runsc`;
+CI and the factory have neither.
+
+```sh
+$E/toon add sandboxed --to second --image toon-e2e-app --runtime runsc --yes --json
+$E/toon status --json | jq '.agent_node.toon_apps[].apps[] | select(.name == "sandboxed") | .confinement.runtime'
+docker inspect --format '{{.HostConfig.Runtime}}' toon-<instance>-sandboxed
+```
+
+**Expect**: the add succeeds, the app starts and answers as `notes` does, `confinement.runtime`
+is `"runsc"` and `docker inspect` prints `runsc`.
+
+On a machine without gVisor the same add fails with `app_failed`, and its message names the
+runtime `runsc` beside docker's own refusal (`unknown or invalid runtime name: runsc`). Nothing
+is left running.
+
 ### An app's variables and secrets
 
 This needs real docker, which CI does not have, so a human runs it, with `toon-e2e-app` or an
