@@ -249,6 +249,11 @@ fn run() -> ExitCode {
             json,
         )
         .into(),
+        Command::Change(args) => render(
+            home::resolve().and_then(|home| apps::change(&home, &args)),
+            json,
+        )
+        .into(),
         Command::Remove { app, yes } => render(
             home::resolve().and_then(|home| apps::remove(&home, &app, yes)),
             json,

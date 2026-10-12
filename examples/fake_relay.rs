@@ -59,6 +59,12 @@ fn main() {
             process::exit(1);
         }
     }
+    // An app given the variable `FAKE_APP_FAILS` does not start, for a test of a change the
+    // app does not start with: the app started again without it does.
+    if env::var_os("FAKE_APP_FAILS").is_some() {
+        eprintln!("fake relay: told not to start");
+        process::exit(1);
+    }
     let key = env::var("NOSTR_SECRET_KEY").unwrap_or_default();
     fs::write(
         data.join("environment"),
@@ -71,6 +77,13 @@ fn main() {
         .collect();
     all.sort();
     fs::write(data.join("all-environment"), all.concat()).expect("write");
+    // One line for every time it was started, for a test of how often an app restarts.
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(data.join("starts"))
+        .and_then(|mut starts| starts.write_all(b"started\n"))
+        .expect("write");
     let mut settings: Vec<String> = env::vars()
         .filter(|(name, _)| {
             (name.starts_with("TOON_RELAY_") && name != "TOON_RELAY_PORT")

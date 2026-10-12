@@ -69,6 +69,60 @@ pub struct Allowances {
 /// `cpus` is never NaN: `parse` refuses it.
 impl Eq for Allowances {}
 
+/// What `toon change` does to one limit.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Limit<T> {
+    /// The flag was not given.
+    #[default]
+    Keep,
+    /// `default`: the limit goes back to the default.
+    Default,
+    Set(T),
+}
+
+impl<T> Limit<T> {
+    fn over(self, before: Option<T>) -> Option<T> {
+        match self {
+            Limit::Keep => before,
+            Limit::Default => None,
+            Limit::Set(value) => Some(value),
+        }
+    }
+
+    fn given(&self) -> bool {
+        !matches!(self, Limit::Keep)
+    }
+}
+
+/// What the allowance flags of `toon change` ask for: a patch over an app's allowances.
+#[derive(Clone, Debug, Default)]
+pub struct AllowanceChange {
+    /// `Some(true)` for `--allow-egress`, `Some(false)` for `--no-allow-egress`.
+    pub egress: Option<bool>,
+    pub scratch: Vec<String>,
+    pub unset_scratch: Vec<String>,
+    pub memory: Limit<u64>,
+    pub cpus: Limit<f64>,
+    pub pids: Limit<u64>,
+}
+
+impl AllowanceChange {
+    /// Whether no allowance flag was given.
+    pub fn is_empty(&self) -> bool {
+        self.egress.is_none()
+            && self.scratch.is_empty()
+            && self.unset_scratch.is_empty()
+            && !self.memory.given()
+            && !self.cpus.given()
+            && !self.pids.given()
+    }
+
+    /// Whether a flag other than a limit was given.
+    pub fn more_than_limits(&self) -> bool {
+        self.egress.is_some() || !self.scratch.is_empty() || !self.unset_scratch.is_empty()
+    }
+}
+
 fn usage(message: String) -> Error {
     Error {
         nothing_sent: true,
@@ -155,6 +209,82 @@ impl Allowances {
             cpus,
             pids,
         })
+    }
+
+    /// The patch the flags of `toon change` ask for, with the values checked as `parse`
+    /// checks them. A limit given as `default` goes back to the default.
+    pub fn parse_change(
+        egress: Option<bool>,
+        scratch: &[String],
+        unset_scratch: &[String],
+        memory: Option<&str>,
+        cpus: Option<&str>,
+        pids: Option<&str>,
+    ) -> Result<AllowanceChange, Error> {
+        fn value(text: Option<&str>) -> Option<&str> {
+            text.filter(|text| *text != "default")
+        }
+        let set = Self::parse(false, scratch, value(memory), value(cpus), value(pids))?;
+        // The same spellings of a path, whether it is added or taken away.
+        let unset = Self::parse(false, unset_scratch, None, None, None)?;
+        fn limit<T>(text: Option<&str>, parsed: Option<T>) -> Limit<T> {
+            match (text, parsed) {
+                (None, _) => Limit::Keep,
+                (Some(_), Some(value)) => Limit::Set(value),
+                (Some(_), None) => Limit::Default,
+            }
+        }
+        Ok(AllowanceChange {
+            egress,
+            scratch: set.scratch,
+            unset_scratch: unset.scratch,
+            memory: limit(memory, set.memory),
+            cpus: limit(cpus, set.cpus),
+            pids: limit(pids, set.pids),
+        })
+    }
+
+    /// This allowance with `change` applied over it, or `usage` if the change takes away
+    /// something the app does not have.
+    pub fn changed(&self, change: &AllowanceChange) -> Result<Self, Error> {
+        let mut result = self.clone();
+        if change.egress == Some(true) {
+            result.egress = true;
+        }
+        if change.egress == Some(false) {
+            if !self.egress {
+                return Err(usage(
+                    "--no-allow-egress: the app is not allowed to open connections out.".into(),
+                ));
+            }
+            result.egress = false;
+        }
+        for path in &change.unset_scratch {
+            if change.scratch.contains(path) {
+                return Err(usage(format!("--scratch {path}: the path is given twice.")));
+            }
+            let Some(position) = result.scratch.iter().position(|known| known == path) else {
+                let has = if self.scratch.is_empty() {
+                    "none".to_owned()
+                } else {
+                    self.scratch.join(", ")
+                };
+                return Err(usage(format!(
+                    "--unset-scratch {path}: the app has no such scratch path. Its scratch \
+                     paths: {has}."
+                )));
+            };
+            result.scratch.remove(position);
+        }
+        for path in &change.scratch {
+            if !result.scratch.contains(path) {
+                result.scratch.push(path.clone());
+            }
+        }
+        result.memory = change.memory.over(result.memory);
+        result.cpus = change.cpus.over(result.cpus);
+        result.pids = change.pids.over(result.pids);
+        Ok(result)
     }
 
     /// Whether nothing is allowed.

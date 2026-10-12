@@ -163,13 +163,25 @@ fn confirm(yes: bool, toon_app: &str) -> Result<(), Error> {
 /// restart stopped it, started again without it. If nothing runs, the change is checked
 /// against the connector's own validation before it is recorded. Returns whether a
 /// connector was restarted.
-pub fn apply(home: &Path, before: &State, changed: &State, toon_app: &str) -> Result<bool, Error> {
+///
+/// `undo` runs when the change did not hold, before the connector is started again as it
+/// was: it puts back whatever the caller kept in the home for the change.
+pub fn apply(
+    home: &Path,
+    before: &State,
+    changed: &State,
+    toon_app: &str,
+    undo: impl Fn(),
+) -> Result<bool, Error> {
     if !control::running(home) {
-        check(home, changed, toon_app)?;
-        changed.save(home)?;
+        check(home, changed, toon_app).inspect_err(|_| undo())?;
+        changed.save(home).inspect_err(|_| undo())?;
         return Ok(false);
     }
-    changed.save(home)?;
+    if let Err(error) = changed.save(home) {
+        undo();
+        return Err(error);
+    }
     let reply = control::ask_about(home, "reload", Some(toon_app), RESTART_PATIENCE);
     let mut error = match &reply {
         Some(reply) if reply["reloaded"] == true => return Ok(true),
@@ -191,6 +203,7 @@ pub fn apply(home: &Path, before: &State, changed: &State, toon_app: &str) -> Re
             format!("The supervisor did not restart the connector of {toon_app}."),
         ),
     };
+    undo();
     before.save(home)?;
     // A restart that failed before it stopped the connector left it as it was.
     let untouched = reply.is_some_and(|reply| reply["stopped"] == false);
@@ -298,11 +311,12 @@ pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
         variables: Default::default(),
         secret_variables: Vec::new(),
         secret_files: Vec::new(),
+        secret_revision: 0,
     };
     add.secrets.record(&mut app);
     changed.toon_apps[index].apps.push(app);
     add.secrets.keep(home, add.name)?;
-    let restarted_now = apply(home, &state, &changed, add.to).inspect_err(|_| {
+    let restarted_now = apply(home, &state, &changed, add.to, || {}).inspect_err(|_| {
         crate::secrets::forget(home, add.name);
     })?;
     Ok(Report {
@@ -351,33 +365,210 @@ pub fn unknown(state: &State, name: &str) -> Error {
     )
 }
 
-/// `toon remove`: take the app `name`, and its route, away from the connector it is behind.
-pub fn remove(home: &Path, name: &str, yes: bool) -> Result<Report, Error> {
-    let state = loaded(home)?;
-    let Some((index, position)) = state.toon_apps.iter().enumerate().find_map(|(index, app)| {
+/// Where the app `name` is: the index of its TOON app and its position behind it.
+fn find_app(state: &State, name: &str) -> Result<(usize, usize), Error> {
+    let found = state.toon_apps.iter().enumerate().find_map(|(index, app)| {
         app.apps
             .iter()
             .position(|behind| behind.name == name)
             .map(|position| (index, position))
-    }) else {
+    });
+    found.ok_or_else(|| {
         let known: Vec<&str> = state
             .toon_apps
             .iter()
             .flat_map(|app| app.apps.iter().map(|behind| behind.name.as_str()))
             .collect();
-        return Err(failed(
+        failed(
             ErrorCode::UnknownName,
             format!(
                 "No app is called {name}. This agent node has {}.",
                 known.join(", ")
             ),
+        )
+    })
+}
+
+/// `toon change`: give an app that is added other variables, secrets or allowances, and
+/// keep everything about it that the flags do not name.
+pub fn change(home: &Path, args: &crate::cli::ChangeArgs) -> Result<Report, Error> {
+    let state = loaded(home)?;
+    let (index, position) = find_app(&state, &args.app)?;
+    let toon_app = state.toon_apps[index].name.clone();
+    let before = &state.toon_apps[index].apps[position];
+    let name = args.app.as_str();
+    if matches!(before.source, Source::Url(_)) {
+        return Err(failed(
+            ErrorCode::Usage,
+            format!("{name} is at a URL: it is not run, so it has nothing to change."),
         ));
+    }
+    let egress = match (args.allow.allow_egress, args.no_allow_egress) {
+        (true, _) => Some(true),
+        (_, true) => Some(false),
+        _ => None,
     };
+    let allowance_change = Allowances::parse_change(
+        egress,
+        &args.allow.scratch,
+        &args.unset_scratch,
+        args.allow.memory.as_deref(),
+        args.allow.cpus.as_deref(),
+        args.allow.pids.as_deref(),
+    )?;
+    let secrets_named = !args.secrets.env.is_empty()
+        || !args.secrets.secret.is_empty()
+        || !args.secrets.secret_file.is_empty()
+        || !args.unset_env.is_empty()
+        || !args.unset_secret.is_empty()
+        || !args.unset_secret_file.is_empty();
+    if allowance_change.is_empty() && !secrets_named {
+        return Err(failed(
+            ErrorCode::Usage,
+            format!("Nothing to change: give {name} a flag, such as --env, --secret or --memory."),
+        ));
+    }
+    if before.source == Source::Relay && (allowance_change.more_than_limits() || secrets_named) {
+        return Err(failed(
+            ErrorCode::Usage,
+            "The relay can be given other limits with --memory, --cpus and --pids, and nothing else."
+                .into(),
+        ));
+    }
+    let allowances = before.allowances.changed(&allowance_change)?;
+    let secrets = crate::secrets::SecretChange {
+        given: crate::secrets::Given::parse_flags(&args.secrets, &allowances)?,
+        unset_env: args.unset_env.clone(),
+        unset_secret: args.unset_secret.clone(),
+        unset_secret_file: args
+            .unset_secret_file
+            .iter()
+            .map(|path| crate::secrets::normal(path))
+            .collect(),
+    };
+    let mut app = secrets.applied(before, &allowances)?;
+    app.allowances = allowances;
+    if app == *before {
+        return Err(failed(
+            ErrorCode::Usage,
+            format!("{name} is already as this would leave it: nothing to change."),
+        ));
+    }
+    confirm(args.yes, &toon_app)?;
+    let mut changed = state.clone();
+    changed.toon_apps[index].apps[position] = app.clone();
+    let staged = secrets.stage(home, before, &app)?;
+    let restarted_now = apply(home, &state, &changed, &toon_app, || staged.put_back())?;
+    staged.commit();
+    let mut set: Vec<String> = Vec::new();
+    let mut unset: Vec<String> = Vec::new();
+    match egress {
+        Some(true) => set.push("egress".into()),
+        Some(false) => unset.push("egress".into()),
+        None => {}
+    }
+    set.extend(
+        allowance_change
+            .scratch
+            .iter()
+            .map(|p| format!("scratch {p}")),
+    );
+    unset.extend(
+        allowance_change
+            .unset_scratch
+            .iter()
+            .map(|p| format!("scratch {p}")),
+    );
+    for (limit, given) in [
+        ("memory", &args.allow.memory),
+        ("cpus", &args.allow.cpus),
+        ("pids", &args.allow.pids),
+    ] {
+        match given.as_deref() {
+            Some("default") => unset.push(limit.into()),
+            Some(_) => set.push(limit.into()),
+            None => {}
+        }
+    }
+    set.extend(
+        secrets
+            .given
+            .variables
+            .keys()
+            .map(|n| format!("variable {n}")),
+    );
+    set.extend(
+        secrets
+            .given
+            .secret_variables
+            .iter()
+            .map(|(n, _)| format!("secret {n}")),
+    );
+    set.extend(
+        secrets
+            .given
+            .secret_files
+            .iter()
+            .map(|(p, _)| format!("secret file {p}")),
+    );
+    unset.extend(secrets.unset_env.iter().map(|n| format!("variable {n}")));
+    unset.extend(secrets.unset_secret.iter().map(|n| format!("secret {n}")));
+    // A name given as the other kind replaces what the app had by that name.
+    unset.extend(
+        secrets
+            .given
+            .variables
+            .keys()
+            .filter(|n| before.secret_variables.contains(n))
+            .map(|n| format!("secret {n}")),
+    );
+    unset.extend(
+        secrets
+            .given
+            .secret_variables
+            .iter()
+            .filter(|(n, _)| before.variables.contains_key(n))
+            .map(|(n, _)| format!("variable {n}")),
+    );
+    unset.extend(
+        secrets
+            .unset_secret_file
+            .iter()
+            .map(|p| format!("secret file {p}")),
+    );
+    let mut parts = Vec::new();
+    if !set.is_empty() {
+        parts.push(format!("gave it {}", set.join(", ")));
+    }
+    if !unset.is_empty() {
+        parts.push(format!("took away {}", unset.join(", ")));
+    }
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({
+            "changed": name,
+            "toon_app": toon_app,
+            "set": set,
+            "unset": unset,
+            "restarted": restarted_now,
+        }),
+        text: format!(
+            "Changed {name} in {toon_app}: {}. {}",
+            parts.join("; "),
+            restarted(restarted_now, &toon_app)
+        ),
+    })
+}
+
+/// `toon remove`: take the app `name`, and its route, away from the connector it is behind.
+pub fn remove(home: &Path, name: &str, yes: bool) -> Result<Report, Error> {
+    let state = loaded(home)?;
+    let (index, position) = find_app(&state, name)?;
     let toon_app = state.toon_apps[index].name.clone();
     confirm(yes, &toon_app)?;
     let mut changed = state.clone();
     let gone = changed.toon_apps[index].apps.remove(position);
-    let restarted_now = apply(home, &state, &changed, &toon_app)?;
+    let restarted_now = apply(home, &state, &changed, &toon_app, || {})?;
     crate::secrets::forget(home, name);
     Ok(Report {
         exit: Exit::Success,
@@ -418,7 +609,7 @@ pub fn route_price(home: &Path, prefix: &str, price: u64, yes: bool) -> Result<R
     confirm(yes, &toon_app)?;
     let mut changed = state.clone();
     changed.toon_apps[index].apps[position].price = price;
-    let restarted_now = apply(home, &state, &changed, &toon_app)?;
+    let restarted_now = apply(home, &state, &changed, &toon_app, || {})?;
     Ok(Report {
         exit: Exit::Success,
         json: json!({

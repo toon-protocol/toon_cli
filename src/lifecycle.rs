@@ -222,6 +222,7 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
                 variables: Default::default(),
                 secret_variables: Vec::new(),
                 secret_files: Vec::new(),
+                secret_revision: 0,
             };
             create.secrets.record(&mut app);
             app
