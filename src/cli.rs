@@ -129,7 +129,7 @@ pub enum Command {
         #[command(subcommand)]
         command: RelayCommand,
     },
-    /// Install, list or print the skills shipped in this binary
+    /// Install, list or show the skills shipped in this binary
     Skill {
         #[command(subcommand)]
         command: SkillCommand,

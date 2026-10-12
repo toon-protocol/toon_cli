@@ -19,6 +19,13 @@ struct Skill {
     references: &'static [(&'static str, &'static str)],
 }
 
+impl Skill {
+    /// The paths of its references, as the skill names them.
+    fn reference_paths(&self) -> Vec<&'static str> {
+        self.references.iter().map(|(path, _)| *path).collect()
+    }
+}
+
 /// Every skill the binary ships.
 const SKILLS: &[Skill] = &[
     Skill {
@@ -190,7 +197,12 @@ fn list() -> Report {
         .iter()
         .map(|skill| {
             std::iter::once(skill.name.to_owned())
-                .chain(skill.references.iter().map(|(path, _)| format!("  {path}")))
+                .chain(
+                    skill
+                        .reference_paths()
+                        .iter()
+                        .map(|path| format!("  {path}")),
+                )
                 .collect::<Vec<_>>()
                 .join("\n")
         })
@@ -203,7 +215,7 @@ fn list() -> Report {
                 .iter()
                 .map(|skill| json!({
                     "name": skill.name,
-                    "references": skill.references.iter().map(|(path, _)| path).collect::<Vec<_>>(),
+                    "references": skill.reference_paths(),
                 }))
                 .collect::<Vec<_>>(),
         }),
@@ -235,12 +247,7 @@ fn show(name: &str, reference: Option<&str>) -> Result<Report, Error> {
                     if skill.references.is_empty() {
                         "none".to_owned()
                     } else {
-                        skill
-                            .references
-                            .iter()
-                            .map(|(path, _)| *path)
-                            .collect::<Vec<_>>()
-                            .join(", ")
+                        skill.reference_paths().join(", ")
                     }
                 ))
             })?,
