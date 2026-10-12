@@ -19,6 +19,7 @@ use crate::derive;
 use crate::egress::Egress;
 use crate::feed;
 use crate::home;
+use crate::inbox;
 use crate::keystore;
 use crate::node;
 use crate::operator::{self, Answer};
@@ -84,7 +85,7 @@ pub fn sign(
 }
 
 /// Tags are a JSON array of arrays of strings.
-fn parse_tags(tags: &str) -> Result<Value, Error> {
+pub fn parse_tags(tags: &str) -> Result<Value, Error> {
     let value: Value = serde_json::from_str(tags)
         .map_err(|error| usage(format!("--tags is not JSON: {error}.")))?;
     let well_formed = value.as_array().is_some_and(|tags| {
@@ -270,8 +271,32 @@ pub fn write_to(
         }
     };
 
+    written(event, answer?, amount)
+}
+
+/// The `sign` order, answered by the supervisor (ADR 0010): an event of any kind, signed
+/// now with the agent identity's kept secret. The secret is in no answer.
+pub fn sign_order(body: &Value, home: &Path) -> Result<Value, Error> {
+    let kind = body["kind"]
+        .as_u64()
+        .ok_or_else(|| usage("A signing order needs a `kind`."))?;
+    let tags = match body.get("tags") {
+        Some(tags) => parse_tags(&tags.to_string())?,
+        None => json!([]),
+    };
+    let secret = inbox::require_kept_secret(home)?;
+    sign(
+        &secret,
+        now(),
+        kind,
+        tags,
+        body["content"].as_str().unwrap_or_default(),
+    )
+}
+
+/// What a write of `event` for `amount` came to, as a report, given the connector's `answer`.
+pub fn written(event: Value, answer: Answer, amount: u64) -> Result<Report, Error> {
     let id = event["id"].as_str().unwrap_or_default().to_owned();
-    let answer = answer?;
     if matches!(answer, Answer::Unanswered) {
         return Err(operator::unanswered_cost(u128::from(amount), Some(event)));
     }

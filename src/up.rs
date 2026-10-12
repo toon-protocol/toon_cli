@@ -29,8 +29,10 @@ use crate::apps;
 use crate::connector::{self, Startup};
 use crate::control;
 use crate::egress::Egress;
+use crate::event;
 use crate::funding;
 use crate::inbox::Inbox;
+use crate::message;
 use crate::node::{self, App, AppFiles, ConnectorFiles, Reach, Source, State, ToonApp};
 use crate::order;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
@@ -575,11 +577,6 @@ fn spawn(files: &ConnectorFiles) -> Result<Started, Error> {
     Err(failed(refusal))
 }
 
-/// An order that could not be carried out, as the answer says so.
-fn refused(error: Error) -> order::Refusal {
-    order::Refusal::bad_order(error.code.as_str(), error.message)
-}
-
 /// Ask `queue`'s consumer to carry out a request, and wait for the answer.
 fn wait_for(queue: &Mutex<Vec<Reload>>) -> Value {
     let (answer, answered) = mpsc::channel();
@@ -687,6 +684,18 @@ impl Shared {
             }
             "add" => apps::ordered_add(home, &key.toon_apps, &order.body).map_err(refused),
             "remove" => apps::ordered_remove(home, &key.toon_apps, &order.body).map_err(refused),
+            "sign" => {
+                let relay = relay_for(home, key, &order.body)?;
+                let event = event::sign_order(&order.body, home).map_err(refused)?;
+                Ok(json!({ "event": event, "relay": relay }))
+            }
+            "seal" => {
+                let relay = relay_for(home, key, &order.body)?;
+                let mut sealed = message::seal_order(home, &order.body).map_err(refused)?;
+                sealed["relay"] = json!(relay);
+                Ok(sealed)
+            }
+            "messages" => message::list_order(home, &order.body).map_err(refused),
             _ => Err(order::Refusal::bad_order(
                 "usage",
                 "No such order.".to_owned(),
@@ -697,6 +706,43 @@ impl Shared {
     fn units(&self) -> MutexGuard<'_, Vec<Arc<UnitShared>>> {
         self.units.lock().expect("the connectors' state")
     }
+}
+
+/// Where the relay of the TOON app a signing order names is written, when it names one: the
+/// agent sends the packets itself, so it needs the address. The TOON app must be one the key
+/// is granted on.
+fn relay_for(home: &Path, key: &Key, body: &Value) -> Result<Option<String>, order::Refusal> {
+    let Some(name) = body["toon_app"].as_str() else {
+        return Ok(None);
+    };
+    if !key.toon_apps.iter().any(|app| app == name) {
+        return Err(order::Refusal::bad_order(
+            "unknown_name",
+            format!("This key is not granted on the TOON app {name}."),
+        ));
+    }
+    State::load(home)
+        .ok()
+        .flatten()
+        .and_then(|state| {
+            state
+                .toon_apps
+                .iter()
+                .find(|app| app.name == name)
+                .map(ToonApp::relay_prefix)
+        })
+        .map(Some)
+        .ok_or_else(|| {
+            order::Refusal::bad_order(
+                "unknown_name",
+                format!("No TOON app {name} in this agent node."),
+            )
+        })
+}
+
+/// An order the supervisor could not carry out, as the answer says so: with the error's code.
+fn refused(error: Error) -> order::Refusal {
+    order::Refusal::bad_order(error.code.as_str(), error.message)
 }
 
 /// The last `lines` lines of the file at `path`, reading no more than its final `TAIL_BYTES`.

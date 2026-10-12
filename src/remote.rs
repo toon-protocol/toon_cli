@@ -14,7 +14,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
-use crate::cli::{AddArgs, Command, LimitCommand, PeerCommand};
+use crate::cli::{AddArgs, Command, EventCommand, LimitCommand, MessageCommand, PeerCommand};
+use crate::event;
+use crate::message;
 use crate::operator::{self, PeerAdd, Surface};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 
@@ -106,7 +108,13 @@ impl KeyFile {
     /// The operator surface of the TOON app `app`, or of the only one the file names, or of
     /// `relay`.
     fn surface(&self, app: Option<&str>) -> Result<Surface, Error> {
-        let (name, url) = match app {
+        let (name, url) = self.choose(app)?;
+        Ok(Surface::of_agent_key(url, name, *self.secret))
+    }
+
+    /// The name and operator-surface address of the TOON app a command works on.
+    fn choose(&self, app: Option<&str>) -> Result<&(String, String), Error> {
+        Ok(match app {
             Some(name) => self
                 .toon_apps
                 .iter()
@@ -125,8 +133,7 @@ impl KeyFile {
                         )
                     })?,
             },
-        };
-        Ok(Surface::of_agent_key(url, name, *self.secret))
+        })
     }
 }
 
@@ -453,6 +460,85 @@ fn limit_show(key: &KeyFile, app: Option<&str>) -> Result<Report, Error> {
     })
 }
 
+/// `toon event sign` and `toon event publish` with an agent key: the supervisor signs with
+/// the agent identity (the `sign` order) and the agent publishes, if it does, with the agent
+/// key, which the connector counts. The secret is never here.
+fn signed(
+    key: &KeyFile,
+    toon_app: Option<&str>,
+    kind: u64,
+    content: &str,
+    tags: &str,
+) -> Result<Value, Error> {
+    let mut body = json!({
+        "kind": kind,
+        "content": content,
+        "tags": event::parse_tags(tags)?,
+    });
+    if let Some(name) = toon_app {
+        body["toon_app"] = json!(name);
+    }
+    order(key, "sign", &body)
+}
+
+fn event_sign(key: &KeyFile, kind: u64, content: &str, tags: &str) -> Result<Report, Error> {
+    let event = signed(key, None, kind, content, tags)?["event"].clone();
+    Ok(Report {
+        exit: Exit::Success,
+        text: event.to_string(),
+        json: json!({ "event": event }),
+    })
+}
+
+fn event_publish(
+    key: &KeyFile,
+    app: Option<&str>,
+    (kind, content, tags): (u64, &str, &str),
+    amount: u64,
+) -> Result<Report, Error> {
+    let (name, _) = key.choose(app)?;
+    let reply = signed(key, Some(name), kind, content, tags)?;
+    let event = reply["event"].clone();
+    let relay = reply["relay"].as_str().ok_or_else(unexpected)?;
+    let answer =
+        operator::write_as_agent(&key.surface(app)?, relay, amount, event::write_body(&event))?;
+    event::written(event, answer, amount)
+}
+
+fn unexpected() -> Error {
+    failed(
+        ErrorCode::ConnectorFailed,
+        "The supervisor's answer was not understood.".into(),
+    )
+}
+
+fn message_send(key: &KeyFile, app: Option<&str>, mut body: Value) -> Result<Report, Error> {
+    let (name, _) = key.choose(app)?;
+    body["toon_app"] = json!(name);
+    let surface = key.surface(app)?;
+    message::send_sealed(
+        &body,
+        |body| order(key, "seal", body),
+        |wrap, relay| {
+            let answer = operator::write_as_agent(&surface, relay, 0, event::write_body(wrap))?;
+            event::written(wrap.clone(), answer, 0)
+        },
+    )
+}
+
+fn message_list(key: &KeyFile, body: &Value) -> Result<Report, Error> {
+    let mut reply = order(key, "messages", body)?;
+    let text = reply["text"].as_str().unwrap_or_default().to_owned();
+    if let Some(object) = reply.as_object_mut() {
+        object.remove("text");
+    }
+    Ok(Report {
+        exit: Exit::Success,
+        json: reply,
+        text,
+    })
+}
+
 /// Run `command` with the agent key at `path` and no home.
 pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, Error> {
     match command {
@@ -512,6 +598,56 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
         Command::Limit {
             command: LimitCommand::Show,
         } => limit_show(&KeyFile::load(path)?, app),
+        Command::Event {
+            command:
+                EventCommand::Sign {
+                    kind,
+                    content,
+                    tags,
+                },
+        } => event_sign(&KeyFile::load(path)?, kind, &content, &tags),
+        Command::Event {
+            command:
+                EventCommand::Publish {
+                    kind,
+                    content,
+                    tags,
+                    amount,
+                    relay: None,
+                    yes: _,
+                },
+        } => event_publish(
+            &KeyFile::load(path)?,
+            app,
+            (kind, &content, &tags),
+            amount.unwrap_or(0),
+        ),
+        Command::Message {
+            command:
+                MessageCommand::Send {
+                    recipients,
+                    content,
+                    reply_to,
+                    subject,
+                    relay: None,
+                    yes: _,
+                },
+        } => message_send(
+            &KeyFile::load(path)?,
+            app,
+            json!({
+                "recipients": recipients,
+                "content": content,
+                "reply_to": reply_to,
+                "subject": subject,
+            }),
+        ),
+        Command::Message {
+            command: MessageCommand::List { with, since, limit },
+        } => message_list(
+            &KeyFile::load(path)?,
+            &json!({ "with": with, "since": since, "limit": limit }),
+        ),
         other => Err(needs_home(&other)),
     }
 }
