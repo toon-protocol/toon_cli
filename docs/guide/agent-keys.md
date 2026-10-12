@@ -83,3 +83,24 @@ overwrite a file. The file is JSON:
 - The file is written once. `toon agent-key set --toon-app` changes which connectors accept
   the key but not a file already handed out: give the agent the address of a newly granted
   TOON app, or revoke the key and create a new one.
+
+## Orders
+
+The supervisor answers orders: HTTP requests signed with an agent key (RFC 9421, the
+signature a connector wants of a write: `@method`, `@path` and `content-digest`, with
+`created`, `expires` and `keyid` the key's public half). It listens on the `supervisor`
+address of the key file, on loopback only, beside its local socket. An address in the record
+that is not loopback is never bound.
+
+| Order | Scope | Body | Answer |
+|---|---|---|---|
+| `POST /orders/status` | `status` | none | The TOON apps the key is granted on, with their connector and apps. No file paths. |
+| `POST /orders/logs` | `logs` | `{"toon_app": NAME, "lines": N}`, both optional | The last lines of that TOON app's connector log. |
+
+The supervisor reads the record on every order, so a revoke or a change takes effect on the
+next one. It refuses, with `401`, an unsigned order, a key not on the record, a signature that
+does not verify or has expired, and a signature it has already answered. It refuses with
+`403` a key past its `--expires`, and a key whose scope lacks the order's; that answer names
+the scope (`error.scope`). A refused order does not spend its signature. An order it cannot
+carry out, such as logs of a TOON app the key is not granted on, is answered `400`. Every
+refusal is `{"error": {"code", "message"}}`.
