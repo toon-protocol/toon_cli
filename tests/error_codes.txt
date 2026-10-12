@@ -38,3 +38,4 @@ no_follow_list
 describe_failed
 agent_key_not_kept
 needs_home
+rate_limited

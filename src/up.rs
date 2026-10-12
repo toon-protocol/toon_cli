@@ -679,6 +679,35 @@ impl Shared {
                     )),
                 }
             }
+            "route-price" => {
+                let prefix = order.body["prefix"].as_str();
+                let price = order.body["price"].as_u64();
+                let (Some(prefix), Some(price)) = (prefix, price) else {
+                    return Err(order::Refusal::bad_order(
+                        "usage",
+                        "A route-price order names a \"prefix\" and a \"price\".".to_owned(),
+                    ));
+                };
+                let named = order.body["toon_app"].as_str();
+                // Granted on the TOON app the route is behind, and under the restart limit,
+                // before anything restarts. `--yes` was the agent's to say when it sent it.
+                crate::apps::route_price_guarded(home, prefix, price, true, |toon_app| {
+                    if !granted(toon_app) || named.is_some_and(|named| named != toon_app) {
+                        return Err(Error {
+                            code: ErrorCode::UnknownName,
+                            message: format!("This key is not granted on the TOON app {toon_app}."),
+                            nothing_sent: true,
+                            unanswered: None,
+                        });
+                    }
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |elapsed| elapsed.as_secs());
+                    crate::restarts::take(home, key, now)
+                })
+                .map(|report| report.json)
+                .map_err(|error| order::Refusal::of_error(&error))
+            }
             _ => Err(order::Refusal::bad_order(
                 "usage",
                 "No such order.".to_owned(),

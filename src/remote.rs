@@ -14,12 +14,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
-use crate::cli::{Command, LimitCommand, PeerCommand};
+use crate::cli::{Command, LimitCommand, PeerCommand, RouteCommand};
 use crate::operator::{self, PeerAdd, Surface};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 
 /// How long an order waits for the supervisor.
 const PATIENCE: Duration = Duration::from_secs(30);
+
+/// How long an order that restarts a connector waits: as long as the operator's own command.
+const RESTART_PATIENCE: Duration = Duration::from_secs(300);
 
 fn failed(code: ErrorCode, message: String) -> Error {
     Error {
@@ -190,7 +193,7 @@ fn now() -> u64 {
 
 /// Send `body` as the order `name` to the supervisor, signed with the key, and return its
 /// answer.
-fn order(key: &KeyFile, name: &str, body: &Value) -> Result<Value, Error> {
+fn order(key: &KeyFile, name: &str, body: &Value, patience: Duration) -> Result<Value, Error> {
     let path = format!("/orders/{name}");
     let url = format!("{}{path}", key.supervisor);
     let text = if body.is_null() {
@@ -209,7 +212,7 @@ fn order(key: &KeyFile, name: &str, body: &Value) -> Result<Value, Error> {
         )
     };
     let client = reqwest::blocking::Client::builder()
-        .timeout(PATIENCE)
+        .timeout(patience)
         .build()
         .map_err(unreachable)?;
     let keypair = key.keypair();
@@ -259,6 +262,8 @@ fn order(key: &KeyFile, name: &str, body: &Value) -> Result<Value, Error> {
             match code {
                 "unknown_name" => ErrorCode::UnknownName,
                 "usage" => ErrorCode::Usage,
+                "rate_limited" => ErrorCode::RateLimited,
+                "confirmation_required" => ErrorCode::ConfirmationRequired,
                 _ => ErrorCode::ConnectorFailed,
             },
             format!("The supervisor refused the order with {status} ({code}): {message}"),
@@ -267,7 +272,7 @@ fn order(key: &KeyFile, name: &str, body: &Value) -> Result<Value, Error> {
 }
 
 fn status(key: &KeyFile) -> Result<Report, Error> {
-    let reply = order(key, "status", &Value::Null)?;
+    let reply = order(key, "status", &Value::Null, PATIENCE)?;
     let toon_apps = reply["toon_apps"].as_array().cloned().unwrap_or_default();
     let mut all_running = true;
     let mut lines = Vec::new();
@@ -309,7 +314,12 @@ fn status(key: &KeyFile) -> Result<Report, Error> {
 }
 
 fn logs(key: &KeyFile, name: &str, lines: usize) -> Result<Report, Error> {
-    let reply = order(key, "logs", &json!({ "toon_app": name, "lines": lines }))?;
+    let reply = order(
+        key,
+        "logs",
+        &json!({ "toon_app": name, "lines": lines }),
+        PATIENCE,
+    )?;
     let shown: Vec<&str> = reply["lines"]
         .as_array()
         .into_iter()
@@ -456,6 +466,36 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
                 },
             )?
             .report)
+        }
+        Command::Route {
+            command: RouteCommand::Price { prefix, price, yes },
+        } => {
+            if !yes {
+                return Err(failed(
+                    ErrorCode::ConfirmationRequired,
+                    "This restarts the connector of the TOON app the route is behind, and drops \
+                     the packets it holds in flight. Run it again with `--yes` to go ahead."
+                        .into(),
+                ));
+            }
+            let mut body = json!({ "prefix": prefix, "price": price });
+            if let Some(app) = app {
+                body["toon_app"] = json!(app);
+            }
+            let reply = order(
+                &KeyFile::load(path)?,
+                "route-price",
+                &body,
+                RESTART_PATIENCE,
+            )?;
+            let toon_app = reply["toon_app"].as_str().unwrap_or("?").to_owned();
+            Ok(Report {
+                exit: Exit::Success,
+                text: format!(
+                    "The route {prefix} costs {price}. The connector of {toon_app} restarted."
+                ),
+                json: reply,
+            })
         }
         Command::Limit {
             command: LimitCommand::Show,

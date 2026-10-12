@@ -51,8 +51,9 @@ holds only orders is on no connector's list, because a connector's list takes on
 limits if omitted. The connector holds them: it counts what the key sends in packets and
 what peering and channel writes deposit, per write and per UTC day, so the limit holds
 although the agent never opens the home. A key granted on several TOON apps has the limit on
-each, so it can spend that much per day on each. `--max-restarts` is how many times a day
-the key may restart an app (ten if omitted). `--expires` is an RFC 3339 time after which the
+each, so it can spend that much per day on each. `--max-restarts` is how many times an hour
+the key may restart a connector, which setting a route's price does (six if omitted; change
+it with `toon agent-key set`). Past it the order is refused with `rate_limited`. `--expires` is an RFC 3339 time after which the
 connector refuses the key.
 
 ## Which TOON apps
@@ -128,6 +129,7 @@ toon limit show
 | `toon logs <toon app> --connector` | The `logs` order: that TOON app's connector log. An app's own log is not offered, so without `--connector` it answers `usage` |
 | `toon send` | A packet originated by a write signed with the key (`send` scope); sealed to the TOON app's connector unless `--seal-to` names another, dialled directly |
 | `toon peer add` | A peering written with the key (`peer` scope) |
+| `toon route price <prefix> <price> --yes` | The `route-price` order: sets the price of the route to an app on a TOON app the key is granted on, and restarts that connector. Under the key's restart limit: past it, `rate_limited`, and the message says when the next restart is allowed |
 | `toon limit show` | The key's spending limit and what is left of today's, read from each connector the key file names (`--app` picks one) |
 
 `--app <toon app>` picks which TOON app's connector `send` and `peer add` use. Without it, the
@@ -143,6 +145,6 @@ key file's only TOON app is used, else `relay`.
 - Every other command answers `needs_home` (exit 1) before anything else is tried, and the
   message names the command and says the operator must run it: `wallet`, `limit set`, `init`,
   `create`, `up`, `down`, `agent-key`, and also, until their tickets land, `add`, `remove`,
-  `route`, `event` and `message`.
+  `route` (but `route price`), `event` and `message`.
 - An agent whose loopback cannot reach the supervisor's order address needs a tunnel the
   deployer provides; reaching an agent node on another host is not offered.

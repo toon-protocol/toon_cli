@@ -95,6 +95,7 @@ A failed command with `--json` prints:
 | `describe_failed` | 1 | `toon describe` got no self-description from the connector's `/ilp` URL: it did not answer, answered an error status, or answered something that is not a self-description (a JSON object with `routes`); nothing was paid |
 | `agent_key_not_kept` | 1 | `toon message list` found no kept secret of the agent identity in the agent node's home, so no private message has been opened: `toon event publish`, `toon event sign` and `toon message send` write it; nothing was read or sent |
 | `needs_home` | 1 | `toon` was run with an agent key (`--agent-key` or `TOON_AGENT_KEY`) and the command needs the agent node's home, which an agent key never reads: the message names the command and says the operator must run it; nothing was sent |
+| `rate_limited` | 1 | `toon route price` was run with an agent key that has already used its restart limit (6 an hour unless `toon agent-key set --max-restarts` changed it): setting a price restarts a connector, so the supervisor refused the order and restarted nothing; the message says when the next restart is allowed. The operator with the home is never limited |
 
 
 ## The wallet passphrase

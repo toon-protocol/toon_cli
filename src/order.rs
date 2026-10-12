@@ -28,7 +28,11 @@ use crate::agent_key::{Key, Record};
 
 /// The orders the supervisor answers, by path, with the scope each one needs (which also
 /// names it).
-const ORDERS: [(&str, &str); 2] = [("/orders/status", "status"), ("/orders/logs", "logs")];
+const ORDERS: [(&str, &str); 3] = [
+    ("/orders/status", "status"),
+    ("/orders/logs", "logs"),
+    ("/orders/route-price", "route-price"),
+];
 
 /// The components a signature covers: exactly these, as a connector's write signature does.
 const COVERED: [&str; 3] = ["@method", "@path", "content-digest"];
@@ -80,6 +84,25 @@ impl Refusal {
             status: 403,
             code,
             message,
+            scope: None,
+        }
+    }
+
+    /// An authorised order that was carried out as far as it was allowed to: `error` is why
+    /// it went no further.
+    pub fn of_error(error: &crate::outcome::Error) -> Self {
+        use crate::outcome::ErrorCode;
+        let (status, code) = match error.code {
+            ErrorCode::RateLimited => (429, "rate_limited"),
+            ErrorCode::UnknownName => (400, "unknown_name"),
+            ErrorCode::Usage => (400, "usage"),
+            ErrorCode::ConfirmationRequired => (400, "confirmation_required"),
+            other => (500, other.as_str()),
+        };
+        Self {
+            status,
+            code,
+            message: error.message.clone(),
             scope: None,
         }
     }

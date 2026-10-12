@@ -603,6 +603,19 @@ pub fn remove(home: &Path, name: &str, yes: bool) -> Result<Report, Error> {
 
 /// `toon route price`: set what a client pays for a packet on the route to an app.
 pub fn route_price(home: &Path, prefix: &str, price: u64, yes: bool) -> Result<Report, Error> {
+    route_price_guarded(home, prefix, price, yes, |_| Ok(()))
+}
+
+/// `route_price`, which asks `guard` before it restarts anything: it is given the TOON app
+/// the route is behind, and may refuse. An order from an agent key is guarded by the key's
+/// grants and its restart limit; the operator's own command is not.
+pub fn route_price_guarded(
+    home: &Path,
+    prefix: &str,
+    price: u64,
+    yes: bool,
+    guard: impl FnOnce(&str) -> Result<(), Error>,
+) -> Result<Report, Error> {
     let state = loaded(home)?;
     let found: Option<(usize, usize)> =
         state.toon_apps.iter().enumerate().find_map(|(index, app)| {
@@ -621,6 +634,7 @@ pub fn route_price(home: &Path, prefix: &str, price: u64, yes: bool) -> Result<R
         ));
     };
     let toon_app = state.toon_apps[index].name.clone();
+    guard(&toon_app)?;
     confirm(yes, &toon_app)?;
     let mut changed = state.clone();
     changed.toon_apps[index].apps[position].price = price;
