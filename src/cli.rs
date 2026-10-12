@@ -77,6 +77,11 @@ pub enum Command {
         #[command(subcommand)]
         command: LimitCommand,
     },
+    /// Create and manage agent keys: operator write keys with a scope and a spending limit
+    AgentKey {
+        #[command(subcommand)]
+        command: AgentKeyCommand,
+    },
     /// Count, list or show the history of the packets the connector has carried, free: needs no passphrase
     Packet {
         #[command(subcommand)]
@@ -756,6 +761,77 @@ pub enum LimitCommand {
         #[arg(long)]
         max_per_day: Option<u128>,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AgentKeyCommand {
+    /// Make an agent key and write its key file; needs the wallet passphrase
+    Create(AgentKeyCreateArgs),
+    /// Show each agent key's public half, scope, limits, expiry and TOON apps; never a private key
+    List,
+    /// Change an agent key's scope, limits, expiry or TOON apps; needs the wallet passphrase
+    Set(AgentKeySetArgs),
+    /// Remove an agent key from the record and from every connector; needs no passphrase
+    Revoke {
+        /// The key's public half, as `toon agent-key list` shows it
+        public_key: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct AgentKeyCreateArgs {
+    /// What the key may do, comma-separated or repeated: the orders `status`, `logs`, `apps`,
+    /// `route-price`, `sign`, `read-messages`, and the connector's writes `send`, `peer`,
+    /// `routes`, `channels-open`, `channels-fund`, `channels-withdraw`, `channels-land`.
+    /// By default every order and `send`, `peer` and `routes`: nothing that withdraws from or
+    /// closes a channel
+    #[arg(long, value_delimiter = ',')]
+    pub scope: Vec<String>,
+    /// The most one command may pay, in the token's base units; the wallet's limit if omitted
+    #[arg(long)]
+    pub max_per_command: Option<u64>,
+    /// The most a UTC day's commands may pay together; the wallet's limit if omitted
+    #[arg(long)]
+    pub max_per_day: Option<u64>,
+    /// How many times a day the key may restart an app
+    #[arg(long)]
+    pub max_restarts: Option<u32>,
+    /// When the key stops working, as an RFC 3339 time; never if omitted
+    #[arg(long)]
+    pub expires: Option<String>,
+    /// A TOON app the key is granted on, repeated for several; the relay TOON app if omitted
+    #[arg(long = "toon-app")]
+    pub toon_app: Vec<String>,
+    /// Where to write the key file; `agent-key-<public key prefix>.json` here if omitted
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentKeySetArgs {
+    /// The key's public half, as `toon agent-key list` shows it
+    pub public_key: String,
+    /// Replace the scope (see `create`)
+    #[arg(long, value_delimiter = ',')]
+    pub scope: Vec<String>,
+    /// The most one command may pay, in the token's base units
+    #[arg(long)]
+    pub max_per_command: Option<u64>,
+    /// The most a UTC day's commands may pay together
+    #[arg(long)]
+    pub max_per_day: Option<u64>,
+    /// How many times a day the key may restart an app
+    #[arg(long)]
+    pub max_restarts: Option<u32>,
+    /// When the key stops working, as an RFC 3339 time
+    #[arg(long, conflicts_with = "no_expiry")]
+    pub expires: Option<String>,
+    /// The key does not expire
+    #[arg(long)]
+    pub no_expiry: bool,
+    /// Replace the TOON apps the key is granted on, repeated for several
+    #[arg(long = "toon-app")]
+    pub toon_app: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]

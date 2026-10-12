@@ -552,6 +552,9 @@ pub struct ConnectorFiles {
     pub bearer_token: PathBuf,
     /// The public keys it accepts a signed write from: the wallet's operator write key.
     pub write_keys: PathBuf,
+    /// The agent keys granted on this connector, with their scope, limits and expiry. The
+    /// connector reads it again on every signed request, so a change needs no restart.
+    pub controller_keys: PathBuf,
     pub identity_key: PathBuf,
     pub settlement_key: PathBuf,
     pub solana_settlement_key: PathBuf,
@@ -568,6 +571,7 @@ impl ConnectorFiles {
         Self {
             bearer_token: dir.join("operator-bearer-token"),
             write_keys: dir.join("operator-write-keys"),
+            controller_keys: dir.join("operator-controller-keys"),
             identity_key: dir.join("identity.key"),
             settlement_key: dir.join("settlement.key"),
             solana_settlement_key: dir.join("settlement-solana.key"),
@@ -943,7 +947,7 @@ pub fn render(
         (Reach::Clearnet { .. }, _) => None,
     };
     let files = ConnectorFiles::of(home, app.connector);
-    let operator = write_operator_files(home, &files)?;
+    let operator = write_operator_files(home, &files, &app.name)?;
     let listen = concrete(&app.listen)?;
     // `socks_proxy` is one top-level key, so it goes before the first table: all the
     // connector dials out goes through it, and `socks5h` because no local resolver
@@ -1038,9 +1042,11 @@ pub fn render(
     }
     if operator {
         config.push_str(&format!(
-            "\n[operator]\nbearer_token_file = {}\nwrite_keys_file = {}\npacket_history = {PACKET_HISTORY}\n",
+            "\n[operator]\nbearer_token_file = {}\nwrite_keys_file = {}\n\
+             controller_keys_file = {}\npacket_history = {PACKET_HISTORY}\n",
             string(&files.bearer_token.to_string_lossy()),
             string(&files.write_keys.to_string_lossy()),
+            string(&files.controller_keys.to_string_lossy()),
         ));
     }
     if let Some(evm) = &app.evm {
@@ -1084,11 +1090,16 @@ pub fn render(
 }
 
 /// The files the connector's operator surface reads: a bearer token, made once and kept,
-/// and the allowlist of write keys, which is the public half of the wallet's operator
-/// write key and is written again every time. An agent node made before `init` wrote the
+/// the allowlist of write keys, which is the public half of the wallet's operator
+/// write key, and the list of agent keys granted on this TOON app; both are written again
+/// every time. An agent node made before `init` wrote the
 /// operator write key has none, and its connector runs without an operator surface, as it
 /// did then: `false`.
-fn write_operator_files(home: &Path, files: &ConnectorFiles) -> Result<bool, Error> {
+fn write_operator_files(
+    home: &Path,
+    files: &ConnectorFiles,
+    toon_app: &str,
+) -> Result<bool, Error> {
     let key = operator_key(home);
     if !key.exists() {
         return Ok(false);
@@ -1110,6 +1121,7 @@ fn write_operator_files(home: &Path, files: &ConnectorFiles) -> Result<bool, Err
         format!("{}\n", derive::operator_write_public_key(&secret)).as_bytes(),
         0o600,
     )?;
+    crate::agent_key::write_connector_list(home, files, toon_app)?;
     Ok(true)
 }
 
