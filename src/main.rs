@@ -35,6 +35,7 @@ mod profile;
 mod receive;
 mod relay;
 mod relay_url;
+mod remote;
 mod runner;
 mod secrets;
 mod service;
@@ -70,6 +71,17 @@ fn run() -> ExitCode {
     let command = match Cli::from_command_line() {
         Ok(cli) => {
             operator::target(cli.app.as_deref());
+            let agent_key = cli.agent_key.or_else(|| {
+                env::var_os("TOON_AGENT_KEY")
+                    .filter(|path| !path.is_empty())
+                    .map(Into::into)
+            });
+            // The hidden `connector` is the supervisor's child, not a command of an operator.
+            if let (Some(path), false) =
+                (&agent_key, matches!(cli.command, Command::Connector { .. }))
+            {
+                return render(remote::run(path, cli.app.as_deref(), cli.command), json).into();
+            }
             (cli.app, cli.command)
         }
         Err(error) if json && error.kind() != ErrorKind::DisplayHelp => {

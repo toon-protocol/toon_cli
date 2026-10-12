@@ -40,6 +40,12 @@ pub struct Cli {
     #[arg(long = "app", id = "toon_app", value_name = "TOON_APP", global = true)]
     pub app: Option<String>,
 
+    /// Run with an agent key and no home: the key file `toon agent-key create` wrote. Also
+    /// read from `TOON_AGENT_KEY`. `toon` then never looks for a home or a keystore, and a
+    /// command that needs one answers `needs_home`
+    #[arg(long = "agent-key", value_name = "FILE", global = true)]
+    pub agent_key: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Command,
 }
