@@ -41,5 +41,6 @@ error_codes! {
     DescribeFailed => "describe_failed" => Failure,
     AgentKeyNotKept => "agent_key_not_kept" => Failure,
     NeedsHome => "needs_home" => Failure,
+    RateLimited => "rate_limited" => Failure,
     NeedsOperator => "needs_operator" => Failure,
 }

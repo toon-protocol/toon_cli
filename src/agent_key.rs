@@ -50,8 +50,8 @@ const WRITE_SCOPES: [&str; 7] = [
 /// and routes. Nothing that withdraws from or closes a channel.
 const DEFAULT_WRITES: [&str; 3] = ["send", "peer", "routes"];
 
-/// How many times a day a key may restart an app, when `--max-restarts` is not given.
-const DEFAULT_RESTARTS: u32 = 10;
+/// How many times an hour a key may restart a connector, when `--max-restarts` is not given.
+const DEFAULT_RESTARTS: u32 = 6;
 
 const RECORD: &str = "agent-keys.json";
 
@@ -494,7 +494,7 @@ fn create(home: &Path, args: &AgentKeyCreateArgs) -> Result<Report, Error> {
 
 fn describe(key: &Key) -> String {
     format!(
-        "{}  scope: {}  limit: {} per command, {} per day  restarts: {} per day  expires: {}  toon apps: {}",
+        "{}  scope: {}  limit: {} per command, {} per day  restarts: {} per hour  expires: {}  toon apps: {}",
         key.public,
         key.scope.join(","),
         key.max_per_command,
