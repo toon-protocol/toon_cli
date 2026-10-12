@@ -3,6 +3,7 @@ mod support;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -86,8 +87,11 @@ fn now() -> u64 {
 }
 
 impl Agent {
-    /// The headers and body of an order signed by this key.
+    /// The headers and body of an order signed by this key. Each is signed with an `expires`
+    /// of its own: the same order signed twice in one second is otherwise the same signature,
+    /// and the second is a replay.
     fn signed(&self, path: &str, body: &str) -> (String, String, String) {
+        static ORDERS: AtomicU64 = AtomicU64::new(0);
         let created = now();
         sign_request(
             &self.keypair,
@@ -95,7 +99,7 @@ impl Agent {
             path,
             body.as_bytes(),
             created,
-            Some(created + 60),
+            Some(created + 60 + ORDERS.fetch_add(1, Ordering::SeqCst) % 60),
         )
     }
 
@@ -205,7 +209,7 @@ fn a_logs_order_needs_the_logs_scope_and_the_answer_names_it() {
     );
 
     let (status, reply) = logs.send("/orders/logs", &json!({ "toon_app": "second" }).to_string());
-    assert_eq!(status, 200, "{reply}");
+    assert_eq!(status, 400, "{reply}");
     assert_eq!(reply["error"]["code"], "unknown_name", "{reply}");
 }
 
@@ -351,4 +355,26 @@ fn orders_are_heard_on_loopback_only() {
             );
         }
     }
+}
+
+#[test]
+fn a_refused_order_does_not_spend_its_signature() {
+    let node = node();
+    let agent = node.create(&["--scope", "status"]);
+    let signed = agent.signed("/orders/logs", "");
+
+    let (status, reply) = post(&agent.supervisor, "/orders/logs", "", Some(signed.clone()));
+    assert_eq!(status, 403, "{reply}");
+    assert_eq!(reply["error"]["code"], "out_of_scope");
+
+    let set = node.machine.toon_with(
+        &["agent-key", "set", &agent.public, "--scope", "logs"],
+        |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        },
+    );
+    assert_eq!(set.exit_code, 0, "{}{}", set.stdout, set.stderr);
+
+    let (status, reply) = post(&agent.supervisor, "/orders/logs", "", Some(signed));
+    assert_eq!(status, 200, "{reply}");
 }

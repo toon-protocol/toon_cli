@@ -101,4 +101,6 @@ The supervisor reads the record on every order, so a revoke or a change takes ef
 next one. It refuses, with `401`, an unsigned order, a key not on the record, a signature that
 does not verify or has expired, and a signature it has already answered. It refuses with
 `403` a key past its `--expires`, and a key whose scope lacks the order's; that answer names
-the scope (`error.scope`).
+the scope (`error.scope`). A refused order does not spend its signature. An order it cannot
+carry out, such as logs of a TOON app the key is not granted on, is answered `400`. Every
+refusal is `{"error": {"code", "message"}}`.

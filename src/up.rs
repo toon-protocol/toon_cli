@@ -626,38 +626,37 @@ impl Shared {
 
     /// Answer an order `key` signed, which has been authorised. It names only the TOON apps
     /// `key` is granted on, and no file path.
-    fn order(&self, home: &Path, key: &Key, order: order::Order) -> Value {
+    fn order(&self, home: &Path, key: &Key, order: order::Order) -> Result<Value, order::Refusal> {
         let granted = |name: &str| key.toon_apps.iter().any(|app| app == name);
         match order.name {
-            "status" => json!({
+            "status" => Ok(json!({
                 "toon_apps": self
                     .units()
                     .iter()
                     .filter(|unit| granted(&unit.toon_app))
                     .map(|unit| unit.status())
                     .collect::<Vec<_>>(),
-            }),
+            })),
             "logs" => {
-                let refused = |code: &str, message: String| json!({ "error": { "code": code, "message": message } });
                 let toon_app = match order.body["toon_app"].as_str() {
                     Some(name) => name.to_owned(),
                     None => match key.toon_apps.as_slice() {
                         [only] => only.clone(),
                         _ => {
-                            return refused(
+                            return Err(order::Refusal::bad_order(
                                 "usage",
                                 "This key is granted on several TOON apps: name one as \
                                  \"toon_app\"."
                                     .to_owned(),
-                            )
+                            ))
                         }
                     },
                 };
                 if !granted(&toon_app) {
-                    return refused(
+                    return Err(order::Refusal::bad_order(
                         "unknown_name",
                         format!("This key is not granted on the TOON app {toon_app}."),
-                    );
+                    ));
                 }
                 let lines = order.body["lines"]
                     .as_u64()
@@ -670,17 +669,20 @@ impl Shared {
                         .map(|app| app.connector)
                 });
                 match connector {
-                    Some(connector) => json!({
+                    Some(connector) => Ok(json!({
                         "toon_app": toon_app,
                         "lines": tail(&ConnectorFiles::of(home, connector).log, lines as usize),
-                    }),
-                    None => refused(
+                    })),
+                    None => Err(order::Refusal::bad_order(
                         "unknown_name",
                         format!("No TOON app {toon_app} in this agent node."),
-                    ),
+                    )),
                 }
             }
-            _ => json!({ "error": { "code": "usage", "message": "unknown order" } }),
+            _ => Err(order::Refusal::bad_order(
+                "usage",
+                "No such order.".to_owned(),
+            )),
         }
     }
 

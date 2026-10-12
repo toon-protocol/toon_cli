@@ -33,15 +33,11 @@ const ORDERS: [(&str, &str); 2] = [("/orders/status", "status"), ("/orders/logs"
 /// The components a signature covers: exactly these, as a connector's write signature does.
 const COVERED: [&str; 3] = ["@method", "@path", "content-digest"];
 
-/// The longest a signature may be valid for. A signature is remembered until it expires, so
-/// this bounds what is remembered.
-const LONGEST_VALIDITY: u64 = 600;
-
 /// How often the listener looks at the record for an address it has not bound yet.
 const WATCH_EVERY: Duration = Duration::from_millis(250);
 
 /// What answers an authorised order.
-type Answer = dyn Fn(&Key, Order) -> Value + Send + Sync;
+type Answer = dyn Fn(&Key, Order) -> Result<Value, Refusal> + Send + Sync;
 
 /// An order that has been authorised: what it is and what it carries.
 pub struct Order {
@@ -65,6 +61,16 @@ impl Refusal {
             status: 401,
             code,
             message: message.to_owned(),
+            scope: None,
+        }
+    }
+
+    /// An authorised order that cannot be carried out as it stands.
+    pub fn bad_order(code: &'static str, message: String) -> Self {
+        Self {
+            status: 400,
+            code,
+            message,
             scope: None,
         }
     }
@@ -231,9 +237,6 @@ impl Orders {
                 "The signature has expired.",
             ));
         }
-        if params.expires.saturating_sub(params.created) > LONGEST_VALIDITY {
-            return Err(malformed("The signature is valid for too long."));
-        }
 
         let record = Record::load(&self.home).map_err(|error| Refusal {
             status: 500,
@@ -269,22 +272,21 @@ impl Orders {
                 Refusal::unauthorised("bad_signature", "The signature does not verify.")
             })?;
 
-        // A signature that verifies is remembered until it expires; the same one again is a
-        // replay, whatever the key may now do.
-        {
-            let mut seen = self.seen.lock().expect("the signatures seen");
-            seen.retain(|_, expires| *expires >= now);
-            if seen.insert(bytes, params.expires).is_some() {
-                return Err(Refusal::unauthorised(
-                    "replayed",
-                    "That signature has already been used.",
-                ));
-            }
+        // A signature that authorised an order is remembered until it expires; the same one
+        // again is a replay, whatever the key may now do. A refused order does not spend its
+        // signature, as a refused write does not at a connector.
+        let mut seen = self.seen.lock().expect("the signatures seen");
+        seen.retain(|_, expires| *expires >= now);
+        if seen.contains_key(&bytes) {
+            return Err(Refusal::unauthorised(
+                "replayed",
+                "That signature has already been used.",
+            ));
         }
 
         if let Some(expires) = &key.expires {
             let over = chrono::DateTime::parse_from_rfc3339(expires).map_or(true, |expires| {
-                expires.timestamp() < i64::try_from(now).unwrap_or(0)
+                i64::try_from(now).unwrap_or(i64::MAX) >= expires.timestamp()
             });
             if over {
                 return Err(Refusal::forbidden(
@@ -301,6 +303,7 @@ impl Orders {
                 scope: Some(scope.to_owned()),
             });
         }
+        seen.insert(bytes, params.expires);
         Ok(key.clone())
     }
 
@@ -320,7 +323,7 @@ impl Orders {
         else {
             return (
                 StatusCode::NOT_FOUND,
-                Json(json!({ "error": "no such order" })),
+                Json(json!({ "error": { "code": "usage", "message": "No such order." } })),
             )
                 .into_response();
         };
@@ -344,17 +347,16 @@ impl Orders {
             match serde_json::from_slice(body) {
                 Ok(body) => body,
                 Err(_) => {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({ "error": { "code": "usage",
-                            "message": "An order's body is JSON." } })),
-                    )
-                        .into_response()
+                    return Refusal::bad_order("usage", "An order's body is JSON.".to_owned())
+                        .response()
                 }
             }
         };
         // An order is named for the scope it needs.
-        Json(answer(&key, Order { name: scope, body })).into_response()
+        match answer(&key, Order { name: scope, body }) {
+            Ok(answer) => Json(answer).into_response(),
+            Err(refusal) => refusal.response(),
+        }
     }
 }
 
@@ -374,7 +376,10 @@ fn address_of(record: &Record) -> Option<SocketAddr> {
 /// Listen for orders at the address the home's record of agent keys names, once it names one
 /// (`toon agent-key create` writes it), and answer each authorised order with `answer`.
 /// Returns at once; the listener runs on a thread of its own.
-pub fn serve(home: &Path, answer: impl Fn(&Key, Order) -> Value + Send + Sync + 'static) {
+pub fn serve(
+    home: &Path,
+    answer: impl Fn(&Key, Order) -> Result<Value, Refusal> + Send + Sync + 'static,
+) {
     let home = home.to_path_buf();
     let answer: Arc<Answer> = Arc::new(answer);
     thread::spawn(move || {
