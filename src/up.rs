@@ -336,7 +336,7 @@ fn start_app(
         }
     };
     let spec = AppSpec {
-        instance: format!("{}-{}", instance(home), app.name),
+        instance: app_instance(home, &app.name),
         image,
         env,
         mounts: mounted,
@@ -376,6 +376,11 @@ fn start_apps(
 fn instance(home: &Path) -> String {
     let digest = sha2::Sha256::digest(home.to_string_lossy().as_bytes());
     hex::encode(&digest[..6])
+}
+
+/// The name the runner knows the app `app` of the agent node at `home` by.
+fn app_instance(home: &Path, app: &str) -> String {
+    format!("{}-{app}", instance(home))
 }
 
 fn launch(
@@ -964,7 +969,7 @@ impl Unit {
                         old.is_some_and(|old| old.allowances.egress != behind.allowances.egress);
                     let place = running.stop_to_restart();
                     let place = if remade {
-                        runner.discard(&self.instance(home, &behind.name), &place);
+                        runner.discard(&app_instance(home, &behind.name), &place);
                         Place {
                             network: None,
                             ports: place.ports,
@@ -1051,7 +1056,7 @@ impl Unit {
         self.apps.extend(fresh);
         for (name, place) in std::mem::take(&mut self.places) {
             if !self.apps.iter().any(|(started, _)| *started == name) {
-                runner.discard(&self.instance(home, &name), &place);
+                runner.discard(&app_instance(home, &name), &place);
             }
         }
         *self.shared.apps() = statuses(&self.apps);
@@ -1098,11 +1103,6 @@ impl Unit {
         Ok(true)
     }
 
-    /// The name the runner knows an app of this unit by.
-    fn instance(&self, home: &Path, app: &str) -> String {
-        format!("{}-{app}", instance(home))
-    }
-
     /// The name of an app that has stopped, if one has. Each app's status is kept current.
     fn stopped_app(&mut self) -> Option<String> {
         let mut stopped = None;
@@ -1123,7 +1123,7 @@ impl Unit {
             app.stop();
         }
         for (name, place) in std::mem::take(&mut self.places) {
-            runner.discard(&self.instance(home, &name), &place);
+            runner.discard(&app_instance(home, &name), &place);
         }
         self.hidden = None;
         self.shared.live().running = false;

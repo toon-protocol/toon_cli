@@ -469,32 +469,17 @@ fn free_ports() -> Result<(Passing, Passing), Error> {
     }
 }
 
-/// The write port and the read port an app is started on: those it had, if `place` names
-/// them and nothing else has taken either since, else two fresh ones.
-struct Ports {
-    write: u16,
-    read: u16,
-    /// Held until the app answers, which it does once it has bound them.
-    _claimed: Option<(Passing, Passing)>,
-}
-
-fn ports_for(place: Option<&Place>) -> Result<Ports, Error> {
-    let free = |port: u16| std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok();
+/// The write port and the read port an app is started on, claimed as `free_ports` claims
+/// them: those it had, if `place` names them and nothing else has taken or claimed either
+/// since, else two fresh ones.
+fn ports_for(place: Option<&Place>) -> Result<(Passing, Passing), Error> {
+    let again = |port| ports::passing_again(&Ipv4Addr::LOCALHOST.to_string(), port);
     if let Some((write, read)) = place.and_then(|place| place.ports) {
-        if free(write) && free(read) {
-            return Ok(Ports {
-                write,
-                read,
-                _claimed: None,
-            });
+        if let (Some(write), Some(read)) = (again(write), again(read)) {
+            return Ok((write, read));
         }
     }
-    let claimed = free_ports()?;
-    Ok(Ports {
-        write: claimed.0.port,
-        read: claimed.1.port,
-        _claimed: Some(claimed),
-    })
+    free_ports()
 }
 
 /// Wait for `GET /health` on `address` to answer 200. `alive` says whether the app is
@@ -557,8 +542,9 @@ impl AppRunner for ProcessRunner {
         // The marker is spent by the start that reads it.
         let moved = fs::remove_file(spec.data_dir.join(MOVE_MARKER)).is_ok();
         let place = spec.place.as_ref().filter(|_| !moved);
-        let ports = ports_for(place)?;
-        let (port, read_port) = (ports.write, ports.read);
+        // Held until the app answers, which it does once it has bound them.
+        let claimed = ports_for(place)?;
+        let (port, read_port) = (claimed.0.port, claimed.1.port);
         let mut command = Command::new(&self.program);
         command
             .env_clear()
@@ -836,7 +822,9 @@ impl AppRunner for ContainerRunner {
         } else {
             None
         };
-        let relay_ports = claimed.as_ref().map(|ports| (ports.write, ports.read));
+        let relay_ports = claimed
+            .as_ref()
+            .map(|(write, read)| (write.port, read.port));
         command
             .args(network_arguments(relay_ports, &name))
             .args(confinement_arguments(&spec.allowances, &caller()))
@@ -853,7 +841,8 @@ impl AppRunner for ContainerRunner {
             .output()
             .map_err(|error| failed(format!("docker could not be run: {error}.")))?;
         if !output.status.success() {
-            if let Some(network) = &network {
+            // A kept network is left for the start that puts the app back as it was.
+            if let (Some(network), false) = (&network, kept) {
                 let _ = docker(&["network", "rm", network]);
             }
             return Err(failed(format!(
@@ -864,7 +853,8 @@ impl AppRunner for ContainerRunner {
         }
         let mut container = Container {
             name: name.clone(),
-            network: network.clone(),
+            // A start that fails stops the container, and that removes only a network made here.
+            network: network.clone().filter(|_| !kept),
             address: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             read: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             stopped: false,
@@ -902,6 +892,8 @@ impl AppRunner for ContainerRunner {
                 spec.instance, spec.image
             )));
         }
+        // Up: the network is this container's now, kept or not.
+        container.network = network;
         Ok(Box::new(container))
     }
 }
@@ -943,10 +935,9 @@ impl RunningApp for Container {
                 ports: Some((self.address.port(), self.read.port())),
             },
         };
-        let network = self.network.take();
+        // The network is left: the caller starts the app on it again, or discards it.
+        self.network = None;
         self.stop();
-        // What a start may use again is left; a start that does not use it removes it.
-        self.network = network;
         place
     }
 }

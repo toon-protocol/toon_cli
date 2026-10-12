@@ -5,9 +5,11 @@
 //! to them restarts it; the price of a write is on the connector's route, which is
 //! rendered when the connector starts, so changing it restarts the connector. So is the
 //! subscribe route that a relay selling its live feed has (ADR 0005), at the subscribe
-//! price; the broadcast price is the relay's own setting. The
-//! supervisor restarts the relay and its connector together, so either change drops the
-//! packets the connector holds, and needs `--yes` while the agent node is running.
+//! price; the broadcast price is the relay's own setting. A change to the settings
+//! restarts the relay alone, on the ports it had, and its connector only if the relay
+//! comes back somewhere else; a price restarts the relay and its connector together and
+//! drops the packets the connector holds. Either needs `--yes` while the agent node is
+//! running.
 
 use std::path::Path;
 
@@ -80,9 +82,10 @@ fn write_price(app: &ToonApp) -> u64 {
         .map_or(node::RELAY_WRITE_PRICE, |behind| behind.price)
 }
 
-/// A change restarts a running connector, which drops the packets it holds: refuse it
-/// unless the operator said `yes`.
-fn confirm(home: &Path, yes: bool, what: &str, warning: &str) -> Result<(), Error> {
+/// A change restarts the running relay, and may restart its connector, which drops the
+/// packets it holds: refuse it with `warning`, which says which, unless the operator said
+/// `yes`.
+fn confirm(home: &Path, yes: bool, warning: &str) -> Result<(), Error> {
     if yes || !control::running(home) {
         return Ok(());
     }
@@ -90,7 +93,7 @@ fn confirm(home: &Path, yes: bool, what: &str, warning: &str) -> Result<(), Erro
         nothing_sent: false,
         unanswered: None,
         code: ErrorCode::ConfirmationRequired,
-        message: format!("{what} {warning} Nothing was changed: run it again with `--yes`."),
+        message: format!("{warning} Nothing was changed: run it again with `--yes`."),
     })
 }
 
@@ -161,12 +164,7 @@ pub fn config(home: &Path, change: &Change, yes: bool) -> Result<Report, Error> 
     let before = state.clone();
     let app = relay_of(&mut state)?;
     let toon_app = app.name.clone();
-    confirm(
-        home,
-        yes,
-        "Changing the relay's settings",
-        &apps::app_warning(node::RELAY, &toon_app),
-    )?;
+    confirm(home, yes, &apps::app_warning(node::RELAY, &toon_app))?;
     let settings = &mut app.relay;
     // An empty name or description unsets it.
     let set = |value: &String| Some(value.clone()).filter(|value| !value.is_empty());
@@ -252,8 +250,8 @@ pub fn price(home: &Path, prices: &Prices, yes: bool) -> Result<Report, Error> {
     confirm(
         home,
         yes,
-        "A new price",
-        "restarts the relay and its connector, and the packets the connector holds are dropped.",
+        "A new price restarts the relay and its connector, and the packets the connector holds \
+         are dropped.",
     )?;
     let before = state.clone();
     let app = relay_of(&mut state)?;

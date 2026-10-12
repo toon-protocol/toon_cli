@@ -252,6 +252,25 @@ fn the_relay_comes_back_on_its_ports_and_its_connector_is_left_alone() {
 }
 
 #[test]
+fn a_relay_whose_port_was_taken_starts_on_fresh_ports_and_its_connector_restarts() {
+    let (machine, _chain, _up) = running();
+    let (pid, _) = connector_run(&machine);
+    let relay = app(&machine, "relay");
+    let write: SocketAddr = relay["address"].as_str().unwrap().parse().unwrap();
+    // The relay holds the port itself until it stops; the claim another supervisor would
+    // put on it is what can be taken meanwhile.
+    let _taken = std::net::UdpSocket::bind(write).unwrap();
+
+    let run = machine.toon(&["relay", "config", "--name", "Renamed", "--yes", "--json"]);
+
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    assert_eq!(run.json()["restarted"], true);
+    assert_ne!(connector_run(&machine).0, pid);
+    assert_ne!(app(&machine, "relay")["address"], relay["address"]);
+    send(connector(&machine), &machine.ephemeral_prefix(), b"ok").expect("fulfilled");
+}
+
+#[test]
 fn a_packet_to_another_app_is_delivered_while_one_restarts() {
     let (machine, _chain, _up) = running();
     with_notes(&machine);
@@ -273,7 +292,8 @@ fn a_packet_to_another_app_is_delivered_while_one_restarts() {
         send(connector(&machine), &machine.ephemeral_prefix(), b"other").expect("fulfilled");
         // The connector answers for an app it cannot reach; the app is not handed the packet.
         let received = writes(&machine, "notes").len();
-        let _ = send(connector(&machine), "g.toon.notes", b"down");
+        let down = send(connector(&machine), "g.toon.notes", b"down").expect_err("a reject");
+        assert!(down.contains("\"T01\""), "{down}");
         thread::sleep(Duration::from_millis(300));
         assert_eq!(writes(&machine, "notes").len(), received);
         let run = changing.join().unwrap();
@@ -326,9 +346,12 @@ fn add_and_remove_still_restart_the_connector() {
 fn relay_config_without_yes_says_what_is_certain_and_what_is_possible() {
     let (machine, _chain, _up) = running();
 
+    let before = machine.toon(&["relay", "config", "--json"]).stdout;
+
     let run = machine.toon(&["relay", "config", "--name", "X", "--json"]);
 
     assert_eq!(run.exit_code, 1);
+    assert_eq!(machine.toon(&["relay", "config", "--json"]).stdout, before);
     assert_eq!(run.json()["error"]["code"], "confirmation_required");
     let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
     assert!(

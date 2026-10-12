@@ -311,9 +311,9 @@ connector is left running, with its pid and its count of restarts as they were. 
 sentence it prints say which happened (`restarted`).
 If the agent node is not running, the change is checked and recorded, and the app starts with it
 at the next `toon up`. If the app does not start with the change, the change is put back, the app
-starts again as it was (and its connector restarts only if the app is somewhere else), and the command fails with `app_failed`; the copy of
-a secret that was replaced stays in the home until the app has started with the change, and is
-deleted then. `--json` prints the app, its TOON app, what was set and what was taken away by name
+starts again as it was (and its connector restarts only if the app comes back somewhere else), and
+the command fails with `app_failed`; the copy of a secret that was replaced stays in the home
+until the app has started with the change, and is deleted then. `--json` prints the app, its TOON app, what was set and what was taken away by name
 (never a secret's contents) and whether a connector restarted.
 
 It is refused with `usage`, with nothing recorded and nothing restarted, when no flag is given,

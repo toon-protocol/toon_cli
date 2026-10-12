@@ -149,7 +149,7 @@ fn warning(toon_app: &str) -> String {
 /// only if the app comes back somewhere else.
 pub fn app_warning(app: &str, toon_app: &str) -> String {
     format!(
-        "This restarts {app}, and packets to it are rejected until it is back. The connector \
+        "This restarts the app {app}, and packets to it are rejected until it is back. The connector \
          of the TOON app {toon_app} restarts too, and drops the packets it holds in flight, \
          only if {app} comes back somewhere else."
     )
