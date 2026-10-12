@@ -262,6 +262,14 @@ fn a_key_is_on_the_list_of_the_toon_apps_it_is_granted_on_and_of_no_other() {
     let key: serde_json::Value = serde_json::from_str(&fs::read_to_string(file).unwrap()).unwrap();
     assert!(key["toon_apps"].get("second").is_some() && key["toon_apps"].get("relay").is_none());
 
+    let moved = with_passphrase(
+        &node.machine,
+        &["agent-key", "set", &on_relay, "--toon-app", "second"],
+    );
+    assert_eq!(moved.exit_code, 0, "{}{}", moved.stdout, moved.stderr);
+    assert!(!node.list_file(0).contains(&on_relay));
+    assert!(node.list_file(1).contains(&on_relay));
+
     let unknown = with_passphrase(
         &node.machine,
         &["agent-key", "create", "--toon-app", "nope", "--json"],
@@ -288,21 +296,21 @@ fn revoke_needs_no_passphrase_and_a_running_connector_refuses_the_key_at_once() 
         public: (&secret).into(),
         secret,
     };
-    let read = || {
+    let signed = |method: &str, path: &str| {
         let created = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
         let (input, signature, digest) = connector_operator::signing::sign_request(
             &keypair,
-            "GET",
-            "/write-keys",
+            method,
+            path,
             b"",
             created,
             Some(created + 60),
         );
         reqwest::blocking::Client::new()
-            .get(format!("http://{address}/write-keys"))
+            .request(method.parse().unwrap(), format!("http://{address}{path}"))
             .header("content-digest", digest)
             .header("signature-input", input)
             .header("signature", signature)
@@ -311,7 +319,14 @@ fn revoke_needs_no_passphrase_and_a_running_connector_refuses_the_key_at_once() 
             .status()
             .as_u16()
     };
-    assert_eq!(read(), 200, "a listed key reads");
+    // A write in the key's scope: removing a peer route, here one there is none of.
+    let write = || signed("DELETE", "/routes/peers/g.nothing");
+    assert_eq!(signed("GET", "/write-keys"), 200, "a listed key reads");
+    let allowed = write();
+    assert!(
+        allowed != 401 && allowed != 403,
+        "a listed key may write: {allowed}"
+    );
 
     let revoked = node
         .machine
@@ -319,10 +334,11 @@ fn revoke_needs_no_passphrase_and_a_running_connector_refuses_the_key_at_once() 
 
     assert_eq!(revoked.exit_code, 0, "{}", revoked.stdout);
     assert_eq!(
-        read(),
+        write(),
         401,
-        "the connector refuses the revoked key without a restart"
+        "the connector refuses the revoked key's next write without a restart"
     );
+    assert_eq!(signed("GET", "/write-keys"), 401);
     assert!(!node.list_file(0).contains(&public));
     assert!(node
         .machine

@@ -801,7 +801,7 @@ pub struct AgentKeyCreateArgs {
     pub expires: Option<String>,
     /// A TOON app the key is granted on, repeated for several; the relay TOON app if omitted
     #[arg(long = "toon-app")]
-    pub app: Vec<String>,
+    pub toon_app: Vec<String>,
     /// Where to write the key file; `agent-key-<public key prefix>.json` here if omitted
     #[arg(long)]
     pub out: Option<PathBuf>,
@@ -814,10 +814,13 @@ pub struct AgentKeySetArgs {
     /// Replace the scope (see `create`)
     #[arg(long, value_delimiter = ',')]
     pub scope: Vec<String>,
+    /// The most one command may pay, in the token's base units
     #[arg(long)]
     pub max_per_command: Option<u64>,
+    /// The most a UTC day's commands may pay together
     #[arg(long)]
     pub max_per_day: Option<u64>,
+    /// How many times a day the key may restart an app
     #[arg(long)]
     pub max_restarts: Option<u32>,
     /// When the key stops working, as an RFC 3339 time
@@ -828,7 +831,7 @@ pub struct AgentKeySetArgs {
     pub no_expiry: bool,
     /// Replace the TOON apps the key is granted on, repeated for several
     #[arg(long = "toon-app")]
-    pub app: Vec<String>,
+    pub toon_app: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]

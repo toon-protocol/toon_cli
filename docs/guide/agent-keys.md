@@ -80,3 +80,6 @@ overwrite a file. The file is JSON:
   it; if it leaks, `toon agent-key revoke` the key.
 - `supervisor` is where the supervisor listens for orders, on loopback.
 - `toon_apps` holds the operator-surface address of each TOON app the key is granted on.
+- The file is written once. `toon agent-key set --toon-app` changes which connectors accept
+  the key but not a file already handed out: give the agent the address of a newly granted
+  TOON app, or revoke the key and create a new one.

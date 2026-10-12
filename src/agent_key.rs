@@ -80,7 +80,7 @@ pub struct Key {
     /// RFC 3339.
     pub expires: Option<String>,
     /// The TOON apps it is granted on.
-    pub apps: Vec<String>,
+    pub toon_apps: Vec<String>,
 }
 
 impl Key {
@@ -94,7 +94,7 @@ impl Key {
             },
             "max_restarts": self.max_restarts,
             "expires": self.expires,
-            "toon_apps": self.apps,
+            "toon_apps": self.toon_apps,
         })
     }
 
@@ -113,7 +113,7 @@ impl Key {
             max_per_day: value["spending_limit"]["per_day"].as_u64()?,
             max_restarts: u32::try_from(value["max_restarts"].as_u64()?).ok()?,
             expires: value["expires"].as_str().map(str::to_owned),
-            apps: strings("toon_apps")?,
+            toon_apps: strings("toon_apps")?,
         })
     }
 
@@ -208,9 +208,10 @@ impl Record {
     }
 }
 
-/// The name of a key's table in a connector's list.
+/// The name of a key's table in a connector's list: the whole public half, since two
+/// tables of one name make the connector refuse the whole list.
 fn table_name(public: &str) -> String {
-    format!("agent-{}", &public[..8])
+    format!("agent-{public}")
 }
 
 /// The connector's `controller_keys_file` for the TOON app `toon_app`: the keys granted on it
@@ -220,7 +221,7 @@ fn connector_list(record: &Record, toon_app: &str) -> String {
     for key in record
         .keys
         .iter()
-        .filter(|key| key.apps.iter().any(|app| app == toon_app))
+        .filter(|key| key.toon_apps.iter().any(|app| app == toon_app))
     {
         let writes = key.connector_scope();
         if writes.is_empty() {
@@ -328,19 +329,19 @@ fn check_expiry(expires: &str) -> Result<(), Error> {
         })
 }
 
-fn check_apps(state: &State, named: &[String]) -> Result<Vec<String>, Error> {
+fn check_toon_apps(state: &State, named: &[String]) -> Result<Vec<String>, Error> {
     if named.is_empty() {
         let relay = crate::apps::toon_app(state, None)?;
         return Ok(vec![relay.name.clone()]);
     }
-    let mut apps: Vec<String> = Vec::new();
+    let mut toon_apps: Vec<String> = Vec::new();
     for name in named {
         crate::apps::toon_app(state, Some(name))?;
-        if !apps.contains(name) {
-            apps.push(name.clone());
+        if !toon_apps.contains(name) {
+            toon_apps.push(name.clone());
         }
     }
-    Ok(apps)
+    Ok(toon_apps)
 }
 
 fn check_limits(per_command: u64, per_day: u64) -> Result<(), Error> {
@@ -380,9 +381,8 @@ fn create(home: &Path, args: &AgentKeyCreateArgs) -> Result<Report, Error> {
     if let Some(expires) = &args.expires {
         check_expiry(expires)?;
     }
-    let apps = check_apps(&state, &args.app)?;
-    let out = args.out.clone().unwrap_or_default();
-    if !out.as_os_str().is_empty() && out.exists() {
+    let toon_apps = check_toon_apps(&state, &args.toon_app)?;
+    if let Some(out) = args.out.as_ref().filter(|out| out.exists()) {
         return Err(usage(format!(
             "{} exists; `toon agent-key create` does not overwrite a file.",
             out.display()
@@ -390,7 +390,7 @@ fn create(home: &Path, args: &AgentKeyCreateArgs) -> Result<Report, Error> {
     }
     // The wallet's limit is the default: an agent key is never given more than the operator
     // allows themself unless they say so.
-    let (default_command, default_day) = match (args.max_per_command, args.max_per_day) {
+    let (per_command, per_day) = match (args.max_per_command, args.max_per_day) {
         (Some(command), Some(day)) => (command, day),
         _ => {
             let wallet = spending::read_limits(home)?;
@@ -401,7 +401,7 @@ fn create(home: &Path, args: &AgentKeyCreateArgs) -> Result<Report, Error> {
             )
         }
     };
-    check_limits(default_command, default_day)?;
+    check_limits(per_command, per_day)?;
 
     let secret = zeroize::Zeroizing::new(keystore::random::<32>()?);
     let public = hex::encode(
@@ -412,49 +412,63 @@ fn create(home: &Path, args: &AgentKeyCreateArgs) -> Result<Report, Error> {
     let key = Key {
         public: public.clone(),
         scope,
-        max_per_command: default_command,
-        max_per_day: default_day,
+        max_per_command: per_command,
+        max_per_day: per_day,
         max_restarts: args.max_restarts.unwrap_or(DEFAULT_RESTARTS),
         expires: args.expires.clone(),
-        apps,
+        toon_apps,
     };
     let mut record = Record::load(home)?;
     let supervisor = supervisor_address(&mut record)?;
-    let out = if out.as_os_str().is_empty() {
-        PathBuf::from(format!("agent-key-{}.json", &public[..8]))
-    } else {
-        out
-    };
+    let out = args
+        .out
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(format!("agent-key-{}.json", &public[..8])));
     let out = std::path::absolute(&out).unwrap_or(out);
     let surfaces: serde_json::Map<String, Value> = state
         .toon_apps
         .iter()
-        .filter(|app| key.apps.contains(&app.name))
+        .filter(|app| key.toon_apps.contains(&app.name))
         .map(|app| (app.name.clone(), json!(format!("http://{}", app.listen))))
         .collect();
-    let file = json!({
-        "private_key": hex::encode(*secret),
+    let rest = json!({
         "public_key": public,
         "supervisor": supervisor,
         "toon_apps": surfaces,
-    });
+    })
+    .to_string();
+    // The private key goes straight into a string that is wiped when dropped, not into a
+    // `Value`, which would keep a copy that is not.
+    let file = zeroize::Zeroizing::new(format!(
+        "{{\"private_key\":\"{}\",{}\n",
+        zeroize::Zeroizing::new(hex::encode(*secret)).as_str(),
+        &rest[1..]
+    ));
     let mut written = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(&out)
-        .map_err(|source| usage(format!("{}: {source}.", out.display())))?;
-    if let Err(source) = writeln!(written, "{file}").and_then(|()| written.sync_all()) {
+        .map_err(|source| failed(ErrorCode::Io, format!("{}: {source}.", out.display())))?;
+    if let Err(source) = written
+        .write_all(file.as_bytes())
+        .and_then(|()| written.sync_all())
+    {
         let _ = std::fs::remove_file(&out);
         return Err(failed(
             ErrorCode::Io,
             format!("{}: {source}.", out.display()),
         ));
     }
+    let before = record.keys.clone();
     record.keys.push(key.clone());
     let saved = record.save(home).and_then(|()| write_lists(home, &state));
     if let Err(error) = saved {
+        // Nobody holds the key once its file is gone, so it is taken off the record and
+        // every list again rather than left granted.
         let _ = std::fs::remove_file(&out);
+        record.keys = before;
+        let _ = record.save(home).and_then(|()| write_lists(home, &state));
         return Err(error);
     }
     Ok(Report {
@@ -463,7 +477,7 @@ fn create(home: &Path, args: &AgentKeyCreateArgs) -> Result<Report, Error> {
         text: format!(
             "Agent key {public} created, granted on {}. Its key file, {}, holds the private key: \
              hand it to the agent and keep no copy where the agent can read it.",
-            key.apps.join(", "),
+            key.toon_apps.join(", "),
             out.display()
         ),
     })
@@ -478,7 +492,7 @@ fn describe(key: &Key) -> String {
         key.max_per_day,
         key.max_restarts,
         key.expires.as_deref().unwrap_or("never"),
-        key.apps.join(","),
+        key.toon_apps.join(","),
     )
 }
 
@@ -517,8 +531,8 @@ fn set(home: &Path, args: &AgentKeySetArgs) -> Result<Report, Error> {
     if args.no_expiry {
         key.expires = None;
     }
-    if !args.app.is_empty() {
-        key.apps = check_apps(&state, &args.app)?;
+    if !args.toon_app.is_empty() {
+        key.toon_apps = check_toon_apps(&state, &args.toon_app)?;
     }
     key.max_per_command = args.max_per_command.unwrap_or(key.max_per_command);
     key.max_per_day = args.max_per_day.unwrap_or(key.max_per_day);
