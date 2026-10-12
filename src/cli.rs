@@ -122,6 +122,14 @@ pub enum Command {
     Approve {
         /// The pending app's name, as `toon status` shows it
         app: String,
+        /// A file for the secret the app names as the variable NAME, as `toon add --secret`
+        /// takes it; the approval gives exactly the secrets the app names; repeatable
+        #[arg(long, value_name = "NAME=FILE")]
+        secret: Vec<String>,
+        /// A file for the secret the app names at PATH in the container, as
+        /// `toon add --secret-file` takes it; repeatable
+        #[arg(long, value_name = "PATH=FILE")]
+        secret_file: Vec<String>,
     },
     /// Refuse a pending app: it is not added, and the agent key's `toon status` says so
     Refuse {
@@ -240,11 +248,13 @@ pub struct SecretArgs {
     #[arg(long, value_name = "NAME=VALUE")]
     pub env: Vec<String>,
     /// A secret the app is started with as the variable NAME, set to the contents of FILE
-    /// less one trailing newline; repeatable
+    /// less one trailing newline; repeatable. With an agent key, just NAME: it names a
+    /// secret the app needs, and the operator gives the file on `toon approve`
     #[arg(long, value_name = "NAME=FILE")]
     pub secret: Vec<String>,
     /// A secret mounted read-only at PATH in the container, holding the bytes of FILE;
-    /// repeatable
+    /// repeatable. With an agent key, just PATH: it names a secret the app needs, and the
+    /// operator gives the file on `toon approve`
     #[arg(long, value_name = "PATH=FILE")]
     pub secret_file: Vec<String>,
 }

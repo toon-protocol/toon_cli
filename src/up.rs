@@ -65,6 +65,30 @@ const MOST_LOG_LINES: u64 = 1000;
 /// How much of the end of a log a `logs` order reads.
 const TAIL_BYTES: u64 = 256 * 1024;
 
+/// Add to each app of `status` the names and paths of the secrets it is started with, as
+/// `toon status` shows them with the home. Never a secret's contents.
+fn named_secrets(home: &Path, status: &mut Value) {
+    let Ok(Some(state)) = node::State::load(home) else {
+        return;
+    };
+    let Some(apps) = status["apps"].as_array_mut() else {
+        return;
+    };
+    for app in apps {
+        let kept = state
+            .toon_apps
+            .iter()
+            .flat_map(|toon_app| toon_app.apps.iter())
+            .find(|behind| app["name"] == behind.name.as_str());
+        if let Some(behind) = kept {
+            app["secrets"] = json!({
+                "variables": behind.secret_variables,
+                "files": behind.secret_files,
+            });
+        }
+    }
+}
+
 /// An app behind the connector, as the control socket reports it.
 struct AppStatus {
     name: String,
@@ -646,7 +670,11 @@ impl Shared {
                     .units()
                     .iter()
                     .filter(|unit| granted(&unit.toon_app))
-                    .map(|unit| unit.status())
+                    .map(|unit| {
+                        let mut status = unit.status();
+                        named_secrets(home, &mut status);
+                        status
+                    })
                     .collect::<Vec<_>>(),
                 // Only what this key asked for.
                 "pending_apps": pending::of_key(home, &key.public)

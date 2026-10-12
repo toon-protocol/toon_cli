@@ -369,14 +369,22 @@ fn changing(key: &KeyFile, name: &str, body: &Value) -> Result<Report, Error> {
 }
 
 fn add(key: &KeyFile, args: &AddArgs) -> Result<Report, Error> {
-    // A secret is the operator's, and its file is never read here.
-    if !args.secrets.secret.is_empty() || !args.secrets.secret_file.is_empty() {
+    // A secret's contents are the operator's, and a file is never read here: a key may only
+    // name the secret.
+    if args
+        .secrets
+        .secret
+        .iter()
+        .chain(&args.secrets.secret_file)
+        .any(|text| text.contains('='))
+    {
         return Err(Error {
             nothing_sent: true,
             ..failed(
                 ErrorCode::NeedsHome,
-                "`toon add --secret` needs the agent node's home, which an agent key never \
-                 reads. Only the operator supplies a secret."
+                "`toon add --secret NAME=FILE` needs the agent node's home, which an agent key \
+                 never reads. Only the operator supplies a secret: name it with `--secret NAME` \
+                 or `--secret-file PATH`, and the operator gives its file on `toon approve`."
                     .into(),
             )
         });
@@ -402,6 +410,8 @@ fn add(key: &KeyFile, args: &AddArgs) -> Result<Report, Error> {
             "cpus": args.allow.cpus,
             "pids": args.allow.pids,
             "env": args.secrets.env,
+            "secret": args.secrets.secret,
+            "secret_file": args.secrets.secret_file,
             "yes": args.yes,
         }),
     )
