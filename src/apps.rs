@@ -807,14 +807,24 @@ fn asked(body: &serde_json::Value, to: &str, origin: &Origin) -> Result<serde_js
         "cpus": text(body, "cpus")?,
         "pids": text(body, "pids")?,
         "env": strings(body, "env")?,
+        "secret": strings(body, "secret")?,
+        "secret_file": strings(body, "secret_file")?,
     }))
 }
 
 /// Where a recorded ask's app comes from, and the allowances and variables it carries, parsed
-/// as `toon add` parses its flags.
+/// as `toon add` parses its flags. The secrets it names are named only: no file is given.
 fn parse_ask(
     ask: &serde_json::Value,
-) -> Result<(Origin<'_>, Allowances, crate::secrets::Given), Error> {
+) -> Result<
+    (
+        Origin<'_>,
+        Allowances,
+        crate::secrets::Given,
+        crate::secrets::Named,
+    ),
+    Error,
+> {
     let origin = match (ask["image"].as_str(), ask["url"].as_str()) {
         (Some(image), None) => Origin::Image(image),
         (None, Some(url)) => Origin::Url(url),
@@ -834,16 +844,16 @@ fn parse_ask(
     };
     let allowances = allowances(&origin, &flags)?;
     named_runtime(&origin, ask["runtime"].as_str())?;
-    let secrets = crate::secrets::Given::parse(
+    let (secrets, named) = crate::secrets::Given::parse_ask(
         &origin,
         &crate::cli::SecretArgs {
             env: strings(ask, "env")?,
-            secret: Vec::new(),
-            secret_file: Vec::new(),
+            secret: strings(ask, "secret")?,
+            secret_file: strings(ask, "secret_file")?,
         },
         &allowances,
     )?;
-    Ok((origin, allowances, secrets))
+    Ok((origin, allowances, secrets, named))
 }
 
 /// An add an agent key may not make at once: recorded as a pending app, for the operator to
@@ -858,7 +868,7 @@ fn hold(
     body: &serde_json::Value,
 ) -> Result<serde_json::Value, Error> {
     let ask = asked(body, to, origin)?;
-    parse_ask(&ask)?;
+    let (.., named) = parse_ask(&ask)?;
     let state = loaded(home)?;
     free(&state, name)?;
     if let Some(prefix) = ask["address"].as_str() {
@@ -869,7 +879,20 @@ fn hold(
         Origin::Url(url) => format!("the app at {url}"),
     };
     if let crate::pending::Recorded::New = crate::pending::record(home, key, name, ask)? {
-        eprintln!("Pending app {name} ({what}, behind {to}) asked for by the agent key {key}.");
+        let secrets: Vec<String> = named
+            .variables
+            .iter()
+            .map(|variable| format!("secret {variable}"))
+            .chain(named.files.iter().map(|path| format!("secret file {path}")))
+            .collect();
+        let secrets = if secrets.is_empty() {
+            String::new()
+        } else {
+            format!(", naming {}", secrets.join(", "))
+        };
+        eprintln!(
+            "Pending app {name} ({what}, behind {to}{secrets}) asked for by the agent key {key}."
+        );
     }
     Err(Error {
         nothing_sent: true,
@@ -916,13 +939,19 @@ pub fn ordered_add(
             ))
         }
     };
-    if listed(body, "secret") || listed(body, "secret_file") {
+    // A key names a secret by its variable or its path; an entry that holds `=` gives the
+    // contents of a file, which only the operator does.
+    let gives = strings(body, "secret")?
+        .iter()
+        .chain(&strings(body, "secret_file")?)
+        .any(|text| text.contains('='));
+    if gives {
         return Err(Error {
             nothing_sent: true,
             ..failed(
                 ErrorCode::NeedsHome,
                 "A secret is supplied by the operator, from the home: an agent key cannot give \
-                 one."
+                 one, only name it."
                     .into(),
             )
         });
@@ -943,6 +972,8 @@ pub fn ordered_add(
                     "cpus",
                     "pids",
                     "env",
+                    "secret",
+                    "secret_file",
                 ]
                 .iter()
                 .any(|field| listed(body, field))
@@ -991,13 +1022,27 @@ fn note(home: &Path, decision: &str, app: &str) {
 }
 
 /// `toon approve`: add the pending app `app` exactly as the agent key asked for it.
-pub fn approve(home: &Path, app: &str) -> Result<Report, Error> {
+pub fn approve(home: &Path, app: &str, files: &crate::cli::SecretArgs) -> Result<Report, Error> {
     let _ordering = ORDERED
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let entry = crate::pending::find_pending(home, app)?;
     let ask = &entry.ask;
-    let (origin, allowances, secrets) = parse_ask(ask)?;
+    let (origin, allowances, mut secrets, named) = parse_ask(ask)?;
+    // The approval gives exactly the secrets the app names, checked before any file is read.
+    named.matched_by(files)?;
+    if !named.variables.is_empty() || !named.files.is_empty() {
+        let given = crate::secrets::Given::parse_flags(
+            &crate::cli::SecretArgs {
+                env: Vec::new(),
+                secret: files.secret.clone(),
+                secret_file: files.secret_file.clone(),
+            },
+            &allowances,
+        )?;
+        secrets.secret_variables = given.secret_variables;
+        secrets.secret_files = given.secret_files;
+    }
     // The operator's approval is an operator's add: no runtime asked for leaves the node's
     // to apply.
     let runtime = runtime(home, &origin, ask["runtime"].as_str())?;

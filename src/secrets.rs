@@ -59,6 +59,64 @@ impl std::fmt::Debug for Given {
     }
 }
 
+/// The secrets an agent key asked for and gave nothing for: the names of the variables and
+/// the paths, in normal form, in the container.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Named {
+    pub variables: Vec<String>,
+    pub files: Vec<String>,
+}
+
+impl Named {
+    /// `usage` unless the operator's `--secret` and `--secret-file` flags give exactly the
+    /// secrets this names: it lists what is missing and what was not asked for.
+    pub fn matched_by(&self, flags: &SecretArgs) -> Result<(), Error> {
+        let before = |text: &String| text.split('=').next().unwrap_or_default().to_owned();
+        let variables: Vec<String> = flags.secret.iter().map(before).collect();
+        let files: Vec<String> = flags
+            .secret_file
+            .iter()
+            .map(|text| normal(&before(text)))
+            .collect();
+        let mut missing: Vec<String> = Vec::new();
+        let mut unasked: Vec<String> = Vec::new();
+        for name in self.variables.iter().filter(|n| !variables.contains(n)) {
+            missing.push(format!("--secret {name}=<file>"));
+        }
+        for path in self.files.iter().filter(|p| !files.contains(p)) {
+            missing.push(format!("--secret-file {path}=<file>"));
+        }
+        for name in variables.iter().filter(|n| !self.variables.contains(n)) {
+            unasked.push(format!("--secret {name}"));
+        }
+        for path in files.iter().filter(|p| !self.files.contains(p)) {
+            unasked.push(format!("--secret-file {path}"));
+        }
+        if missing.is_empty() && unasked.is_empty() {
+            return Ok(());
+        }
+        let mut message = String::from("The approval must give exactly the secrets the app names.");
+        if !missing.is_empty() {
+            message += &format!(" Missing: {}.", missing.join(", "));
+        }
+        if !unasked.is_empty() {
+            message += &format!(" Not asked for: {}.", unasked.join(", "));
+        }
+        Err(refused(message))
+    }
+}
+
+fn refuse_url(origin: &Origin) -> Result<(), Error> {
+    if matches!(origin, Origin::Url(_)) {
+        return Err(refused(
+            "--env, --secret and --secret-file give an app that runs from an image \
+             something to start with; an app at a --url is not run."
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// The name and the rest of `NAME=rest`.
 fn split<'a>(flag: &str, text: &'a str) -> Result<(&'a str, &'a str), Error> {
     text.split_once('=')
@@ -166,19 +224,40 @@ impl Given {
         if flags.env.is_empty() && flags.secret.is_empty() && flags.secret_file.is_empty() {
             return Ok(Self::default());
         }
-        if matches!(origin, Origin::Url(_)) {
-            return Err(refused(
-                "--env, --secret and --secret-file give an app that runs from an image \
-                 something to start with; an app at a --url is not run."
-                    .into(),
-            ));
-        }
+        refuse_url(origin)?;
         Self::parse_flags(flags, allowances)
     }
 
     /// What the flags give, for an app known to run from an image.
     pub fn parse_flags(flags: &SecretArgs, allowances: &Allowances) -> Result<Self, Error> {
+        Ok(Self::parse_with(flags, allowances, true)?.0)
+    }
+
+    /// The variables, and the secrets only named, of an ask an agent key made: `flags.secret`
+    /// and `flags.secret_file` hold bare names and paths, and no file is read. Checked by the
+    /// rules that `parse` applies to an operator's own add.
+    pub fn parse_ask(
+        origin: &Origin,
+        flags: &SecretArgs,
+        allowances: &Allowances,
+    ) -> Result<(Self, Named), Error> {
+        if flags.env.is_empty() && flags.secret.is_empty() && flags.secret_file.is_empty() {
+            return Ok((Self::default(), Named::default()));
+        }
+        refuse_url(origin)?;
+        Self::parse_with(flags, allowances, false)
+    }
+
+    /// The one set of rules for names and paths. With `read_files`, `--secret` and
+    /// `--secret-file` are `NAME=FILE` and the files are read; without, they are bare names
+    /// and paths.
+    fn parse_with(
+        flags: &SecretArgs,
+        allowances: &Allowances,
+        read_files: bool,
+    ) -> Result<(Self, Named), Error> {
         let mut given = Self::default();
+        let mut named = Named::default();
         let mut names: Vec<String> = Vec::new();
         let mut take = |flag: &str, name: &str| -> Result<(), Error> {
             check_name(flag, name)?;
@@ -194,24 +273,38 @@ impl Given {
             given.variables.insert(name.to_owned(), value.to_owned());
         }
         for text in &flags.secret {
-            let (name, file) = split("--secret", text)?;
-            take("--secret", name)?;
-            let value = variable_value(file, read("--secret", file)?)?;
-            given.secret_variables.push((name.to_owned(), value));
+            if read_files {
+                let (name, file) = split("--secret", text)?;
+                take("--secret", name)?;
+                let value = variable_value(file, read("--secret", file)?)?;
+                given.secret_variables.push((name.to_owned(), value));
+                named.variables.push(name.to_owned());
+            } else {
+                take("--secret", text)?;
+                named.variables.push(text.clone());
+            }
         }
         for text in &flags.secret_file {
-            let (path, file) = split("--secret-file", text)?;
+            let (path, file) = if read_files {
+                let (path, file) = split("--secret-file", text)?;
+                (path, Some(file))
+            } else {
+                (text.as_str(), None)
+            };
             let path = check_path(path, allowances)?;
-            if given.secret_files.iter().any(|(known, _)| *known == path) {
+            if named.files.contains(&path) {
                 return Err(refused(format!(
                     "--secret-file {path}: the path is given twice."
                 )));
             }
-            given
-                .secret_files
-                .push((path, read("--secret-file", file)?));
+            if let Some(file) = file {
+                given
+                    .secret_files
+                    .push((path.clone(), read("--secret-file", file)?));
+            }
+            named.files.push(path);
         }
-        Ok(given)
+        Ok((given, named))
     }
 
     /// Put what was given in the record of `app`.

@@ -378,3 +378,28 @@ fn a_refused_order_does_not_spend_its_signature() {
     let (status, reply) = post(&agent.supervisor, "/orders/logs", "", Some(signed));
     assert_eq!(status, 200, "{reply}");
 }
+
+#[test]
+fn an_add_order_that_gives_a_secrets_file_is_answered_needs_home() {
+    let node = node();
+    let agent = node.create(&["--scope", "status,apps"]);
+    for (field, entry) in [
+        ("secret", "KEY=/etc/hostname"),
+        ("secret_file", "/run/secrets/k=/etc/hostname"),
+    ] {
+        let mut body = json!({
+            "name": "given",
+            "to": "relay",
+            "image": "ghcr.io/toon-protocol/echo",
+        });
+        body[field] = json!([entry]);
+        let (status, reply) = agent.send("/orders/add", &body.to_string());
+        assert_ne!(status, 200, "{reply}");
+        assert_eq!(reply["error"]["code"], "needs_home", "{reply}");
+    }
+    let (_, reply) = agent.send("/orders/status", "");
+    assert_eq!(reply["pending_apps"], json!([]), "{reply}");
+    let record = fs::read_to_string(node.machine.agent_node_home().join("pending-apps.json"))
+        .unwrap_or_default();
+    assert!(!record.contains("given"), "{record}");
+}

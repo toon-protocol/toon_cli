@@ -284,8 +284,22 @@ fn run() -> ExitCode {
             json,
         )
         .into(),
-        Command::Approve { app } => render(
-            home::resolve().and_then(|home| apps::approve(&home, &app)),
+        Command::Approve {
+            app,
+            secret,
+            secret_file,
+        } => render(
+            home::resolve().and_then(|home| {
+                apps::approve(
+                    &home,
+                    &app,
+                    &cli::SecretArgs {
+                        env: Vec::new(),
+                        secret,
+                        secret_file,
+                    },
+                )
+            }),
             json,
         )
         .into(),

@@ -183,7 +183,9 @@ NAME=value`, `--secret NAME=<file>` (a variable with the file's contents less on
 anyone who can use docker can read it) and `--secret-file <path>=<file>` (the file mounted
 read-only at `<path>`). Each is repeatable, only with `--image`, and refused with `usage` for a
 name beginning `TOON_`, a bad name or path, or an empty, unreadable or over-64-KiB file. Only the
-operator supplies a secret. To change one, use `toon change` (below); a backup holds none.
+operator supplies a secret. With an agent key, `--secret NAME` and `--secret-file <path>` (no file) name a
+secret the app needs; the add is held as a pending app, and the operator gives a file for each on
+`toon approve`, exactly the set named. `NAME=<file>` with an agent key is refused with `needs_home`. To change one, use `toon change` (below); a backup holds none.
 An image that needs another variable to start fails with `app_failed`; `toon logs <app>` says why. Do not
 assume a published image meets this: the one image known to run unchanged is the minimal app in
 [Adding an app](https://github.com/toon-protocol/toon_cli/blob/main/docs/guide/adding-an-app.md),

@@ -99,6 +99,10 @@ impl Entry {
                 "pids": self.ask["pids"],
             },
             "variables": self.ask["env"],
+            "secrets": {
+                "variables": listed(&self.ask["secret"]),
+                "files": listed(&self.ask["secret_file"]),
+            },
             "runtime": self.ask["runtime"],
         });
         if let Some(reason) = &self.refused {
@@ -120,6 +124,15 @@ impl Entry {
             Some(reason) if reason.is_empty() => format!("{head}; refused."),
             Some(reason) => format!("{head}; refused: {reason}"),
         }
+    }
+}
+
+/// `value` if it is a list, else an empty one: a record from before secrets were named holds none.
+fn listed(value: &Value) -> Value {
+    if value.is_array() {
+        value.clone()
+    } else {
+        json!([])
     }
 }
 
@@ -152,6 +165,16 @@ pub fn asked(shown: &Value) -> String {
             "variable {}",
             variable.as_str().unwrap_or_default()
         ));
+    }
+    for variable in shown["secrets"]["variables"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        with.push(format!("secret {}", variable.as_str().unwrap_or_default()));
+    }
+    for path in shown["secrets"]["files"].as_array().into_iter().flatten() {
+        with.push(format!("secret file {}", path.as_str().unwrap_or_default()));
     }
     let with = if with.is_empty() {
         String::new()

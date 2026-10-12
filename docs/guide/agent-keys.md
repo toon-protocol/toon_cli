@@ -187,24 +187,32 @@ example.com:5000/team/app        # exactly this repository
 An add by an agent key, with `apps` in its scope and granted on the TOON app it goes behind
 (`--to`), is added at once only if its image is on the list **and** it carries no allowance
 (`--allow-egress`, `--scratch`, `--memory`, `--cpus`, `--pids`), no variable (`--env`) and no
-runtime (`--runtime`): a trusted image is trusted as shipped. An agent key cannot name a
+runtime (`--runtime`), and names no secret: a trusted image is trusted as shipped. An agent key cannot name a
 runtime and have the app added at once, since a name may be a runtime that confines less than
 docker's own; such an add is held as a pending app, and `toon change` stays the operator's. Anything else, and every `--url`, becomes a **pending
 app**: it is recorded in the home, nothing is pulled, started or routed, and the add answers
 `approval_pending`, exit 1, naming the app. The same add again gives the same answer and
 records nothing more. A key holds at most 8 pending apps; the ninth is refused with
-`needs_operator` and not recorded. A secret (`--secret`, `--secret-file`) is refused with
-`needs_home`. `toon remove` with a key refuses the relay with `needs_operator`.
+`needs_operator` and not recorded. An agent key may *name* a secret the app needs, with
+`--secret NAME` (a variable) or `--secret-file <path>` (a file at `<path>` in the container),
+and give nothing for it; an add that names one is always a pending app, even for a trusted
+image. A secret given with its file (`--secret NAME=<file>`, `--secret-file <path>=<file>`) is
+refused with `needs_home`: an agent key cannot supply a secret. `toon remove` with a key refuses the relay with `needs_operator`.
 
 ### Pending apps
 
 `toon status` shows a pending app to the operator, with the image or URL, the TOON app, the
-allowances and variables asked for, and which key asked. An agent key's `toon status` shows
+allowances, variables and secrets asked for (`"secrets": {"variables": [...], "files": [...]}`
+in `--json`; names and paths, never contents), and which key asked. An agent key's `toon status` shows
 only the ones that key asked for, as `pending`, or as `refused` with the operator's reason.
 
 - `toon approve <app>` (home only) adds the app exactly as it was asked for: the same image
   reference or URL, allowances and variables, behind the same TOON app. It restarts that
-  connector, as `toon add --yes` does. Approving does not put the image on the list of trusted
+  connector, as `toon add --yes` does. If the app names secrets, the approval gives a file for
+  each, `--secret NAME=<file>` and `--secret-file <path>=<file>`, with the meaning and the
+  checks they have on `toon add`, and gives exactly those the app names: one missing, or one
+  not named, is refused with `usage` and the app stays pending. An app that names none is
+  refused with `usage` if given one. Approving does not put the image on the list of trusted
   images; that is an edit to the `trusted-images` file.
 - `toon refuse <app> [--reason <text>]` (home only) records the refusal. The app is not added.
   The key may ask again, which replaces the refusal with a new pending app. The home keeps

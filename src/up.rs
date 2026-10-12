@@ -65,6 +65,27 @@ const MOST_LOG_LINES: u64 = 1000;
 /// How much of the end of a log a `logs` order reads.
 const TAIL_BYTES: u64 = 256 * 1024;
 
+/// Add to each app of `status` the names and paths of the secrets it is started with, as
+/// `toon status` shows them with the home. Never a secret's contents.
+fn named_secrets(state: &node::State, status: &mut Value) {
+    let Some(apps) = status["apps"].as_array_mut() else {
+        return;
+    };
+    for app in apps {
+        let kept = state
+            .toon_apps
+            .iter()
+            .flat_map(|toon_app| toon_app.apps.iter())
+            .find(|behind| app["name"] == behind.name.as_str());
+        if let Some(behind) = kept {
+            app["secrets"] = json!({
+                "variables": behind.secret_variables,
+                "files": behind.secret_files,
+            });
+        }
+    }
+}
+
 /// An app behind the connector, as the control socket reports it.
 struct AppStatus {
     name: String,
@@ -642,20 +663,29 @@ impl Shared {
     fn order(&self, home: &Path, key: &Key, order: order::Order) -> Result<Value, order::Refusal> {
         let granted = |name: &str| key.toon_apps.iter().any(|app| app == name);
         match order.name {
-            "status" => Ok(json!({
-                "toon_apps": self
-                    .units()
-                    .iter()
-                    .filter(|unit| granted(&unit.toon_app))
-                    .map(|unit| unit.status())
-                    .collect::<Vec<_>>(),
-                // Only what this key asked for.
-                "pending_apps": pending::of_key(home, &key.public)
-                    .map_err(refused)?
-                    .iter()
-                    .map(pending::Entry::shown)
-                    .collect::<Vec<_>>(),
-            })),
+            "status" => {
+                let state = node::State::load(home).ok().flatten();
+                Ok(json!({
+                    "toon_apps": self
+                        .units()
+                        .iter()
+                        .filter(|unit| granted(&unit.toon_app))
+                        .map(|unit| {
+                            let mut status = unit.status();
+                            if let Some(state) = &state {
+                                named_secrets(state, &mut status);
+                            }
+                            status
+                        })
+                        .collect::<Vec<_>>(),
+                    // Only what this key asked for.
+                    "pending_apps": pending::of_key(home, &key.public)
+                        .map_err(refused)?
+                        .iter()
+                        .map(pending::Entry::shown)
+                        .collect::<Vec<_>>(),
+                }))
+            }
             "logs" => {
                 let toon_app = match order.body["toon_app"].as_str() {
                     Some(name) => name.to_owned(),

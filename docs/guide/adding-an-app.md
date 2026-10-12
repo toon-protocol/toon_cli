@@ -241,6 +241,10 @@ These are refused with `usage`, before anything is written, pulled or restarted:
 A variable or a secret is not an allowance: it tells the app something and lets it reach nothing
 more. They are set when the app is added, and `toon change` changes them (below). The relay takes none: what it is
 started with comes from its settings and the agent identity. An agent key cannot supply a secret.
+It can name one an app needs, with `--secret NAME` or `--secret-file <path>` and no file; the add
+is then held as a pending app, and the operator supplies each file on
+`toon approve <app> --secret NAME=<file> --secret-file <path>=<file>`. The approval must give
+exactly the secrets named, no fewer and no more, or it is refused with `usage`.
 
 ## What an app may and may not do
 
