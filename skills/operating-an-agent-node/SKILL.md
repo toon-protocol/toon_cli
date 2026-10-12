@@ -87,7 +87,8 @@ command shares then:
 
 - A tool may have `--yes` written into it. Then the command cannot be run without it to see a
   price, so learn what a send costs with `toon describe` and `toon probe` (see "Finding out what a
-  connector offers") before you use the tool.
+  connector offers"), and what a relay charges with `toon relay describe <ws-url>`, before you use
+  the tool.
 - `--body`, `--request` and `--terms` take a file. You need somewhere you can write one; if you
   have none, say so instead of guessing.
 - `TOON_PASSPHRASE_FILE` (or `TOON_PASSPHRASE`) is set by whatever starts you, when you cannot set
@@ -281,7 +282,9 @@ inbound channel now.
 `toon relay config` shows the relay's settings and prices. With `--name`, `--description`,
 `--expiry honour|ignore`, `--block <event-id>` or `--unblock <event-id>` it changes them and restarts
 the relay and its connector (`--yes`). `toon relay price <amount>` sets the price of one write
-to the relay's route.
+to the relay's route. `toon relay describe <ws-url>` is the other direction: it prints what
+another relay charges for a write and for its live feed, and whether a peering of this agent node
+reaches it. It pays nothing and needs no passphrase or `--yes`.
 
 To sell the relay's live feed (ADR 0005), `toon relay price --subscribe <amount> --broadcast <amount>`
 sets what a subscribe packet costs and credits, on a new route of the connector, and what the relay

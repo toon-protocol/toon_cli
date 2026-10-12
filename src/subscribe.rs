@@ -52,13 +52,32 @@ struct Terms {
     broadcast_price: u64,
 }
 
+/// What a relay that sells its live feed charges for it, from its information document.
+pub struct Feed {
+    /// The subscribe route.
+    pub address: String,
+    /// What one subscribe packet costs and credits.
+    pub price: u64,
+    /// What each broadcast event debits.
+    pub broadcast_price: u64,
+}
+
+/// The feed a relay's information document sells, or `None` when it does not sell one.
+pub fn feed_terms(document: &Value) -> Option<Feed> {
+    let subscription = &document["toon_subscription"];
+    let positive = |value: &Value| value.as_u64().filter(|number| *number > 0);
+    let address = subscription["ilp_address"]
+        .as_str()
+        .filter(|text| !text.is_empty())?;
+    Some(Feed {
+        address: address.to_owned(),
+        price: positive(&subscription["price"])?,
+        broadcast_price: positive(&subscription["broadcast_price"])?,
+    })
+}
+
 fn terms(egress: &Egress, relay: &str) -> Result<Terms, Error> {
     let document = event::information_document(egress, relay)?;
-    let subscription = &document["toon_subscription"];
-    fn text(value: &Value) -> Option<&str> {
-        value.as_str().filter(|text| !text.is_empty())
-    }
-    let positive = |value: &Value| value.as_u64().filter(|number| *number > 0);
     let edge = event::edge_fields(&document["toon"]).map_err(|missing| {
         event::unpayable(format!(
             "The information document of {relay} does not say where its feed is paid for: \
@@ -66,19 +85,15 @@ fn terms(egress: &Egress, relay: &str) -> Result<Terms, Error> {
              `connector_seal_key` of 65 bytes of hex and a `price`, and has {missing}."
         ))
     })?;
-    match (
-        text(&subscription["ilp_address"]),
-        positive(&subscription["price"]),
-        positive(&subscription["broadcast_price"]),
-    ) {
-        (Some(address), Some(price), Some(broadcast_price)) => Ok(Terms {
+    match feed_terms(&document) {
+        Some(feed) => Ok(Terms {
             connector_url: edge.connector_url,
             seal_key: edge.seal_key,
-            address: address.to_owned(),
-            price,
-            broadcast_price,
+            address: feed.address,
+            price: feed.price,
+            broadcast_price: feed.broadcast_price,
         }),
-        _ => Err(event::unpayable(format!(
+        None => Err(event::unpayable(format!(
             "The information document of {relay} has no `toon_subscription` with an \
              `ilp_address`, a `price` and a `broadcast_price` above 0, so it does not sell \
              its feed."

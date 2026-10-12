@@ -124,7 +124,7 @@ pub enum Command {
         #[command(subcommand)]
         command: ChannelCommand,
     },
-    /// Set the relay and what a write to it costs
+    /// Set the relay and what a write to it costs, or read what another relay charges
     Relay {
         #[command(subcommand)]
         command: RelayCommand,
@@ -745,6 +745,11 @@ pub enum RelayCommand {
         /// Restart a running connector without asking: a restart drops the packets it holds
         #[arg(long)]
         yes: bool,
+    },
+    /// Print what another relay charges, from its information document, and pay nothing
+    Describe {
+        /// The relay's websocket URL, `ws://host:port` or `wss://host:port`
+        relay: String,
     },
     /// Subscribe to another relay's paid live feed, or top a subscription up
     Subscribe {

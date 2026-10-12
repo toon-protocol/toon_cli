@@ -1504,3 +1504,63 @@ fn an_older_read_time_is_replaced_by_the_next_read() {
 
     assert!(status_subscription(&near)["read_at"].as_u64().unwrap() > 1);
 }
+
+#[test]
+fn relay_describe_prints_the_prices_and_whether_a_peering_reaches_the_relay() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let (far, relay) = remote(&chain);
+    relay.publish_connector(&far.url(), &support::seal_key(&far.url()));
+    // No passphrase is set: the command pays nothing.
+    let limits = || near.machine.toon(&["limit", "show", "--json"]).json();
+    let before = limits();
+    let url = relay.url();
+    let describe = |extra: &[&str]| {
+        let mut args = vec!["relay", "describe", &url[..]];
+        args.extend_from_slice(extra);
+        near.machine.toon(&args)
+    };
+
+    let run = describe(&["--json"]);
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    let shown = run.json();
+    assert_eq!(shown["write"]["price"], 1, "{shown}");
+    assert_eq!(shown["write"]["ilp_address"], "g.toon.relay");
+    assert_eq!(shown["write"]["connector_url"], far.url());
+    assert_eq!(shown["feed"]["selling"], true);
+    assert_eq!(shown["feed"]["ilp_address"], SUBSCRIBE);
+    assert_eq!(shown["feed"]["subscribe_price"], PRICE);
+    assert_eq!(shown["feed"]["broadcast_price"], BROADCAST_PRICE);
+    assert_eq!(shown["peering"], false);
+    assert_eq!(limits(), before);
+
+    let peered = near.toon(&[
+        "peer",
+        "add",
+        &far.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+    ]);
+    assert_eq!(peered.exit_code, 0, "{}{}", peered.stdout, peered.stderr);
+    let id = near.toon(&["peer", "list", "--json"]).json()["peers"][0]["id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    let after = limits();
+    let text = describe(&[]);
+    assert_eq!(text.exit_code, 0, "{}{}", text.stdout, text.stderr);
+    assert!(
+        text.stdout
+            .contains(&format!("toon route add g.toon.relay --peer {id}")),
+        "{}",
+        text.stdout
+    );
+    assert!(!text.stdout.contains("--deposit"), "{}", text.stdout);
+
+    let routed = near.toon(&["route", "add", "g.toon.relay", "--peer", &id]);
+    assert_eq!(routed.exit_code, 0, "{}{}", routed.stdout, routed.stderr);
+    assert_eq!(describe(&["--json"]).json()["peering"], true);
+    assert_eq!(limits(), after);
+    assert_eq!(relay.posts(), 0);
+}

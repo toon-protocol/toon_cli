@@ -84,7 +84,7 @@ A failed command with `--json` prints:
 | `confirmation_required` | 1 | `toon add`, `toon remove`, `toon route price`, `toon relay config` or `toon relay price` restarts a running connector, which drops the packets it holds in flight (`toon relay` restarts the relay too), and was not given `--yes`; nothing was changed |
 | `overlay_unavailable` | 1 | The Anyone overlay did not bootstrap (its `anon` release could not be downloaded or did not match its pinned checksum, its terms were not agreed to, or the daemon did not come up), so a hidden service was not created or started, or a command on a hidden agent node that makes a request of its own (a faucet, a chain, a relay, a connector) had no overlay to send it through; nothing falls back to clearnet |
 | `join_refused` | 1 | `toon join` named a network other than the one this agent node was initialised for, the agent node has already joined one, or it records no connector for the network; nothing was spent |
-| `relay_not_payable` | 1 | `toon event publish --relay`, `toon message send --relay` or `toon relay subscribe` could not read the relay's information document (or, for a `wss://` relay, its certificate did not verify), or it names no write edge (`toon`: `ilp_address`, `connector_url`, `connector_seal_key`, `price`; the key is 65 bytes of hex beginning `04`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
+| `relay_not_payable` | 1 | `toon event publish --relay`, `toon message send --relay`, `toon relay describe` or `toon relay subscribe` could not read the relay's information document (or, for a `wss://` relay, its certificate did not verify), or it names no write edge (`toon`: `ilp_address`, `connector_url`, `connector_seal_key`, `price`; the key is 65 bytes of hex beginning `04`) or, for `subscribe`, no subscribe route (`toon_subscription`: `ilp_address`, `price`, `broadcast_price`); nothing was paid |
 | `peering_needed` | 1 | `toon event publish --relay`, `toon message send --relay` or `toon relay subscribe` found no route that forwards the relay's `ilp_address`; nothing was paid and nothing was created. If no peering of this agent node reaches the relay's `connector_url`, the message prints the `toon peer add <connector_url> --deposit <amount> --yes` to run (for `subscribe`, with the deposit it would take in place of `<amount>`), then `toon route add`. If one does (the network joined from that URL, or a peering whose id is the label `peer add` derives from it), the message names only `toon route add <address> --peer <id>` and says no new deposit is needed |
 | `no_follow_list` | 1 | `toon event query --following` or `toon relay subscribe --following` found no follow list of the agent identity on the agent node's own relay, or one with no keys; nothing was sent or paid |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
@@ -222,6 +222,14 @@ amount to carry to get past that connector, a floor and not the whole cost, and 
 so instead of naming `--amount`. A cost of 0 is left
 out. `reject.message` is the reject's own message. Nothing is retried, and the same report is
 given by `toon send`. `--yes` is refused without `--relay`.
+
+`toon relay describe <relay-url>` reads the same information document and prints what the relay
+charges: `write` (its `ilp_address`, `connector_url` and `price`), `feed` (`selling`, and for a
+relay that sells its live feed the subscribe route's `ilp_address`, `subscribe_price` and
+`broadcast_price`; a relay that sells none is `"selling": false` and exits 0) and `peering`,
+whether a route of this agent node forwards the write edge's `ilp_address`. Amounts are in base
+units. It pays nothing, needs no passphrase and no `--yes`, and does not change the spending
+limit. A document without a usable `toon` object fails with `relay_not_payable`.
 
 `toon relay subscribe <relay-url> --filter <filter> --amount <amount>` subscribes to another
 relay's paid live feed (`nips/paid-subscription.md`). It reads `toon_subscription` from the

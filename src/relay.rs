@@ -16,8 +16,12 @@ use serde_json::json;
 use crate::apps;
 use crate::cli::RelayCommand;
 use crate::control;
+use crate::egress::Egress;
+use crate::event;
 use crate::node::{self, Expiry, RelaySettings, State, ToonApp};
+use crate::operator;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::subscribe;
 
 /// What `toon relay config` was asked to change. Nothing asked is a read.
 #[derive(Debug, Default)]
@@ -250,6 +254,78 @@ pub fn price(home: &Path, prices: &Prices, yes: bool) -> Result<Report, Error> {
     Ok(report(&settings, write, restarted, true))
 }
 
+/// `toon relay describe`: what another relay charges, read from its information document.
+/// It pays nothing and needs no passphrase.
+fn describe(home: &Path, relay: &str) -> Result<Report, Error> {
+    let egress = Egress::of(home)?;
+    let document = event::information_document(&egress, relay)?;
+    let edge = event::edge_fields(&document["toon"]).map_err(|missing| {
+        event::unpayable(format!(
+            "The information document of {relay} does not say where a write is paid for: \
+             its `toon` object needs an `ilp_address`, a `connector_url`, a \
+             `connector_seal_key` of 65 bytes of hex and a `price`, and has {missing}."
+        ))
+    })?;
+    let reached = State::load(home)?.is_some() && operator::forwards(home, &edge.ilp_address)?;
+    let feed = subscribe::feed_terms(&document);
+    let mut lines = vec![
+        format!("{relay} charges {} base units for a write.", edge.price),
+        format!(
+            "Write paid at {} (connector {}).",
+            edge.ilp_address, edge.connector_url
+        ),
+    ];
+    lines.push(match &feed {
+        Some(feed) => format!(
+            "Live feed: subscribe price {} base units a packet at {}, broadcast price {} base \
+             units an event.",
+            feed.price, feed.address, feed.broadcast_price
+        ),
+        None => "It sells no live feed.".to_owned(),
+    });
+    lines.push(if reached {
+        "A peering of this agent node reaches the write edge.".to_owned()
+    } else {
+        match operator::peering_toward(home, &edge.connector_url) {
+            Ok(Some(id)) => format!(
+                "No route of this agent node forwards {}, but its peering {id} already reaches \
+                 {}: no new deposit is needed. Run `toon route add {} --peer {id}`.",
+                edge.ilp_address, edge.connector_url, edge.ilp_address
+            ),
+            Ok(None) | Err(_) => format!(
+                "No peering of this agent node reaches {}: run `{}` and then \
+                 `toon route add {} --peer <id>`.",
+                edge.ilp_address,
+                operator::peer_add_command(&edge.connector_url, "<amount>", ""),
+                edge.ilp_address
+            ),
+        }
+    });
+    let feed_json = match &feed {
+        Some(feed) => json!({
+            "selling": true,
+            "ilp_address": feed.address,
+            "subscribe_price": feed.price,
+            "broadcast_price": feed.broadcast_price,
+        }),
+        None => json!({ "selling": false }),
+    };
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({
+            "relay": relay,
+            "write": {
+                "ilp_address": edge.ilp_address,
+                "connector_url": edge.connector_url,
+                "price": edge.price,
+            },
+            "feed": feed_json,
+            "peering": reached,
+        }),
+        text: lines.join("\n"),
+    })
+}
+
 /// `toon relay`.
 pub fn run(home: &Path, command: RelayCommand) -> Result<Report, Error> {
     match command {
@@ -268,6 +344,7 @@ pub fn run(home: &Path, command: RelayCommand) -> Result<Report, Error> {
             },
             yes,
         ),
+        RelayCommand::Describe { relay } => describe(home, &relay),
         RelayCommand::Subscribe {
             relay,
             filter,

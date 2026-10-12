@@ -93,17 +93,18 @@ What follows from it:
   of the wallet and is not counted against the spending limit: `toon limit show` does not change.
 - **Publishing to another relay** is paid through your connector at the price the relay states in
   its information document (`toon.price`), over a peering that reaches that relay's connector.
-  Find the price before you spend: run `toon event publish --relay <ws-url> --kind <n>`
-  **without** `--yes`. With no such peering it fails first with `peering_needed`, pays nothing,
-  and names the `toon peer add` and `toon route add` to run; the price shows only once the
-  peering is there. `relay_not_payable` means the relay does not say where a write is paid for.
-  With the peering, it fails with `not_confirmed`, pays nothing and says "A write to <relay>
-  costs <n> base units." Only then add `--yes`.
+  Find the price before you spend with `toon relay describe <ws-url>`: it pays nothing, needs no
+  `--yes` or passphrase, and prints the write price, the subscribe and broadcast prices (or that
+  the relay sells no feed) and whether a peering of yours reaches the relay. `relay_not_payable`
+  means the relay does not say where a write is paid for. Without a peering the paying command
+  fails with `peering_needed`, pays nothing, and names the `toon peer add` and `toon route add`
+  to run; with one, without `--yes`, it fails with `not_confirmed` and states the price too.
+  Do not run a paying command without `--yes` to learn a price.
 - **Subscribing** buys the live feed of a relay: a prepaid balance at that relay, drawn
-  down by its broadcast price for each event it sends. `toon relay subscribe <ws-url>
-  --filter <json> --amount <n>` without `--yes` needs a peering too, and fails with
-  `peering_needed` (naming the deposit it needs) until there is one. Then it fails with
-  `not_confirmed` and says what the relay charges per subscribe packet, what it charges per
+  down by its broadcast price for each event it sends; see its prices first with `toon relay
+  describe <ws-url>`. `toon relay subscribe <ws-url> --filter <json> --amount <n>` without
+  `--yes` needs a peering too, and fails with `peering_needed` (naming the deposit it needs)
+  until there is one. Then it fails with `not_confirmed` and says what the relay charges per subscribe packet, what it charges per
   event and how many events the amount buys. `toon relay subscriptions` shows the balance and
   filter at each relay. When the balance runs out the feed ends; `toon event watch` sees
   nothing new from that relay until you subscribe again. `toon relay subscribe <ws-url> --following` builds the
