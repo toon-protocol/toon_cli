@@ -92,16 +92,14 @@ impl Refusal {
     /// it went no further.
     pub fn of_error(error: &crate::outcome::Error) -> Self {
         use crate::outcome::ErrorCode;
-        let (status, code) = match error.code {
-            ErrorCode::RateLimited => (429, "rate_limited"),
-            ErrorCode::UnknownName => (400, "unknown_name"),
-            ErrorCode::Usage => (400, "usage"),
-            ErrorCode::ConfirmationRequired => (400, "confirmation_required"),
-            other => (500, other.as_str()),
+        let status = match error.code {
+            ErrorCode::RateLimited => 429,
+            ErrorCode::UnknownName | ErrorCode::Usage | ErrorCode::ConfirmationRequired => 400,
+            _ => 500,
         };
         Self {
             status,
-            code,
+            code: error.code.as_str(),
             message: error.message.clone(),
             scope: None,
         }

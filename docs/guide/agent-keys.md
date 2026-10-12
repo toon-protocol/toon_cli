@@ -145,6 +145,6 @@ key file's only TOON app is used, else `relay`.
 - Every other command answers `needs_home` (exit 1) before anything else is tried, and the
   message names the command and says the operator must run it: `wallet`, `limit set`, `init`,
   `create`, `up`, `down`, `agent-key`, and also, until their tickets land, `add`, `remove`,
-  `route` (but `route price`), `event` and `message`.
+  `route` (except `route price`), `event` and `message`.
 - An agent whose loopback cannot reach the supervisor's order address needs a tunnel the
   deployer provides; reaching an agent node on another host is not offered.

@@ -53,7 +53,7 @@ pub fn take(home: &Path, key: &Key, now: u64) -> Result<(), Error> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut all = load(home);
-    // Only the keys the record still holds, and only restarts still inside the hour.
+    // Only restarts still inside the hour.
     let mut times = all.remove(&key.public).unwrap_or_default();
     times.retain(|at| at + WINDOW > now);
     let limit = usize::try_from(key.max_restarts).unwrap_or(usize::MAX);
