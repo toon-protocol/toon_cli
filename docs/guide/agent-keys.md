@@ -1,0 +1,82 @@
+# Agent keys
+
+An agent key is an operator write key with a **scope** and a **spending limit**, which you
+hand to an agent that does not hold the wallet. The agent works the agent node with it and
+can do nothing outside its scope ([ADR 0010](../adr/0010-an-agent-key-works-an-agent-node-without-its-home.md)).
+
+The home holds the record of agent keys, `agent-keys.json`. It never holds a private key.
+`toon` writes each connector's list of agent keys from the record, to
+`connectors/<n>/operator-controller-keys`, and the connector reads that file again on every
+signed request. So `create`, `set` and `revoke` reach a running connector at once, without a
+restart. (A connector started before this version rendered its config needs one restart to
+learn the file's name.)
+
+## Commands
+
+```sh
+toon agent-key create [--scope a,b] [--max-per-command N] [--max-per-day N] \
+    [--max-restarts N] [--expires 2026-12-31T00:00:00Z] [--toon-app NAME]... [--out FILE]
+toon agent-key list
+toon agent-key set <public key> [the same options] [--no-expiry]
+toon agent-key revoke <public key>
+```
+
+- `create` and `set` need the wallet passphrase, as `toon limit set` does. `list` and
+  `revoke` do not.
+- `list` shows each key's public half, scope, limits, expiry and TOON apps. It never prints
+  a private key.
+- `revoke` removes the key from the record and from every connector's list. The connector
+  refuses the key's next request, a read as well as a write.
+- `set` changes only what you name. `--scope` and `--toon-app` replace the whole list.
+
+## Scope
+
+| Scope | What it lets the key do |
+|---|---|
+| `status`, `logs`, `apps`, `route-price`, `sign`, `read-messages` | The orders the supervisor answers for the key. They move no money. |
+| `send` | Originate packets (`POST /packets`) |
+| `peer` | Add and remove peerings |
+| `routes` | Write forwarding routes, runtime and leased |
+| `channels-open`, `channels-fund`, `channels-withdraw`, `channels-land` | The channel writes, as the connector names them |
+
+With no `--scope` the key gets every order scope and `send`, `peer` and `routes`: nothing
+that withdraws from or closes a channel. The channel scopes must be named. A key whose scope
+holds only orders is on no connector's list, because a connector's list takes only writes.
+
+`sign` lets the agent sign anything as the agent identity; the secret stays in the home.
+
+## Limits and expiry
+
+`--max-per-command` and `--max-per-day` are in the token's base units, and the wallet's
+limits if omitted. The connector holds them: it counts what the key sends in packets and
+what peering and channel writes deposit, per write and per UTC day, so the limit holds
+although the agent never opens the home. A key granted on several TOON apps has the limit on
+each, so it can spend that much per day on each. `--max-restarts` is how many times a day
+the key may restart an app (ten if omitted). `--expires` is an RFC 3339 time after which the
+connector refuses the key.
+
+## Which TOON apps
+
+`--toon-app` names a TOON app the key is granted on, and may be repeated. With none, the key
+is granted on the relay TOON app only. The key is on the list of the TOON apps it is granted
+on and of no other.
+
+## The key file
+
+`create` writes one file, readable by its owner only, to `--out` or to
+`agent-key-<first 8 hex of the public key>.json` in the current directory. It refuses to
+overwrite a file. The file is JSON:
+
+```json
+{
+  "private_key": "<64 hex: the ed25519 secret key>",
+  "public_key": "<64 hex>",
+  "supervisor": "http://127.0.0.1:12345",
+  "toon_apps": { "relay": "http://127.0.0.1:4000" }
+}
+```
+
+- `private_key` is the only copy. Hand the file to the agent and keep none where it can read
+  it; if it leaks, `toon agent-key revoke` the key.
+- `supervisor` is where the supervisor listens for orders, on loopback.
+- `toon_apps` holds the operator-surface address of each TOON app the key is granted on.

@@ -1001,7 +1001,7 @@ checksum = "cc14f565cf027a105f7a44ccf9e5b424348421a1d8952a8fc9d499d313107789"
 [[package]]
 name = "connector-btp"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "tokio",
 ]
@@ -1009,7 +1009,7 @@ dependencies = [
 [[package]]
 name = "connector-chain-rpc"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "async-trait",
  "ethers",
@@ -1026,7 +1026,7 @@ dependencies = [
 [[package]]
 name = "connector-cli"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1064,7 +1064,7 @@ dependencies = [
 [[package]]
 name = "connector-client-edge"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "async-trait",
  "axum",
@@ -1091,7 +1091,7 @@ dependencies = [
 [[package]]
 name = "connector-config"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "bs58",
  "chrono",
@@ -1106,7 +1106,7 @@ dependencies = [
 [[package]]
 name = "connector-domain"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "chrono",
  "serde",
@@ -1118,13 +1118,14 @@ dependencies = [
 [[package]]
 name = "connector-operator"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "axum",
  "base64 0.22.1",
  "bs58",
  "chrono",
  "connector-client-edge",
+ "connector-config",
  "connector-domain",
  "connector-runtime",
  "connector-settlement",
@@ -1133,18 +1134,19 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tracing",
  "url",
 ]
 
 [[package]]
 name = "connector-peer-auth"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 
 [[package]]
 name = "connector-peer-btp"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1170,7 +1172,7 @@ dependencies = [
 [[package]]
 name = "connector-peer-http"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1191,7 +1193,7 @@ dependencies = [
 [[package]]
 name = "connector-rate-source"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1202,7 +1204,7 @@ dependencies = [
 [[package]]
 name = "connector-rate-source-evm"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1216,7 +1218,7 @@ dependencies = [
 [[package]]
 name = "connector-runtime"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1243,7 +1245,7 @@ dependencies = [
 [[package]]
 name = "connector-settlement"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1253,7 +1255,7 @@ dependencies = [
 [[package]]
 name = "connector-settlement-evm"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1271,7 +1273,7 @@ dependencies = [
 [[package]]
 name = "connector-settlement-solana"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1300,7 +1302,7 @@ dependencies = [
 [[package]]
 name = "connector-signer"
 version = "0.1.0"
-source = "git+https://github.com/toon-protocol/connector?rev=ec32193fe05b491af14967ca245a984be6cfe1f3#ec32193fe05b491af14967ca245a984be6cfe1f3"
+source = "git+https://github.com/toon-protocol/connector?rev=7d0582e29c076318c7fbe8eacb3766c943ad44bc#7d0582e29c076318c7fbe8eacb3766c943ad44bc"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",

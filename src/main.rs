@@ -5,6 +5,7 @@
 //! readable text, and errors go to standard error. The exit codes are in `outcome` and
 //! in `docs/exit-codes.md`.
 
+mod agent_key;
 mod anon;
 mod apps;
 mod cli;
@@ -274,6 +275,11 @@ fn run() -> ExitCode {
         .into(),
         Command::Join(args) => render(
             home::resolve().and_then(|home| operator::join(&home, &args)),
+            json,
+        )
+        .into(),
+        Command::AgentKey { command } => render(
+            home::resolve().and_then(|home| agent_key::run(&home, &command)),
             json,
         )
         .into(),

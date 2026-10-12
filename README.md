@@ -133,6 +133,7 @@ toon skill install                  # into ~/.claude/skills; again after every u
 | [Install](docs/guide/install.md) | A release binary or a build from source, upgrading, and the agent skills |
 | [Your first agent node](docs/guide/first-agent-node.md) | `init`, fund, `up`, publish an event to your own relay, read it back |
 | [Money: wallet, limits and channels](docs/guide/money.md) | Funding, balances, the spending limit, `--yes`, and managing channels |
+| [Agent keys](docs/guide/agent-keys.md) | Handing an agent a scoped key with a spending limit: `toon agent-key create`, `list`, `set` and `revoke` |
 | [Peering](docs/guide/peering.md) | Joining a network, peering with another operator, routes, probing a path's cost, and sending a packet |
 | [Adding an app to a connector](docs/guide/adding-an-app.md) | Writing an app, `toon add`, prices, and taking an app away |
 | [Creating a TOON app](docs/guide/creating-a-toon-app.md) | A second connector with its own keys: `toon create`, `toon destroy` |
