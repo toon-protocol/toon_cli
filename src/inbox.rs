@@ -24,7 +24,7 @@ use crate::event;
 use crate::feed::{self, Ended};
 use crate::gift_wrap;
 use crate::node::{self, AppFiles};
-use crate::outcome::Error;
+use crate::outcome::{Error, ErrorCode};
 use crate::receive::Surroundings;
 
 /// How often the worker looks again for a kept secret and a relay to read.
@@ -70,6 +70,19 @@ pub fn kept_secret(home: &Path) -> Option<[u8; 32]> {
         .ok()?
         .try_into()
         .ok()
+}
+
+/// [`kept_secret`], or the error that says it is not kept.
+pub fn require_kept_secret(home: &Path) -> Result<[u8; 32], Error> {
+    kept_secret(home).ok_or_else(|| Error {
+        nothing_sent: true,
+        unanswered: None,
+        code: ErrorCode::AgentKeyNotKept,
+        message: "The agent identity's secret is not kept in the agent node's home. The operator \
+                  keeps it by running `toon event publish`, `toon message send` or `toon \
+                  agent-key create` with the wallet."
+            .into(),
+    })
 }
 
 /// The keys a rumor names: its author and every key of its `p` tags, sorted, each once.

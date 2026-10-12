@@ -134,7 +134,12 @@ fn seal(secret: &[u8; 32], sender: &str, message: &Message) -> Result<Sealed, Er
 /// Write the sender's copy to the agent node's own relay, which must take it: with no copy
 /// the sender could not find the message again, and nothing is sent.
 fn write_copy(home: &Path, wrap: &Value) -> Result<(), Error> {
-    let report = event::write(home, wrap.clone(), 0).map_err(|mut error| {
+    copy_written(event::write(home, wrap.clone(), 0))
+}
+
+/// [`write_copy`], given how the write of the copy went.
+fn copy_written(written: Result<Report, Error>) -> Result<(), Error> {
+    let report = written.map_err(|mut error| {
         error.nothing_sent = true;
         error.message = format!(
             "The sender's copy could not be written, so nothing was sent. {}",
@@ -344,6 +349,78 @@ fn send_to(home: &Path, message: &Message, relay: &str, yes: bool) -> Result<Rep
     })
 }
 
+/// A message as a `seal` order carries it.
+fn message_of(body: &Value) -> Result<Message, Error> {
+    let recipients: Vec<String> = body["recipients"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|key| key.as_str().map(str::to_owned))
+        .collect();
+    Message::of(
+        &recipients,
+        body["content"].as_str().unwrap_or_default(),
+        body["reply_to"].as_str(),
+        body["subject"].as_str(),
+    )
+}
+
+/// The `seal` order, answered by the supervisor (ADR 0010): the wraps of a private message,
+/// sealed and signed with the agent identity's kept secret, and nothing is sent. The secret
+/// is in no answer.
+pub fn seal_order(home: &Path, body: &Value) -> Result<Value, Error> {
+    let message = message_of(body)?;
+    let secret = inbox::require_kept_secret(home)?;
+    let sender = event::public_key(&secret)?;
+    let sealed = seal(&secret, &sender, &message)?;
+    Ok(json!({
+        "rumor": sealed.rumor,
+        "to_recipients": sealed.to_recipients,
+        "to_sender": sealed.to_sender,
+    }))
+}
+
+/// `toon message send` through an agent key (ADR 0010): `sealed` asks the supervisor to seal
+/// the message (the `seal` order), and `write` sends one wrap to the agent node's own relay,
+/// named in the answer, with the agent key, so the connector counts it. The sender's copy goes first and must be
+/// taken, as with the home.
+pub fn send_sealed(
+    body: &Value,
+    sealed: impl FnOnce(&Value) -> Result<Value, Error>,
+    write: impl Fn(&Value, &str) -> Result<Report, Error>,
+) -> Result<Report, Error> {
+    let message = message_of(body)?;
+    let answer = sealed(body)?;
+    let malformed = || io("The supervisor's answer was not a sealed message.".to_owned());
+    let wraps_of = |name: &str| -> Result<Vec<Value>, Error> {
+        answer[name].as_array().cloned().ok_or_else(malformed)
+    };
+    let relay = answer["relay"].as_str().ok_or_else(malformed)?.to_owned();
+    let relay = relay.as_str();
+    let sealed = Sealed {
+        rumor: answer["rumor"].clone(),
+        to_recipients: wraps_of("to_recipients")?,
+        to_sender: answer["to_sender"].clone(),
+    };
+    if sealed.to_recipients.len() != message.recipients.len() || !sealed.to_sender.is_object() {
+        return Err(malformed());
+    }
+    let sender = sealed.rumor["pubkey"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    copy_written(write(&sealed.to_sender, relay))?;
+    let mut wraps = vec![wrap_entry(&sealed.to_sender, &sender, relay, &published())];
+    for (recipient, wrap) in message.recipients.iter().zip(&sealed.to_recipients) {
+        let written = write(wrap, relay)?;
+        wraps.push(wrap_entry(wrap, recipient, relay, &written));
+        if written.json["outcome"] != "published" {
+            break;
+        }
+    }
+    Ok(report(&sealed, &message, wraps, None, None))
+}
+
 /// `toon message`.
 pub fn run(command: MessageCommand) -> Result<Report, Error> {
     match command {
@@ -370,13 +447,40 @@ pub fn run(command: MessageCommand) -> Result<Report, Error> {
                 None => send_here(&home, &message),
             }
         }
-        MessageCommand::List { with, since, limit } => list(&with, since, limit),
+        MessageCommand::List { with, since, limit } => {
+            let home = home::resolve()?;
+            list(&home, &with, since, limit)
+        }
     }
+}
+
+/// The `messages` order, answered by the supervisor (ADR 0010): what `toon message list`
+/// prints with the home, with the text it prints.
+pub fn list_order(home: &Path, body: &Value) -> Result<Value, Error> {
+    let strings = |name: &str| -> Vec<String> {
+        body[name]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|key| key.as_str().map(str::to_owned))
+            .collect()
+    };
+    let limit = body["limit"]
+        .as_u64()
+        .and_then(|limit| usize::try_from(limit).ok());
+    let mut report = list(home, &strings("with"), body["since"].as_u64(), limit)?;
+    report.json["text"] = json!(report.text);
+    Ok(report.json)
 }
 
 /// `toon message list`: the private messages the supervisor has opened and kept, which
 /// needs no passphrase, opens no keystore and sends and pays nothing.
-fn list(with: &[String], since: Option<u64>, limit: Option<usize>) -> Result<Report, Error> {
+fn list(
+    home: &Path,
+    with: &[String],
+    since: Option<u64>,
+    limit: Option<usize>,
+) -> Result<Report, Error> {
     let mut others: Vec<String> = Vec::new();
     for key in with {
         others.push(public_key(key).ok_or_else(|| {
@@ -385,18 +489,10 @@ fn list(with: &[String], since: Option<u64>, limit: Option<usize>) -> Result<Rep
             ))
         })?);
     }
-    let home = home::resolve()?;
-    if node::State::load(&home)?.is_none() {
-        return Err(node::no_agent_node(&home));
+    if node::State::load(home)?.is_none() {
+        return Err(node::no_agent_node(home));
     }
-    let secret = inbox::kept_secret(&home).ok_or_else(|| Error {
-        nothing_sent: true,
-        unanswered: None,
-        code: ErrorCode::AgentKeyNotKept,
-        message: "The agent identity's secret is not kept in the agent node's home, so no private \
-                  message has been opened. `toon event publish` and `toon message send` write it."
-            .into(),
-    })?;
+    let secret = inbox::require_kept_secret(home)?;
     let identity = event::public_key(&secret)?;
     let conversation = (!others.is_empty()).then(|| {
         others.push(identity.clone());
@@ -405,7 +501,7 @@ fn list(with: &[String], since: Option<u64>, limit: Option<usize>) -> Result<Rep
         inbox::conversation(&others)
     });
 
-    let mut messages: Vec<Value> = inbox::load(&home)
+    let mut messages: Vec<Value> = inbox::load(home)
         .into_iter()
         .filter_map(|rumor| {
             let participants = inbox::participants(&rumor);
@@ -442,7 +538,7 @@ fn list(with: &[String], since: Option<u64>, limit: Option<usize>) -> Result<Rep
         messages.drain(..messages.len().saturating_sub(limit));
     }
 
-    let running = control::running(&home);
+    let running = control::running(home);
     let mut text = if messages.is_empty() {
         "No private message is stored.".to_owned()
     } else {
