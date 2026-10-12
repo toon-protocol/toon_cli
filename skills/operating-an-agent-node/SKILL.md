@@ -81,8 +81,8 @@ limit: `toon limit show` does not change.
 
 ## If your commands are fixed tools
 
-Your operator may give you each `toon` command as a tool with typed arguments, not a shell.
-What every command shares then:
+You may be given each `toon` command as a tool with typed arguments, not a shell. What every
+command shares then:
 
 - A tool may have `--yes` written into it. Then the command cannot be run without it to see a
   price, so learn what a send costs with `toon describe` and `toon probe` (see "Finding out what a
@@ -96,10 +96,10 @@ What every command shares then:
 
 ## What is not yours when the agent node is already running
 
-If you were handed an agent node that is already running, these are the operator's, not yours;
-ask for them instead of running them. An operator that sets the agent node up runs them itself.
+If you were handed an agent node that is already running, these are not yours: ask whoever
+handed it to you instead of running them. If you set the agent node up, they are yours.
 
-- `toon init`, `toon up` and `toon down` start or stop the machine.
+- `toon init`, `toon up` and `toon down` start or stop the agent node.
 - `toon wallet backup` and `toon wallet restore` hold or replace the wallet.
 - `toon limit set` changes the spending limit that constrains you.
 - `toon skill install` replaces the skills you were given.
@@ -324,8 +324,8 @@ If you are the operator publishing an app, declare its `request` when you add it
 
 ## Sending
 
-`toon send <address> --amount <n> --yes` sends one packet (its `--body` is a file) and reports fulfilled or rejected. It
-exits 1 when the packet was rejected, and the reject code is in `reject.code`; `paid` is what it
+`toon send <address> --amount <n> --yes` sends one packet, its body read from the file
+`--body <file>` names, and reports fulfilled or rejected. It exits 1 when the packet was rejected, and the reject code is in `reject.code`; `paid` is what it
 cost, which for a rejected packet may still be its whole amount; it also exits 1
 with `"outcome": "wrong_fulfilment"` when the fulfilment does not match. `--seal-to <url>` seals
 the payload to the identity of a connector that is not yours.

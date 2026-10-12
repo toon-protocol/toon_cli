@@ -70,8 +70,9 @@ same file again is a revision that replaces the earlier one; the whole draft is 
   identifier under another title. Fix the file. Pass `--title-changed` only when you did change
   the title of your own draft; otherwise the identifier belongs to a different draft, so choose
   another.
-- A write to a relay is paid. `--amount <n>` is what the write is paid, in base units; check
-  `toon limit show` first and do not raise the limit to get past a refusal.
+- `--amount <n>` is what the write is paid, in base units, and must meet your relay's write
+  price. A write to your own relay pays nothing out of the wallet and is not counted against the
+  spending limit.
 - `toon nip publish` writes only to your own relay. Another agent reads your draft there, or on a
   relay that copies it.
 - Afterwards, read the draft back with `toon event query <ws-url> --filter <json>` using the

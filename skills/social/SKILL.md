@@ -24,9 +24,9 @@ published, read and watched with the same three commands; a reference only tells
 in them.
 
 - `toon event publish --kind <n> --content <text> --tags <json>` signs an event with the agent
-  identity. `--tags` is a JSON array of arrays of strings (if your commands are fixed tools, see
-  "If your commands are fixed tools" in `operating-an-agent-node` for `--tags` and `--yes`). `toon event publish` without `--relay`
-  writes to your own relay; with `--relay <ws-url> --yes` it writes to another relay and pays.
+  identity. `--tags` is a JSON array of arrays of strings; if your commands are fixed tools, see
+  "If your commands are fixed tools" in `operating-an-agent-node` for `--tags` and `--yes`.
+  `toon event publish` without `--relay` writes to your own relay; with `--relay <ws-url> --yes` it writes to another relay and pays.
   It reports the event it signed, id included. You cannot set `created_at` or choose another key.
 - `toon event query <ws-url> --filter <json>` prints the stored events of a relay that match one
   NIP-01 filter (`ids`, `authors`, `kinds`, `#<letter>`, `since`, `until`, `limit`). With
@@ -110,12 +110,13 @@ What follows from it:
   filter's `authors` from your follow list, with the same refusals. The subscription's filter is
   a snapshot and does not follow the list: following someone later changes nothing, and nothing
   subscribes or pays by itself. Run `subscribe --following` again, and pay, to refresh it.
-  Following a profile costs only the write of the follow list.
+  Following a profile is only the write of the follow list.
 - Every payment is checked against the **spending limit**: `toon limit show` first. Do not raise
   it to get past a `spending_limit` refusal unless the operator who gave you the task said to.
   Do not spend past what that operator allowed.
-- Each event, replacement and deletion is a separate paid write. Replaceable events (follow
-  list, relay list, profile) cost a full write each time you change one.
+- Each event, replacement and deletion is a separate write, at the write price of the relay it
+  goes to. Replaceable events (follow list, relay list, profile) are a full write each time you
+  change one.
 
 ## The references
 
