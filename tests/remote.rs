@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use support::anvil_chain::AnvilChain;
 use support::fake_chain::FakeChain;
 use support::{Foreground, Machine, Run, PASSPHRASE};
 
@@ -49,17 +50,7 @@ fn node() -> Node {
 impl Node {
     /// Create an agent key and return its key file and public half.
     fn create(&self, extra: &[&str]) -> (PathBuf, String) {
-        let mut args = vec!["agent-key", "create", "--json"];
-        args.extend_from_slice(extra);
-        let run = self.machine.toon_with(&args, |command| {
-            command.env("TOON_PASSPHRASE", PASSPHRASE);
-        });
-        assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
-        let json = run.json();
-        (
-            PathBuf::from(json["key_file"].as_str().expect("key file")),
-            json["agent_key"]["public_key"].as_str().unwrap().to_owned(),
-        )
+        create_key(&self.machine, extra)
     }
 
     /// Run `toon` as the agent does: `HOME` holds no agent node, and the key file is named
@@ -69,25 +60,38 @@ impl Node {
     }
 
     fn agent_in(&self, home: &Path, key: &Path, args: &[&str]) -> Run {
-        let run = |attempt: &mut dyn FnMut() -> Run| {
-            // The supervisor binds its order address a moment after the key is made.
-            let deadline = Instant::now() + Duration::from_secs(30);
-            loop {
-                let run = attempt();
-                if run.exit_code != 1
-                    || !run.stdout.contains("did not answer")
-                    || Instant::now() > deadline
-                {
-                    return run;
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-        };
-        run(&mut || {
-            self.machine.toon_with(args, |command| {
-                command.env("HOME", home).env("TOON_AGENT_KEY", key);
-            })
-        })
+        as_agent(&self.machine, home, key, args)
+    }
+}
+
+/// Create an agent key on `machine` and return its key file and public half.
+fn create_key(machine: &Machine, extra: &[&str]) -> (PathBuf, String) {
+    let mut args = vec!["agent-key", "create", "--json"];
+    args.extend_from_slice(extra);
+    let run = machine.toon_with(&args, |command| {
+        command.env("TOON_PASSPHRASE", PASSPHRASE);
+    });
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    let json = run.json();
+    (
+        PathBuf::from(json["key_file"].as_str().expect("key file")),
+        json["agent_key"]["public_key"].as_str().unwrap().to_owned(),
+    )
+}
+
+/// Run `toon` with the key file `key` in the environment and `home` as `HOME`.
+fn as_agent(machine: &Machine, home: &Path, key: &Path, args: &[&str]) -> Run {
+    // The supervisor binds its order address a moment after the key is made.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let run = machine.toon_with(args, |command| {
+            command.env("HOME", home).env("TOON_AGENT_KEY", key);
+        });
+        if run.exit_code != 1 || !run.stdout.contains("did not answer") || Instant::now() > deadline
+        {
+            return run;
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -118,9 +122,17 @@ fn status_and_logs_work_with_a_key_file_and_a_home_that_holds_no_agent_node() {
     assert_eq!(logs.exit_code, 0, "{}{}", logs.stdout, logs.stderr);
     assert!(logs.json()["lines"].is_array());
 
-    let unknown = node.agent(&key, &["logs", "nowhere", "--json"]);
+    let unknown = node.agent(&key, &["logs", "nowhere", "--connector", "--json"]);
     assert_eq!(unknown.exit_code, 1);
     assert_eq!(unknown.json()["error"]["code"], "unknown_name");
+
+    // An app's own log is not an order: the agent is told to ask for the connector's.
+    let own = node.agent(&key, &["logs", "relay", "--json"]);
+    assert_eq!(own.json()["error"]["code"], "usage", "{}", own.stdout);
+    assert!(own.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("--connector"));
 }
 
 #[test]
@@ -309,7 +321,7 @@ fn a_revoked_key_is_refused_by_the_supervisor_and_the_connector() {
 
     for args in [
         vec!["status", "--json"],
-        vec!["logs", "relay", "--json"],
+        vec!["logs", "relay", "--connector", "--json"],
         vec!["limit", "show", "--json"],
         vec!["send", &relay, "--amount", "0", "--yes", "--json"],
         vec![
@@ -324,6 +336,65 @@ fn a_revoked_key_is_refused_by_the_supervisor_and_the_connector() {
     ] {
         let run = node.agent(&key, &args);
         assert_eq!(run.exit_code, 1, "{args:?}: {}{}", run.stdout, run.stderr);
-        assert!(run.json()["error"].is_object(), "{args:?}: {}", run.stdout);
+        // Refused by whoever checks the key, not failed for some other reason.
+        let message = run.json()["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(
+            message.contains("supervisor refused") || message.contains("401"),
+            "{args:?}: {message}"
+        );
     }
+}
+
+/// An agent node on `chain` that may peer over plain `http://`, its wallet funded, and up.
+fn up_on(chain: &AnvilChain, funded: u128) -> (Machine, Foreground, String) {
+    let machine = Machine::new();
+    let init = machine.init_on_anvil(chain, true);
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let shown = machine.toon_with(&["wallet", "show", "--json"], |command| {
+        command.env("TOON_PASSPHRASE", PASSPHRASE);
+    });
+    let evm = shown.json()["wallet"]["chains"]["evm"][0]["address"]
+        .as_str()
+        .expect("the wallet's EVM address")
+        .to_owned();
+    chain.fund(&evm, funded);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    let address = up.report()["connector"]["address"]
+        .as_str()
+        .expect("the connector's address")
+        .to_owned();
+    (machine, up, address)
+}
+
+#[test]
+fn a_peering_is_written_with_the_key() {
+    const DEPOSIT: u128 = 1_000_000;
+    let chain = AnvilChain::start();
+    let (near, _near_up, _) = up_on(&chain, DEPOSIT * 10);
+    let (_far, _far_up, far) = up_on(&chain, DEPOSIT * 10);
+    let (key, _) = create_key(&near, &["--scope", "peer"]);
+    let nowhere = tempfile::tempdir().expect("a directory");
+
+    let peered = as_agent(
+        &near,
+        nowhere.path(),
+        &key,
+        &[
+            "peer",
+            "add",
+            &format!("http://{far}/ilp"),
+            "--deposit",
+            &DEPOSIT.to_string(),
+            "--id",
+            "far",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(peered.exit_code, 0, "{}{}", peered.stdout, peered.stderr);
+    assert_eq!(peered.json()["peering"]["id"], "far", "{}", peered.stdout);
+    assert!(!nowhere.path().join(".toon").exists());
 }

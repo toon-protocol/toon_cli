@@ -21,9 +21,6 @@ use crate::outcome::{Error, ErrorCode, Exit, Report};
 /// How long an order waits for the supervisor.
 const PATIENCE: Duration = Duration::from_secs(30);
 
-/// How long a signed order stays valid, in seconds.
-const SIGNATURE_TTL: u64 = 60;
-
 fn failed(code: ErrorCode, message: String) -> Error {
     Error {
         code,
@@ -88,10 +85,7 @@ impl KeyFile {
     }
 
     fn keypair(&self) -> ed25519_dalek_v1::Keypair {
-        let secret = ed25519_dalek_v1::SecretKey::from_bytes(&self.secret[..])
-            .expect("32 bytes are a secret key");
-        let public = ed25519_dalek_v1::PublicKey::from(&secret);
-        ed25519_dalek_v1::Keypair { secret, public }
+        operator::keypair_of(&self.secret[..]).expect("32 bytes are a secret key")
     }
 
     fn unknown_toon_app(&self, name: &str) -> Error {
@@ -228,7 +222,7 @@ fn order(key: &KeyFile, name: &str, body: &Value) -> Result<Value, Error> {
                 &path,
                 text.as_bytes(),
                 created,
-                Some(created + SIGNATURE_TTL),
+                Some(created + operator::SIGNATURE_TTL),
             );
         let mut request = client
             .post(&url)
@@ -249,12 +243,7 @@ fn order(key: &KeyFile, name: &str, body: &Value) -> Result<Value, Error> {
     // The same order twice in one second has the same signature, and is refused as a replay.
     // That refusal did nothing, so the order is signed again once the second has turned.
     if status == 401 && answer["error"]["code"] == "replayed" {
-        let into_second = Duration::from_nanos(u64::from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |elapsed| elapsed.subsec_nanos()),
-        ));
-        std::thread::sleep(Duration::from_secs(1) - into_second + Duration::from_millis(20));
+        operator::wait_for_next_second();
         (status, answer) = send()?;
     }
     if (200..300).contains(&status) {
@@ -386,20 +375,26 @@ fn limit_show(key: &KeyFile, app: Option<&str>) -> Result<Report, Error> {
                 lines.push(format!("{name}: this key states no spending limit."));
             }
             limit => {
-                let figure = |field: &str| limit[field].as_u64().unwrap_or(0);
+                // A limit the key does not state is none, not zero.
+                let figure = |field: &str| limit[field].as_u64();
                 let (per_command, per_day) = (figure("per_write"), figure("per_day"));
-                let remaining = per_day.saturating_sub(figure("counted_today"));
+                let remaining = per_day
+                    .map(|per_day| per_day.saturating_sub(figure("counted_today").unwrap_or(0)));
+                let shown =
+                    |figure: Option<u64>| figure.map_or("none".to_owned(), |f| f.to_string());
                 limits.insert(
                     name.clone(),
                     json!({
-                        "per_command": per_command.to_string(),
-                        "per_day": per_day.to_string(),
-                        "remaining_today": remaining.to_string(),
+                        "per_command": per_command.map(|f| f.to_string()),
+                        "per_day": per_day.map(|f| f.to_string()),
+                        "remaining_today": remaining.map(|f| f.to_string()),
                     }),
                 );
                 lines.push(format!(
-                    "{name}: per command {per_command}, per day {per_day}, remaining today \
-                     {remaining}."
+                    "{name}: per command {}, per day {}, remaining today {}.",
+                    shown(per_command),
+                    shown(per_day),
+                    shown(remaining)
                 ));
             }
         }
@@ -416,7 +411,18 @@ fn limit_show(key: &KeyFile, app: Option<&str>) -> Result<Report, Error> {
 pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, Error> {
     match command {
         Command::Status => status(&KeyFile::load(path)?),
-        Command::Logs { name, lines, .. } => logs(&KeyFile::load(path)?, &name, lines),
+        Command::Logs {
+            name,
+            connector: true,
+            lines,
+        } => logs(&KeyFile::load(path)?, &name, lines),
+        Command::Logs { name, .. } => Err(failed(
+            ErrorCode::Usage,
+            format!(
+                "An agent key reads only the connector's log of a TOON app: run `toon logs \
+                 {name} --connector`."
+            ),
+        )),
         Command::Send(args) => {
             confirmed(args.amount.into(), args.yes)?;
             let surface = KeyFile::load(path)?.surface(app)?;

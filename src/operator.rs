@@ -163,7 +163,7 @@ fn get<T>(
 }
 
 /// How long a signed write stays valid, in seconds.
-const SIGNATURE_TTL: u64 = 60;
+pub(crate) const SIGNATURE_TTL: u64 = 60;
 
 /// How long a write waits for the connector: a peering opens and funds a channel, which
 /// waits for the chain.
@@ -181,7 +181,7 @@ const REPLAY_SLACK: Duration = Duration::from_millis(20);
 
 /// Wait until the clock's second has turned, so that a write signed again is signed with
 /// another `created` and so another signature.
-fn wait_for_next_second() {
+pub(crate) fn wait_for_next_second() {
     let into_second = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(Duration::ZERO, |elapsed| {
@@ -1205,14 +1205,15 @@ pub fn route_remove(home: &Path, prefix: &str) -> Result<Report, Error> {
     })
 }
 
-/// The wallet's operator write key, the 32 bytes `init` wrote, as the keypair the
-/// connector's request signing takes.
-fn keypair_of(raw: &[u8]) -> Option<ed25519_dalek_v1::Keypair> {
+/// 32 bytes of an ed25519 secret as the keypair the connector's request signing takes.
+pub(crate) fn keypair_of(raw: &[u8]) -> Option<ed25519_dalek_v1::Keypair> {
     let secret = ed25519_dalek_v1::SecretKey::from_bytes(raw).ok()?;
     let public = ed25519_dalek_v1::PublicKey::from(&secret);
     Some(ed25519_dalek_v1::Keypair { secret, public })
 }
 
+/// The wallet's operator write key, the 32 bytes `init` wrote, as the keypair the
+/// connector's request signing takes.
 fn write_keypair(path: &Path) -> Result<ed25519_dalek_v1::Keypair, Error> {
     let unusable = |reason: String| failed(ErrorCode::Io, format!("{}: {reason}.", path.display()));
     let raw = Zeroizing::new(std::fs::read(path).map_err(|source| unusable(source.to_string()))?);

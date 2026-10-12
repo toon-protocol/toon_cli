@@ -125,7 +125,7 @@ toon limit show
 | Command | What it does with a key |
 |---|---|
 | `toon status` | The `status` order: only the TOON apps the key is granted on |
-| `toon logs <toon app>` | The `logs` order: that TOON app's connector log (an app's own log is not offered) |
+| `toon logs <toon app> --connector` | The `logs` order: that TOON app's connector log. An app's own log is not offered, so without `--connector` it answers `usage` |
 | `toon send` | A packet originated by a write signed with the key (`send` scope); sealed to the TOON app's connector unless `--seal-to` names another, dialled directly |
 | `toon peer add` | A peering written with the key (`peer` scope) |
 | `toon limit show` | The key's spending limit and what is left of today's, read from each connector the key file names (`--app` picks one) |
