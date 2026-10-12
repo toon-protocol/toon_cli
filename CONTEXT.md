@@ -25,6 +25,14 @@ _Avoid_: Backend, service
 **Relay**:
 The Nostr relay app: paid to write to through its connector. An agent node has one, the one `toon init` creates; `toon create` and `toon add` refuse the relay's image.
 
+**Confinement**:
+What an app is held to when the agent node runs it: what it can reach, where it can write, whom it runs as and how much of the machine it may use. An app the operator serves at a URL has none.
+_Avoid_: Sandbox (a network profile), hardening, isolation
+
+**Allowance**:
+One thing an operator lets one app do beyond its confinement, such as opening connections out.
+_Avoid_: Grant (what an agent key is given), permission, exception
+
 **Supervisor**:
 The one process per machine that runs an agent node: it starts each connector as a child process of the same binary and keeps it running.
 _Avoid_: Daemon, manager, orchestrator
