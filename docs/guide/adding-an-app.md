@@ -302,10 +302,16 @@ A name is one thing the app is started with: `--secret NAME=<file>` over a varia
 replaces the variable with the secret, and `--env NAME=value` over a secret `NAME` replaces the
 secret. A name given twice in one command is refused. A secret given again is always a change.
 
-It restarts the app and its connector, so it refuses with `confirmation_required` without `--yes`.
+It restarts the app, so it refuses with `confirmation_required` without `--yes`. Packets to the
+app are rejected until it is back; packets to the other apps behind its connector are delivered.
+The connector restarts too, and drops the packets it holds in flight, only if the app comes back
+somewhere else: the app keeps its docker network across the restart (granting or withdrawing
+`--allow-egress` remakes it), and the relay keeps its ports if they are still free. Otherwise the
+connector is left running, with its pid and its count of restarts as they were. `--json` and the
+sentence it prints say which happened (`restarted`).
 If the agent node is not running, the change is checked and recorded, and the app starts with it
 at the next `toon up`. If the app does not start with the change, the change is put back, the app
-and its connector start again as they were, and the command fails with `app_failed`; the copy of
+starts again as it was (and its connector restarts only if the app is somewhere else), and the command fails with `app_failed`; the copy of
 a secret that was replaced stays in the home until the app has started with the change, and is
 deleted then. `--json` prints the app, its TOON app, what was set and what was taken away by name
 (never a secret's contents) and whether a connector restarted.

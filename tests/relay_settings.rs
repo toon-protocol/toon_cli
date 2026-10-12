@@ -121,7 +121,8 @@ fn config_restarts_a_running_relay_with_the_new_settings_only_with_yes() {
     ]);
 
     assert_eq!(run.exit_code, 0, "{}", run.stdout);
-    assert_eq!(run.json()["restarted"], true);
+    // The relay came back on its ports, so its connector was left alone.
+    assert_eq!(run.json()["restarted"], false);
     assert_eq!(
         settings(&machine),
         format!("TOON_BLOCKED_EVENT_IDS={EVENT_ID}\nTOON_RELAY_NAME=Renamed\n")
@@ -278,7 +279,7 @@ fn two_blocked_ids_are_passed_together_and_none_passes_nothing() {
         "--json",
     ]);
     assert_eq!(run.exit_code, 0, "{}", run.stdout);
-    assert_eq!(run.json()["restarted"], true);
+    assert_eq!(run.json()["restarted"], false);
     assert_eq!(settings(&machine), "");
 }
 

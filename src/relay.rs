@@ -82,7 +82,7 @@ fn write_price(app: &ToonApp) -> u64 {
 
 /// A change restarts a running connector, which drops the packets it holds: refuse it
 /// unless the operator said `yes`.
-fn confirm(home: &Path, yes: bool, what: &str) -> Result<(), Error> {
+fn confirm(home: &Path, yes: bool, what: &str, warning: &str) -> Result<(), Error> {
     if yes || !control::running(home) {
         return Ok(());
     }
@@ -90,14 +90,17 @@ fn confirm(home: &Path, yes: bool, what: &str) -> Result<(), Error> {
         nothing_sent: false,
         unanswered: None,
         code: ErrorCode::ConfirmationRequired,
-        message: format!(
-            "{what} restarts the relay and its connector, and the packets the connector \
-             holds are dropped. Nothing was changed: run it again with `--yes`."
-        ),
+        message: format!("{what} {warning} Nothing was changed: run it again with `--yes`."),
     })
 }
 
-fn report(settings: &RelaySettings, price: u64, restarted: bool, changed: bool) -> Report {
+fn report(
+    settings: &RelaySettings,
+    price: u64,
+    restarted: bool,
+    running: bool,
+    changed: bool,
+) -> Report {
     let shown = |value: &Option<String>| value.clone().unwrap_or_else(|| "(not set)".into());
     let blocklist = if settings.blocklist.is_empty() {
         "(empty)".to_owned()
@@ -121,6 +124,8 @@ fn report(settings: &RelaySettings, price: u64, restarted: bool, changed: bool) 
     }
     if restarted {
         text.push_str("\nThe relay and its connector were restarted.");
+    } else if changed && running {
+        text.push_str("\nThe relay was restarted. Its connector did not restart.");
     } else if changed {
         text.push_str("\nNo agent node is running: `toon up` starts the relay with these.");
     }
@@ -151,12 +156,17 @@ pub fn config(home: &Path, change: &Change, yes: bool) -> Result<Report, Error> 
     let mut state = load(home)?;
     if change.is_empty() {
         let app = relay_of(&mut state)?;
-        return Ok(report(&app.relay, write_price(app), false, false));
+        return Ok(report(&app.relay, write_price(app), false, false, false));
     }
-    confirm(home, yes, "Changing the relay's settings")?;
     let before = state.clone();
     let app = relay_of(&mut state)?;
     let toon_app = app.name.clone();
+    confirm(
+        home,
+        yes,
+        "Changing the relay's settings",
+        &apps::app_warning(node::RELAY, &toon_app),
+    )?;
     let settings = &mut app.relay;
     // An empty name or description unsets it.
     let set = |value: &String| Some(value.clone()).filter(|value| !value.is_empty());
@@ -179,7 +189,13 @@ pub fn config(home: &Path, change: &Change, yes: bool) -> Result<Report, Error> 
     let price = write_price(app);
     let settings = app.relay.clone();
     let restarted = apps::apply(home, &before, &state, &toon_app, || {})?;
-    Ok(report(&settings, price, restarted, true))
+    Ok(report(
+        &settings,
+        price,
+        restarted,
+        control::running(home),
+        true,
+    ))
 }
 
 /// What `toon relay price` was asked to set. A price of `0` for the subscribe route or
@@ -233,7 +249,12 @@ pub fn price(home: &Path, prices: &Prices, yes: bool) -> Result<Report, Error> {
              broadcast event: give `--subscribe` and `--broadcast` together.",
         ));
     }
-    confirm(home, yes, "A new price")?;
+    confirm(
+        home,
+        yes,
+        "A new price",
+        "restarts the relay and its connector, and the packets the connector holds are dropped.",
+    )?;
     let before = state.clone();
     let app = relay_of(&mut state)?;
     let toon_app = app.name.clone();
@@ -251,7 +272,13 @@ pub fn price(home: &Path, prices: &Prices, yes: bool) -> Result<Report, Error> {
     let settings = app.relay.clone();
     let write = write_price(app);
     let restarted = apps::apply(home, &before, &state, &toon_app, || {})?;
-    Ok(report(&settings, write, restarted, true))
+    Ok(report(
+        &settings,
+        write,
+        restarted,
+        control::running(home),
+        true,
+    ))
 }
 
 /// `toon relay describe`: what another relay charges, read from its information document.

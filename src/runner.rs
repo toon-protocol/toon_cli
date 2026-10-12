@@ -387,11 +387,31 @@ pub struct AppSpec {
     pub relay: bool,
     /// What the operator allowed the app. The relay always has the defaults.
     pub allowances: Allowances,
+    /// Where the app was before it was stopped to start again alone, if it was.
+    pub place: Option<Place>,
 }
+
+/// Where an app was when it was stopped to be started again alone: the docker network a
+/// container was on, which the stop left, or the two ports a process or the relay served on.
+/// A runner brings the app back there if it can, and anywhere else if it cannot.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Place {
+    pub network: Option<String>,
+    /// The write port and the read port.
+    pub ports: Option<(u16, u16)>,
+}
+
+/// A marker in an app's data directory, which only the local process runner reads: when it
+/// is there the app is started on fresh ports, once, so that tests can bring an app back at
+/// another address.
+pub const MOVE_MARKER: &str = ".toon-move";
 
 pub trait AppRunner {
     /// Start the app and return once it answers its health check.
     fn start(&self, spec: &AppSpec) -> Result<Box<dyn RunningApp>, Error>;
+    /// Remove what `stop_to_restart` left of the app `instance` at `place`, for an app that
+    /// is not started again.
+    fn discard(&self, _instance: &str, _place: &Place) {}
 }
 
 pub trait RunningApp: Send {
@@ -403,6 +423,10 @@ pub trait RunningApp: Send {
     fn running(&mut self) -> bool;
     /// Stop the app and return once it is gone. Stopping a stopped app does nothing.
     fn stop(&mut self);
+    /// Stop the app as `stop` does, but leave what it ran on that a start can use again, and
+    /// say where the app was. Whoever calls this starts the app again, or stops what it left
+    /// by starting it and stopping it.
+    fn stop_to_restart(&mut self) -> Place;
 }
 
 fn failed(message: String) -> Error {
@@ -443,6 +467,34 @@ fn free_ports() -> Result<(Passing, Passing), Error> {
             return Ok((write, read));
         }
     }
+}
+
+/// The write port and the read port an app is started on: those it had, if `place` names
+/// them and nothing else has taken either since, else two fresh ones.
+struct Ports {
+    write: u16,
+    read: u16,
+    /// Held until the app answers, which it does once it has bound them.
+    _claimed: Option<(Passing, Passing)>,
+}
+
+fn ports_for(place: Option<&Place>) -> Result<Ports, Error> {
+    let free = |port: u16| std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok();
+    if let Some((write, read)) = place.and_then(|place| place.ports) {
+        if free(write) && free(read) {
+            return Ok(Ports {
+                write,
+                read,
+                _claimed: None,
+            });
+        }
+    }
+    let claimed = free_ports()?;
+    Ok(Ports {
+        write: claimed.0.port,
+        read: claimed.1.port,
+        _claimed: Some(claimed),
+    })
 }
 
 /// Wait for `GET /health` on `address` to answer 200. `alive` says whether the app is
@@ -502,9 +554,11 @@ impl AppRunner for ProcessRunner {
             .append(true)
             .open(&log)
             .map_err(|error| io(&log, error))?;
-        // Held until the app answers, which it does once it has bound them.
-        let claimed = free_ports()?;
-        let (port, read_port) = (claimed.0.port, claimed.1.port);
+        // The marker is spent by the start that reads it.
+        let moved = fs::remove_file(spec.data_dir.join(MOVE_MARKER)).is_ok();
+        let place = spec.place.as_ref().filter(|_| !moved);
+        let ports = ports_for(place)?;
+        let (port, read_port) = (ports.write, ports.read);
         let mut command = Command::new(&self.program);
         command
             .env_clear()
@@ -568,6 +622,14 @@ impl RunningApp for Process {
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+
+    fn stop_to_restart(&mut self) -> Place {
+        self.stop();
+        Place {
+            network: None,
+            ports: Some((self.address.port(), self.read.port())),
+        }
     }
 }
 
@@ -730,6 +792,13 @@ fn container_ip(name: &str, network: &str) -> Result<Ipv4Addr, String> {
 }
 
 impl AppRunner for ContainerRunner {
+    fn discard(&self, instance: &str, place: &Place) {
+        if let Some(network) = &place.network {
+            debug_assert_eq!(*network, format!("toon-{instance}"));
+            let _ = docker(&["network", "rm", network]);
+        }
+    }
+
     fn start(&self, spec: &AppSpec) -> Result<Box<dyn RunningApp>, Error> {
         let name = format!("toon-{}", spec.instance);
         fs::create_dir_all(&spec.data_dir)
@@ -740,9 +809,13 @@ impl AppRunner for ContainerRunner {
         // What a supervisor that was killed left behind, its output kept first.
         keep_output(&name, &log);
         let _ = docker(&["rm", "--force", &name]);
-        // The network such a container was on, if the supervisor was killed before it went.
         let network = (!spec.relay).then(|| name.clone());
-        if let Some(network) = &network {
+        // A network kept across a restart alone is used again, if it is still there.
+        let kept = network.is_some()
+            && spec.place.as_ref().and_then(|place| place.network.as_ref()) == network.as_ref()
+            && docker(&["network", "inspect", &name]).is_ok();
+        if let (Some(network), false) = (&network, kept) {
+            // The network such a container was on, if the supervisor was killed before it went.
             let _ = docker(&["network", "rm", network]);
             let arguments = network_create_arguments(spec.allowances.egress, network);
             let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
@@ -759,13 +832,11 @@ impl AppRunner for ContainerRunner {
         command.args(["run", "--detach", "--name", &name]);
         // Held until the relay answers, which it does once it has bound them.
         let claimed = if spec.relay {
-            Some(free_ports()?)
+            Some(ports_for(spec.place.as_ref())?)
         } else {
             None
         };
-        let relay_ports = claimed
-            .as_ref()
-            .map(|(write, read)| (write.port, read.port));
+        let relay_ports = claimed.as_ref().map(|ports| (ports.write, ports.read));
         command
             .args(network_arguments(relay_ports, &name))
             .args(confinement_arguments(&spec.allowances, &caller()))
@@ -860,6 +931,24 @@ impl RunningApp for Container {
             let _ = docker(&["network", "rm", network]);
         }
     }
+
+    fn stop_to_restart(&mut self) -> Place {
+        let place = match &self.network {
+            Some(network) => Place {
+                network: Some(network.clone()),
+                ports: None,
+            },
+            None => Place {
+                network: None,
+                ports: Some((self.address.port(), self.read.port())),
+            },
+        };
+        let network = self.network.take();
+        self.stop();
+        // What a start may use again is left; a start that does not use it removes it.
+        self.network = network;
+        place
+    }
 }
 
 impl Drop for Container {
@@ -894,6 +983,7 @@ mod tests {
             data_dir: data_dir.to_path_buf(),
             relay: false,
             allowances: Allowances::default(),
+            place: None,
         }
     }
 
@@ -955,6 +1045,62 @@ mod tests {
             format!("NOSTR_SECRET_KEY={}\n", "02".repeat(32))
         );
         app.stop();
+    }
+
+    #[test]
+    fn a_process_stopped_to_restart_comes_back_on_its_ports() {
+        let data = tempfile::tempdir().unwrap();
+        let runner = ProcessRunner {
+            program: fake_relay(),
+        };
+        let mut app = runner.start(&spec(data.path(), "unused")).unwrap();
+        let (write, read) = (app.write_address(), app.read_address());
+        let mut again = spec(data.path(), "unused");
+        again.place = Some(app.stop_to_restart());
+
+        let mut back = runner.start(&again).unwrap();
+
+        assert_eq!(back.write_address(), write);
+        assert_eq!(back.read_address(), read);
+        back.stop();
+    }
+
+    #[test]
+    fn a_port_taken_while_the_app_was_down_gives_it_fresh_ports() {
+        let data = tempfile::tempdir().unwrap();
+        let runner = ProcessRunner {
+            program: fake_relay(),
+        };
+        let mut app = runner.start(&spec(data.path(), "unused")).unwrap();
+        let write = app.write_address();
+        let mut again = spec(data.path(), "unused");
+        again.place = Some(app.stop_to_restart());
+        let _taken = std::net::TcpListener::bind(write).unwrap();
+
+        let mut back = runner.start(&again).unwrap();
+
+        assert_ne!(back.write_address(), write);
+        back.stop();
+    }
+
+    #[test]
+    fn the_move_marker_brings_an_app_back_elsewhere_once() {
+        let data = tempfile::tempdir().unwrap();
+        let runner = ProcessRunner {
+            program: fake_relay(),
+        };
+        let mut app = runner.start(&spec(data.path(), "unused")).unwrap();
+        let write = app.write_address();
+        let place = app.stop_to_restart();
+        fs::write(data.path().join(MOVE_MARKER), "").unwrap();
+        let mut again = spec(data.path(), "unused");
+        again.place = Some(place);
+
+        let mut moved = runner.start(&again).unwrap();
+
+        assert_ne!(moved.write_address(), write);
+        assert!(!data.path().join(MOVE_MARKER).exists());
+        moved.stop();
     }
 
     #[test]

@@ -65,6 +65,14 @@ fn main() {
         eprintln!("fake relay: told not to start");
         process::exit(1);
     }
+    // An app given `FAKE_APP_START_DELAY_MS` takes that long to start, for a test of what
+    // happens to the packets of an app that is behind the same connector as one starting.
+    if let Some(delay) = env::var("FAKE_APP_START_DELAY_MS")
+        .ok()
+        .and_then(|delay| delay.parse().ok())
+    {
+        thread::sleep(Duration::from_millis(delay));
+    }
     let key = env::var("NOSTR_SECRET_KEY").unwrap_or_default();
     fs::write(
         data.join("environment"),
