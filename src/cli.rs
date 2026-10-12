@@ -124,7 +124,7 @@ pub enum Command {
         #[command(subcommand)]
         command: ChannelCommand,
     },
-    /// Set the relay and what a write to it costs
+    /// Set the relay and what a write to it costs, or read what another relay charges
     Relay {
         #[command(subcommand)]
         command: RelayCommand,

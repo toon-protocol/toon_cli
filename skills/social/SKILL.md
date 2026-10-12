@@ -101,10 +101,10 @@ What follows from it:
   to run; with one, without `--yes`, it fails with `not_confirmed` and states the price too.
   Do not run a paying command without `--yes` to learn a price.
 - **Subscribing** buys the live feed of a relay: a prepaid balance at that relay, drawn
-  down by its broadcast price for each event it sends. `toon relay subscribe <ws-url>
-  --filter <json> --amount <n>` (see its prices first with `toon relay describe <ws-url>`) without `--yes` needs a peering too, and fails with
-  `peering_needed` (naming the deposit it needs) until there is one. Then it fails with
-  `not_confirmed` and says what the relay charges per subscribe packet, what it charges per
+  down by its broadcast price for each event it sends; see its prices first with `toon relay
+  describe <ws-url>`. `toon relay subscribe <ws-url> --filter <json> --amount <n>` without
+  `--yes` needs a peering too, and fails with `peering_needed` (naming the deposit it needs)
+  until there is one. Then it fails with `not_confirmed` and says what the relay charges per subscribe packet, what it charges per
   event and how many events the amount buys. `toon relay subscriptions` shows the balance and
   filter at each relay. When the balance runs out the feed ends; `toon event watch` sees
   nothing new from that relay until you subscribe again. `toon relay subscribe <ws-url> --following` builds the
