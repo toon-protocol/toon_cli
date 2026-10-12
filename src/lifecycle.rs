@@ -31,6 +31,8 @@ pub struct Create<'a> {
     pub origin: Origin<'a>,
     pub price: u64,
     pub allowances: crate::runner::Allowances,
+    /// The runtime the app is started under, already settled; `None` for docker's own.
+    pub runtime: Option<String>,
     pub secrets: crate::secrets::Given,
     pub reach: Reach,
     pub accept_anyone_terms: bool,
@@ -219,6 +221,7 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
                 price: create.price,
                 request: None,
                 allowances: create.allowances.clone(),
+                runtime: create.runtime.clone(),
                 variables: Default::default(),
                 secret_variables: Vec::new(),
                 secret_files: Vec::new(),

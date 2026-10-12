@@ -526,6 +526,50 @@ fn an_agent_key_does_not_add_what_the_operator_has_not_trusted() {
 }
 
 #[test]
+fn an_agent_key_cannot_name_a_runtime_and_have_the_app_added_at_once() {
+    let node = node();
+    let (key, _) = node.create(&["--scope", "status,apps"]);
+    let held = node.agent(
+        &key,
+        &[
+            "add",
+            "boxed",
+            "--to",
+            "relay",
+            "--image",
+            "ghcr.io/toon-protocol/echo",
+            "--runtime",
+            "runsc",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(error_code(&held), "approval_pending", "{}", held.stdout);
+    assert_eq!(apps_behind(&node, &key, "relay"), vec!["relay".to_owned()]);
+    let entry = pending_entry(&node, &key, "boxed").expect("held as a pending app");
+    assert_eq!(entry["runtime"], "runsc");
+
+    // An agent key's change is the operator's.
+    let change = node.agent(&key, &["change", "boxed", "--runtime", "default", "--json"]);
+    assert_ne!(change.exit_code, 0, "{}", change.stdout);
+
+    let approved = node.machine.toon(&["approve", "boxed", "--json"]);
+    assert_eq!(
+        approved.exit_code, 0,
+        "{}{}",
+        approved.stdout, approved.stderr
+    );
+    let status = node.machine.toon(&["status", "--json"]).json();
+    let runtime = status["agent_node"]["toon_apps"][0]["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|app| app["name"] == "boxed")
+        .map(|app| app["confinement"]["runtime"].clone());
+    assert_eq!(runtime, Some(serde_json::json!("runsc")));
+}
+
+#[test]
 fn the_operator_edits_the_list_and_the_home_is_never_checked_against_it() {
     let node = node();
     let (key, _) = node.create(&["--scope", "status,apps"]);

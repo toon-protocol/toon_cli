@@ -152,6 +152,9 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                 if let Some(departures) = behind.allowances.departures() {
                     lines.push(format!("  {name} is confined, and {departures}."));
                 }
+                if let Some(runtime) = &behind.runtime {
+                    lines.push(format!("  {name} runs under the runtime {runtime}."));
+                }
                 let given: Vec<String> = behind
                     .variables
                     .keys()
@@ -178,7 +181,9 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                         "variables": behind.secret_variables,
                         "files": behind.secret_files,
                     },
-                    "confinement": behind.allowances.confinement(relay, &runner::caller()),
+                    "confinement": behind
+                        .allowances
+                        .confinement(relay, &runner::caller(), behind.runtime.as_deref()),
                     "name": name, "address": field("address"),
                     "read_address": field("read_address"), "running": running,
                     "image": image, "prefix": behind.prefix, "price": behind.price,

@@ -181,12 +181,15 @@ example.com:5000/team/app        # exactly this repository
 - An image matches by its repository, so `ghcr.io/toon-protocol/echo`, `…/echo:1.2` and
   `…/echo@sha256:…` are one entry's. A `..` or empty path part never matches.
 - The list is checked for an agent key only. An operator running `toon add` with the home is
-  never checked against it.
+  never refused by it. The one thing it does to an operator's add is to decide whether the
+  node's runtime applies to the app (`untrusted-runtime`, see adding-an-app.md).
 
 An add by an agent key, with `apps` in its scope and granted on the TOON app it goes behind
 (`--to`), is added at once only if its image is on the list **and** it carries no allowance
-(`--allow-egress`, `--scratch`, `--memory`, `--cpus`, `--pids`) and no variable (`--env`): a
-trusted image is trusted as shipped. Anything else, and every `--url`, becomes a **pending
+(`--allow-egress`, `--scratch`, `--memory`, `--cpus`, `--pids`), no variable (`--env`) and no
+runtime (`--runtime`): a trusted image is trusted as shipped. An agent key cannot name a
+runtime and have the app added at once, since a name may be a runtime that confines less than
+docker's own; such an add is held as a pending app, and `toon change` stays the operator's. Anything else, and every `--url`, becomes a **pending
 app**: it is recorded in the home, nothing is pulled, started or routed, and the add answers
 `approval_pending`, exit 1, naming the app. The same add again gives the same answer and
 records nothing more. A key holds at most 8 pending apps; the ninth is refused with
