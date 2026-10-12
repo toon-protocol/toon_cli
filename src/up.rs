@@ -33,7 +33,7 @@ use crate::node::{self, App, AppFiles, ConnectorFiles, Reach, Source, State, Too
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::overlay::{self, Edge};
 use crate::receive::{Feeds, Receiver, Surroundings};
-use crate::runner::{self, AppRunner, AppSpec, RunningApp};
+use crate::runner::{self, AppRunner, AppSpec, Place, RunningApp};
 
 /// How long a connector gets to exit once its supervisor is stopping, before it is killed.
 const GRACE: Duration = Duration::from_secs(10);
@@ -79,7 +79,8 @@ struct Unreloaded {
 }
 
 /// Someone waiting for the connector to be started again with the state as it now is.
-type Reload = Sender<Result<(), Unreloaded>>;
+/// Whether the connector restarted, or an error.
+type Reload = Sender<Result<bool, Unreloaded>>;
 
 /// What the control socket reads of one TOON app's connector.
 struct UnitShared {
@@ -188,6 +189,8 @@ struct Unit {
     shared: Arc<UnitShared>,
     /// What the first start reported, for `report`.
     first: (u32, String),
+    /// Where the apps that a reload stopped to start again were, by name, until they are up.
+    places: Vec<(String, Place)>,
     /// How long to wait before the next restart.
     delay: Duration,
     /// When the connector, which is down, is started again.
@@ -286,6 +289,7 @@ fn start_app(
     app: &App,
     runner: &dyn AppRunner,
     onion: Option<&str>,
+    place: Option<Place>,
 ) -> Result<Option<Box<dyn RunningApp>>, Error> {
     let files = AppFiles::of(home, &app.name);
     let mut mounted = Vec::new();
@@ -332,13 +336,14 @@ fn start_app(
         }
     };
     let spec = AppSpec {
-        instance: format!("{}-{}", instance(home), app.name),
+        instance: app_instance(home, &app.name),
         image,
         env,
         mounts: mounted,
         data_dir: files.data_dir,
         relay: matches!(app.source, Source::Relay),
         allowances: app.allowances.clone(),
+        place,
     };
     runner.start(&spec).map(Some)
 }
@@ -352,7 +357,7 @@ fn start_apps(
 ) -> Result<StartedApps, Error> {
     let mut started = StartedApps::new();
     for behind in &app.apps {
-        match start_app(home, app, behind, runner, onion) {
+        match start_app(home, app, behind, runner, onion, None) {
             Ok(Some(running)) => started.push((behind.name.clone(), running)),
             Ok(None) => {}
             Err(error) => {
@@ -371,6 +376,11 @@ fn start_apps(
 fn instance(home: &Path) -> String {
     let digest = sha2::Sha256::digest(home.to_string_lossy().as_bytes());
     hex::encode(&digest[..6])
+}
+
+/// The name the runner knows the app `app` of the agent node at `home` by.
+fn app_instance(home: &Path, app: &str) -> String {
+    format!("{}-{app}", instance(home))
 }
 
 fn launch(
@@ -495,6 +505,7 @@ fn launch_connector(
         files,
         shared,
         first,
+        places: Vec::new(),
         delay: FIRST_RESTART_DELAY,
         restart_at: None,
     })
@@ -553,7 +564,7 @@ fn wait_for(queue: &Mutex<Vec<Reload>>) -> Value {
     let (answer, answered) = mpsc::channel();
     queue.lock().expect("the requests").push(answer);
     match answered.recv() {
-        Ok(Ok(())) => json!({ "reloaded": true }),
+        Ok(Ok(restarted)) => json!({ "reloaded": true, "restarted": restarted }),
         Ok(Err(Unreloaded { error, stopped })) => {
             let mut reply = error.json();
             reply["stopped"] = json!(stopped);
@@ -573,16 +584,20 @@ impl Shared {
             }),
             // Start the connector of one TOON app again from the state as it now is, and
             // wait for the answer. Apps are started and stopped to match the state too.
-            "reload" => match self
-                .units()
-                .iter()
-                .find(|unit| Some(unit.toon_app.as_str()) == toon_app)
-            {
-                Some(unit) => wait_for(&unit.reload),
-                None => json!({ "error": { "code": "connector_failed", "message": format!(
+            "reload" => {
+                // The units are not locked while the reload is waited for: `status` needs them.
+                let unit = self
+                    .units()
+                    .iter()
+                    .find(|unit| Some(unit.toon_app.as_str()) == toon_app)
+                    .cloned();
+                match unit {
+                    Some(unit) => wait_for(&unit.reload),
+                    None => json!({ "error": { "code": "connector_failed", "message": format!(
                     "No connector runs for the TOON app {}.", toon_app.unwrap_or_default()
                 ) }, "stopped": false }),
-            },
+                }
+            }
             // Start the connector of each TOON app the state holds that does not run, and
             // stop each one that is no longer in it.
             "sync" => wait_for(&self.sync),
@@ -634,10 +649,10 @@ impl UnitShared {
 }
 
 /// Tell each waiter how a request ended.
-fn answer_all(waiting: Vec<Reload>, result: &Result<(), Unreloaded>) {
+fn answer_all(waiting: Vec<Reload>, result: &Result<bool, Unreloaded>) {
     for answer in waiting {
         let _ = answer.send(match result {
-            Ok(()) => Ok(()),
+            Ok(restarted) => Ok(*restarted),
             Err(unreloaded) => Err(Unreloaded {
                 error: Error {
                     nothing_sent: unreloaded.error.nothing_sent,
@@ -730,7 +745,7 @@ impl Supervisor {
             let requested = std::mem::take(&mut *self.shared.sync.lock().expect("the syncs"));
             if !requested.is_empty() {
                 let synced = self.sync();
-                answer_all(requested, &synced);
+                answer_all(requested, &synced.map(|()| true));
             }
             for unit in &mut self.units {
                 unit.tick(&self.home, &*self.runner);
@@ -753,7 +768,7 @@ impl Supervisor {
         self.inbox = None;
         for unit in &mut self.units {
             unit.shared.reloads().clear();
-            unit.stop();
+            unit.stop(&self.home, &*self.runner);
         }
         self.units.clear();
         self.shared.units().clear();
@@ -791,7 +806,7 @@ impl Supervisor {
             self.shared
                 .units()
                 .retain(|shared| !Arc::ptr_eq(shared, &unit.shared));
-            unit.stop();
+            unit.stop(&self.home, &*self.runner);
         }
         self.reconcile(&state);
         Ok(())
@@ -909,11 +924,14 @@ impl Unit {
         }
     }
 
-    /// Start the connector again with the apps and routes the state now holds. An app that
-    /// is new starts first, and the new config is checked, so that a change that fails
-    /// either leaves the connector as it was. Then the connector stops, which drops what it
-    /// holds in flight, and the apps that were removed stop after it.
-    fn reload(&mut self, home: &Path, runner: &dyn AppRunner) -> Result<(), Unreloaded> {
+    /// Make the apps and routes the state now holds run. An app whose definition changed is
+    /// started again where it was, with its network kept, and an app that is new starts
+    /// too. If the connector's config is then what it was, which is so when no app moved and
+    /// no route came or went, the connector is left running. Otherwise the new config is
+    /// checked first, so that a change that fails leaves the connector as it was, and then
+    /// the connector stops, which drops what it holds in flight, and starts again; the apps
+    /// that were removed stop after it. Returns whether the connector restarted.
+    fn reload(&mut self, home: &Path, runner: &dyn AppRunner) -> Result<bool, Unreloaded> {
         let untouched = |error| Unreloaded {
             error,
             stopped: false,
@@ -944,7 +962,23 @@ impl Unit {
             });
             if let Some(position) = self.apps.iter().position(|(name, _)| *name == behind.name) {
                 if changed {
-                    self.apps.remove(position).1.stop();
+                    let mut running = self.apps.remove(position).1;
+                    // Granting or withdrawing egress swaps the network for one of the other
+                    // kind, so it is remade; otherwise it is kept.
+                    let remade =
+                        old.is_some_and(|old| old.allowances.egress != behind.allowances.egress);
+                    let place = running.stop_to_restart();
+                    let place = if remade {
+                        runner.discard(&app_instance(home, &behind.name), &place);
+                        Place {
+                            network: None,
+                            ports: place.ports,
+                        }
+                    } else {
+                        place
+                    };
+                    self.places.retain(|(name, _)| *name != behind.name);
+                    self.places.push((behind.name.clone(), place));
                     touched = true;
                 }
             }
@@ -954,9 +988,17 @@ impl Unit {
             stopped: touched,
         };
         let mut fresh = StartedApps::new();
-        let stop = |fresh: &mut StartedApps| {
-            for (_, running) in fresh {
-                running.stop();
+        // Apps that were started again are stopped so that they can be started where they
+        // were again; any other is stopped for good.
+        let places = |this: &mut Self, fresh: &mut StartedApps| {
+            for (name, mut running) in std::mem::take(fresh) {
+                if this.places.iter().any(|(placed, _)| *placed == name) {
+                    let place = running.stop_to_restart();
+                    this.places.retain(|(placed, _)| *placed != name);
+                    this.places.push((name, place));
+                } else {
+                    running.stop();
+                }
             }
         };
         for behind in &app.apps {
@@ -964,11 +1006,16 @@ impl Unit {
                 continue;
             }
             let onion = self.hidden.as_ref().map(|hidden| hidden.endpoint.as_str());
-            match start_app(home, app, behind, runner, onion) {
+            let place = self
+                .places
+                .iter()
+                .find(|(name, _)| *name == behind.name)
+                .map(|(_, place)| place.clone());
+            match start_app(home, app, behind, runner, onion, place) {
                 Ok(Some(running)) => fresh.push((behind.name.clone(), running)),
                 Ok(None) => {}
                 Err(error) => {
-                    stop(&mut fresh);
+                    places(self, &mut fresh);
                     return Err(unreloaded(error));
                 }
             }
@@ -978,21 +1025,26 @@ impl Unit {
         // The relay's read port moves with the relay, so the onion endpoint is told again.
         let read = read_address(&self.apps).or_else(|| read_address(&fresh));
         let rendering = self.hidden.as_ref().map(Hidden::overlay);
+        let before = fs::read(&self.files.config).ok();
         let files = match node::render(home, app, &reached, rendering.as_ref()) {
             Ok(files) => files,
             Err(error) => {
-                stop(&mut fresh);
+                places(self, &mut fresh);
                 // Put back the config the connector runs, for the next time it restarts.
                 let _ = node::render(home, &self.app, &addresses(&self.apps), rendering.as_ref());
                 return Err(unreloaded(error));
             }
         };
-        self.stop_connector();
-        {
+        // Nothing moved and no route came or went: the config is what the connector runs.
+        let alone =
+            self.connector.is_some() && before.is_some() && fs::read(&files.config).ok() == before;
+        if !alone {
+            self.stop_connector();
             let mut live = self.shared.live();
             live.running = false;
             live.pid = None;
             live.address = None;
+            drop(live);
         }
         let (kept, removed): (StartedApps, StartedApps) = std::mem::take(&mut self.apps)
             .into_iter()
@@ -1002,12 +1054,33 @@ impl Unit {
         }
         self.apps = kept;
         self.apps.extend(fresh);
+        for (name, place) in std::mem::take(&mut self.places) {
+            if !self.apps.iter().any(|(started, _)| *started == name) {
+                runner.discard(&app_instance(home, &name), &place);
+            }
+        }
         *self.shared.apps() = statuses(&self.apps);
         self.app = app.clone();
+        self.files = files;
+        if alone {
+            // The onion endpoint is told again only if the relay's read port moved.
+            if let Some(hidden) = &mut self.hidden {
+                if hidden.read != read {
+                    hidden.read = read;
+                    let address = self.connector.as_ref().map(|c| c.address.clone());
+                    if let Some(Err(error)) = address.map(|address| hidden.publish(&address)) {
+                        eprintln!(
+                            "toon: the relay's read address was not published: {}",
+                            error.message
+                        );
+                    }
+                }
+            }
+            return Ok(false);
+        }
         if let Some(hidden) = &mut self.hidden {
             hidden.read = read;
         }
-        self.files = files;
         let mut started = spawn(&self.files).map_err(|error| Unreloaded {
             error,
             stopped: true,
@@ -1027,7 +1100,7 @@ impl Unit {
         drop(live);
         self.connector = Some(started);
         self.delay = FIRST_RESTART_DELAY;
-        Ok(())
+        Ok(true)
     }
 
     /// The name of an app that has stopped, if one has. Each app's status is kept current.
@@ -1044,10 +1117,13 @@ impl Unit {
     }
 
     /// Stop the connector, and then the apps behind it.
-    fn stop(&mut self) {
+    fn stop(&mut self, home: &Path, runner: &dyn AppRunner) {
         self.stop_connector();
         for (_, app) in &mut self.apps {
             app.stop();
+        }
+        for (name, place) in std::mem::take(&mut self.places) {
+            runner.discard(&app_instance(home, &name), &place);
         }
         self.hidden = None;
         self.shared.live().running = false;

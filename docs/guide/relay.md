@@ -70,7 +70,10 @@ toon relay config --expiry honour --yes             # drop expired events (or: i
 toon relay config --block <event-id> --yes          # refuse one event; --unblock lifts it
 ```
 
-A change restarts the relay and its connector, so it needs `--yes` while they run.
+A change restarts the relay, so it needs `--yes` while it runs. The relay comes back on the ports
+it had if they are still free, and its connector is then left running; if the relay comes back on
+other ports, its connector restarts too and drops the packets it holds in flight. `restarted` in
+`--json` says whether it did.
 
 ## Set the price of a write
 

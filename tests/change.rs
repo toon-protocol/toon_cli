@@ -111,7 +111,8 @@ fn a_secret_is_replaced_and_everything_else_stays() {
     let report = run.json();
     assert_eq!(report["changed"], "notes");
     assert_eq!(report["toon_app"], "relay");
-    assert_eq!(report["restarted"], true);
+    // The app came back at the address it had, so the connector was left alone.
+    assert_eq!(report["restarted"], false);
     assert_eq!(report["set"], json!(["secret KEY"]));
     assert!(!run.stdout.contains("new-key"));
     assert!(
@@ -120,13 +121,7 @@ fn a_secret_is_replaced_and_everything_else_stays() {
         environment(&machine, "notes")
     );
     assert!(has(&machine, "notes", "A=1"));
-    // The app was started again, so it has another address.
-    let unaddressed = |mut value: Value| {
-        value.as_object_mut().unwrap().remove("address");
-        value.as_object_mut().unwrap().remove("read_address");
-        value
-    };
-    assert_eq!(unaddressed(app(&machine, "notes")), unaddressed(before));
+    assert_eq!(app(&machine, "notes"), before);
     // No copy of the secret that was replaced is left.
     let dir = apps_dir(&machine, "notes");
     assert!(!dir.join("secrets.before").exists());
@@ -281,7 +276,7 @@ fn without_yes_it_asks_and_changes_nothing() {
     assert!(run.json()["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("restarts the connector"));
+        .contains("only if notes comes back somewhere else"));
     assert_eq!(state(&machine), before);
 }
 

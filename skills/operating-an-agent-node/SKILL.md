@@ -73,8 +73,10 @@ packet that did not decode, as for an address that is not an ILP address); any o
 first.
 
 Commands that restart a connector (`toon add`, `toon remove`, `toon route price`,
-`toon relay config`, `toon relay price`) drop the packets it holds. They need `--yes` once the
-connector is running, or fail with `confirmation_required` and change nothing.
+`toon relay price`) drop the packets it holds. `toon change` and `toon relay config` restart one
+app, and its connector only if the app comes back somewhere else (`restarted` in `--json` says
+whether it did). They need `--yes` once the connector is running, or fail with
+`confirmation_required` and change nothing.
 
 A write to the agent node's own relay (`toon event publish` without `--relay`) must meet the
 relay's write price, but pays nothing out of the wallet and is not counted against the spending
@@ -197,8 +199,8 @@ app may open connections out; an app that calls a chain or an API needs it), `--
 allowance with `--url`, is refused with `usage`. To change an allowance, variable or secret, use
 `toon change <app> ... --yes`: it takes the same flags and `--no-allow-egress`, `--unset-scratch`,
 `--unset-env`, `--unset-secret` and `--unset-secret-file`, and `default` for `--memory`, `--cpus`
-and `--pids`; it keeps everything it does not name, restarts the app and its connector (so it needs
-`--yes`), and puts the change back with `app_failed` if the app does not start. A name is one
+and `--pids`; it keeps everything it does not name, restarts the app (so it needs `--yes`), and
+its connector only if the app comes back somewhere else, and puts the change back with `app_failed` if the app does not start. A name is one
 thing: `--secret NAME=<file>` replaces a variable `NAME`, and `--env` replaces a secret. It is
 refused with `usage` for no flag, no difference, taking away what the app lacks, an app at a
 `--url`, and on the relay anything but `--memory`, `--cpus` and `--pids`. An image that needs root or a capability is not supported, and neither is rootless
@@ -287,8 +289,9 @@ inbound channel now.
 
 `toon relay config` shows the relay's settings and prices. With `--name`, `--description`,
 `--expiry honour|ignore`, `--block <event-id>` or `--unblock <event-id>` it changes them and restarts
-the relay and its connector (`--yes`). `toon relay price <amount>` sets the price of one write
-to the relay's route. `toon relay describe <ws-url>` is the other direction: it prints what
+the relay (`--yes`), on the ports it had if they are free, and its connector only if the relay
+comes back somewhere else. `toon relay price <amount>` sets the price of one write to the relay's
+route. `toon relay describe <ws-url>` is the other direction: it prints what
 another relay charges for a write and for its live feed, and whether a peering of this agent node
 reaches it. It pays nothing and needs no passphrase or `--yes`.
 

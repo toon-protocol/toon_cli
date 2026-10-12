@@ -120,6 +120,18 @@ pub fn passing(host: &str) -> io::Result<Passing> {
     })
 }
 
+/// `port` on `host` again, for an app that had it and is started again: claimed as
+/// `passing` claims a port, if nothing has taken it or claimed it since.
+pub fn passing_again(host: &str, port: u16) -> Option<Passing> {
+    let address = format!("{host}:{port}");
+    let claim = UdpSocket::bind(&address).ok()?;
+    TcpListener::bind(&address).ok()?;
+    Some(Passing {
+        port,
+        _claim: Some(claim),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

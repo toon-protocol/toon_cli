@@ -145,16 +145,27 @@ fn warning(toon_app: &str) -> String {
     )
 }
 
+/// What `toon change` and `toon relay config` say: an app restarts alone, and the connector
+/// only if the app comes back somewhere else.
+pub fn app_warning(app: &str, toon_app: &str) -> String {
+    format!(
+        "This restarts the app {app}, and packets to it are rejected until it is back. The connector \
+         of the TOON app {toon_app} restarts too, and drops the packets it holds in flight, \
+         only if {app} comes back somewhere else."
+    )
+}
+
 fn confirm(yes: bool, toon_app: &str) -> Result<(), Error> {
+    confirmed(yes, warning(toon_app))
+}
+
+fn confirmed(yes: bool, warning: String) -> Result<(), Error> {
     if yes {
         return Ok(());
     }
     Err(failed(
         ErrorCode::ConfirmationRequired,
-        format!(
-            "{} Run it again with `--yes` to go ahead.",
-            warning(toon_app)
-        ),
+        format!("{warning} Run it again with `--yes` to go ahead."),
     ))
 }
 
@@ -184,7 +195,7 @@ pub fn apply(
     }
     let reply = control::ask_about(home, "reload", Some(toon_app), RESTART_PATIENCE);
     let mut error = match &reply {
-        Some(reply) if reply["reloaded"] == true => return Ok(true),
+        Some(reply) if reply["reloaded"] == true => return Ok(reply["restarted"] != false),
         Some(reply) if reply["error"].is_object() => {
             let code = match reply["error"]["code"].as_str() {
                 Some("app_failed") => ErrorCode::AppFailed,
@@ -454,7 +465,7 @@ pub fn change(home: &Path, args: &crate::cli::ChangeArgs) -> Result<Report, Erro
             format!("{name} is already as this would leave it: nothing to change."),
         ));
     }
-    confirm(args.yes, &toon_app)?;
+    confirmed(args.yes, app_warning(name, &toon_app))?;
     let mut changed = state.clone();
     changed.toon_apps[index].apps[position] = app.clone();
     let staged = secrets.stage(home, before, &app)?;
@@ -555,7 +566,11 @@ pub fn change(home: &Path, args: &crate::cli::ChangeArgs) -> Result<Report, Erro
         text: format!(
             "Changed {name} in {toon_app}: {}. {}",
             parts.join("; "),
-            restarted(restarted_now, &toon_app)
+            if restarted_now || !control::running(home) {
+                restarted(restarted_now, &toon_app)
+            } else {
+                format!("The connector of {toon_app} did not restart.")
+            }
         ),
     })
 }
