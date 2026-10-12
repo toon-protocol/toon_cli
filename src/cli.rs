@@ -96,6 +96,9 @@ pub enum Command {
         /// The TOON app's name
         name: String,
     },
+    /// Give an app that is added other variables, secrets or allowances, and keep the rest
+    /// of it: this restarts the app and its connector
+    Change(ChangeArgs),
     /// Take an app, and its route, away from its connector: this restarts that connector
     Remove {
         /// The app's name
@@ -238,6 +241,35 @@ pub struct AddArgs {
     #[command(flatten)]
     pub secrets: SecretArgs,
     /// Go ahead although the connector restarts and drops packets in flight
+    #[arg(long)]
+    pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ChangeArgs {
+    /// The app's name
+    pub app: String,
+    #[command(flatten)]
+    pub allow: AllowanceArgs,
+    #[command(flatten)]
+    pub secrets: SecretArgs,
+    /// Take away the app's permission to open connections out
+    #[arg(long, conflicts_with = "allow_egress")]
+    pub no_allow_egress: bool,
+    /// Take a scratch path away; repeatable. `--memory`, `--cpus` and `--pids` take
+    /// `default` to return to the default limit
+    #[arg(long, value_name = "PATH")]
+    pub unset_scratch: Vec<String>,
+    /// Take a variable away; repeatable
+    #[arg(long, value_name = "NAME")]
+    pub unset_env: Vec<String>,
+    /// Take a secret given as a variable away; repeatable
+    #[arg(long, value_name = "NAME")]
+    pub unset_secret: Vec<String>,
+    /// Take a secret mounted as a file away; repeatable
+    #[arg(long, value_name = "PATH")]
+    pub unset_secret_file: Vec<String>,
+    /// Go ahead although the app and its connector restart and drop packets in flight
     #[arg(long)]
     pub yes: bool,
 }

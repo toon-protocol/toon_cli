@@ -121,7 +121,7 @@ fn variable_value(file: &str, mut bytes: Vec<u8>) -> Result<String, Error> {
 }
 
 /// `path` without empty or `.` parts, as the container sees it.
-fn normal(path: &str) -> String {
+pub fn normal(path: &str) -> String {
     path.split('/')
         .filter(|part| !part.is_empty() && *part != ".")
         .flat_map(|part| ["/", part])
@@ -163,9 +163,8 @@ impl Given {
         flags: &SecretArgs,
         allowances: &Allowances,
     ) -> Result<Self, Error> {
-        let mut given = Self::default();
         if flags.env.is_empty() && flags.secret.is_empty() && flags.secret_file.is_empty() {
-            return Ok(given);
+            return Ok(Self::default());
         }
         if matches!(origin, Origin::Url(_)) {
             return Err(refused(
@@ -174,6 +173,12 @@ impl Given {
                     .into(),
             ));
         }
+        Self::parse_flags(flags, allowances)
+    }
+
+    /// What the flags give, for an app known to run from an image.
+    pub fn parse_flags(flags: &SecretArgs, allowances: &Allowances) -> Result<Self, Error> {
+        let mut given = Self::default();
         let mut names: Vec<String> = Vec::new();
         let mut take = |flag: &str, name: &str| -> Result<(), Error> {
             check_name(flag, name)?;
@@ -256,6 +261,230 @@ impl Given {
     }
 }
 
+/// What `toon change` does to the variables and secrets of an app: what it gives, over
+/// the app's own, and the names and paths it takes away.
+#[derive(Debug, Default)]
+pub struct SecretChange {
+    pub given: Given,
+    pub unset_env: Vec<String>,
+    pub unset_secret: Vec<String>,
+    pub unset_secret_file: Vec<String>,
+}
+
+impl SecretChange {
+    /// `app` with the change applied to its record, checked against the `allowances` the app
+    /// has after the whole change, or `usage` if the change cannot be made.
+    pub fn applied(&self, app: &App, allowances: &Allowances) -> Result<App, Error> {
+        let mut seen: Vec<&str> = Vec::new();
+        let names = self
+            .given
+            .variables
+            .keys()
+            .map(|name| ("--env", name))
+            .chain(
+                self.given
+                    .secret_variables
+                    .iter()
+                    .map(|(n, _)| ("--secret", n)),
+            )
+            .chain(self.unset_env.iter().map(|name| ("--unset-env", name)))
+            .chain(
+                self.unset_secret
+                    .iter()
+                    .map(|name| ("--unset-secret", name)),
+            );
+        for (flag, name) in names {
+            if seen.contains(&name.as_str()) {
+                return Err(refused(format!("{flag} {name}: the name is given twice.")));
+            }
+            seen.push(name);
+        }
+        let mut seen_paths: Vec<&str> = Vec::new();
+        let paths = self
+            .given
+            .secret_files
+            .iter()
+            .map(|(path, _)| ("--secret-file", path))
+            .chain(
+                self.unset_secret_file
+                    .iter()
+                    .map(|p| ("--unset-secret-file", p)),
+            );
+        for (flag, path) in paths {
+            if seen_paths.contains(&path.as_str()) {
+                return Err(refused(format!("{flag} {path}: the path is given twice.")));
+            }
+            seen_paths.push(path);
+        }
+        let list = |items: Vec<String>| {
+            if items.is_empty() {
+                "none".to_owned()
+            } else {
+                items.join(", ")
+            }
+        };
+        let mut changed = app.clone();
+        for name in &self.unset_env {
+            if changed.variables.remove(name).is_none() {
+                let hint = if app.secret_variables.contains(name) {
+                    format!(" {name} is a secret: `--unset-secret {name}` takes it away.")
+                } else {
+                    String::new()
+                };
+                return Err(refused(format!(
+                    "--unset-env {name}: the app has no such variable. Its variables: {}.{hint}",
+                    list(app.variables.keys().cloned().collect())
+                )));
+            }
+        }
+        for name in &self.unset_secret {
+            let before = changed.secret_variables.len();
+            changed.secret_variables.retain(|known| known != name);
+            if changed.secret_variables.len() == before {
+                let hint = if app.variables.contains_key(name) {
+                    format!(" {name} is a variable: `--unset-env {name}` takes it away.")
+                } else {
+                    String::new()
+                };
+                return Err(refused(format!(
+                    "--unset-secret {name}: the app has no such secret. Its secrets: {}.{hint}",
+                    list(app.secret_variables.clone())
+                )));
+            }
+        }
+        for path in &self.unset_secret_file {
+            let before = changed.secret_files.len();
+            changed.secret_files.retain(|known| known != path);
+            if changed.secret_files.len() == before {
+                return Err(refused(format!(
+                    "--unset-secret-file {path}: the app has no such secret file. Its secret \
+                     files: {}.",
+                    list(app.secret_files.clone())
+                )));
+            }
+        }
+        // A name is one thing the app is started with: the last to give it replaces the rest.
+        for (name, value) in &self.given.variables {
+            changed.secret_variables.retain(|known| known != name);
+            changed.variables.insert(name.clone(), value.clone());
+        }
+        for (name, _) in &self.given.secret_variables {
+            changed.variables.remove(name);
+            if !changed.secret_variables.contains(name) {
+                changed.secret_variables.push(name.clone());
+            }
+        }
+        for (path, _) in &self.given.secret_files {
+            if !changed.secret_files.contains(path) {
+                changed.secret_files.push(path.clone());
+            }
+        }
+        for path in &changed.secret_files {
+            check_path(path, allowances)?;
+        }
+        if !self.given.secret_variables.is_empty() || !self.given.secret_files.is_empty() {
+            changed.secret_revision += 1;
+        }
+        if changed.secret_variables.is_empty() && changed.secret_files.is_empty() {
+            changed.secret_revision = 0;
+        }
+        Ok(changed)
+    }
+
+    /// Put the copies of the secrets `after` holds in place of the ones `before` holds: the
+    /// secrets given are written, the ones kept are copied from the earlier directory, and
+    /// the earlier directory is set aside, not deleted, until `Staged::commit`.
+    pub fn stage(&self, home: &Path, before: &App, after: &App) -> Result<Staged, Error> {
+        let files = AppFiles::of(home, &after.name);
+        let staged = Staged {
+            dir: files.secrets_dir.clone(),
+            aside: aside(&files.secrets_dir),
+            new: files.secrets_dir.with_file_name("secrets.new"),
+            had_before: files.secrets_dir.exists(),
+        };
+        let io = |error: std::io::Error| Error {
+            code: ErrorCode::Io,
+            message: format!(
+                "The secrets could not be kept in {}: {error}.",
+                staged.dir.display()
+            ),
+            nothing_sent: false,
+            unanswered: None,
+        };
+        let result = (|| {
+            let _ = fs::remove_dir_all(&staged.new);
+            let _ = fs::remove_dir_all(&staged.aside);
+            if !after.secret_variables.is_empty() || !after.secret_files.is_empty() {
+                fs::DirBuilder::new().mode(0o700).create(&staged.new)?;
+                for name in &after.secret_variables {
+                    let bytes = match self.given.secret_variables.iter().find(|(n, _)| n == name) {
+                        Some((_, value)) => value.clone().into_bytes(),
+                        None => fs::read(variable_copy(&staged.dir, name))?,
+                    };
+                    write_private(&variable_copy(&staged.new, name), &bytes)?;
+                }
+                for (index, path) in after.secret_files.iter().enumerate() {
+                    let bytes = match self.given.secret_files.iter().find(|(p, _)| p == path) {
+                        Some((_, bytes)) => bytes.clone(),
+                        None => {
+                            let old = before.secret_files.iter().position(|p| p == path);
+                            let old = old.ok_or_else(|| {
+                                std::io::Error::other(format!("no copy of {path}"))
+                            })?;
+                            fs::read(file_copy(&staged.dir, old))?
+                        }
+                    };
+                    write_private(&file_copy(&staged.new, index), &bytes)?;
+                }
+            }
+            if staged.dir.exists() {
+                fs::rename(&staged.dir, &staged.aside)?;
+            }
+            if staged.new.exists() {
+                fs::rename(&staged.new, &staged.dir)?;
+            }
+            Ok::<(), std::io::Error>(())
+        })();
+        match result {
+            Ok(()) => Ok(staged),
+            Err(error) => {
+                staged.put_back();
+                Err(io(error))
+            }
+        }
+    }
+}
+
+fn aside(dir: &Path) -> PathBuf {
+    dir.with_file_name("secrets.before")
+}
+
+/// The copies of an app's secrets after a change, and the earlier ones set aside.
+pub struct Staged {
+    dir: PathBuf,
+    aside: PathBuf,
+    new: PathBuf,
+    had_before: bool,
+}
+
+impl Staged {
+    /// The app started with the change: delete the earlier copies.
+    pub fn commit(&self) {
+        let _ = fs::remove_dir_all(&self.aside);
+    }
+
+    /// The change did not hold: the new copies go, and the earlier ones come back.
+    pub fn put_back(&self) {
+        let _ = fs::remove_dir_all(&self.new);
+        if self.aside.exists() {
+            let _ = fs::remove_dir_all(&self.dir);
+            let _ = fs::rename(&self.aside, &self.dir);
+        } else if !self.had_before {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+}
+
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -275,7 +504,9 @@ fn file_copy(dir: &Path, index: usize) -> PathBuf {
 
 /// Remove the copies of the secrets of the app `name`.
 pub fn forget(home: &Path, name: &str) {
-    let _ = fs::remove_dir_all(AppFiles::of(home, name).secrets_dir);
+    let dir = AppFiles::of(home, name).secrets_dir;
+    let _ = fs::remove_dir_all(aside(&dir));
+    let _ = fs::remove_dir_all(dir);
 }
 
 /// The copies of secrets and the paths they are mounted at.

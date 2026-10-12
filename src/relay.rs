@@ -174,7 +174,7 @@ pub fn config(home: &Path, change: &Change, yes: bool) -> Result<Report, Error> 
     settings.blocklist.retain(|id| !change.unblock.contains(id));
     let price = write_price(app);
     let settings = app.relay.clone();
-    let restarted = apps::apply(home, &before, &state, &toon_app)?;
+    let restarted = apps::apply(home, &before, &state, &toon_app, || {})?;
     Ok(report(&settings, price, restarted, true))
 }
 
@@ -246,7 +246,7 @@ pub fn price(home: &Path, prices: &Prices, yes: bool) -> Result<Report, Error> {
     app.relay.broadcast_price = broadcast;
     let settings = app.relay.clone();
     let write = write_price(app);
-    let restarted = apps::apply(home, &before, &state, &toon_app)?;
+    let restarted = apps::apply(home, &before, &state, &toon_app, || {})?;
     Ok(report(&settings, write, restarted, true))
 }
 

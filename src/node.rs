@@ -310,6 +310,9 @@ pub struct App {
     /// The paths in the container of the secrets given as files, in the order the copies
     /// are numbered.
     pub secret_files: Vec<String>,
+    /// How many times the operator has given the app secrets since it was added. A secret's
+    /// contents are never compared, so this is how a reload tells that one was given again.
+    pub secret_revision: u64,
 }
 
 impl App {
@@ -325,6 +328,7 @@ impl App {
             variables: BTreeMap::new(),
             secret_variables: Vec::new(),
             secret_files: Vec::new(),
+            secret_revision: 0,
         }
     }
 
@@ -362,8 +366,12 @@ impl App {
             value["env"] = json!(self.variables);
         }
         if !self.secret_variables.is_empty() || !self.secret_files.is_empty() {
-            value["secrets"] =
-                json!({ "variables": self.secret_variables, "files": self.secret_files });
+            value["secrets"] = json!({
+                "variables": self.secret_variables, "files": self.secret_files,
+            });
+            if self.secret_revision > 0 {
+                value["secrets"]["revision"] = json!(self.secret_revision);
+            }
         }
         value
     }
@@ -430,6 +438,7 @@ impl App {
                 .unwrap_or_default(),
             secret_variables: strings(&value["secrets"]["variables"]),
             secret_files: strings(&value["secrets"]["files"]),
+            secret_revision: value["secrets"]["revision"].as_u64().unwrap_or(0),
         })
     }
 }

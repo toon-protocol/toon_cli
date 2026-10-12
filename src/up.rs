@@ -927,13 +927,19 @@ impl Unit {
                 "The TOON app {toon_app} is no longer in the state."
             ))));
         };
-        // An app whose definition changed, or the relay with new settings, is started again,
-        // and the old one goes first: the two would share a name.
+        // An app whose definition changed (its image, allowances, variables or secrets), or
+        // the relay with new settings, is started again, and the old one goes first: the two
+        // would share a name.
         let mut touched = false;
         for behind in &app.apps {
             let old = self.app.apps.iter().find(|old| old.name == behind.name);
             let changed = old.is_some_and(|old| {
                 old.source != behind.source
+                    || old.allowances != behind.allowances
+                    || old.variables != behind.variables
+                    || old.secret_variables != behind.secret_variables
+                    || old.secret_files != behind.secret_files
+                    || old.secret_revision != behind.secret_revision
                     || (behind.name == node::RELAY && self.app.relay != app.relay)
             });
             if let Some(position) = self.apps.iter().position(|(name, _)| *name == behind.name) {

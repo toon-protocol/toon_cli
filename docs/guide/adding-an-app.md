@@ -239,8 +239,7 @@ These are refused with `usage`, before anything is written, pulled or restarted:
   spelling.
 
 A variable or a secret is not an allowance: it tells the app something and lets it reach nothing
-more. They are set when the app is added. To change one, remove the app and add it again; replacing
-a leaked secret means the same, and it restarts the connector. The relay takes none: what it is
+more. They are set when the app is added, and `toon change` changes them (below). The relay takes none: what it is
 started with comes from its settings and the agent identity. An agent key cannot supply a secret.
 
 ## What an app may and may not do
@@ -271,7 +270,7 @@ An operator can make an allowance for one app when adding it, with `toon add` or
 
 A value that cannot be used (a relative scratch path, `/data` or `/tmp` as one, a size that does
 not parse, zero) is refused with `usage` and nothing changes. The allowances are kept with the
-app across `toon down`, `toon up` and restarts. To change them, remove the app and add it again.
+app across `toon down`, `toon up` and restarts. To change them, use `toon change` (below).
 
 There is no allowance for a capability, for another user or for running unconfined. An image
 that needs root or a capability is not supported, and fails with `app_failed`. Rootless docker is
@@ -280,9 +279,42 @@ network, and docker's default address pools hold about thirty.
 
 An app that was added before apps were confined has no allowances and is confined with the
 defaults from the next `toon up`. If it no longer starts, or its calls out now fail, it may need
-an allowance (most often `--allow-egress`) or a new image; remove it and add it again. When an
+an allowance (most often `--allow-egress`: `toon change <app> --allow-egress --yes`) or a new
+image; an image is changed by removing the app and adding it again. When an
 app does not start or does not answer its health check, `app_failed` says it runs confined;
 `toon logs <app>` shows what it wrote.
+
+## Change an app
+
+`toon change <app>` gives an app that is already added other variables, secrets or allowances and
+keeps everything else about it: its image, address, price, request and whatever no flag names. It
+takes the flags of `toon add` (`--allow-egress`, `--scratch`, `--memory`, `--cpus`, `--pids`,
+`--env`, `--secret`, `--secret-file`), with the same meaning and the same checks, and flags that
+take something away: `--no-allow-egress`, `--unset-scratch <path>`, `--unset-env <name>`,
+`--unset-secret <name>`, `--unset-secret-file <path>`. `--memory`, `--cpus` and `--pids` each
+accept `default`, which returns the limit to its default.
+
+```
+toon change oracle --secret API_KEY=./new-key --unset-env DEBUG --memory 2g --yes
+```
+
+A name is one thing the app is started with: `--secret NAME=<file>` over a variable `NAME`
+replaces the variable with the secret, and `--env NAME=value` over a secret `NAME` replaces the
+secret. A name given twice in one command is refused. A secret given again is always a change.
+
+It restarts the app and its connector, so it refuses with `confirmation_required` without `--yes`.
+If the agent node is not running, the change is checked and recorded, and the app starts with it
+at the next `toon up`. If the app does not start with the change, the change is put back, the app
+and its connector start again as they were, and the command fails with `app_failed`; the copy of
+a secret that was replaced stays in the home until the app has started with the change, and is
+deleted then. `--json` prints the app, its TOON app, what was set and what was taken away by name
+(never a secret's contents) and whether a connector restarted.
+
+It is refused with `usage`, with nothing recorded and nothing restarted, when no flag is given,
+when the change leaves the app as it is, when it takes away a variable, secret, secret file or
+scratch path the app does not have (the message names what it has), and when the app is at a
+`--url`, which is not run. The relay takes only `--memory`, `--cpus` and `--pids`. An unknown app
+is `unknown_name`.
 
 ## What it refuses
 

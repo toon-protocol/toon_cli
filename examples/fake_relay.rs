@@ -59,6 +59,12 @@ fn main() {
             process::exit(1);
         }
     }
+    // An app given the variable `FAKE_APP_FAILS` does not start, for a test of a change the
+    // app does not start with: the app started again without it does.
+    if env::var_os("FAKE_APP_FAILS").is_some() {
+        eprintln!("fake relay: told not to start");
+        process::exit(1);
+    }
     let key = env::var("NOSTR_SECRET_KEY").unwrap_or_default();
     fs::write(
         data.join("environment"),

@@ -180,7 +180,7 @@ NAME=value`, `--secret NAME=<file>` (a variable with the file's contents less on
 anyone who can use docker can read it) and `--secret-file <path>=<file>` (the file mounted
 read-only at `<path>`). Each is repeatable, only with `--image`, and refused with `usage` for a
 name beginning `TOON_`, a bad name or path, or an empty, unreadable or over-64-KiB file. Only the
-operator supplies a secret. To change one, remove the app and add it again; a backup holds none.
+operator supplies a secret. To change one, use `toon change` (below); a backup holds none.
 An image that needs another variable to start fails with `app_failed`; `toon logs <app>` says why. Do not
 assume a published image meets this: the one image known to run unchanged is the minimal app in
 [Adding an app](https://github.com/toon-protocol/toon_cli/blob/main/docs/guide/adding-an-app.md),
@@ -193,8 +193,14 @@ root filesystem (only `/data`, a 64 MB `/tmp` and scratch paths are writable), 5
 adding the app, with `toon add` or `toon create` and only with `--image`: `--allow-egress` (the
 app may open connections out; an app that calls a chain or an API needs it), `--scratch <path>`
 (repeatable), `--memory <size>`, `--cpus <n>`, `--pids <n>`. A value that cannot be used, or an
-allowance with `--url`, is refused with `usage`. To change an allowance, remove the app and add
-it again. An image that needs root or a capability is not supported, and neither is rootless
+allowance with `--url`, is refused with `usage`. To change an allowance, variable or secret, use
+`toon change <app> ... --yes`: it takes the same flags and `--no-allow-egress`, `--unset-scratch`,
+`--unset-env`, `--unset-secret` and `--unset-secret-file`, and `default` for `--memory`, `--cpus`
+and `--pids`; it keeps everything it does not name, restarts the app and its connector (so it needs
+`--yes`), and puts the change back with `app_failed` if the app does not start. A name is one
+thing: `--secret NAME=<file>` replaces a variable `NAME`, and `--env` replaces a secret. It is
+refused with `usage` for no flag, no difference, taking away what the app lacks, an app at a
+`--url`, and on the relay anything but `--memory`, `--cpus` and `--pids`. An image that needs root or a capability is not supported, and neither is rootless
 docker. An app that does not start or answer its health check fails with `app_failed`.
 
 An app's address is not a way to pay it. A request made straight to it does not arrive
