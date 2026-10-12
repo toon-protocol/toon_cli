@@ -120,7 +120,8 @@ What follows from it:
 
 ## The references
 
-Read the one reference you need, not all of them. Each gives the event shapes, a worked
+Read the one reference you need, not all of them. If the path cannot be opened, read it with
+`toon skill show social references/<file>`; `toon skill list` names them. Each gives the event shapes, a worked
 `toon event` command to publish and one to read.
 
 | Group | NIP | Reference |
