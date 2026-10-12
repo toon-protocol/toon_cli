@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
-use crate::cli::{Command, EventCommand, LimitCommand, MessageCommand, PeerCommand};
+use crate::cli::{AddArgs, Command, EventCommand, LimitCommand, MessageCommand, PeerCommand};
 use crate::event;
 use crate::message;
 use crate::operator::{self, PeerAdd, Surface};
@@ -263,12 +263,7 @@ fn order(key: &KeyFile, name: &str, body: &Value) -> Result<Value, Error> {
     Err(Error {
         nothing_sent: true,
         ..failed(
-            match code {
-                "unknown_name" => ErrorCode::UnknownName,
-                "usage" => ErrorCode::Usage,
-                "agent_key_not_kept" => ErrorCode::AgentKeyNotKept,
-                _ => ErrorCode::ConnectorFailed,
-            },
+            ErrorCode::from_name(code).unwrap_or(ErrorCode::ConnectorFailed),
             format!("The supervisor refused the order with {status} ({code}): {message}"),
         )
     })
@@ -334,6 +329,56 @@ fn logs(key: &KeyFile, name: &str, lines: usize) -> Result<Report, Error> {
         }),
         text: shown.join("\n"),
     })
+}
+
+/// An order that changes the apps: its answer is what the command would have reported with
+/// the home.
+fn changing(key: &KeyFile, name: &str, body: &Value) -> Result<Report, Error> {
+    let reply = order(key, name, body)?;
+    Ok(Report {
+        exit: Exit::Success,
+        json: reply["result"].clone(),
+        text: reply["text"].as_str().unwrap_or_default().to_owned(),
+    })
+}
+
+fn add(key: &KeyFile, args: &AddArgs) -> Result<Report, Error> {
+    // A secret is the operator's, and its file is never read here.
+    if !args.secrets.secret.is_empty() || !args.secrets.secret_file.is_empty() {
+        return Err(Error {
+            nothing_sent: true,
+            ..failed(
+                ErrorCode::NeedsHome,
+                "`toon add --secret` needs the agent node's home, which an agent key never \
+                 reads. Only the operator supplies a secret."
+                    .into(),
+            )
+        });
+    }
+    let request = match &args.request {
+        Some(file) => Some(crate::apps::read_request(file)?),
+        None => None,
+    };
+    changing(
+        key,
+        "add",
+        &json!({
+            "name": args.app,
+            "to": args.to,
+            "image": args.image,
+            "url": args.url,
+            "address": args.address,
+            "price": args.price,
+            "request": request,
+            "allow_egress": args.allow.allow_egress,
+            "scratch": args.allow.scratch,
+            "memory": args.allow.memory,
+            "cpus": args.allow.cpus,
+            "pids": args.allow.pids,
+            "env": args.secrets.env,
+            "yes": args.yes,
+        }),
+    )
 }
 
 /// A command that moves money states its amount and says `--yes`, as it does with the home.
@@ -510,6 +555,12 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
                  {name} --connector`."
             ),
         )),
+        Command::Add(args) => add(&KeyFile::load(path)?, &args),
+        Command::Remove { app, yes } => changing(
+            &KeyFile::load(path)?,
+            "remove",
+            &json!({ "app": app, "yes": yes }),
+        ),
         Command::Send(args) => {
             confirmed(args.amount.into(), args.yes)?;
             let surface = KeyFile::load(path)?.surface(app)?;

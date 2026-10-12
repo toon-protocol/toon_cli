@@ -62,6 +62,14 @@ macro_rules! error_codes {
                 }
             }
 
+            /// The code called `name`, if there is one.
+            pub fn from_name(name: &str) -> Option<Self> {
+                match name {
+                    $($name => Some(ErrorCode::$variant),)*
+                    _ => None,
+                }
+            }
+
             pub fn exit(self) -> Exit {
                 match self {
                     $(ErrorCode::$variant => Exit::$exit,)*

@@ -25,6 +25,7 @@ use sha2::Digest;
 
 use crate::agent_key::Key;
 use crate::anon;
+use crate::apps;
 use crate::connector::{self, Startup};
 use crate::control;
 use crate::egress::Egress;
@@ -681,6 +682,8 @@ impl Shared {
                     )),
                 }
             }
+            "add" => apps::ordered_add(home, &key.toon_apps, &order.body).map_err(refused),
+            "remove" => apps::ordered_remove(home, &key.toon_apps, &order.body).map_err(refused),
             "sign" => {
                 let relay = relay_for(home, key, &order.body)?;
                 let event = event::sign_order(&order.body, home).map_err(refused)?;

@@ -28,9 +28,11 @@ use crate::agent_key::{Key, Record};
 
 /// The orders the supervisor answers, by name (`/orders/<name>`), with the scope each one
 /// needs. `sign` and `seal` both sign as the agent identity, so both need `sign`.
-const ORDERS: [(&str, &str); 5] = [
+const ORDERS: [(&str, &str); 7] = [
     ("status", "status"),
     ("logs", "logs"),
+    ("add", "apps"),
+    ("remove", "apps"),
     ("sign", "sign"),
     ("seal", "sign"),
     ("messages", "read-messages"),

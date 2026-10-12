@@ -18,6 +18,7 @@ use crate::control;
 use crate::node::{self, App, Source, State, ToonApp};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::runner::{self, Allowances};
+use crate::trusted::repository;
 
 /// How long a restart waits: an image is pulled and started, then the connector binds to
 /// its chain.
@@ -46,15 +47,6 @@ impl Origin<'_> {
     }
 }
 
-/// An image reference without its digest and its tag.
-fn repository(image: &str) -> &str {
-    let image = image.split_once('@').map_or(image, |(name, _)| name);
-    match image.rsplit_once(':') {
-        Some((name, tag)) if !tag.contains('/') => name,
-        _ => image,
-    }
-}
-
 /// What `toon add` was asked for.
 pub struct Add<'a> {
     pub name: &'a str,
@@ -63,8 +55,8 @@ pub struct Add<'a> {
     /// The address prefix, `g.toon.<segment>.<app>` if omitted.
     pub address: Option<&'a str>,
     pub price: u64,
-    /// A file holding the JSON object that says what a client should send the app.
-    pub request: Option<&'a Path>,
+    /// The JSON object that says what a client should send the app.
+    pub request: Option<serde_json::Value>,
     pub allowances: Allowances,
     pub secrets: crate::secrets::Given,
     pub yes: bool,
@@ -101,7 +93,7 @@ fn failed(code: ErrorCode, message: String) -> Error {
 }
 
 /// The `request` in `file`: one JSON object that a TOML table can carry.
-fn read_request(file: &Path) -> Result<serde_json::Value, Error> {
+pub fn read_request(file: &Path) -> Result<serde_json::Value, Error> {
     let refused = |why: String| {
         failed(
             ErrorCode::Usage,
@@ -112,6 +104,13 @@ fn read_request(file: &Path) -> Result<serde_json::Value, Error> {
     let request: serde_json::Value =
         serde_json::from_str(&text).map_err(|source| refused(format!("not JSON ({source})")))?;
     node::request_toml(&request).map_err(refused)?;
+    Ok(request)
+}
+
+/// A `request` an order carried: the same object `--request` reads from a file.
+pub fn checked_request(request: serde_json::Value) -> Result<serde_json::Value, Error> {
+    node::request_toml(&request)
+        .map_err(|why| failed(ErrorCode::Usage, format!("request: {why}.")))?;
     Ok(request)
 }
 
@@ -280,7 +279,7 @@ pub fn free(state: &State, name: &str) -> Result<(), Error> {
 /// `toon add`: put a new app behind the connector of the TOON app `to`.
 pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
     add.origin.refuse_relay_image()?;
-    let request = add.request.map(read_request).transpose()?;
+    let request = add.request.clone();
     let state = loaded(home)?;
     let Some(index) = state.toon_apps.iter().position(|app| app.name == add.to) else {
         return Err(unknown(&state, add.to));
@@ -638,4 +637,191 @@ pub fn route_price(home: &Path, prefix: &str, price: u64, yes: bool) -> Result<R
             restarted(restarted_now, &toon_app)
         ),
     })
+}
+
+/// Held while an order changes the apps, so that two orders do not each save the state they
+/// loaded before the other's change.
+static ORDERED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A refusal of what only the operator does: `what` was refused, and `instead` says how the
+/// operator does it with the home.
+fn needs_operator(what: &str, instead: &str) -> Error {
+    Error {
+        nothing_sent: true,
+        ..failed(ErrorCode::NeedsOperator, format!("{what} {instead}"))
+    }
+}
+
+/// A refusal of an app an agent key may not add at once.
+fn operator_adds(what: &str) -> Error {
+    needs_operator(
+        what,
+        "The operator must add it: run `toon add` with the home.",
+    )
+}
+
+fn not_granted(toon_app: &str) -> Error {
+    failed(
+        ErrorCode::UnknownName,
+        format!("This key is not granted on the TOON app {toon_app}."),
+    )
+}
+
+fn text<'a>(body: &'a serde_json::Value, field: &str) -> Result<Option<&'a str>, Error> {
+    match &body[field] {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::String(text) => Ok(Some(text)),
+        _ => Err(failed(
+            ErrorCode::Usage,
+            format!("`{field}` is text in an order to add an app."),
+        )),
+    }
+}
+
+fn listed(body: &serde_json::Value, field: &str) -> bool {
+    match &body[field] {
+        serde_json::Value::Null | serde_json::Value::Bool(false) => false,
+        serde_json::Value::Array(items) => !items.is_empty(),
+        _ => true,
+    }
+}
+
+/// An order to add an app, from an agent key granted on the TOON apps `granted`. Done as
+/// `toon add` does it with the home, but only for what an agent key may add at once: an
+/// image on the list of trusted images, added as shipped. Anything else is refused with
+/// `needs_operator` before anything is pulled, started or routed.
+pub fn ordered_add(
+    home: &Path,
+    granted: &[String],
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, Error> {
+    let name = text(body, "name")?
+        .ok_or_else(|| failed(ErrorCode::Usage, "An order to add an app names it.".into()))?;
+    let to = text(body, "to")?.ok_or_else(|| {
+        failed(
+            ErrorCode::Usage,
+            "An order to add an app names the TOON app it goes behind.".into(),
+        )
+    })?;
+    if !granted.iter().any(|app| app == to) {
+        return Err(not_granted(to));
+    }
+    let origin = match (text(body, "image")?, text(body, "url")?) {
+        (Some(image), None) => Origin::Image(image),
+        (None, Some(url)) => Origin::Url(url),
+        _ => {
+            return Err(failed(
+                ErrorCode::Usage,
+                "An order to add an app names an image or a URL, and not both.".into(),
+            ))
+        }
+    };
+    if listed(body, "secret") || listed(body, "secret_file") {
+        return Err(Error {
+            nothing_sent: true,
+            ..failed(
+                ErrorCode::NeedsHome,
+                "A secret is supplied by the operator, from the home: an agent key cannot give \
+                 one."
+                    .into(),
+            )
+        });
+    }
+    origin.refuse_relay_image()?;
+    let Origin::Image(image) = origin else {
+        return Err(operator_adds(
+            "An app at a URL is not added by an agent key: the connector would deliver to any \
+             address the agent names.",
+        ));
+    };
+    if !crate::trusted::is_trusted(home, image)? {
+        return Err(operator_adds(&format!(
+            "The image {} is not on the list of trusted images.",
+            repository(image)
+        )));
+    }
+    if ["allow_egress", "scratch", "memory", "cpus", "pids"]
+        .iter()
+        .any(|field| listed(body, field))
+    {
+        return Err(operator_adds(
+            "An allowance is the operator's to give: a trusted image is trusted as shipped.",
+        ));
+    }
+    if listed(body, "env") {
+        return Err(operator_adds(
+            "A variable is the operator's to give: a trusted image is trusted as shipped, not \
+             under a configuration an agent chooses.",
+        ));
+    }
+    let request = match &body["request"] {
+        serde_json::Value::Null => None,
+        request => Some(checked_request(request.clone())?),
+    };
+    let price = match &body["price"] {
+        serde_json::Value::Null => 0,
+        price => price.as_u64().ok_or_else(|| {
+            failed(
+                ErrorCode::Usage,
+                "`price` is a whole number in an order to add an app.".into(),
+            )
+        })?,
+    };
+    let _ordering = ORDERED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let report = add(
+        home,
+        &Add {
+            name,
+            to,
+            origin: Origin::Image(image),
+            address: text(body, "address")?,
+            price,
+            request,
+            allowances: Allowances::default(),
+            secrets: Default::default(),
+            yes: body["yes"].as_bool().unwrap_or(false),
+        },
+    )?;
+    Ok(serde_json::json!({ "result": report.json, "text": report.text }))
+}
+
+/// An order to remove the app `name`, from an agent key granted on the TOON apps `granted`:
+/// any app behind one of them but the relay.
+pub fn ordered_remove(
+    home: &Path,
+    granted: &[String],
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, Error> {
+    let name = text(body, "app")?.ok_or_else(|| {
+        failed(
+            ErrorCode::Usage,
+            "An order to remove an app names it.".into(),
+        )
+    })?;
+    let _ordering = ORDERED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state = loaded(home)?;
+    let behind = state
+        .toon_apps
+        .iter()
+        .filter(|toon_app| granted.contains(&toon_app.name))
+        .flat_map(|toon_app| toon_app.apps.iter())
+        .find(|behind| behind.name == name)
+        .ok_or_else(|| {
+            failed(
+                ErrorCode::UnknownName,
+                format!("No app is called {name} behind a TOON app this key is granted on."),
+            )
+        })?;
+    if behind.source == Source::Relay {
+        return Err(needs_operator(
+            &format!("The relay {name} is not removed by an agent key."),
+            "Only the operator removes it: run `toon remove` with the home.",
+        ));
+    }
+    let report = remove(home, name, body["yes"].as_bool().unwrap_or(false))?;
+    Ok(serde_json::json!({ "result": report.json, "text": report.text }))
 }
