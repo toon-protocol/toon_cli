@@ -129,7 +129,7 @@ pub enum Command {
         #[command(subcommand)]
         command: RelayCommand,
     },
-    /// Install the skills shipped in this binary
+    /// Install, list or show the skills shipped in this binary
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
@@ -171,6 +171,18 @@ pub enum SkillCommand {
         /// The directory the skills go under, instead of `~/.claude/skills`
         #[arg(long)]
         dir: Option<PathBuf>,
+    },
+    /// List the shipped skills, and under each the references it has
+    List,
+    /// Print a shipped skill's SKILL.md, or one of its references, from the binary
+    ///
+    /// Needs no agent node: for an agent whose harness cannot open a file beside SKILL.md,
+    /// or whose installed copy is older than the binary.
+    Show {
+        /// The skill, such as `social`
+        skill: String,
+        /// A reference of the skill as the skill names it, such as `references/nip-02.md`
+        reference: Option<String>,
     },
 }
 

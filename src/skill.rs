@@ -1,4 +1,4 @@
-//! `toon skill install`: put the skills this binary ships where an agent harness loads them.
+//! `toon skill install`, `list` and `show`: put the skills this binary ships where an agent harness loads them.
 //!
 //! The skills are written in this repository (`skills/`) and compiled into the binary, so
 //! what is installed always describes the commands of the `toon` that installed it.
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use crate::cli::SkillCommand;
-use crate::outcome::{Error, Exit, Report};
+use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::{home, node};
 
 /// A skill: the name of its directory, its `SKILL.md`, and the references it loads on demand,
@@ -17,6 +17,13 @@ struct Skill {
     name: &'static str,
     body: &'static str,
     references: &'static [(&'static str, &'static str)],
+}
+
+impl Skill {
+    /// The paths of its references, as the skill names them.
+    fn reference_paths(&self) -> Vec<&'static str> {
+        self.references.iter().map(|(path, _)| *path).collect()
+    }
 }
 
 /// Every skill the binary ships.
@@ -126,6 +133,8 @@ const SKILLS: &[Skill] = &[
 pub fn run(command: SkillCommand) -> Result<Report, Error> {
     match command {
         SkillCommand::Install { dir } => install(dir.as_deref()),
+        SkillCommand::List => Ok(list()),
+        SkillCommand::Show { skill, reference } => show(&skill, reference.as_deref()),
     }
 }
 
@@ -170,5 +179,83 @@ fn install(directory: Option<&Path>) -> Result<Report, Error> {
                 .collect::<Vec<_>>(),
         }),
         text,
+    })
+}
+
+fn usage(message: String) -> Error {
+    Error {
+        nothing_sent: false,
+        unanswered: None,
+        code: ErrorCode::Usage,
+        message,
+    }
+}
+
+/// `toon skill list`: each shipped skill and the references under it, named as the skill names them.
+fn list() -> Report {
+    let text = SKILLS
+        .iter()
+        .map(|skill| {
+            std::iter::once(skill.name.to_owned())
+                .chain(
+                    skill
+                        .reference_paths()
+                        .iter()
+                        .map(|path| format!("  {path}")),
+                )
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Report {
+        exit: Exit::Success,
+        json: json!({
+            "skills": SKILLS
+                .iter()
+                .map(|skill| json!({
+                    "name": skill.name,
+                    "references": skill.reference_paths(),
+                }))
+                .collect::<Vec<_>>(),
+        }),
+        text,
+    }
+}
+
+/// `toon skill show <skill> [<reference>]`: the text `install` would write, straight from the binary.
+fn show(name: &str, reference: Option<&str>) -> Result<Report, Error> {
+    let skill = SKILLS
+        .iter()
+        .find(|skill| skill.name == name)
+        .ok_or_else(|| {
+            usage(format!(
+                "there is no skill {name}; the skills are {}",
+                SKILLS.iter().map(|s| s.name).collect::<Vec<_>>().join(", ")
+            ))
+        })?;
+    let (shown, text) = match reference {
+        None => ("SKILL.md", skill.body),
+        Some(wanted) => skill
+            .references
+            .iter()
+            .find(|(path, _)| *path == wanted)
+            .map(|(path, text)| (*path, *text))
+            .ok_or_else(|| {
+                usage(format!(
+                    "the skill {name} has no reference {wanted}; its references are {}",
+                    if skill.references.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        skill.reference_paths().join(", ")
+                    }
+                ))
+            })?,
+    };
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "skill": name, "name": shown, "text": text }),
+        // The report is printed with a newline of its own.
+        text: text.strip_suffix('\n').unwrap_or(text).to_owned(),
     })
 }

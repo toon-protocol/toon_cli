@@ -364,3 +364,81 @@ fn every_skill_has_frontmatter_a_skills_installer_can_read() {
         );
     }
 }
+
+#[test]
+fn skill_list_names_every_skill_and_reference_that_install_writes() {
+    let machine = Machine::new();
+    let run = machine.toon(&["skill", "list", "--json"]);
+    assert_eq!(run.exit_code, 0, "{}", run.stderr);
+    let listed = run.json();
+    let shipped = shipped_skills();
+    let skills = listed["skills"].as_array().unwrap();
+    assert_eq!(skills.len(), shipped.len());
+    for (skill, (name, file)) in skills.iter().zip(&shipped) {
+        assert_eq!(skill["name"], name.as_str());
+        let mut references: Vec<&str> = skill["references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap())
+            .collect();
+        references.sort();
+        let mut wanted = skill_files(file.parent().unwrap());
+        wanted.retain(|f| f != "SKILL.md");
+        assert_eq!(references, wanted);
+    }
+    let text = machine.toon(&["skill", "list"]);
+    assert!(
+        text.stdout.contains("social\n  references/nip-01.md")
+            && text.stdout.contains("  references/nip-02.md")
+    );
+}
+
+#[test]
+fn skill_show_prints_the_bytes_install_writes() {
+    let machine = Machine::new();
+    for (name, file) in shipped_skills() {
+        let dir = file.parent().unwrap();
+        for path in skill_files(dir) {
+            let mut args = vec!["skill", "show", name.as_str()];
+            if path != "SKILL.md" {
+                args.push(path.as_str());
+            }
+            let shown = machine.toon(&args);
+            assert_eq!(shown.exit_code, 0, "{name} {path}: {}", shown.stderr);
+            let wanted = fs::read_to_string(dir.join(&path)).unwrap();
+            assert_eq!(shown.stdout, wanted, "{name} {path}");
+            args.push("--json");
+            assert_eq!(machine.toon(&args).json()["text"], wanted.as_str());
+        }
+    }
+}
+
+#[test]
+fn skill_show_refuses_what_does_not_exist_and_says_what_does() {
+    let machine = Machine::new();
+    let skill = machine.toon(&["skill", "show", "nope"]);
+    assert_eq!(skill.exit_code, 2);
+    assert!(skill.stderr.contains("social"), "{}", skill.stderr);
+    let json = machine.toon(&["skill", "show", "nope", "--json"]);
+    assert_eq!(json.exit_code, 2);
+    assert_eq!(json.json()["error"]["code"], "usage");
+    let reference = machine.toon(&["skill", "show", "social", "references/nope.md", "--json"]);
+    assert_eq!(reference.exit_code, 2);
+    assert_eq!(reference.json()["error"]["code"], "usage");
+    assert!(reference.stdout.contains("references/nip-02.md"));
+}
+
+#[test]
+fn skill_list_and_show_are_in_help() {
+    let machine = Machine::new();
+    let help = machine.toon(&["--help"]);
+    assert!(
+        help.stdout
+            .contains("Install, list or show the skills shipped in this binary"),
+        "{}",
+        help.stdout
+    );
+    let help = machine.toon(&["skill", "--help"]);
+    assert!(help.stdout.contains("list") && help.stdout.contains("show"));
+}

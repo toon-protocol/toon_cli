@@ -411,3 +411,8 @@ for an operator who asks for it with `--clearnet`.
 `toon skill install` copies the skills shipped in the binary to `~/.claude/skills`, or to the
 directory given with `--dir`. It is safe to run again after an upgrade: it replaces what it
 installed with the version in the binary.
+
+When a harness cannot open a file beside `SKILL.md`, or an installed copy may be older than the
+binary, read the text from the binary: `toon skill list` names each skill and its references, and
+`toon skill show <skill>` prints a skill's `SKILL.md`, `toon skill show <skill> <reference>` one
+reference. Neither needs an agent node.
