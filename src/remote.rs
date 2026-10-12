@@ -305,13 +305,29 @@ fn status(key: &KeyFile) -> Result<Report, Error> {
     if toon_apps.is_empty() {
         lines.push("This key is granted on no TOON app that the supervisor runs.".into());
     }
+    let pending_apps = reply["pending_apps"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for app in &pending_apps {
+        let state = app["status"].as_str().unwrap_or("pending");
+        let why = app["reason"]
+            .as_str()
+            .map(|reason| format!(": {reason}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "{}: {state}{why} ({}).",
+            app["name"].as_str().unwrap_or("?"),
+            crate::pending::asked(app)
+        ));
+    }
     Ok(Report {
         exit: if all_running {
             Exit::Success
         } else {
             Exit::Failure
         },
-        json: json!({ "agent_key": key.public, "toon_apps": toon_apps }),
+        json: json!({ "agent_key": key.public, "toon_apps": toon_apps, "pending_apps": pending_apps }),
         text: lines.join("\n"),
     })
 }

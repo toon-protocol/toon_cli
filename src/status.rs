@@ -198,6 +198,10 @@ pub fn status(home: &Path) -> Result<Report, Error> {
             },
         }));
     }
+    let pending_apps = crate::pending::load(home)?;
+    for entry in &pending_apps {
+        lines.push(format!("Pending app {}", entry.line()));
+    }
     // What `subscribe` and the supervisor last kept, not what each relay says now: asking
     // them is `toon relay subscriptions`.
     let mut subscriptions = Vec::new();
@@ -259,6 +263,10 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                     .collect::<Vec<_>>()),
                 "reads": state.reads,
                 "toon_apps": toon_apps,
+                "pending_apps": pending_apps
+                    .iter()
+                    .map(crate::pending::Entry::shown)
+                    .collect::<Vec<_>>(),
                 "subscriptions": subscriptions,
                 "totals": {
                     "subscriptions": { "active": active, "exhausted": exhausted_count },

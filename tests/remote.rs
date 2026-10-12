@@ -13,7 +13,7 @@ struct Node {
     machine: Machine,
     nowhere: tempfile::TempDir,
     _chain: FakeChain,
-    _up: Foreground,
+    up: Foreground,
 }
 
 fn node() -> Node {
@@ -43,7 +43,7 @@ fn node() -> Node {
         machine,
         nowhere: tempfile::tempdir().expect("a directory"),
         _chain: chain,
-        _up: up,
+        up,
     }
 }
 
@@ -483,14 +483,15 @@ fn an_agent_key_does_not_add_what_the_operator_has_not_trusted() {
         &["--image", "ghcr.io/toon-protocol/echo", "--env", "A=b"],
         &["--image", "ghcr.io/toon-protocol/echo", "--cpus", "2"],
     ];
-    for flags in refused {
-        let mut args = vec!["add", "nope", "--to", "relay", "--yes", "--json"];
+    for (index, flags) in refused.iter().enumerate() {
+        let name = format!("held{index}");
+        let mut args = vec!["add", name.as_str(), "--to", "relay", "--yes", "--json"];
         args.extend_from_slice(flags);
         let run = node.agent(&key, &args);
         assert_eq!(run.exit_code, 1, "{flags:?}: {}{}", run.stdout, run.stderr);
         assert_eq!(
             error_code(&run),
-            "needs_operator",
+            "approval_pending",
             "{flags:?}: {}",
             run.stdout
         );
@@ -498,7 +499,7 @@ fn an_agent_key_does_not_add_what_the_operator_has_not_trusted() {
             run.json()["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("operator must add it"),
+                .contains(&name),
             "{flags:?}"
         );
     }
@@ -542,7 +543,7 @@ fn the_operator_edits_the_list_and_the_home_is_never_checked_against_it() {
         "--yes",
         "--json",
     ];
-    assert_eq!(error_code(&node.agent(&key, &args)), "needs_operator");
+    assert_eq!(error_code(&node.agent(&key, &args)), "approval_pending");
 
     std::fs::write(&list, "# mine\nexample.com/team/*\n").unwrap();
     let added = node.agent(&key, &args);
@@ -562,7 +563,7 @@ fn the_operator_edits_the_list_and_the_home_is_never_checked_against_it() {
             "--json",
         ],
     );
-    assert_eq!(error_code(&gone), "needs_operator");
+    assert_eq!(error_code(&gone), "approval_pending");
 
     // With the home, an image not on the list is added as before.
     let home = node.machine.toon(&[
@@ -656,4 +657,349 @@ fn an_add_or_remove_needs_the_scope_and_a_toon_app_the_key_is_granted_on() {
         .collect();
     assert!(names.contains(&"second".to_owned()), "{names:?}");
     assert!(!names.contains(&"x".to_owned()), "{names:?}");
+}
+
+/// The entry of `status` with `key` that is about the pending app `name`.
+fn pending_entry(node: &Node, key: &Path, name: &str) -> Option<serde_json::Value> {
+    let status = node.agent(key, &["status", "--json"]);
+    status.json()["pending_apps"]
+        .as_array()
+        .expect("status lists pending apps")
+        .iter()
+        .find(|app| app["name"] == name)
+        .cloned()
+}
+
+#[test]
+fn an_add_that_is_held_is_recorded_once_and_runs_nothing() {
+    let node = node();
+    let (key, public) = node.create(&["--scope", "status,apps"]);
+    let image = [
+        "add",
+        "held",
+        "--to",
+        "relay",
+        "--image",
+        "docker.io/someone/else:1",
+        "--json",
+    ];
+    for _ in 0..2 {
+        let run = node.agent(&key, &image);
+        assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
+        assert_eq!(error_code(&run), "approval_pending");
+    }
+    let url = node.agent(
+        &key,
+        &[
+            "add",
+            "served",
+            "--to",
+            "relay",
+            "--url",
+            "http://127.0.0.1:9999",
+            "--json",
+        ],
+    );
+    assert_eq!(error_code(&url), "approval_pending", "{}", url.stdout);
+
+    assert_eq!(apps_behind(&node, &key, "relay"), vec!["relay".to_owned()]);
+    let status = node.agent(&key, &["status", "--json"]);
+    let pending = status.json()["pending_apps"].as_array().unwrap().clone();
+    assert_eq!(pending.len(), 2, "{pending:?}");
+    let held = pending_entry(&node, &key, "held").expect("held is listed");
+    assert_eq!(held["status"], "pending");
+    assert_eq!(held["key"], public.as_str());
+    assert_eq!(held["image"], "docker.io/someone/else:1");
+    assert!(status.stdout.contains("pending"));
+
+    // The operator sees both, and with which key.
+    let home = node.machine.toon(&["status", "--json"]);
+    let shown = home.json()["agent_node"]["pending_apps"].clone();
+    assert_eq!(shown.as_array().unwrap().len(), 2, "{shown}");
+    assert!(node
+        .machine
+        .toon(&["status"])
+        .stdout
+        .contains("toon approve"));
+}
+
+#[test]
+fn a_key_holds_at_most_eight_pending_apps() {
+    let node = node();
+    let (key, _) = node.create(&["--scope", "status,apps"]);
+    for index in 0..8 {
+        let name = format!("held{index}");
+        let run = node.agent(
+            &key,
+            &[
+                "add",
+                &name,
+                "--to",
+                "relay",
+                "--image",
+                "docker.io/someone/else:1",
+                "--json",
+            ],
+        );
+        assert_eq!(
+            error_code(&run),
+            "approval_pending",
+            "{index}: {}",
+            run.stdout
+        );
+    }
+    let ninth = node.agent(
+        &key,
+        &[
+            "add",
+            "ninth",
+            "--to",
+            "relay",
+            "--image",
+            "docker.io/someone/else:1",
+            "--json",
+        ],
+    );
+    assert_eq!(ninth.exit_code, 1);
+    assert_eq!(error_code(&ninth), "needs_operator", "{}", ninth.stdout);
+    assert!(pending_entry(&node, &key, "ninth").is_none());
+
+    // The ones already held are still answered the same.
+    let again = node.agent(
+        &key,
+        &[
+            "add",
+            "held3",
+            "--to",
+            "relay",
+            "--image",
+            "docker.io/someone/else:1",
+            "--json",
+        ],
+    );
+    assert_eq!(error_code(&again), "approval_pending");
+}
+
+#[test]
+fn approve_adds_the_app_as_asked_and_refuse_records_why() {
+    let node = node();
+    let (key, _) = node.create(&["--scope", "status,apps"]);
+    let held = node.agent(
+        &key,
+        &[
+            "add",
+            "held",
+            "--to",
+            "relay",
+            "--image",
+            "docker.io/someone/else:1",
+            "--memory",
+            "1g",
+            "--env",
+            "A=b",
+            "--json",
+        ],
+    );
+    assert_eq!(error_code(&held), "approval_pending", "{}", held.stdout);
+    let declined = node.agent(
+        &key,
+        &[
+            "add",
+            "declined",
+            "--to",
+            "relay",
+            "--image",
+            "docker.io/someone/else:2",
+            "--json",
+        ],
+    );
+    assert_eq!(error_code(&declined), "approval_pending");
+
+    // The operator is shown what was asked for.
+    let shown = node.machine.toon(&["status", "--json"]);
+    let entry = shown.json()["agent_node"]["pending_apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|app| app["name"] == "held")
+        .cloned()
+        .unwrap();
+    assert_eq!(entry["allowances"]["memory"], "1g");
+    assert_eq!(entry["variables"][0], "A=b");
+
+    // An agent key decides nothing.
+    for args in [
+        vec!["approve", "held", "--json"],
+        vec!["refuse", "held", "--json"],
+    ] {
+        let run = node.agent(&key, &args);
+        assert_eq!(error_code(&run), "needs_home", "{args:?}: {}", run.stdout);
+    }
+    assert!(pending_entry(&node, &key, "held").is_some_and(|app| app["status"] == "pending"));
+
+    let approved = node.machine.toon(&["approve", "held", "--json"]);
+    assert_eq!(
+        approved.exit_code, 0,
+        "{}{}",
+        approved.stdout, approved.stderr
+    );
+    assert_eq!(approved.json()["added"], "held");
+    assert_eq!(approved.json()["toon_app"], "relay");
+    assert!(apps_behind(&node, &key, "relay").contains(&"held".to_owned()));
+    assert!(pending_entry(&node, &key, "held").is_none());
+    let seen = node.agent(&key, &["status", "--json"]);
+    let app = seen.json()["toon_apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|toon_app| toon_app["name"] == "relay")
+        .and_then(|toon_app| {
+            toon_app["apps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|app| app["name"] == "held")
+                .cloned()
+        })
+        .expect("the key sees the app");
+    assert_eq!(app["running"], true, "{app}");
+    let operator = node.machine.toon(&["status", "--json"]);
+    let app = operator.json()["agent_node"]["toon_apps"][0]["apps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|app| app["name"] == "held")
+        .cloned()
+        .expect("the operator sees the app");
+    assert_eq!(app["image"], "docker.io/someone/else:1");
+    assert_eq!(app["variables"]["A"], "b");
+    assert_eq!(app["running"], true, "{app}");
+
+    let refused =
+        node.machine
+            .toon(&["refuse", "declined", "--reason", "not that image", "--json"]);
+    assert_eq!(refused.exit_code, 0, "{}{}", refused.stdout, refused.stderr);
+    assert!(!apps_behind(&node, &key, "relay").contains(&"declined".to_owned()));
+    let seen = pending_entry(&node, &key, "declined").expect("the key sees the refusal");
+    assert_eq!(seen["status"], "refused");
+    assert_eq!(seen["reason"], "not that image");
+    let text = node.agent(&key, &["status"]);
+    assert!(
+        text.stdout.contains("refused: not that image"),
+        "{}",
+        text.stdout
+    );
+
+    // Neither is pending now.
+    let again = node.machine.toon(&["approve", "declined", "--json"]);
+    assert_eq!(error_code(&again), "unknown_name");
+
+    // The supervisor logged each pending app and what the operator decided.
+    let log = node.up.stderr();
+    for line in [
+        "Pending app held",
+        "Pending app declined",
+        "The operator approved the pending app held.",
+        "The operator refused the pending app declined.",
+    ] {
+        assert!(log.contains(line), "{line}: {log}");
+    }
+}
+
+#[test]
+fn a_key_sees_only_its_own_pending_apps_and_revoking_drops_them() {
+    let node = node();
+    let (first, first_public) = node.create(&["--scope", "status,apps"]);
+    let (second, _) = node.create(&["--scope", "status,apps"]);
+    let held = node.agent(
+        &first,
+        &[
+            "add",
+            "mine",
+            "--to",
+            "relay",
+            "--image",
+            "docker.io/someone/else:1",
+            "--json",
+        ],
+    );
+    assert_eq!(error_code(&held), "approval_pending");
+    assert!(pending_entry(&node, &second, "mine").is_none());
+
+    // Another key may not take the name.
+    let taken = node.agent(
+        &second,
+        &[
+            "add",
+            "mine",
+            "--to",
+            "relay",
+            "--image",
+            "docker.io/someone/else:1",
+            "--json",
+        ],
+    );
+    assert_eq!(error_code(&taken), "name_taken");
+
+    let revoked = node.machine.toon_with(
+        &["agent-key", "revoke", &first_public, "--json"],
+        |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        },
+    );
+    assert_eq!(revoked.exit_code, 0, "{}{}", revoked.stdout, revoked.stderr);
+    let shown = node.machine.toon(&["status", "--json"]);
+    assert!(shown.json()["agent_node"]["pending_apps"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn with_the_home_an_add_of_the_same_image_is_not_held() {
+    let node = node();
+    let (key, _) = node.create(&["--scope", "status,apps"]);
+    let held = node.agent(
+        &key,
+        &[
+            "add",
+            "held",
+            "--to",
+            "relay",
+            "--image",
+            "docker.io/someone/else:1",
+            "--json",
+        ],
+    );
+    assert_eq!(error_code(&held), "approval_pending", "{}", held.stdout);
+
+    let home = node.machine.toon(&[
+        "add",
+        "direct",
+        "--to",
+        "relay",
+        "--image",
+        "docker.io/someone/else:1",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(home.exit_code, 0, "{}{}", home.stdout, home.stderr);
+    assert_eq!(home.json()["added"], "direct");
+    assert!(apps_behind(&node, &key, "relay").contains(&"direct".to_owned()));
+    // The pending app is still the operator's to decide.
+    assert!(pending_entry(&node, &key, "held").is_some_and(|app| app["status"] == "pending"));
+
+    // Adding the pending app's name with the home settles it.
+    let settled = node.machine.toon(&[
+        "add",
+        "held",
+        "--to",
+        "relay",
+        "--image",
+        "docker.io/someone/else:1",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(settled.exit_code, 0, "{}{}", settled.stdout, settled.stderr);
+    assert!(pending_entry(&node, &key, "held").is_none());
 }

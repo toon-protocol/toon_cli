@@ -40,3 +40,4 @@ agent_key_not_kept
 needs_home
 rate_limited
 needs_operator
+approval_pending

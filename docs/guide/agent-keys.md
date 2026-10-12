@@ -138,7 +138,7 @@ toon limit show
 | `toon logs <toon app> --connector` | The `logs` order: that TOON app's connector log. An app's own log is not offered, so without `--connector` it answers `usage` |
 | `toon send` | A packet originated by a write signed with the key (`send` scope); sealed to the TOON app's connector unless `--seal-to` names another, dialled directly |
 | `toon peer add` | A peering written with the key (`peer` scope) |
-| `toon add --image <image> --to <toon app>` | The `add` order (`apps` scope): the app is added at once if its image is on the list of trusted images, as `toon add` does with the home. Any other image, and every `--url`, is refused with `needs_operator` |
+| `toon add --image <image> --to <toon app>` | The `add` order (`apps` scope): the app is added at once if its image is on the list of trusted images, as `toon add` does with the home. Any other image, and every `--url`, becomes a pending app and answers `approval_pending` |
 | `toon remove <app>` | The `remove` order (`apps` scope): any app behind a TOON app the key is granted on, but the relay |
 | `toon route price <prefix> <price> --yes` | The `route-price` order: sets the price of the route to an app on a TOON app the key is granted on, and restarts that connector. Under the key's restart limit: past it, `rate_limited`, and the message says when the next restart is allowed |
 | `toon event publish` | The `sign` order, then the packet is sent with the key (`send` scope) to the relay of the TOON app, so the connector counts `--amount` against the key. `--relay` needs the home |
@@ -186,7 +186,29 @@ example.com:5000/team/app        # exactly this repository
 An add by an agent key, with `apps` in its scope and granted on the TOON app it goes behind
 (`--to`), is added at once only if its image is on the list **and** it carries no allowance
 (`--allow-egress`, `--scratch`, `--memory`, `--cpus`, `--pids`) and no variable (`--env`): a
-trusted image is trusted as shipped. Anything else, and every `--url`, is refused with
-`needs_operator`, and nothing is pulled, started or routed; the operator adds the app with
-the home. A secret (`--secret`, `--secret-file`) is refused with `needs_home`. `toon remove`
-with a key refuses the relay with `needs_operator`.
+trusted image is trusted as shipped. Anything else, and every `--url`, becomes a **pending
+app**: it is recorded in the home, nothing is pulled, started or routed, and the add answers
+`approval_pending`, exit 1, naming the app. The same add again gives the same answer and
+records nothing more. A key holds at most 8 pending apps; the ninth is refused with
+`needs_operator` and not recorded. A secret (`--secret`, `--secret-file`) is refused with
+`needs_home`. `toon remove` with a key refuses the relay with `needs_operator`.
+
+### Pending apps
+
+`toon status` shows a pending app to the operator, with the image or URL, the TOON app, the
+allowances and variables asked for, and which key asked. An agent key's `toon status` shows
+only the ones that key asked for, as `pending`, or as `refused` with the operator's reason.
+
+- `toon approve <app>` (home only) adds the app exactly as it was asked for: the same image
+  reference or URL, allowances and variables, behind the same TOON app. It restarts that
+  connector, as `toon add --yes` does. Approving does not put the image on the list of trusted
+  images; that is an edit to the `trusted-images` file.
+- `toon refuse <app> [--reason <text>]` (home only) records the refusal. The app is not added.
+  The key may ask again, which replaces the refusal with a new pending app. The home keeps
+  the latest 8 refusals of each key and forgets older ones.
+- A name held by a pending app is not taken by another key's add, nor by the same key's add
+  of something else: both answer `name_taken`.
+- With an agent key both answer `needs_home`.
+
+Pending apps do not expire. Revoking a key drops its pending apps, and so does adding an app
+of the same name with the home. The supervisor logs each pending app, approval and refusal.

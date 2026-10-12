@@ -118,6 +118,19 @@ pub enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Add a pending app, exactly as the agent key asked for it: this restarts the connector
+    Approve {
+        /// The pending app's name, as `toon status` shows it
+        app: String,
+    },
+    /// Refuse a pending app: it is not added, and the agent key's `toon status` says so
+    Refuse {
+        /// The pending app's name, as `toon status` shows it
+        app: String,
+        /// Why, for the agent key to read
+        #[arg(long)]
+        reason: Option<String>,
+    },
     /// Publish and read Nostr events under the agent identity
     Event {
         #[command(subcommand)]

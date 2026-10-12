@@ -329,6 +329,8 @@ pub fn add(home: &Path, add: &Add) -> Result<Report, Error> {
     let restarted_now = apply(home, &state, &changed, add.to, || {}).inspect_err(|_| {
         crate::secrets::forget(home, add.name);
     })?;
+    // An add the operator or an approval made settles a pending app of that name.
+    let _ = crate::pending::forget(home, add.name);
     Ok(Report {
         exit: Exit::Success,
         json: json!({
@@ -666,14 +668,6 @@ fn needs_operator(what: &str, instead: &str) -> Error {
     }
 }
 
-/// A refusal of an app an agent key may not add at once.
-fn operator_adds(what: &str) -> Error {
-    needs_operator(
-        what,
-        "The operator must add it: run `toon add` with the home.",
-    )
-}
-
 fn not_granted(toon_app: &str) -> Error {
     failed(
         ErrorCode::UnknownName,
@@ -700,12 +694,143 @@ fn listed(body: &serde_json::Value, field: &str) -> bool {
     }
 }
 
-/// An order to add an app, from an agent key granted on the TOON apps `granted`. Done as
-/// `toon add` does it with the home, but only for what an agent key may add at once: an
-/// image on the list of trusted images, added as shipped. Anything else is refused with
-/// `needs_operator` before anything is pulled, started or routed.
+fn strings(body: &serde_json::Value, field: &str) -> Result<Vec<String>, Error> {
+    match &body[field] {
+        serde_json::Value::Null => Ok(Vec::new()),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|item| item.as_str().map(str::to_owned))
+            .collect::<Option<_>>()
+            .ok_or_else(|| {
+                failed(
+                    ErrorCode::Usage,
+                    format!("`{field}` is a list of text in an order to add an app."),
+                )
+            }),
+        _ => Err(failed(
+            ErrorCode::Usage,
+            format!("`{field}` is a list of text in an order to add an app."),
+        )),
+    }
+}
+
+/// What an order to add an app asked for, in the one form a pending app is recorded in and
+/// approved from.
+fn asked(body: &serde_json::Value, to: &str, origin: &Origin) -> Result<serde_json::Value, Error> {
+    let (image, url) = match origin {
+        Origin::Image(image) => (Some(*image), None),
+        Origin::Url(url) => (None, Some(*url)),
+    };
+    let price = match &body["price"] {
+        serde_json::Value::Null => 0,
+        price => price.as_u64().ok_or_else(|| {
+            failed(
+                ErrorCode::Usage,
+                "`price` is a whole number in an order to add an app.".into(),
+            )
+        })?,
+    };
+    let request = match &body["request"] {
+        serde_json::Value::Null => serde_json::Value::Null,
+        request => checked_request(request.clone())?,
+    };
+    Ok(json!({
+        "to": to,
+        "image": image,
+        "url": url,
+        "address": text(body, "address")?,
+        "price": price,
+        "request": request,
+        "allow_egress": body["allow_egress"].as_bool().unwrap_or(false),
+        "scratch": strings(body, "scratch")?,
+        "memory": text(body, "memory")?,
+        "cpus": text(body, "cpus")?,
+        "pids": text(body, "pids")?,
+        "env": strings(body, "env")?,
+    }))
+}
+
+/// Where a recorded ask's app comes from, and the allowances and variables it carries, parsed
+/// as `toon add` parses its flags.
+fn parse_ask(
+    ask: &serde_json::Value,
+) -> Result<(Origin<'_>, Allowances, crate::secrets::Given), Error> {
+    let origin = match (ask["image"].as_str(), ask["url"].as_str()) {
+        (Some(image), None) => Origin::Image(image),
+        (None, Some(url)) => Origin::Url(url),
+        _ => {
+            return Err(failed(
+                ErrorCode::Io,
+                "A pending app names an image or a URL, and not both.".into(),
+            ))
+        }
+    };
+    let flags = crate::cli::AllowanceArgs {
+        allow_egress: ask["allow_egress"].as_bool().unwrap_or(false),
+        scratch: strings(ask, "scratch")?,
+        memory: text(ask, "memory")?.map(str::to_owned),
+        cpus: text(ask, "cpus")?.map(str::to_owned),
+        pids: text(ask, "pids")?.map(str::to_owned),
+    };
+    let allowances = allowances(&origin, &flags)?;
+    let secrets = crate::secrets::Given::parse(
+        &origin,
+        &crate::cli::SecretArgs {
+            env: strings(ask, "env")?,
+            secret: Vec::new(),
+            secret_file: Vec::new(),
+        },
+        &allowances,
+    )?;
+    Ok((origin, allowances, secrets))
+}
+
+/// An add an agent key may not make at once: recorded as a pending app, for the operator to
+/// approve or refuse. Nothing is pulled, started or routed. Answers `approval_pending`,
+/// naming the app, whether the ask is new or the same as one already pending.
+fn hold(
+    home: &Path,
+    key: &str,
+    name: &str,
+    to: &str,
+    origin: &Origin,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, Error> {
+    let ask = asked(body, to, origin)?;
+    parse_ask(&ask)?;
+    let state = loaded(home)?;
+    free(&state, name)?;
+    if let Some(prefix) = ask["address"].as_str() {
+        plain(ErrorCode::RouteFailed, "The address", prefix)?;
+    }
+    let what = match origin {
+        Origin::Image(image) => format!("the image {image}"),
+        Origin::Url(url) => format!("the app at {url}"),
+    };
+    if let crate::pending::Recorded::New = crate::pending::record(home, key, name, ask)? {
+        eprintln!("Pending app {name} ({what}, behind {to}) asked for by the agent key {key}.");
+    }
+    Err(Error {
+        nothing_sent: true,
+        ..failed(
+            ErrorCode::ApprovalPending,
+            format!(
+                "{name} is waiting for the operator: {what} is not added by an agent key at \
+                 once. Nothing was pulled, started or routed. The operator runs \
+                 `toon approve {name}` or `toon refuse {name}`; `toon status` shows it."
+            ),
+        )
+    })
+}
+
+/// An order to add an app, from the agent key `key`, granted on the TOON apps `granted`. Done
+/// as `toon add` does it with the home, but only for what an agent key may add at once: an
+/// image on the list of trusted images, added as shipped, with no allowance and no variable.
+/// Anything else, and every app at a URL, becomes a pending app and is answered with
+/// `approval_pending` before anything is pulled, started or routed.
 pub fn ordered_add(
     home: &Path,
+    key: &str,
     granted: &[String],
     body: &serde_json::Value,
 ) -> Result<serde_json::Value, Error> {
@@ -742,32 +867,24 @@ pub fn ordered_add(
         });
     }
     origin.refuse_relay_image()?;
-    let Origin::Image(image) = origin else {
-        return Err(operator_adds(
-            "An app at a URL is not added by an agent key: the connector would deliver to any \
-             address the agent names.",
-        ));
+    let _ordering = ORDERED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let at_once = match origin {
+        Origin::Url(_) => false,
+        Origin::Image(image) => {
+            crate::trusted::is_trusted(home, image)?
+                && !["allow_egress", "scratch", "memory", "cpus", "pids", "env"]
+                    .iter()
+                    .any(|field| listed(body, field))
+        }
     };
-    if !crate::trusted::is_trusted(home, image)? {
-        return Err(operator_adds(&format!(
-            "The image {} is not on the list of trusted images.",
-            repository(image)
-        )));
+    if !at_once {
+        return hold(home, key, name, to, &origin, body);
     }
-    if ["allow_egress", "scratch", "memory", "cpus", "pids"]
-        .iter()
-        .any(|field| listed(body, field))
-    {
-        return Err(operator_adds(
-            "An allowance is the operator's to give: a trusted image is trusted as shipped.",
-        ));
-    }
-    if listed(body, "env") {
-        return Err(operator_adds(
-            "A variable is the operator's to give: a trusted image is trusted as shipped, not \
-             under a configuration an agent chooses.",
-        ));
-    }
+    let Origin::Image(image) = origin else {
+        unreachable!("only an image is added at once")
+    };
     let request = match &body["request"] {
         serde_json::Value::Null => None,
         request => Some(checked_request(request.clone())?),
@@ -781,9 +898,6 @@ pub fn ordered_add(
             )
         })?,
     };
-    let _ordering = ORDERED
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let report = add(
         home,
         &Add {
@@ -799,6 +913,70 @@ pub fn ordered_add(
         },
     )?;
     Ok(serde_json::json!({ "result": report.json, "text": report.text }))
+}
+
+/// Tell the supervisor, if it runs, to log what the operator decided.
+fn note(home: &Path, decision: &str, app: &str) {
+    let _ = control::ask_about(home, decision, Some(app), Duration::from_secs(5));
+}
+
+/// `toon approve`: add the pending app `app` exactly as the agent key asked for it.
+pub fn approve(home: &Path, app: &str) -> Result<Report, Error> {
+    let _ordering = ORDERED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = crate::pending::find_pending(home, app)?;
+    let ask = &entry.ask;
+    let (origin, allowances, secrets) = parse_ask(ask)?;
+    let to = ask["to"].as_str().unwrap_or_default();
+    let report = add(
+        home,
+        &Add {
+            name: app,
+            to,
+            origin,
+            address: ask["address"].as_str(),
+            price: ask["price"].as_u64().unwrap_or(0),
+            request: match &ask["request"] {
+                serde_json::Value::Null => None,
+                request => Some(request.clone()),
+            },
+            allowances,
+            secrets,
+            // Approving is the operator's say-so for the restart.
+            yes: true,
+        },
+    )?;
+    note(home, "approved", app);
+    let mut json = report.json;
+    json["approved"] = json!(app);
+    json["asked_by"] = json!(entry.key);
+    Ok(Report {
+        exit: Exit::Success,
+        json,
+        text: format!(
+            "Approved {app}, asked for by the agent key {}. {}",
+            entry.key, report.text
+        ),
+    })
+}
+
+/// `toon refuse`: record that the operator refused the pending app `app`.
+pub fn refuse(home: &Path, app: &str, reason: Option<&str>) -> Result<Report, Error> {
+    let _ordering = ORDERED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = crate::pending::refuse(home, app, reason)?;
+    note(home, "refused", app);
+    let reason = entry.refused.as_deref().filter(|reason| !reason.is_empty());
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "refused": app, "reason": reason, "asked_by": entry.key }),
+        text: match reason {
+            Some(reason) => format!("Refused {app}: {reason}"),
+            None => format!("Refused {app}."),
+        },
+    })
 }
 
 /// An order to remove the app `name`, from an agent key granted on the TOON apps `granted`:
