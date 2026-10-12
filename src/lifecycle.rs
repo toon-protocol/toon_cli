@@ -30,6 +30,7 @@ pub struct Create<'a> {
     /// The app behind the new connector.
     pub origin: Origin<'a>,
     pub price: u64,
+    pub allowances: crate::runner::Allowances,
     pub reach: Reach,
     pub accept_anyone_terms: bool,
     pub listen: &'a str,
@@ -214,6 +215,7 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
             prefix: prefix.clone(),
             price: create.price,
             request: None,
+            allowances: create.allowances.clone(),
         }],
         relay: node::RelaySettings::default(),
     };

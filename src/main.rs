@@ -183,16 +183,19 @@ fn run() -> ExitCode {
         .into(),
         Command::Add(args) => render(
             home::resolve().and_then(|home| {
+                let origin = match (&args.image, &args.url) {
+                    (_, Some(url)) => apps::Origin::Url(url),
+                    (Some(image), None) => apps::Origin::Image(image),
+                    (None, None) => unreachable!("clap requires one of them"),
+                };
+                let allowances = apps::allowances(&origin, &args.allow)?;
                 apps::add(
                     &home,
                     &apps::Add {
                         name: &args.app,
                         to: &args.to,
-                        origin: match (&args.image, &args.url) {
-                            (_, Some(url)) => apps::Origin::Url(url),
-                            (Some(image), None) => apps::Origin::Image(image),
-                            (None, None) => unreachable!("clap requires one of them"),
-                        },
+                        origin,
+                        allowances,
                         address: args.address.as_deref(),
                         price: args.price,
                         request: args.request.as_deref(),
@@ -205,16 +208,19 @@ fn run() -> ExitCode {
         .into(),
         Command::Create(args) => render(
             home::resolve().and_then(|home| {
+                let origin = match (&args.image, &args.url) {
+                    (_, Some(url)) => apps::Origin::Url(url),
+                    (Some(image), None) => apps::Origin::Image(image),
+                    (None, None) => unreachable!("clap requires one of them"),
+                };
+                let allowances = apps::allowances(&origin, &args.allow)?;
                 lifecycle::create(
                     &home,
                     &lifecycle::Create {
                         name: &args.name,
                         from: app.as_deref(),
-                        origin: match (&args.image, &args.url) {
-                            (_, Some(url)) => apps::Origin::Url(url),
-                            (Some(image), None) => apps::Origin::Image(image),
-                            (None, None) => unreachable!("clap requires one of them"),
-                        },
+                        origin,
+                        allowances,
                         price: args.price,
                         reach: match &args.clearnet {
                             Some(hostname) => node::Reach::Clearnet {

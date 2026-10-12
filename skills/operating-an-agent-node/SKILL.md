@@ -151,7 +151,18 @@ assume a published image meets this: the one image known to run unchanged is the
 [Adding an app](https://github.com/toon-protocol/toon_cli/blob/main/docs/guide/adding-an-app.md),
 built with `docker build`; the end-to-end run adds an app built the same way.
 
-An app's loopback address is not a way to pay it. A request made straight to it does not arrive
+Every app runs confined (ADR 0011): on a docker network of its own that publishes no port and
+leads nowhere, as the user of the process that runs `toon`, with no capabilities, a read-only
+root filesystem (only `/data`, a 64 MB `/tmp` and scratch paths are writable), 512 MB of memory,
+1 CPU and 256 processes. `toon status --json` shows it as `confinement`. Make an allowance when
+adding the app, with `toon add` or `toon create` and only with `--image`: `--allow-egress` (the
+app may open connections out; an app that calls a chain or an API needs it), `--scratch <path>`
+(repeatable), `--memory <size>`, `--cpus <n>`, `--pids <n>`. A value that cannot be used, or an
+allowance with `--url`, is refused with `usage`. To change an allowance, remove the app and add
+it again. An image that needs root or a capability is not supported, and neither is rootless
+docker. An app that does not start or answer its health check fails with `app_failed`.
+
+An app's address is not a way to pay it. A request made straight to it does not arrive
 as a packet through the connector, so it is unpaid work: never do it in place of a payment.
 
 ## Create a TOON app: `toon create`
