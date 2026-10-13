@@ -229,6 +229,36 @@ fn a_send_without_yes_is_refused_as_it_is_with_the_home() {
 }
 
 #[test]
+fn status_tells_a_key_where_its_apps_are_paid_and_a_send_there_arrives() {
+    let node = node();
+    let (key, _) = node.create(&["--max-per-command", "5", "--max-per-day", "100"]);
+    let operator =
+        node.machine.toon(&["status", "--json"]).json()["agent_node"]["toon_apps"][0].clone();
+
+    let status = node.agent(&key, &["status", "--json"]);
+    assert_eq!(status.exit_code, 0, "{}{}", status.stdout, status.stderr);
+    let shown = status.json()["toon_apps"][0].clone();
+    assert_eq!(
+        shown["connector"]["ilp_address"], operator["connector"]["ilp_address"],
+        "{shown}"
+    );
+    let prefix = shown["apps"][0]["prefix"].as_str().unwrap().to_owned();
+    assert_eq!(prefix, node.machine.relay_prefix(), "{shown}");
+    assert_eq!(shown["apps"][0]["price"], operator["apps"][0]["price"]);
+    assert!(shown["apps"][0]["price"].is_u64(), "{shown}");
+
+    let text = node.agent(&key, &["status"]);
+    assert!(
+        text.stdout.contains(&format!("at {prefix}, price ")),
+        "{}",
+        text.stdout
+    );
+
+    let sent = node.agent(&key, &["send", &prefix, "--amount", "0", "--yes", "--json"]);
+    assert_eq!(sent.json()["outcome"], "fulfilled", "{}", sent.stdout);
+}
+
+#[test]
 fn a_send_and_what_is_left_of_the_limit_are_the_connectors() {
     let node = node();
     let (key, public) = node.create(&["--max-per-command", "5", "--max-per-day", "100"]);
