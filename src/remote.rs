@@ -295,8 +295,13 @@ fn status(key: &KeyFile) -> Result<Report, Error> {
         for behind in app["apps"].as_array().into_iter().flatten() {
             let running = behind["running"].as_bool().unwrap_or(false);
             all_running &= running;
+            // What a send to the app or a new price for its route names.
+            let route = match (behind["prefix"].as_str(), behind["price"].as_u64()) {
+                (Some(prefix), Some(price)) => format!(" at {prefix}, price {price}"),
+                _ => String::new(),
+            };
             lines.push(format!(
-                "  {}: {}.",
+                "  {}: {}{route}.",
                 behind["name"].as_str().unwrap_or("?"),
                 if running { "running" } else { "not running" }
             ));

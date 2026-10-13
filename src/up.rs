@@ -86,6 +86,34 @@ fn named_secrets(state: &node::State, status: &mut Value) {
     }
 }
 
+/// Add to `status` where the TOON app and each app behind it are paid: the connector's ILP
+/// address, and each route's prefix and price, as `toon status` shows them with the home. A
+/// key that may send or price a route has no other way to learn an address, and a connector
+/// tells them to anyone who asks.
+fn routes(state: &node::State, status: &mut Value) {
+    let Some(toon_app) = state
+        .toon_apps
+        .iter()
+        .find(|toon_app| status["name"] == toon_app.name.as_str())
+    else {
+        return;
+    };
+    status["connector"]["ilp_address"] = json!(toon_app.address());
+    let Some(apps) = status["apps"].as_array_mut() else {
+        return;
+    };
+    for app in apps {
+        let kept = toon_app
+            .apps
+            .iter()
+            .find(|behind| app["name"] == behind.name.as_str());
+        if let Some(behind) = kept {
+            app["prefix"] = json!(behind.prefix);
+            app["price"] = json!(behind.price);
+        }
+    }
+}
+
 /// An app behind the connector, as the control socket reports it.
 struct AppStatus {
     name: String,
@@ -674,6 +702,7 @@ impl Shared {
                             let mut status = unit.status();
                             if let Some(state) = &state {
                                 named_secrets(state, &mut status);
+                                routes(state, &mut status);
                             }
                             status
                         })
