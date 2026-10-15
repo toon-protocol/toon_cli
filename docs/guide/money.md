@@ -113,8 +113,7 @@ toon channel land <id> --json | jq '.transactions'
 # [{"chain": "evm", "network": "devnet", "hash": "0x…"}]
 ```
 
-`transactions` is `[]` when the connector does not report the transaction, which the
-connector this release embeds does not yet do; the text says so.
+`transactions` is `[]` when the connector does not report the transaction; the text says so.
 `landed` in `toon channel list` still shows what has landed.
 
 The outbound **watermark** is how much you have signed away on a channel so far. Watching

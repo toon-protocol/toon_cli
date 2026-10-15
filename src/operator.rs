@@ -1332,8 +1332,9 @@ pub fn channel_withdraw(home: &Path, id: &str) -> Result<Report, Error> {
 }
 
 /// The settlement transactions the connector's answer to a land names: `transaction`, one
-/// hash or signature, or `transactions`, several. The connector at the pinned revision names
-/// none (toon_cli#258), so this is empty until it does.
+/// hash or signature, or `transactions`, several. The connector at the pinned revision answers
+/// with `transaction`, the one that landed the voucher (connector#1508); an answer naming
+/// neither leaves this empty.
 fn landed_transactions(channel: &Value) -> Vec<String> {
     let named = match (&channel["transaction"], &channel["transactions"]) {
         (Value::String(one), _) => vec![one.clone()],
