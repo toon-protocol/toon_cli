@@ -72,7 +72,7 @@ A failed command with `--json` prints:
 | `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused every address (one refusal does not fail the command while another address is funded) |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up`. With an agent key, the supervisor did not answer at the key file's address |
 | `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event; for `toon message send`, a wrap) could not be sent: the connector's operator surface refused the write, could not be reached, or did not answer within the wait (the packet's 30-second expiry and five seconds more); the message carries the reason. A packet that went unanswered has expired and will not be delivered, so the command can be run again; the failure's JSON carries `paid` and, for `toon event publish --relay`, the `event` with its id (see Spending limit) |
-| `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or `toon down` could not stop it; the message carries `systemctl`'s own reason |
+| `systemd_failed` | 1 | `toon up` wrote its `systemd --user` unit and `systemctl` would not load or start it, or the supervisor it started exited before answering (an unfunded settlement key, say), or `toon down` could not stop it; the message carries `systemctl`'s own reason and the supervisor's last lines |
 | `unknown_name` | 1 | `--app`, `toon create --app`, `toon destroy`, `toon logs` (also an app served at a URL, which has no log of its own), `toon add`, `toon change` or `toon remove` was given a name that is not a TOON app or an app of this agent node, as that command needs; or `toon approve` or `toon refuse` was given a name that is not a pending app |
 | `peer_failed` | 1 | The connector's operator surface refused a peering write or could not be reached; the message carries the reason |
 | `peer_not_peerable` | 1 | `peer add` named a connector that is not peerable: the refusal is on the other side, and only its operator can lift it |
@@ -117,7 +117,8 @@ key is not kept (the file is absent or not a whole key).
 `toon init --network` takes `devnet` (the default), `sandbox` or `mainnet`. Solana
 settlement is off unless `--solana` is given. `toon up` does not start a connector whose
 settlement key holds less than one whole token, or on Solana less than 0.01 SOL for fees; it
-fails with `unfunded`. An EVM connector starts without gas: gas is spent when it sends a
+fails with `unfunded`, or, without `--foreground`, with `systemd_failed` and the supervisor's
+reason. An EVM connector starts without gas: gas is spent when it sends a
 transaction, so `toon join`, `toon peer add` with a deposit, `toon create` with a deposit (both
 keys send one) and `toon channel open`, `fund`, `withdraw` and `land` fail with `unfunded` while
 the EVM settlement key holds less than 0.001 ETH. They refuse before the spending limit is
