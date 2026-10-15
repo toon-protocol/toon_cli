@@ -141,7 +141,9 @@ handed it to you instead of running them. If you set the agent node up, they are
 ## Funding
 
 `toon up` fails with `unfunded` while a settlement key holds less than one whole token (on Solana,
-also 0.01 SOL for fees); the message names each address and the amount. An EVM connector starts
+also 0.01 SOL for fees); the message names each address and the amount. Without `--foreground`
+the check runs in the supervisor the unit starts, so `toon up` fails with `systemd_failed` and its
+message ends with what the supervisor said. An EVM connector starts
 without gas. Gas (0.001 ETH) is needed where it is spent: `toon join`, `toon peer add` with a
 deposit, `toon create` with a deposit and `toon channel open`, `fund`, `withdraw` and `land` fail
 with `unfunded` without it, before anything is charged or sent. A connector that refuses a

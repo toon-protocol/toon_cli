@@ -391,6 +391,7 @@ fn up(json: bool) -> Exit {
         Exit::Success => {}
         unwritten => return unwritten,
     }
+    service::notify_ready();
     match supervisor.wait() {
         Stopped::Down => Exit::Success,
         // The one JSON document has been printed; the exit code is all that is left.

@@ -5,6 +5,8 @@
 //! to load and start it. The unit runs `toon up --foreground`, so the supervisor is the
 //! same process whoever starts it. `toon down` disables and stops the unit.
 
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -35,7 +37,34 @@ fn quoted(word: &str) -> String {
     format!("\"{escaped}\"")
 }
 
+/// Tell systemd that the supervisor answers on its control socket, when systemd is
+/// waiting for that (`NOTIFY_SOCKET` is set). Without `NOTIFY_SOCKET` nothing is sent,
+/// and a notice that cannot be sent is not an error: the supervisor runs either way.
+pub fn notify_ready() {
+    let Some(target) = std::env::var_os("NOTIFY_SOCKET").filter(|target| !target.is_empty()) else {
+        return;
+    };
+    let Ok(socket) = UnixDatagram::unbound() else {
+        return;
+    };
+    let message = b"READY=1";
+    let bytes = target.as_bytes();
+    #[cfg(target_os = "linux")]
+    if let Some(name) = bytes.strip_prefix(b"@") {
+        // An abstract-namespace socket: the `@` stands for a leading NUL byte.
+        use std::os::linux::net::SocketAddrExt;
+        if let Ok(address) = SocketAddr::from_abstract_name(name) {
+            let _ = socket.send_to_addr(message, &address);
+        }
+        return;
+    }
+    let _ = socket.send_to(message, Path::new(&target));
+}
+
 /// The unit that runs the supervisor of the agent node, started from the binary `toon`.
+///
+/// `TimeoutStartSec` is 600 seconds: a first start may download the `anon` overlay and
+/// pull app images, which can outlast systemd's 90 second default on a slow link.
 pub fn unit(toon: &Path) -> String {
     format!(
         "# Written by `toon up`. `toon up` overwrites it and `toon down` stops it.\n\
@@ -47,7 +76,8 @@ pub fn unit(toon: &Path) -> String {
          StartLimitBurst=5\n\
          \n\
          [Service]\n\
-         Type=simple\n\
+         Type=notify\n\
+         TimeoutStartSec=600\n\
          ExecStart={} up --foreground\n\
          Restart=on-failure\n\
          RestartSec=5\n\
@@ -90,6 +120,23 @@ fn systemctl(args: &[&str]) -> Result<(), Error> {
     )))
 }
 
+/// The last lines the supervisor wrote, for the message of a start that failed. Empty
+/// when `journalctl` cannot say.
+fn journal_tail() -> String {
+    let Ok(output) = run(
+        "journalctl",
+        &["--user", "-u", UNIT, "-n", "5", "--no-pager", "-o", "cat"],
+    ) else {
+        return String::new();
+    };
+    let said = String::from_utf8_lossy(&output.stdout);
+    let said = said.trim();
+    if !output.status.success() || said.is_empty() {
+        return String::new();
+    }
+    format!(" The supervisor said:\n{said}")
+}
+
 /// What installing the unit did.
 pub struct Installed {
     pub unit: PathBuf,
@@ -110,7 +157,10 @@ pub fn install() -> Result<Installed, Error> {
     let path = unit_path(&user_home);
     node::write(&path, unit(&toon).as_bytes(), 0o644)?;
     systemctl(&["daemon-reload"])?;
-    systemctl(&["enable", "--now", UNIT])?;
+    systemctl(&["enable", "--now", UNIT]).map_err(|mut error| {
+        error.message.push_str(&journal_tail());
+        error
+    })?;
     // Without lingering the user's manager, and so the supervisor, starts at the first
     // login and not at boot. It may need privileges this user does not have.
     let linger = run("loginctl", &["enable-linger"]).is_ok_and(|output| output.status.success());

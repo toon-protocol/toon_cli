@@ -75,7 +75,8 @@ fn up_writes_a_unit_that_runs_the_supervisor_in_the_foreground() {
              StartLimitBurst=5\n\
              \n\
              [Service]\n\
-             Type=simple\n\
+             Type=notify\n\
+             TimeoutStartSec=600\n\
              ExecStart=\"{}\" up --foreground\n\
              Restart=on-failure\n\
              RestartSec=5\n\
