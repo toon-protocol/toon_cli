@@ -217,7 +217,7 @@ fn up_sends_ready_once_the_supervisor_answers_its_control_socket() {
     let length = socket.recv(&mut buffer).expect("READY=1 is sent");
     assert_eq!(&buffer[..length], b"READY=1");
     let status = machine.toon(&["status", "--json"]);
-    assert_eq!(status.json()["supervisor"]["running"], true);
+    assert_eq!(status.json()["agent_node"]["supervisor"]["running"], true);
     let _ = fs::remove_file(&path);
 }
 
