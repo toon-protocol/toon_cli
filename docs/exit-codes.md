@@ -33,7 +33,8 @@ is missing here. Add a new code to the test and to this file together.
 | 3 | There is no agent node on this machine |
 
 `toon up` without `--foreground` installs a `systemd --user` unit and returns once
-`systemctl` has started it. A connector that stops by itself is restarted by the
+the supervisor answers on its control socket (the unit is `Type=notify`; if the supervisor
+exits first, `toon up` exits 1 with `systemd_failed`). A connector that stops by itself is restarted by the
 supervisor, and `toon status` reports how many times.
 
 `toon status` exits with the code that describes the agent node, and still prints its

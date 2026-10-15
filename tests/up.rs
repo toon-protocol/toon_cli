@@ -191,3 +191,52 @@ fn up_fails_with_the_connectors_reason_when_the_chain_is_not_there() {
     assert_eq!(run.exit_code, 1);
     assert_eq!(run.stderr, "");
 }
+
+fn notify_socket(name: &str) -> (std::os::unix::net::UnixDatagram, std::path::PathBuf) {
+    let path = std::env::temp_dir().join(format!("toon-notify-{}-{name}", std::process::id()));
+    let _ = fs::remove_file(&path);
+    let socket = std::os::unix::net::UnixDatagram::bind(&path).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .unwrap();
+    (socket, path)
+}
+
+#[test]
+fn up_sends_ready_once_the_supervisor_answers_its_control_socket() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    configure_a_connector(&machine, &chain);
+    let (socket, path) = notify_socket("ready");
+
+    let _up = machine.start_with(&["up", "--foreground", "--json"], |command| {
+        command.env("NOTIFY_SOCKET", &path);
+    });
+
+    let mut buffer = [0u8; 64];
+    let length = socket.recv(&mut buffer).expect("READY=1 is sent");
+    assert_eq!(&buffer[..length], b"READY=1");
+    let status = machine.toon(&["status", "--json"]);
+    assert_eq!(status.json()["supervisor"]["running"], true);
+    let _ = fs::remove_file(&path);
+}
+
+#[test]
+fn a_supervisor_that_fails_to_start_sends_no_ready() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    configure_a_connector(&machine, &chain);
+    drop(chain);
+    let (socket, path) = notify_socket("failed");
+    socket
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+
+    let run = machine.toon_with(&["up", "--foreground", "--json"], |command| {
+        command.env("NOTIFY_SOCKET", &path);
+    });
+
+    assert_eq!(run.exit_code, 1);
+    assert!(socket.recv(&mut [0u8; 64]).is_err(), "no READY=1 arrives");
+    let _ = fs::remove_file(&path);
+}
