@@ -1331,11 +1331,58 @@ pub fn channel_withdraw(home: &Path, id: &str) -> Result<Report, Error> {
     Ok(channel_report(channel, &format!("Withdrawal step {step}")))
 }
 
+/// The settlement transactions the connector's answer to a land names: `transaction`, one
+/// hash or signature, or `transactions`, several. The connector at the pinned revision names
+/// none (toon_cli#258), so this is empty until it does.
+fn landed_transactions(channel: &Value) -> Vec<String> {
+    let named = match (&channel["transaction"], &channel["transactions"]) {
+        (Value::String(one), _) => vec![one.clone()],
+        (_, Value::Array(many)) => many
+            .iter()
+            .filter_map(|hash| hash.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
+    };
+    named.into_iter().filter(|hash| !hash.is_empty()).collect()
+}
+
+/// What `toon channel land` reports: the channel after the land, and each settlement
+/// transaction with the chain and network it landed on.
+fn land_report(channel: Value, network: Profile) -> Report {
+    let chain = channel["chain"].as_str().unwrap_or_default().to_owned();
+    let network = network.name();
+    let hashes = landed_transactions(&channel);
+    let mut text = format!("Landed: {}", describe_channel(&channel));
+    if hashes.is_empty() {
+        text.push_str(
+            "\nThe connector did not report the settlement transaction; \
+             `toon channel list` shows what has landed.",
+        );
+    }
+    for hash in &hashes {
+        text.push_str(&format!(
+            "\nSettlement transaction on {chain} ({network}): {hash}"
+        ));
+    }
+    let transactions: Vec<Value> = hashes
+        .iter()
+        .map(|hash| json!({ "chain": chain, "network": network, "hash": hash }))
+        .collect();
+    Report {
+        exit: Exit::Success,
+        text,
+        json: json!({ "channel": channel, "transactions": transactions }),
+    }
+}
+
 /// `toon channel land`: land the latest voucher held on an inbound channel.
 pub fn channel_land(home: &Path, id: &str) -> Result<Report, Error> {
     ensure_gas(home)?;
+    let Some(state) = State::load(home)? else {
+        return Err(node::no_agent_node(home));
+    };
     let channel = channel_write(home, &channel_path(id, "land")?, String::new())?;
-    Ok(channel_report(channel, "Landed"))
+    Ok(land_report(channel, state.network))
 }
 
 /// Refuse with `unfunded` unless the settlement key of the TOON app these commands are
@@ -2322,9 +2369,10 @@ mod tests {
         AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD,
         UNREAD_TIMEOUT,
     };
-    use super::{history_report, parse_packet_counts, PacketCounts};
+    use super::{history_report, land_report, parse_packet_counts, PacketCounts};
     use crate::cli::Chain;
     use crate::outcome::ErrorCode;
+    use crate::profile::Profile;
     use std::io::{Read, Write};
 
     /// A connector that answers each `POST /peers` with the next of `answers`, and says
@@ -3088,5 +3136,89 @@ toon_fees_earned_total 40\n";
         );
         assert_eq!(json["packets"].as_array().unwrap().len(), 1);
         assert_eq!(json["packets"][0]["time"], "new");
+    }
+
+    /// The connector's answer to `POST /channels/:id/land` for an EVM channel, with
+    /// `extra` fields beside the view.
+    fn landed_view(chain: &str, extra: serde_json::Value) -> serde_json::Value {
+        let mut view = serde_json::json!({
+            "id": "0xab",
+            "scheme": "batch-settlement",
+            "chain": chain,
+            "direction": "inbound",
+            "status": "open",
+            "counterparty": "0xcd",
+            "collateral": 1000,
+            "landed": 300,
+            "watermark": 300,
+        });
+        view.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        view
+    }
+
+    #[test]
+    fn land_reports_the_settlement_transaction_the_connector_names() {
+        let hash = format!("0x{}", "12".repeat(32));
+        let view = landed_view("evm", serde_json::json!({ "transaction": hash }));
+
+        let report = land_report(view, Profile::Devnet);
+
+        assert_eq!(
+            report.json["transactions"],
+            serde_json::json!([{ "chain": "evm", "network": "devnet", "hash": hash }]),
+            "{}",
+            report.json
+        );
+        assert_eq!(report.json["channel"]["id"], "0xab");
+        assert!(
+            report.text.starts_with("Landed: 0xab evm inbound open"),
+            "{}",
+            report.text
+        );
+        assert!(
+            report
+                .text
+                .contains(&format!("Settlement transaction on evm (devnet): {hash}")),
+            "{}",
+            report.text
+        );
+    }
+
+    #[test]
+    fn land_reports_each_settlement_transaction_the_connector_names() {
+        let view = landed_view(
+            "solana",
+            serde_json::json!({ "transactions": ["5sig", "6sig"] }),
+        );
+
+        let report = land_report(view, Profile::Mainnet);
+
+        assert_eq!(
+            report.json["transactions"],
+            serde_json::json!([
+                { "chain": "solana", "network": "mainnet", "hash": "5sig" },
+                { "chain": "solana", "network": "mainnet", "hash": "6sig" },
+            ]),
+            "{}",
+            report.json
+        );
+        assert!(report.text.contains(": 5sig"), "{}", report.text);
+        assert!(report.text.contains(": 6sig"), "{}", report.text);
+    }
+
+    #[test]
+    fn land_says_so_when_the_connector_names_no_transaction() {
+        let report = land_report(landed_view("evm", serde_json::json!({})), Profile::Devnet);
+
+        assert_eq!(report.json["transactions"], serde_json::json!([]));
+        assert!(
+            report
+                .text
+                .contains("The connector did not report the settlement transaction"),
+            "{}",
+            report.text
+        );
     }
 }

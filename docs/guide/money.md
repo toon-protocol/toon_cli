@@ -104,6 +104,19 @@ toon channel withdraw <id>              # start withdrawing; run again to finish
 toon channel land <id>                  # land the latest voucher on an inbound channel now
 ```
 
+`toon channel land` reports each settlement transaction it sent, with the chain and network
+it landed on, as proof of the land. With `--json` they are in `transactions`, beside the
+`channel` after the land:
+
+```sh
+toon channel land <id> --json | jq '.transactions'
+# [{"chain": "evm", "network": "devnet", "hash": "0x…"}]
+```
+
+`transactions` is `[]` when the connector does not report the transaction, which the
+connector this release embeds does not yet do; the text says so.
+`landed` in `toon channel list` still shows what has landed.
+
 The outbound **watermark** is how much you have signed away on a channel so far. Watching
 it move is the most direct way to see what payments cost.
 

@@ -287,7 +287,8 @@ stopped.
 <file> --deposit <n>` opens an outbound channel from the counterparty's `batchSettlements` entry.
 `toon channel fund <id> --amount <n>` adds to an outbound channel. `toon channel withdraw <id>`
 starts or finishes withdrawing collateral. `toon channel land <id>` lands the latest voucher on an
-inbound channel now.
+inbound channel now; its `--json` holds `channel` and `transactions`, each with `chain`, `network`
+and `hash`, `[]` when the connector did not report the settlement transaction.
 
 ## Relay settings
 
