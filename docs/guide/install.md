@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/toon-protocol/toon_cli/main/install
 
 [`install.sh`](../../install.sh) downloads the latest release for this machine, checks it
 against the release's `SHA256SUMS`, and puts `toon` in `~/.local/bin`. It refuses a
-machine without glibc 2.35 or later. `TOON_VERSION=v0.2.0` installs that release instead,
+machine without glibc 2.35 or later. `TOON_VERSION=v0.3.0` installs that release instead,
 and `TOON_INSTALL_DIR` puts `toon` somewhere else. Run it again to upgrade.
 
 ## From a release, by hand
@@ -24,7 +24,7 @@ No Rust toolchain needed. Pick a tag from the
 [releases page](https://github.com/toon-protocol/toon_cli/releases):
 
 ```sh
-version=v0.2.0
+version=v0.3.0
 arch=$(uname -m)    # x86_64 or aarch64
 base=https://github.com/toon-protocol/toon_cli/releases/download/$version
 curl -fsSLO "$base/toon-$version-linux-$arch.tar.gz"
@@ -39,7 +39,7 @@ Do not skip the checksum: this binary holds your keys.
 ## From source
 
 ```sh
-cargo install --locked --git https://github.com/toon-protocol/toon_cli --tag v0.2.0
+cargo install --locked --git https://github.com/toon-protocol/toon_cli --tag v0.3.0
 ```
 
 ## Check it
@@ -51,7 +51,7 @@ toon --version
 It prints the release, the connector revision it embeds, and the relay image it runs:
 
 ```
-toon 0.2.0 (connector 7d0582e2…, relay ghcr.io/toon-protocol/relay:rust-sha-1b02f2e@sha256:3eea…)
+toon 0.3.0 (connector 18da529a…, relay ghcr.io/toon-protocol/relay:rust-sha-1b02f2e@sha256:3eea…)
 ```
 
 ## Upgrading
