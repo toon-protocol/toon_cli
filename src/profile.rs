@@ -104,7 +104,7 @@ impl Profile {
     /// Mainnet's is the node Drew runs (ADR 0009).
     pub fn connector_url(self) -> Option<&'static str> {
         match self {
-            Profile::Devnet => Some("https://proxy.relay.devnet.toonprotocol.dev/ilp"),
+            Profile::Devnet => Some("https://toonprotocol.dev/ilp"),
             Profile::Sandbox => Some("http://localhost:3200/ilp"),
             Profile::Mainnet => Some("https://connector.mainnet.toonprotocol.dev/ilp"),
         }
@@ -123,7 +123,7 @@ impl Profile {
     /// Mainnet's is the node Drew runs (ADR 0009).
     pub fn relay_url(self) -> Option<&'static str> {
         match self {
-            Profile::Devnet => Some("wss://relay-ws.devnet.toonprotocol.dev"),
+            Profile::Devnet => Some("wss://relay.toonprotocol.dev"),
             Profile::Sandbox => Some("ws://localhost:7100"),
             Profile::Mainnet => Some("wss://relay.mainnet.toonprotocol.dev"),
         }

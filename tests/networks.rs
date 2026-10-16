@@ -552,11 +552,8 @@ fn the_devnet_profile_records_the_devnets_connector_and_relay() {
 
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
     let state = state(&machine);
-    assert_eq!(
-        state["connector_url"],
-        "https://proxy.relay.devnet.toonprotocol.dev/ilp"
-    );
-    assert_eq!(state["relay_url"], "wss://relay-ws.devnet.toonprotocol.dev");
+    assert_eq!(state["connector_url"], "https://toonprotocol.dev/ilp");
+    assert_eq!(state["relay_url"], "wss://relay.toonprotocol.dev");
 }
 
 #[test]
