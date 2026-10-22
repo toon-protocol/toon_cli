@@ -1,0 +1,12 @@
+{
+  "name": "toon-cli",
+  "version": "0.1.0",
+  "description": "Run a TOON agent node with toon_cli: stand up TOON apps and operate them, and send packets with the Rust `toon` binary.",
+  "author": {
+    "name": "TOON Protocol",
+    "url": "https://github.com/toon-protocol"
+  },
+  "repository": "https://github.com/toon-protocol/toon-plugins",
+  "license": "MIT",
+  "keywords": ["toon", "operator", "agent-node", "ilp"]
+}
