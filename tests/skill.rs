@@ -5,28 +5,39 @@ use std::path::{Path, PathBuf};
 
 use support::Machine;
 
-/// The `SKILL.md` of the skill `name` in `skills/`.
-fn skill_text(name: &str) -> String {
-    fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("skills/{name}/SKILL.md")),
-    )
-    .expect("read the skill")
+/// The vendored `toon-plugins` plugins, each a directory with its skills under `skills/`.
+fn plugins_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/toon-plugins/plugins")
 }
 
-/// The skills in `skills/`: each directory's name and its `SKILL.md`.
+/// The skills of the vendored `toon-nostr` and `toon-cli` plugins: each directory's name and its
+/// `SKILL.md`.
 fn shipped_skills() -> Vec<(String, PathBuf)> {
-    let mut skills: Vec<(String, PathBuf)> =
-        fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("skills"))
-            .expect("read skills/")
-            .map(|entry| entry.expect("read skills/").path())
-            .filter(|path| path.is_dir())
-            .map(|path| {
-                let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                (name, path.join("SKILL.md"))
-            })
-            .collect();
+    let mut skills: Vec<(String, PathBuf)> = ["toon-nostr", "toon-cli"]
+        .iter()
+        .flat_map(|plugin| {
+            fs::read_dir(plugins_dir().join(plugin).join("skills"))
+                .expect("read a plugin's skills/")
+                .map(|entry| entry.expect("read skills/").path())
+                .filter(|path| path.is_dir())
+                .collect::<Vec<_>>()
+        })
+        .map(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            (name, path.join("SKILL.md"))
+        })
+        .collect();
     skills.sort();
     skills
+}
+
+/// The `SKILL.md` of the vendored skill `name`.
+fn skill_text(name: &str) -> String {
+    let (_, file) = shipped_skills()
+        .into_iter()
+        .find(|(skill, _)| skill == name)
+        .unwrap_or_else(|| panic!("no vendored skill {name}"));
+    fs::read_to_string(file).expect("read the skill")
 }
 
 /// Every Markdown file of a shipped skill, as a path relative to its directory: `SKILL.md` and
@@ -72,6 +83,10 @@ fn every_command_the_skill_names_exists_in_the_binary() {
         named_commands(&skill_text("operating-an-agent-node")).len() > 30,
         "the skill names its commands"
     );
+    assert!(
+        named_commands(&skill_text("sending-with-toon-cli")).len() > 20,
+        "the sending skill names its commands"
+    );
     let mut commands: Vec<Vec<String>> = shipped_skills()
         .into_iter()
         .flat_map(|(_, file)| {
@@ -88,8 +103,8 @@ fn every_command_the_skill_names_exists_in_the_binary() {
             .iter()
             .filter(|words| words.starts_with(&["event".to_owned()]))
             .count()
-            > 40,
-        "the social references show their commands"
+            > 5,
+        "the sending skills show their event commands"
     );
     for words in commands {
         // The command is the leading plain words; a value is `<placeholder>`, and a flag
@@ -130,6 +145,72 @@ fn the_skill_keeps_the_glossary_terms() {
     assert!(text.contains("a TOON app is a connector with its apps, an app is the service alone"));
     assert!(text.contains("spending_limit"));
     assert!(text.contains("`--yes`"));
+}
+
+/// The range of `toon_cli` versions the vendored sending skill supports, as comparators:
+/// `>=0.3, <0.4` is two.
+fn supported_range() -> Vec<(String, Vec<u64>)> {
+    let text = skill_text("sending-with-toon-cli");
+    let range = text
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---\n"))
+        .and_then(|(frontmatter, _)| {
+            frontmatter
+                .lines()
+                .find_map(|line| line.strip_prefix("toon_cli: "))
+        })
+        .expect("the sending skill's frontmatter has a toon_cli range")
+        .trim()
+        .trim_matches('"');
+    range
+        .split(',')
+        .map(|comparator| {
+            let comparator = comparator.trim();
+            let split = comparator
+                .find(|c: char| c.is_ascii_digit())
+                .unwrap_or_else(|| panic!("no version in `{comparator}`"));
+            let (operator, version) = comparator.split_at(split);
+            let parts = version
+                .split('.')
+                .map(|part| part.parse().expect("a numeric version part"))
+                .collect();
+            (operator.trim().to_owned(), parts)
+        })
+        .collect()
+}
+
+/// Whether `version` satisfies one comparator; a missing part counts as zero.
+fn satisfies(version: &[u64], operator: &str, bound: &[u64]) -> bool {
+    let part = |parts: &[u64], index: usize| parts.get(index).copied().unwrap_or(0);
+    let ordering = (0..3)
+        .map(|index| part(version, index).cmp(&part(bound, index)))
+        .find(|ordering| ordering.is_ne())
+        .unwrap_or(std::cmp::Ordering::Equal);
+    match operator {
+        ">=" => ordering.is_ge(),
+        ">" => ordering.is_gt(),
+        "<=" => ordering.is_le(),
+        "<" => ordering.is_lt(),
+        "=" | "" => ordering.is_eq(),
+        other => panic!("the range uses an operator this test does not read: {other}"),
+    }
+}
+
+#[test]
+fn the_sending_skill_supports_this_crates_version() {
+    let version: Vec<u64> = env!("CARGO_PKG_VERSION")
+        .split(['.', '-'])
+        .take(3)
+        .map(|part| part.parse().expect("a numeric crate version"))
+        .collect();
+    for (operator, bound) in supported_range() {
+        assert!(
+            satisfies(&version, &operator, &bound),
+            "the vendored sending-with-toon-cli skill supports toon_cli {operator}{bound:?}, \
+             not {}: refresh vendor/toon-plugins",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
 }
 
 #[test]
@@ -195,6 +276,29 @@ fn skill_install_installs_every_skill_in_the_repository() {
 }
 
 #[test]
+fn skill_install_ships_both_plugins_and_never_the_client_plugin() {
+    let machine = Machine::new();
+    let target = machine.home().join("flat");
+    let run = machine.toon(&["skill", "install", "--dir", target.to_str().unwrap()]);
+    assert_eq!(run.exit_code, 0, "{}", run.stderr);
+    let mut installed: Vec<String> = fs::read_dir(&target)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    installed.sort();
+    assert_eq!(
+        installed,
+        [
+            "authoring-a-nip",
+            "operating-an-agent-node",
+            "sending-with-toon-cli",
+            "social"
+        ]
+    );
+    assert!(target.join("social/references/nip-01.md").exists());
+}
+
+#[test]
 fn skill_install_takes_a_directory() {
     let machine = Machine::new();
     let target = machine.home().join("elsewhere");
@@ -202,137 +306,6 @@ fn skill_install_takes_a_directory() {
     assert_eq!(run.exit_code, 0, "{}", run.stderr);
     assert!(target.join("operating-an-agent-node/SKILL.md").exists());
     assert!(!machine.home().join(".claude").exists());
-}
-
-#[test]
-fn the_nip_skill_walks_through_proposing_and_supporting_a_draft() {
-    let text = skill_text("authoring-a-nip");
-    for needed in [
-        "toon nip new",
-        "toon nip publish",
-        "toon event query",
-        "Is a new NIP warranted",
-        "Comment on another agent's draft",
-        "Support another agent's draft",
-        "draft_refused",
-    ] {
-        assert!(text.contains(needed), "the skill does not mention {needed}");
-    }
-}
-
-/// The NIPs of the social set, one reference each: 17 holds 44 and 59 too.
-const SOCIAL_NIPS: [&str; 21] = [
-    "01", "02", "65", "51", "38", "58", "10", "22", "18", "25", "23", "88", "84", "28", "29", "72",
-    "17", "09", "40", "56", "36",
-];
-
-fn social_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/social")
-}
-
-#[test]
-fn the_social_skill_has_one_reference_per_nip_in_the_set() {
-    let mut found = skill_files(&social_dir());
-    found.retain(|file| file != "SKILL.md");
-    let mut wanted: Vec<String> = SOCIAL_NIPS
-        .iter()
-        .map(|nip| format!("references/nip-{nip}.md"))
-        .collect();
-    wanted.sort();
-    assert_eq!(found, wanted);
-
-    let skill = skill_text("social");
-    for nip in SOCIAL_NIPS {
-        assert!(
-            skill.contains(&format!("references/nip-{nip}.md")),
-            "SKILL.md does not list NIP-{nip}"
-        );
-        let text =
-            fs::read_to_string(social_dir().join(format!("references/nip-{nip}.md"))).unwrap();
-        assert!(
-            text.starts_with(&format!("# NIP-{nip}")),
-            "NIP-{nip} has no title"
-        );
-        for needed in [
-            "## Publish",
-            "## Read",
-            "toon event publish",
-            "toon event query",
-        ] {
-            assert!(text.contains(needed), "NIP-{nip} lacks {needed}");
-        }
-    }
-    let private = fs::read_to_string(social_dir().join("references/nip-17.md")).unwrap();
-    assert!(private.contains("NIP-44") && private.contains("NIP-59"));
-    for needed in [
-        "toon message send",
-        "toon message list",
-        "--reply-to",
-        "--subject",
-        "--relay",
-        "--yes",
-        "--with",
-        "--since",
-        "--limit",
-        "agent_key_not_kept",
-        "ADR 0008",
-        "does not read a recipient's kind `10050`",
-    ] {
-        assert!(private.contains(needed), "NIP-17 lacks {needed}");
-    }
-    assert!(!private.contains("cannot send") && !private.contains("this build cannot"));
-}
-
-#[test]
-fn no_skill_says_the_relay_lacks_nip_42_or_names_a_private_message_a_dm_or_a_chat() {
-    for (name, file) in shipped_skills() {
-        let dir = file.parent().unwrap().to_path_buf();
-        let mut files = vec![file];
-        if let Ok(references) = fs::read_dir(dir.join("references")) {
-            files.extend(references.map(|entry| entry.unwrap().path()));
-        }
-        for path in files {
-            let text = fs::read_to_string(&path).unwrap().replace('\n', " ");
-            for stale in ["not implemented by the relay", "does not implement NIP-42"] {
-                assert!(
-                    !text.contains(stale),
-                    "{name}: {} says {stale}",
-                    path.display()
-                );
-            }
-        }
-    }
-    let social = skill_text("social");
-    assert!(social.contains("the relay implements it"));
-    let private = fs::read_to_string(social_dir().join("references/nip-17.md")).unwrap();
-    let body = private.split_once('\n').unwrap().1;
-    for avoided in ["DM", "direct message", "chat"] {
-        assert!(!body.contains(avoided), "NIP-17 says {avoided}");
-    }
-    let operating = skill_text("operating-an-agent-node");
-    assert!(operating.contains("`toon message list`") && operating.contains("`toon message send"));
-}
-
-#[test]
-fn the_social_skill_states_cost_gaps_and_omissions() {
-    let text = skill_text("social");
-    for needed in [
-        "a TOON app is a connector with its apps, an app is the service alone",
-        "toon limit show",
-        "not_confirmed",
-        "toon relay subscriptions",
-        "NIP-29",
-        "NIP-42",
-        "NIP-57",
-        "NIP-05",
-    ] {
-        assert!(text.contains(needed), "the skill does not mention {needed}");
-    }
-    let omitted = text
-        .split("## Left out, and why")
-        .nth(1)
-        .expect("a section on what is left out");
-    assert!(omitted.contains("Lightning") && omitted.contains("clearnet domain"));
 }
 
 /// `npx skills add` reads a `SKILL.md`'s frontmatter as YAML and skips a skill it cannot
@@ -392,6 +365,11 @@ fn skill_list_names_every_skill_and_reference_that_install_writes() {
         text.stdout.contains("social\n  references/nip-01.md")
             && text.stdout.contains("  references/nip-02.md")
     );
+    let rev =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/toon-plugins/REV"))
+            .unwrap();
+    assert_eq!(listed["toon_plugins_rev"], rev.trim());
+    assert!(text.stdout.contains(rev.trim()), "{}", text.stdout);
 }
 
 #[test]

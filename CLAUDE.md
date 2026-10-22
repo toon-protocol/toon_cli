@@ -30,8 +30,19 @@ merge as a union (`.gitattributes`), so codes added on two branches do not confl
 and listed in `nips/README.md`; `tests/nips.rs` checks both by reading the files, as
 `tests/exit_codes.rs` reads its document. A draft is the single source
 for what implements it: `nips/paid-subscription.md` for the subscribe commands, the fake
-remote relay and the Rust relay, `nips/proposals-as-events.md` for `toon nip publish` and
-the skill for authoring a NIP. Change the draft before the code that follows it.
+remote relay and the Rust relay, `nips/proposals-as-events.md` for `toon nip publish`. The skill for authoring a NIP,
+`authoring-a-nip`, now lives in the `toon-nostr` plugin of `toon-plugins`: change the draft
+here first, then the skill there. Change the draft before the code that follows it.
+
+## The vendored skills
+
+`vendor/toon-plugins/` holds the `toon-nostr` and `toon-cli` plugins at one `toon-plugins`
+commit, `vendor/toon-plugins/REV` (a full SHA; ADR 0013). `build.rs` compiles every skill
+under it into `toon skill install`, `list` and `show`, and fails the build if `REV` is not a
+full SHA. Do not edit the copy: change a skill in `toon-plugins`, then refresh with
+`scripts/vendor-toon-plugins.sh <sha>` in an ordinary PR. `toon-client` is never vendored.
+`tests/skill.rs` checks that every command a vendored skill names exists, and that the
+`toon_cli` range in the `sending-with-toon-cli` frontmatter includes this crate's version.
 
 ## The embedded connector
 

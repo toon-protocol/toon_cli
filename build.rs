@@ -4,6 +4,9 @@
 //!
 //! Cargo has no way to share one `rev` between dependency lines, so every line that
 //! names the connector's repository must carry the same one. The build fails otherwise.
+//!
+//! It also reads the `toon-plugins` revision in `vendor/toon-plugins/REV` and generates the
+//! table of skills compiled into the binary from the vendored plugins (ADR 0013).
 
 use std::env;
 use std::fs;
@@ -14,6 +17,7 @@ const CONNECTOR_REPOSITORY: &str = "github.com/toon-protocol/connector\"";
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("cargo sets CARGO_MANIFEST_DIR");
+    vendored_skills(Path::new(&manifest_dir));
     let manifest =
         fs::read_to_string(Path::new(&manifest_dir).join("Cargo.toml")).expect("read Cargo.toml");
     let relay_image = relay_image(&manifest);
@@ -68,4 +72,96 @@ fn relay_image(manifest: &str) -> &str {
 
 fn is_sha256_digest(digest: &str) -> bool {
     digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Pins the vendored `toon-plugins` revision and writes `$OUT_DIR/skills.rs`: one `Skill` per
+/// directory under `vendor/toon-plugins/plugins/*/skills/`, with every file beside its `SKILL.md`
+/// as a reference.
+fn vendored_skills(manifest_dir: &Path) {
+    let vendor = manifest_dir.join("vendor/toon-plugins");
+    println!("cargo:rerun-if-changed=vendor/toon-plugins");
+    let rev_file = vendor.join("REV");
+    let revision = fs::read_to_string(&rev_file)
+        .unwrap_or_else(|error| panic!("read {}: {error}", rev_file.display()));
+    let revision = revision.trim();
+    assert!(
+        is_full_revision(revision),
+        "{} is not a full 40-character commit: {revision}",
+        rev_file.display()
+    );
+    println!("cargo:rustc-env=TOON_PLUGINS_REVISION={revision}");
+
+    let mut skills: Vec<(String, std::path::PathBuf)> = Vec::new();
+    for plugin in sorted_entries(&vendor.join("plugins")) {
+        for skill in sorted_entries(&plugin.join("skills")) {
+            if !skill.is_dir() {
+                continue;
+            }
+            let name = skill.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                skill.join("SKILL.md").is_file(),
+                "{} has no SKILL.md",
+                skill.display()
+            );
+            if let Some((_, other)) = skills.iter().find(|(taken, _)| *taken == name) {
+                panic!(
+                    "two vendored skills are named {name}: {} and {}",
+                    other.display(),
+                    skill.display()
+                );
+            }
+            skills.push((name, skill));
+        }
+    }
+    assert!(!skills.is_empty(), "{} holds no skills", vendor.display());
+    skills.sort();
+
+    let mut table = String::from("const SKILLS: &[Skill] = &[\n");
+    for (name, dir) in &skills {
+        let mut references = Vec::new();
+        collect_files(dir, dir, &mut references);
+        references.sort();
+        table.push_str(&format!(
+            "    Skill {{\n        name: {name:?},\n        body: include_str!({:?}),\n        references: &[\n",
+            dir.join("SKILL.md").display().to_string()
+        ));
+        for (relative, path) in references {
+            table.push_str(&format!(
+                "            ({relative:?}, include_str!({:?})),\n",
+                path.display().to_string()
+            ));
+        }
+        table.push_str("        ],\n    },\n");
+    }
+    table.push_str("];\n");
+    let out = env::var("OUT_DIR").expect("cargo sets OUT_DIR");
+    fs::write(Path::new(&out).join("skills.rs"), table).expect("write skills.rs");
+}
+
+fn sorted_entries(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
+        .map(|entry| entry.expect("read a directory entry").path())
+        .collect();
+    entries.sort();
+    entries
+}
+
+/// Every file under `dir` other than the skill's own `SKILL.md`, as a `/`-separated path
+/// relative to `root` and its absolute path.
+fn collect_files(root: &Path, dir: &Path, files: &mut Vec<(String, std::path::PathBuf)>) {
+    for path in sorted_entries(dir) {
+        if path.is_dir() {
+            collect_files(root, &path, files);
+        } else if path != root.join("SKILL.md") {
+            let relative = path
+                .strip_prefix(root)
+                .unwrap()
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            files.push((relative, path));
+        }
+    }
 }
