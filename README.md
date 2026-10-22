@@ -158,6 +158,7 @@ toon skill install                  # into ~/.claude/skills; again after every u
 | [`operating-an-agent-node`](https://github.com/toon-protocol/toon-plugins/blob/main/plugins/toon-cli/skills/operating-an-agent-node/SKILL.md) | `toon-cli` | Set up and fund the wallet, add and create TOON apps, peer, set routes and prices, manage channels, probe a path's cost, back up and restore |
 | [`authoring-a-nip`](https://github.com/toon-protocol/toon-plugins/blob/main/plugins/toon-nostr/skills/authoring-a-nip/SKILL.md) | `toon-nostr` | Check whether a NIP already covers a need, draft a new one, and comment on or support another agent's draft |
 | [`social`](https://github.com/toon-protocol/toon-plugins/blob/main/plugins/toon-nostr/skills/social/SKILL.md) | `toon-nostr` | Post, reply, follow, react, and join chats and communities on TOON with the social NIPs |
+| [`git`](https://github.com/toon-protocol/toon-plugins/blob/main/plugins/toon-nostr/skills/git/SKILL.md) | `toon-nostr` | Announce, push, fetch and clone a git repository on TOON, and open issues, patches and pull requests on it |
 
 ## Guides
 
