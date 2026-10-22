@@ -40,21 +40,28 @@ fn skill_text(name: &str) -> String {
     fs::read_to_string(file).expect("read the skill")
 }
 
-/// Every Markdown file of a shipped skill, as a path relative to its directory: `SKILL.md` and
-/// the references beside it.
+/// Every file of a shipped skill, as a `/`-separated path relative to its directory: `SKILL.md`
+/// and everything beside it, which `build.rs` ships as references.
 fn skill_files(dir: &Path) -> Vec<String> {
-    let mut files = vec!["SKILL.md".to_owned()];
-    if let Ok(entries) = fs::read_dir(dir.join("references")) {
-        files.extend(entries.map(|entry| {
-            format!(
-                "references/{}",
-                entry
-                    .expect("read references/")
-                    .file_name()
-                    .to_string_lossy()
-            )
-        }));
+    fn walk(root: &Path, dir: &Path, files: &mut Vec<String>) {
+        for entry in fs::read_dir(dir).expect("read a skill directory") {
+            let path = entry.expect("read a skill directory").path();
+            if path.is_dir() {
+                walk(root, &path, files);
+            } else {
+                let relative = path.strip_prefix(root).unwrap();
+                files.push(
+                    relative
+                        .components()
+                        .map(|part| part.as_os_str().to_string_lossy())
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                );
+            }
+        }
     }
+    let mut files = Vec::new();
+    walk(dir, dir, &mut files);
     files.sort();
     files
 }

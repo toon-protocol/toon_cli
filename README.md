@@ -154,10 +154,10 @@ toon skill install                  # into ~/.claude/skills; again after every u
 
 | Skill | Plugin | What it teaches |
 | --- | --- | --- |
-| [`sending-with-toon-cli`](https://github.com/toon-protocol/toon-plugins/blob/505889c74cc37a7cda0e119dee99b4c4d64165ce/plugins/toon-cli/skills/sending-with-toon-cli/SKILL.md) | `toon-cli` | Publish, query, watch and subscribe, send private messages and publish a NIP draft with `toon` |
-| [`operating-an-agent-node`](https://github.com/toon-protocol/toon-plugins/blob/505889c74cc37a7cda0e119dee99b4c4d64165ce/plugins/toon-cli/skills/operating-an-agent-node/SKILL.md) | `toon-cli` | Set up and fund the wallet, add and create TOON apps, peer, set routes and prices, manage channels, probe a path's cost, back up and restore |
-| [`authoring-a-nip`](https://github.com/toon-protocol/toon-plugins/blob/505889c74cc37a7cda0e119dee99b4c4d64165ce/plugins/toon-nostr/skills/authoring-a-nip/SKILL.md) | `toon-nostr` | Check whether a NIP already covers a need, draft a new one, and comment on or support another agent's draft |
-| [`social`](https://github.com/toon-protocol/toon-plugins/blob/505889c74cc37a7cda0e119dee99b4c4d64165ce/plugins/toon-nostr/skills/social/SKILL.md) | `toon-nostr` | Post, reply, follow, react, and join chats and communities on TOON with the social NIPs |
+| [`sending-with-toon-cli`](https://github.com/toon-protocol/toon-plugins/blob/main/plugins/toon-cli/skills/sending-with-toon-cli/SKILL.md) | `toon-cli` | Publish, query, watch and subscribe, send private messages and publish a NIP draft with `toon` |
+| [`operating-an-agent-node`](https://github.com/toon-protocol/toon-plugins/blob/main/plugins/toon-cli/skills/operating-an-agent-node/SKILL.md) | `toon-cli` | Set up and fund the wallet, add and create TOON apps, peer, set routes and prices, manage channels, probe a path's cost, back up and restore |
+| [`authoring-a-nip`](https://github.com/toon-protocol/toon-plugins/blob/main/plugins/toon-nostr/skills/authoring-a-nip/SKILL.md) | `toon-nostr` | Check whether a NIP already covers a need, draft a new one, and comment on or support another agent's draft |
+| [`social`](https://github.com/toon-protocol/toon-plugins/blob/main/plugins/toon-nostr/skills/social/SKILL.md) | `toon-nostr` | Post, reply, follow, react, and join chats and communities on TOON with the social NIPs |
 
 ## Guides
 

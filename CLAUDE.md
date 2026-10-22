@@ -30,9 +30,10 @@ merge as a union (`.gitattributes`), so codes added on two branches do not confl
 and listed in `nips/README.md`; `tests/nips.rs` checks both by reading the files, as
 `tests/exit_codes.rs` reads its document. A draft is the single source
 for what implements it: `nips/paid-subscription.md` for the subscribe commands, the fake
-remote relay and the Rust relay, `nips/proposals-as-events.md` for `toon nip publish`. The skill for authoring a NIP,
-`authoring-a-nip`, now lives in the `toon-nostr` plugin of `toon-plugins`: change the draft
-here first, then the skill there. Change the draft before the code that follows it.
+remote relay and the Rust relay, `nips/proposals-as-events.md` for `toon nip publish`.
+The skill for authoring a NIP, `authoring-a-nip`, now lives in the `toon-nostr` plugin of
+`toon-plugins`: change the draft here first, then the skill there. Change the draft before
+the code that follows it.
 
 ## The vendored skills
 
