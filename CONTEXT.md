@@ -195,3 +195,17 @@ A packet that arrived from one side and left toward a peer. A fee is kept if it 
 
 **Sent**:
 A packet the operator originated: a send, a probe, a publish or a payment of a subscribe route.
+
+### What teaches an agent
+
+**Plugin**:
+A set of skills for one role, published in the `toon-plugins` marketplace: `toon-nostr` for what goes in packets, `toon-cli` and `toon-client` for how each client sends them. An agent installs the data plugin and the plugin of the client it uses.
+_Avoid_: Package, bundle, skill pack
+
+**Data skill**:
+A skill that says what goes in a packet and in what order, for one kind of app, and names no client. It ends where sending begins: "send this with your client's sending skill".
+_Avoid_: Protocol skill; using "skill" for a data skill that names `toon` commands
+
+**Sending skill**:
+A skill that says how one client sends, queries and follows packets, and which versions of that client it covers. It says nothing about what a packet holds.
+_Avoid_: Client skill, transport skill
