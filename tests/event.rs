@@ -343,6 +343,21 @@ impl Running {
             .collect();
         let published = self.publish(&["--kind", "3", "--tags", &Value::Array(tags).to_string()]);
         assert_eq!(published.exit_code, 0, "{}", published.stdout);
+        // The write is answered before the relay can serve it: wait until a read finds it,
+        // so a `--following` run started next reads this list and not the one before.
+        let id = published.json()["event"]["id"].clone();
+        let filter = serde_json::json!({ "ids": [id] }).to_string();
+        for _ in 0..50 {
+            let query = self.query(&["--filter", &filter]);
+            if query.json()["events"]
+                .as_array()
+                .is_some_and(|events| !events.is_empty())
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("the relay never served the follow list {id}");
     }
 
     fn query(&self, args: &[&str]) -> support::Run {
