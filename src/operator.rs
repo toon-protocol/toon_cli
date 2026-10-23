@@ -1645,6 +1645,7 @@ fn before_sending(error: &connector_cli::CliError) -> bool {
 /// connector at `seal_to`, or to this one, and return what the connector says it came to.
 /// `method` and `target` are the request the app receives; `body` is a file the request
 /// carries as its JSON body.
+#[allow(clippy::too_many_arguments)]
 pub fn dispatch(
     home: &Path,
     destination: &str,
@@ -1652,6 +1653,7 @@ pub fn dispatch(
     seal_to: Option<&str>,
     method: &str,
     target: &str,
+    headers: &[(String, String)],
     body: Option<&Path>,
 ) -> Result<Answer, Error> {
     let surface = surface(home)?;
@@ -1683,7 +1685,8 @@ pub fn dispatch(
     // The connector's `send` takes its proxy only to an onion endpoint and dials any other
     // host directly, so a request that must go through the overlay to another host is
     // formed here, with the same envelope the connector's `send` makes.
-    if socks_proxy.is_some() && !is_onion_endpoint(&seal_to) {
+    // The same goes for a request with headers, which the connector's `send` cannot set.
+    if !headers.is_empty() || (socks_proxy.is_some() && !is_onion_endpoint(&seal_to)) {
         let body = match &body {
             Some(path) => std::fs::read(path).map_err(|error| Error {
                 nothing_sent: true,
@@ -1691,7 +1694,6 @@ pub fn dispatch(
             })?,
             None => Vec::new(),
         };
-        let headers = vec![("content-type".to_owned(), "application/json".to_owned())];
         let public = identity(&egress, &seal_to)?;
         return dispatch_with_headers(
             home,
@@ -1699,7 +1701,7 @@ pub fn dispatch(
             amount,
             &public,
             (method, target),
-            headers,
+            request_headers(headers),
             body,
         );
     }
@@ -1750,6 +1752,46 @@ pub fn dispatch(
             "The connector's answer was not understood: {summary}"
         ))
     })
+}
+
+/// One `--header 'Name: value'` as a pair, or a usage error naming it. Nothing is sent or
+/// paid for a header that is not a valid HTTP header.
+pub fn parse_header(text: &str) -> Result<(String, String), Error> {
+    let bad = |why: &str| {
+        failed(
+            ErrorCode::Usage,
+            format!("The header `{text}` is not `Name: value`: {why}."),
+        )
+    };
+    let (name, value) = text.split_once(':').ok_or_else(|| bad("it has no colon"))?;
+    let (name, value) = (name.trim(), value.trim());
+    if name.is_empty() {
+        return Err(bad("its name is empty"));
+    }
+    reqwest::header::HeaderName::from_bytes(name.as_bytes())
+        .map_err(|_| bad("its name is not a valid HTTP header name"))?;
+    reqwest::header::HeaderValue::from_str(value)
+        .map_err(|_| bad("its value is not a valid HTTP header value"))?;
+    Ok((name.to_owned(), value.to_owned()))
+}
+
+/// Every `--header` of a command, parsed.
+pub fn parse_headers(texts: &[String]) -> Result<Vec<(String, String)>, Error> {
+    texts.iter().map(|text| parse_header(text)).collect()
+}
+
+/// The headers of a request: those given, in order, and `content-type: application/json`
+/// first unless one of them is a `content-type`.
+fn request_headers(given: &[(String, String)]) -> Vec<(String, String)> {
+    let mut headers = Vec::with_capacity(given.len() + 1);
+    if !given
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+    {
+        headers.push(("content-type".to_owned(), "application/json".to_owned()));
+    }
+    headers.extend(given.iter().cloned());
+    headers
 }
 
 /// Whether `url` names an onion endpoint, which the connector's `send` dials through its
@@ -1961,6 +2003,7 @@ pub fn dispatch_with_headers_on(
 /// `toon send`: one packet from the operator surface to `destination`, for `amount`,
 /// sealed to the connector at `seal_to`, or to this one.
 /// A packet that is not fulfilled is a report, not an error, and exits 1.
+#[allow(clippy::too_many_arguments)]
 pub fn send(
     home: &Path,
     destination: &str,
@@ -1968,6 +2011,7 @@ pub fn send(
     seal_to: Option<&str>,
     method: &str,
     target: &str,
+    headers: &[(String, String)],
     body: Option<&Path>,
 ) -> Result<Report, Error> {
     send_packet(
@@ -1977,6 +2021,7 @@ pub fn send(
         seal_to,
         method,
         target,
+        headers,
         body,
         false,
     )
@@ -1984,6 +2029,7 @@ pub fn send(
 
 /// `toon probe`: the packet of [`send`], read for what it says about cost. A reject that
 /// states a cost, complete or partial, is a success, and a cost of 0 is stated.
+#[allow(clippy::too_many_arguments)]
 pub fn probe(
     home: &Path,
     destination: &str,
@@ -1991,6 +2037,7 @@ pub fn probe(
     seal_to: Option<&str>,
     method: &str,
     target: &str,
+    headers: &[(String, String)],
     body: Option<&Path>,
 ) -> Result<Report, Error> {
     send_packet(
@@ -2000,6 +2047,7 @@ pub fn probe(
         seal_to,
         method,
         target,
+        headers,
         body,
         true,
     )
@@ -2013,23 +2061,35 @@ fn send_packet(
     seal_to: Option<&str>,
     method: &str,
     target: &str,
+    headers: &[(String, String)],
     body: Option<&Path>,
     probing: bool,
 ) -> Result<Report, Error> {
     send_packet_with(destination, amount, target, probing, |target| {
-        dispatch(home, destination, amount, seal_to, method, target, body)
+        dispatch(
+            home,
+            destination,
+            amount,
+            seal_to,
+            method,
+            target,
+            headers,
+            body,
+        )
     })
 }
 
 /// `toon send` through an agent key (ADR 0010): the packet is formed here and originated by
 /// a signed write of the connector at `surface`, sealed to `seal_to` or to that connector.
 /// The agent node's home is never read, and the request leaves directly.
+#[allow(clippy::too_many_arguments)]
 pub fn send_as_agent(
     surface: &Surface,
     destination: &str,
     amount: u64,
     seal_to: Option<&str>,
     (method, target): (&str, &str),
+    headers: &[(String, String)],
     body: Option<&Path>,
 ) -> Result<Report, Error> {
     let not_sent = |message: String| Error {
@@ -2050,7 +2110,7 @@ pub fn send_as_agent(
             amount,
             &public,
             (method, target),
-            vec![("content-type".to_owned(), "application/json".to_owned())],
+            request_headers(headers),
             body,
         )
     })
@@ -3220,6 +3280,40 @@ toon_fees_earned_total 40\n";
                 .contains("The connector did not report the settlement transaction"),
             "{}",
             report.text
+        );
+    }
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::*;
+
+    fn pair(name: &str, value: &str) -> (String, String) {
+        (name.to_owned(), value.to_owned())
+    }
+
+    #[test]
+    fn a_header_is_a_name_and_a_value() {
+        assert_eq!(
+            parse_header("X-Test: a: b").unwrap(),
+            pair("X-Test", "a: b")
+        );
+        for bad in ["nope", ": v", "a b: v", "X: a\nb"] {
+            let error = parse_header(bad).unwrap_err();
+            assert_eq!(error.code, ErrorCode::Usage);
+            assert!(error.message.contains(bad), "{}", error.message);
+        }
+    }
+
+    #[test]
+    fn the_json_content_type_leads_unless_one_is_given() {
+        assert_eq!(
+            request_headers(&[pair("X-A", "1")]),
+            vec![pair("content-type", "application/json"), pair("X-A", "1")]
+        );
+        assert_eq!(
+            request_headers(&[pair("X-A", "1"), pair("Content-Type", "text/plain")]),
+            vec![pair("X-A", "1"), pair("Content-Type", "text/plain")]
         );
     }
 }

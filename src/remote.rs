@@ -604,6 +604,7 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
             &json!({ "app": app, "yes": yes }),
         ),
         Command::Send(args) => {
+            let headers = operator::parse_headers(&args.header)?;
             confirmed(args.amount.into(), args.yes)?;
             let surface = KeyFile::load(path)?.surface(app)?;
             let mut report = operator::send_as_agent(
@@ -612,6 +613,7 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
                 args.amount,
                 args.seal_to.as_deref(),
                 (&args.method, &args.path),
+                &headers,
                 args.body.as_deref(),
             )?;
             if report.exit == Exit::Success {

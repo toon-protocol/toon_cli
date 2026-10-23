@@ -511,10 +511,17 @@ pub struct SendArgs {
     /// The request's method
     #[arg(long, default_value = "POST")]
     pub method: String,
-    /// The path and query the app receives, beneath the route's handler
+    /// The path and query the app receives, joined beneath the route's own path: the default
+    /// `/` is the route's path itself, so on a route that maps to `/upload`, leave `--path`
+    /// unset (`--path /upload` asks for `/upload/upload`)
     #[arg(long, default_value = "/")]
     pub path: String,
-    /// A file whose bytes are the request's body, sent as `application/json`
+    /// A request header, `'Name: value'`, put on the request the app receives; repeat it for
+    /// more. A `content-type` header replaces the default `application/json`
+    #[arg(long = "header", value_name = "NAME: VALUE")]
+    pub header: Vec<String>,
+    /// A file whose bytes are sent unchanged as the request's body, as `application/json`
+    /// unless a `content-type` header is given
     #[arg(long)]
     pub body: Option<std::path::PathBuf>,
     /// Confirm that this command moves money: without it nothing is sent
@@ -537,10 +544,17 @@ pub struct ProbeArgs {
     /// The request's method
     #[arg(long, default_value = "POST")]
     pub method: String,
-    /// The path and query the app receives, beneath the route's handler
+    /// The path and query the app receives, joined beneath the route's own path: the default
+    /// `/` is the route's path itself, so on a route that maps to `/upload`, leave `--path`
+    /// unset (`--path /upload` asks for `/upload/upload`)
     #[arg(long, default_value = "/")]
     pub path: String,
-    /// A file whose bytes are the request's body, sent as `application/json`
+    /// A request header, `'Name: value'`, put on the request the app receives; repeat it for
+    /// more. A `content-type` header replaces the default `application/json`
+    #[arg(long = "header", value_name = "NAME: VALUE")]
+    pub header: Vec<String>,
+    /// A file whose bytes are sent unchanged as the request's body, as `application/json`
+    /// unless a `content-type` header is given
     #[arg(long)]
     pub body: Option<std::path::PathBuf>,
     /// Confirm that a probe with an amount moves money: without it nothing is sent

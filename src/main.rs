@@ -125,6 +125,7 @@ fn run() -> ExitCode {
         Command::Send(args) => render(
             home::resolve().and_then(|home| {
                 let amount: u128 = args.amount.into();
+                let headers = operator::parse_headers(&args.header)?;
                 spending::spend_packets(&home, amount, args.yes, |packets| {
                     let mut report = operator::send(
                         &home,
@@ -133,6 +134,7 @@ fn run() -> ExitCode {
                         args.seal_to.as_deref(),
                         &args.method,
                         &args.path,
+                        &headers,
                         args.body.as_deref(),
                     )
                     .map_err(|error| operator::repriced(error, packets.moved(amount)))?;
@@ -157,6 +159,7 @@ fn run() -> ExitCode {
         Command::Probe(args) => render(
             home::resolve().and_then(|home| {
                 let amount: u128 = args.amount.into();
+                let headers = operator::parse_headers(&args.header)?;
                 let probe = || {
                     operator::probe(
                         &home,
@@ -165,6 +168,7 @@ fn run() -> ExitCode {
                         args.seal_to.as_deref(),
                         &args.method,
                         &args.path,
+                        &headers,
                         args.body.as_deref(),
                     )
                 };
