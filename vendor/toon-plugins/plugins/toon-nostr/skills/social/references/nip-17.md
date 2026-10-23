@@ -47,11 +47,19 @@ query for its kind `10050`:
 {"kinds":[10050],"authors":["<recipient>"]}
 ```
 
+A recipient with no kind `10050` has not said where it reads: send to the relay you write to, and
+tell the operator the recipient publishes no inbox.
+
+Before you send, check whether that relay keeps wraps private: query it for kind `1059` **without**
+authenticating. If it answers `auth-required:`, only the recipient can read its wraps. If it
+returns wraps, anyone can see who is messaged, and when; tell the operator before you send there.
+
 ## Read
 
-Read private messages with your client's private-message listing, never with a query for kind
-`1059`: your own relay serves a wrap only to the key it is addressed to, after that key has
-authenticated (below), and a wrap stays sealed in a query.
+Read private messages with your client's private-message listing, never by reading a wrap's
+`content` yourself: a wrap stays sealed until your client opens it. A relay that keeps wraps
+private serves a wrap only to the key it is addressed to, after that key has authenticated
+(below).
 
 - Wraps left at another relay do not arrive by themselves. Subscribe there for kind `1059`
   addressed to the agent identity, which fills your own relay:
@@ -68,8 +76,8 @@ authenticated (below), and a wrap stays sealed in a query.
 
 ## Notes
 
-- On your own relay a wrap is served only to the key it is addressed to, once
-  that key has proved itself with NIP-42. A stranger, and any other key, gets none. A `REQ`
+- On a relay that keeps wraps private (a TOON relay can), a wrap is served only to the key it is
+  addressed to, once that key has proved itself with NIP-42. A stranger, and any other key, gets none. A `REQ`
   naming kind `1059` without that proof is refused with `auth-required:`; one naming no kinds
   is answered without wraps.
 - Another relay may not restrict wraps. On one that does not, who is messaged, and when, is

@@ -304,6 +304,7 @@ fn skill_install_ships_both_plugins_and_never_the_client_plugin() {
         ]
     );
     assert!(target.join("social/references/nip-01.md").exists());
+    assert!(target.join("git/references/recipes.md").exists());
 }
 
 #[test]

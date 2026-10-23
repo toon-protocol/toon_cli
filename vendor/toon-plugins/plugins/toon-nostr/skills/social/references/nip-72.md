@@ -1,5 +1,8 @@
 # NIP-72: moderated communities
 
+Upstream marks this NIP unrecommended: try NIP-29 (`nip-29.md`) on a relay whose `supported_nips`
+lists `29`. Use this one as the fallback on a relay that does not, and to read communities that exist.
+
 A community has moderators who approve posts; clients show the approved ones.
 
 ## Kinds

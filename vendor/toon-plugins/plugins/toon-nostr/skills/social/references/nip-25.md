@@ -6,7 +6,8 @@ Kind `7` is a reaction to an event.
 
 - `content`: `+` (like), `-` (dislike), an emoji, or a custom emoji `:shortcode:` with a
   `["emoji","shortcode","<image url>"]` tag. Empty content means `+`.
-- Tags: `["e","<id>","<relay>","<author>"]` the event reacted to, `["p","<author>","<relay>"]`, and
+- Tags: `["e","<id>","<relay>","<author>"]` the event reacted to, `["p","<author>"]` (a relay hint
+  may follow the key), and
   `["k","<kind of the event>"]`. For an addressable event add `["a","<address>","<relay>"]`.
 - The last `e` and `p` tags are the ones reacted to.
 

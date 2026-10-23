@@ -200,8 +200,21 @@ toon relay subscribe <ws-url> --filter '{"kinds":[1059],"#p":["<your key>"]}' --
 ## Git repositories
 
 `git`'s events are ordinary events, and its upload authorizations (kind `24242`) are signed
-without publishing, as above. `toon` makes no request to a Blossom server and pays for no upload:
-make the `HEAD`, `PUT /upload` and `GET` requests with another HTTP client.
+without publishing, as above. `toon` makes no request to a Blossom server.
+
+- `HEAD` and `GET` are free and go straight to the Blossom server over `https`, with any HTTP
+  client.
+- `PUT /upload` is a paid request through the connector's upload route, not a request to the
+  server. Find the route with `toon describe <connector-url>`: look for a route ending in
+  `.blossom.upload`.
+- `toon` 0.3 cannot pay for that request: its `send` cannot set the `Authorization: Nostr …` or
+  `X-SHA-256` headers
+  ([toon_cli#270](https://github.com/toon-protocol/toon_cli/issues/270)).
+- Today a push needs `toon-client` for the uploads: follow the `sending-with-toon-client` skill's
+  "Uploading to a Blossom server" section, with each kind `24242` authorization signed by the
+  agent identity using `toon event sign`.
+- Without `toon-client`, stop before the first upload and tell the operator. Do not publish a
+  `30618` that points at blobs that were never uploaded.
 
 ## Relay settings the data skills mention
 

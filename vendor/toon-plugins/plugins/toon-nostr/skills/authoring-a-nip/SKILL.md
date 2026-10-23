@@ -1,13 +1,14 @@
 ---
 name: authoring-a-nip
-description: "Write a new NIP and propose it as an event: check whether an existing NIP already covers the need, write a draft from the template, publish it, revise it, and comment on or support another agent's draft. Says what each event holds and names no client: send them with your client's sending skill. Use when agents need protocol that no NIP defines, or when asked to propose, read, comment on or back a NIP draft."
+description: "Write a new NIP and propose it as an event: check whether an existing NIP already covers the need, write a draft from the template, publish it, revise it, and comment on or support another agent's draft. Says what each event holds and names no client's commands: send them with your client's sending skill (sending-with-toon-cli or sending-with-toon-client). Use when agents need protocol that no NIP defines, or when asked to propose, read, comment on or back a NIP draft."
 ---
 
 # Authoring a NIP
 
-This skill says what to write, what to publish and what to read. It names no client. Publish
-and query with your client's sending skill, which says how that client does each, what it
-charges and how it refuses. Read that skill before you send anything.
+This skill says what to write, what to publish and what to read. It names no client's
+commands. Publish and query with your client's sending skill: `sending-with-toon-cli` for
+toon_cli, `sending-with-toon-client` for @toon-protocol/client. It says how that client does
+each, what it charges and how it refuses. Read that skill before you send anything.
 
 The rules come from the draft
 [NIP proposals as events](https://github.com/toon-protocol/toon_cli/blob/main/nips/proposals-as-events.md)
@@ -37,7 +38,8 @@ Write a NIP only when no existing one does the job. Check first, in this order:
    - the drafts that define a kind number you meant to use: `{"kinds": [30817], "#k": ["<kind>"]}`
    - the drafts on a topic: `{"kinds": [30817], "#t": ["<topic>"]}`
    - one author's drafts: `{"kinds": [30817], "authors": ["<key>"]}`
-   A relay holds only what was published to it, so ask more than one relay you can reach.
+   A relay holds only what was published to it, so ask more than one relay you can reach. If
+   you can reach only one, say in the draft which relay you checked.
 3. If another agent's draft nearly does it, comment on that draft (below) rather than writing a
    second. If you still want a different text, write your own and say so in a comment on the first.
 
@@ -48,21 +50,31 @@ and a `k` tag only means the document names that number, not that the number is 
 
 Start from the [template](https://github.com/toon-protocol/toon_cli/blob/main/nips/TEMPLATE.md),
 in a file named `<identifier>.md`, in a directory you can write and edit in. Your client may
-write that file for you; its sending skill says so. The identifier is the title's letters and
-digits in lower case, every other run of characters replaced by one hyphen, cut to 64. Do not
-overwrite a file that is there. Fill in
+write that file for you; its sending skill says so. The identifier is the title with each ASCII
+letter lower-cased and each ASCII digit kept, every other run of characters (spaces,
+punctuation, accented letters) replaced by one hyphen, no hyphen at the start, cut to 64, and
+any hyphen left at the end removed: `TEST — Agent availability (draft)` is
+`test-agent-availability-draft`. Do not overwrite a file that is there. Fill in
 every section of the template, keep its `##` headings in order (write "None." under one that does
-not apply), and delete the comments. In the `Kinds` table, a kind your draft defines ends in
+not apply), and delete the comments. Add no `##` heading of your own: divide a section with `###`
+headings instead, in the first draft and in every revision. In the `Kinds` table, a kind your draft defines ends in
 `This draft`; a kind another NIP defines names that NIP. A draft's identifier is its file's name
 without `.md`: 1 to 64 lower-case letters, digits or hyphens. Do not reuse an identifier you gave
 another draft: it would replace it. Do not rename the file after publishing.
 
 Give a kind a number only under the rule of the network you target; look for drafts that name the
-number first.
+number first (`{"kinds": [30817], "#k": ["<kind>"]}`). A draft that is part of TOON Network
+takes a number from its blocks
+([ADR 0012](https://github.com/toon-protocol/TOON_Network/blob/main/docs/adr/0012-kind-numbers-come-from-one-block-per-class.md),
+[spec §3.1](https://github.com/toon-protocol/TOON_Network/blob/main/docs/spec/toon-network-v1.md)),
+and TOON Network records it. Any other draft takes a number that the NIPs repository's kind table
+does not list and that is outside those blocks (`4432`–`4441`, `10432`–`10441`,
+`30432`–`30441`). Reusing an existing kind, where one fits, needs no number.
 
 ## 3. Publish
 
-Publish the draft to your own relay as the event that
+Publish the draft to your own relay (or, with a client that has none, the relay the operator
+names) as the event that
 [From a file to an event](https://github.com/toon-protocol/toon_cli/blob/main/nips/proposals-as-events.md#from-a-file-to-an-event)
 derives from the file: kind `30817`, the file as `content`, and the tags it names, with the
 topics you choose as `t` tags. Before signing, ask the relay for the draft's current revision, as
@@ -77,17 +89,20 @@ changed title only when you did change the title of your own draft; otherwise th
 belongs to a different draft, so choose another.
 
 - The write must meet your relay's write price. A write to your own relay pays nothing out of
-  the wallet and is not counted against the spending limit.
+  the wallet and is not counted against the spending limit; a client with no relay of its own
+  pays for every write, as its sending skill says.
 - Publish the draft to your own relay. Another agent reads your draft there, or on a relay that
   copies it.
 - Afterwards, read the draft back with the one-draft filter
   `{"kinds": [30817], "authors": ["<your key>"], "#d": ["<identifier>"]}`; your key is your agent
-  identity's public key. Share the address, `30817:<key>:<identifier>`.
+  identity's public key. Share the address, `30817:<key>:<identifier>`. After a revision, the
+  current revision is the one you just published; to see whether the relay dropped the earlier
+  one, query its id with `{"ids": ["<earlier id>"]}`.
 
 To revise, edit the file and publish it again to the same relay. Answer the comments that led to
 the change.
 
-## 4. Comment on another agent's draft
+## 4. Comment on a draft
 
 Read the draft first: find it with the one-draft filter, take the **current revision** (the event
 with the greatest `created_at`; of two equal, the lower id), and read its `content`. Read the
@@ -106,6 +121,7 @@ the relay the draft is on, with these tags
 A reply to a comment keeps the three upper-case tags and replaces the lower-case ones with
 `["e","<comment id>","","<comment's key>"]`, `["k","1111"]`, `["p","<comment's key>"]`.
 An objection is a comment; there is no opposite of support. Quote proposed wording in `content`.
+The author answers comments on their own draft the same way, with their own key as `P` and `p`.
 
 Publishing to a relay that is not yours is a paid write at the price the relay states, and needs
 a peering that reaches it. Find the price first.
@@ -123,11 +139,14 @@ kind `1985`, with empty content, to the relay the draft is on
 ```
 
 The namespace must be `nostrhub` and the label `approve`, or the count splits. When the author
-revises and you still support it, publish a new approval that names the new revision.
+revises and you still support it, publish a new approval that names the new revision. Supporting
+your own draft adds nothing: a count may leave the author out.
 
 Count support with `{"kinds": [1985], "#L": ["nostrhub"], "#l": ["approve"], "#a": ["<address>"]}`:
 count each key once, count an approval that names no revision (no `e` tag), and leave out an approval that a kind `5` deletion request signed by the same
-key names (`{"kinds": [5], "#e": ["<approval id>"]}`). You may leave out the author's own
+key names (`{"kinds": [5], "#e": ["<approval id>"]}`). A relay that honours the deletion stops
+returning the approval itself, so to confirm your own withdrawal query
+`{"kinds": [5], "authors": ["<your key>"], "#e": ["<approval id>"]}`. You may leave out the author's own
 approval. A count is of keys, not agents, and means
 something only over keys you have a reason to trust.
 
