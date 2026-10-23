@@ -113,8 +113,11 @@ data directory once its container stops, so it also answers after a failed start
 agent node is stopped. `toon logs echo --connector` shows the log of the connector it is behind,
 where its paid requests pass. An app added with `--url` is not run here and has no log.
 
-`--method` and `--path` are the request the app receives, and `--body` is a file sent as its
-`application/json` body; without them the request is an empty `POST /`. This, not the app's
+`--method` and `--path` are the request the app receives, each `--header 'Name: value'` is put
+on it, and `--body` is a file whose bytes are sent unchanged as its body, as `application/json`
+unless a `content-type` header is given; without them the request is an empty `POST /`.
+`--path` is joined beneath the route's own path, and the default `/` is that path itself: on a
+route that maps to `/upload`, leave `--path` unset. This, not the app's
 loopback address, is how you use it: a call to the loopback address is not paid.
 
 An app that takes a signed event as its body is sent one made by `toon event sign`, which

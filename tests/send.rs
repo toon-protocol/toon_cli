@@ -3,7 +3,7 @@ mod support;
 use std::fs;
 
 use support::fake_chain::FakeChain;
-use support::{Foreground, Machine};
+use support::{Foreground, Machine, PASSPHRASE};
 
 /// An agent node, running, with the fake relay behind its connector.
 struct Running {
@@ -226,8 +226,9 @@ fn route_list_needs_the_agent_node_to_be_running() {
     assert_eq!(run.exit_code, 1);
 }
 
-/// An app at a URL that records each request it receives, head and body, and answers 201.
-fn app() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+/// An app at a URL that records each request it receives, head and body, as the bytes that
+/// arrived, and answers 201.
+fn app() -> (String, std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>) {
     use std::io::{Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/inbox", listener.local_addr().unwrap());
@@ -241,7 +242,8 @@ fn app() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
                 let read = stream.read(&mut buffer).unwrap_or(0);
                 request.extend_from_slice(&buffer[..read]);
                 let text = String::from_utf8_lossy(&request).into_owned();
-                let complete = text.split_once("\r\n\r\n").is_some_and(|(head, body)| {
+                let complete = text.split_once("\r\n\r\n").is_some_and(|(head, _)| {
+                    let body_len = request.len() - head.len() - 4;
                     let wanted = head
                         .lines()
                         .find_map(|line| {
@@ -250,15 +252,13 @@ fn app() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
                                 .and_then(|n| n.trim().parse::<usize>().ok())
                         })
                         .unwrap_or(0);
-                    body.len() >= wanted
+                    body_len >= wanted
                 });
                 if read == 0 || complete {
                     break;
                 }
             }
-            log.lock()
-                .unwrap()
-                .push(String::from_utf8_lossy(&request).into_owned());
+            log.lock().unwrap().push(request);
             let _ = stream.write_all(
                 b"HTTP/1.1 201 Created\r\nContent-Length: 5\r\nConnection: close\r\n\r\nmade!",
             );
@@ -310,7 +310,7 @@ fn a_request_with_a_method_a_path_and_a_body_reaches_the_app_and_its_answer_come
     assert_eq!(report["outcome"], "fulfilled", "{report}");
     assert_eq!(report["response"]["status"], 201);
     assert_eq!(report["response"]["body"], "made!");
-    let seen = seen.lock().unwrap();
+    let seen = texts(&seen.lock().unwrap());
     assert_eq!(seen.len(), 1, "{seen:?}");
     let request = seen[0].to_ascii_lowercase();
     assert!(
@@ -335,7 +335,7 @@ fn a_send_with_none_of_the_request_flags_is_an_empty_post_to_the_root() {
         .toon(&["send", "g.toon.inbox", "--amount", "0", "--yes"]);
 
     assert_eq!(run.exit_code, 0, "{}", run.stdout);
-    let seen = seen.lock().unwrap();
+    let seen = texts(&seen.lock().unwrap());
     assert!(seen[0].starts_with("POST /inbox "), "{seen:?}");
     assert!(seen[0].ends_with("\r\n\r\n"), "{seen:?}");
 }
@@ -346,9 +346,6 @@ fn an_unreadable_body_file_fails_before_sending_and_counts_for_nothing() {
     let node = running();
     add_app(&node, &url);
     let missing = node.machine.home().join("missing.json");
-    let remaining = |node: &Running| {
-        node.machine.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone()
-    };
     let before = remaining(&node);
     assert!(before.is_string(), "{before}");
 
@@ -375,4 +372,197 @@ fn an_unreadable_body_file_fails_before_sending_and_counts_for_nothing() {
     assert_eq!(run.exit_code, 1);
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(remaining(&node), before);
+}
+
+/// What is left of today's spending limit on `node`.
+fn remaining(node: &Running) -> serde_json::Value {
+    node.machine.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone()
+}
+
+/// The lower-cased head of each request an app saw.
+fn heads(seen: &[Vec<u8>]) -> Vec<String> {
+    seen.iter()
+        .map(|request| {
+            let text = String::from_utf8_lossy(request).to_ascii_lowercase();
+            text.split("\r\n\r\n").next().unwrap().to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn headers_given_reach_the_app_and_the_json_content_type_stays() {
+    let (url, seen) = app();
+    let node = running();
+    add_app(&node, &url);
+
+    let run = node.machine.toon(&[
+        "send",
+        "g.toon.inbox",
+        "--amount",
+        "0",
+        "--header",
+        "X-Test: a",
+        "--header",
+        "Authorization: Nostr abc",
+        "--yes",
+        "--json",
+    ]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let heads = heads(&seen.lock().unwrap());
+    assert_eq!(heads.len(), 1, "{heads:?}");
+    let test = heads[0].find("x-test: a\r\n");
+    let authorization = heads[0].find("authorization: nostr abc\r\n");
+    assert!(test.is_some() && authorization.is_some(), "{heads:?}");
+    assert!(test < authorization, "in the order given: {heads:?}");
+    assert_eq!(heads[0].matches("content-type:").count(), 1, "{heads:?}");
+    assert!(
+        heads[0].contains("content-type: application/json"),
+        "{heads:?}"
+    );
+}
+
+#[test]
+fn a_content_type_header_replaces_the_default_and_a_binary_body_arrives_unchanged() {
+    let (url, seen) = app();
+    let node = running();
+    add_app(&node, &url);
+    let bytes: Vec<u8> = vec![0xff, 0xfe, 0x00, 0x80, b'\r', b'\n', 0xc3];
+    let body = node.machine.home().join("object.bin");
+    fs::write(&body, &bytes).unwrap();
+
+    let run = node.machine.toon(&[
+        "send",
+        "g.toon.inbox",
+        "--amount",
+        "0",
+        "--method",
+        "PUT",
+        "--header",
+        "content-TYPE: application/octet-stream",
+        "--body",
+        body.to_str().unwrap(),
+        "--yes",
+        "--json",
+    ]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let seen = seen.lock().unwrap();
+    let heads = heads(&seen);
+    assert_eq!(heads[0].matches("content-type:").count(), 1, "{heads:?}");
+    assert!(
+        heads[0].contains("content-type: application/octet-stream"),
+        "{heads:?}"
+    );
+    assert!(seen[0].ends_with(&bytes), "{:?}", seen[0]);
+}
+
+#[test]
+fn probe_takes_headers_the_same_way() {
+    let (url, seen) = app();
+    let node = running();
+    add_app(&node, &url);
+
+    let run = node.machine.toon(&[
+        "probe",
+        "g.toon.inbox",
+        "--header",
+        "X-Probe: yes",
+        "--json",
+    ]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let heads = heads(&seen.lock().unwrap());
+    assert!(heads[0].contains("x-probe: yes"), "{heads:?}");
+}
+
+#[test]
+fn a_malformed_header_is_a_usage_error_before_anything_is_sent_or_paid() {
+    let (url, seen) = app();
+    let node = running();
+    add_app(&node, &url);
+    let before = remaining(&node);
+
+    for bad in ["no colon", ": value", "bad name: v", "X-Ok: line\nbreak"] {
+        for command in ["send", "probe"] {
+            let run = node.machine.toon(&[
+                command,
+                "g.toon.inbox",
+                "--amount",
+                "1",
+                "--header",
+                bad,
+                "--yes",
+                "--json",
+            ]);
+            let error = run.json()["error"].clone();
+            assert_eq!(error["code"], "usage", "{bad}: {}", run.stdout);
+            assert!(
+                error["message"].as_str().unwrap().contains(bad),
+                "{bad}: {error}"
+            );
+            assert_eq!(run.exit_code, 2, "{bad}");
+        }
+    }
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(remaining(&node), before);
+}
+
+#[test]
+fn headers_reach_the_app_through_an_agent_key() {
+    let (url, seen) = app();
+    let node = running();
+    add_app(&node, &url);
+    let created = node.machine.toon_with(
+        &["agent-key", "create", "--max-per-command", "5", "--json"],
+        |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        },
+    );
+    assert_eq!(created.exit_code, 0, "{}{}", created.stdout, created.stderr);
+    let key = created.json()["key_file"].as_str().unwrap().to_owned();
+    let nowhere = tempfile::tempdir().unwrap();
+    let args = [
+        "send",
+        "g.toon.inbox",
+        "--amount",
+        "0",
+        "--header",
+        "X-Agent: a",
+        "--header",
+        "Content-Type: text/plain",
+        "--yes",
+        "--json",
+    ];
+
+    // The supervisor binds its order address a moment after the key is made.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let run = loop {
+        let run = node.machine.toon_with(&args, |command| {
+            command
+                .env("HOME", nowhere.path())
+                .env("TOON_AGENT_KEY", &key);
+        });
+        if run.exit_code != 1
+            || !run.stdout.contains("did not answer")
+            || std::time::Instant::now() > deadline
+        {
+            break run;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    let heads = heads(&seen.lock().unwrap());
+    assert_eq!(heads.len(), 1, "{heads:?}");
+    assert!(heads[0].contains("x-agent: a\r\n"), "{heads:?}");
+    assert_eq!(heads[0].matches("content-type:").count(), 1, "{heads:?}");
+    assert!(heads[0].contains("content-type: text/plain"), "{heads:?}");
+}
+
+/// Each request an app saw, as text.
+fn texts(seen: &[Vec<u8>]) -> Vec<String> {
+    seen.iter()
+        .map(|request| String::from_utf8_lossy(request).into_owned())
+        .collect()
 }
