@@ -128,4 +128,21 @@ impl Profile {
             Profile::Mainnet => Some("wss://relay.mainnet.toonprotocol.dev"),
         }
     }
+
+    /// The connector URLs this profile named in earlier releases. A state saved then holds
+    /// one; it is read as [`Profile::connector_url`].
+    pub fn retired_connector_urls(self) -> &'static [&'static str] {
+        match self {
+            Profile::Devnet => &["https://proxy.relay.devnet.toonprotocol.dev/ilp"],
+            Profile::Sandbox | Profile::Mainnet => &[],
+        }
+    }
+
+    /// The relay URLs this profile named in earlier releases, read as [`Profile::relay_url`].
+    pub fn retired_relay_urls(self) -> &'static [&'static str] {
+        match self {
+            Profile::Devnet => &["wss://relay-ws.devnet.toonprotocol.dev"],
+            Profile::Sandbox | Profile::Mainnet => &[],
+        }
+    }
 }
