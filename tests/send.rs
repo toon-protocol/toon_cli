@@ -3,7 +3,7 @@ mod support;
 use std::fs;
 
 use support::fake_chain::FakeChain;
-use support::{Foreground, Machine};
+use support::{Foreground, Machine, PASSPHRASE};
 
 /// An agent node, running, with the fake relay behind its connector.
 struct Running {
@@ -346,9 +346,6 @@ fn an_unreadable_body_file_fails_before_sending_and_counts_for_nothing() {
     let node = running();
     add_app(&node, &url);
     let missing = node.machine.home().join("missing.json");
-    let remaining = |node: &Running| {
-        node.machine.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone()
-    };
     let before = remaining(&node);
     assert!(before.is_string(), "{before}");
 
@@ -375,6 +372,11 @@ fn an_unreadable_body_file_fails_before_sending_and_counts_for_nothing() {
     assert_eq!(run.exit_code, 1);
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(remaining(&node), before);
+}
+
+/// What is left of today's spending limit on `node`.
+fn remaining(node: &Running) -> serde_json::Value {
+    node.machine.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone()
 }
 
 /// The lower-cased head of each request an app saw.
@@ -409,8 +411,10 @@ fn headers_given_reach_the_app_and_the_json_content_type_stays() {
     assert_eq!(run.exit_code, 0, "{}", run.stdout);
     let heads = heads(&seen.lock().unwrap());
     assert_eq!(heads.len(), 1, "{heads:?}");
-    assert!(heads[0].contains("x-test: a\r\n"), "{heads:?}");
-    assert!(heads[0].contains("authorization: nostr abc"), "{heads:?}");
+    let test = heads[0].find("x-test: a\r\n");
+    let authorization = heads[0].find("authorization: nostr abc\r\n");
+    assert!(test.is_some() && authorization.is_some(), "{heads:?}");
+    assert!(test < authorization, "in the order given: {heads:?}");
     assert_eq!(heads[0].matches("content-type:").count(), 1, "{heads:?}");
     assert!(
         heads[0].contains("content-type: application/json"),
@@ -477,9 +481,6 @@ fn a_malformed_header_is_a_usage_error_before_anything_is_sent_or_paid() {
     let (url, seen) = app();
     let node = running();
     add_app(&node, &url);
-    let remaining = |node: &Running| {
-        node.machine.toon(&["limit", "show", "--json"]).json()["limits"]["remaining_today"].clone()
-    };
     let before = remaining(&node);
 
     for bad in ["no colon", ": value", "bad name: v", "X-Ok: line\nbreak"] {
@@ -505,6 +506,58 @@ fn a_malformed_header_is_a_usage_error_before_anything_is_sent_or_paid() {
     }
     assert!(seen.lock().unwrap().is_empty());
     assert_eq!(remaining(&node), before);
+}
+
+#[test]
+fn headers_reach_the_app_through_an_agent_key() {
+    let (url, seen) = app();
+    let node = running();
+    add_app(&node, &url);
+    let created = node.machine.toon_with(
+        &["agent-key", "create", "--max-per-command", "5", "--json"],
+        |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        },
+    );
+    assert_eq!(created.exit_code, 0, "{}{}", created.stdout, created.stderr);
+    let key = created.json()["key_file"].as_str().unwrap().to_owned();
+    let nowhere = tempfile::tempdir().unwrap();
+    let args = [
+        "send",
+        "g.toon.inbox",
+        "--amount",
+        "0",
+        "--header",
+        "X-Agent: a",
+        "--header",
+        "Content-Type: text/plain",
+        "--yes",
+        "--json",
+    ];
+
+    // The supervisor binds its order address a moment after the key is made.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let run = loop {
+        let run = node.machine.toon_with(&args, |command| {
+            command
+                .env("HOME", nowhere.path())
+                .env("TOON_AGENT_KEY", &key);
+        });
+        if run.exit_code != 1
+            || !run.stdout.contains("did not answer")
+            || std::time::Instant::now() > deadline
+        {
+            break run;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    let heads = heads(&seen.lock().unwrap());
+    assert_eq!(heads.len(), 1, "{heads:?}");
+    assert!(heads[0].contains("x-agent: a\r\n"), "{heads:?}");
+    assert_eq!(heads[0].matches("content-type:").count(), 1, "{heads:?}");
+    assert!(heads[0].contains("content-type: text/plain"), "{heads:?}");
 }
 
 /// Each request an app saw, as text.

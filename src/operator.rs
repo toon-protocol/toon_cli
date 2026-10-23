@@ -1643,8 +1643,9 @@ fn before_sending(error: &connector_cli::CliError) -> bool {
 
 /// Send one packet from the operator surface to `destination`, for `amount`, sealed to the
 /// connector at `seal_to`, or to this one, and return what the connector says it came to.
-/// `method` and `target` are the request the app receives; `body` is a file the request
-/// carries as its JSON body.
+/// `method`, `target` and `headers` are the request the app receives; `body` is a file
+/// whose bytes the request carries, as `application/json` unless `headers` has a
+/// `content-type`.
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch(
     home: &Path,
@@ -2081,7 +2082,8 @@ fn send_packet(
 
 /// `toon send` through an agent key (ADR 0010): the packet is formed here and originated by
 /// a signed write of the connector at `surface`, sealed to `seal_to` or to that connector.
-/// The agent node's home is never read, and the request leaves directly.
+/// The agent node's home is never read, and the request leaves directly. `headers` are put
+/// on the request as [`dispatch`] puts them.
 #[allow(clippy::too_many_arguments)]
 pub fn send_as_agent(
     surface: &Surface,
@@ -2431,6 +2433,7 @@ mod tests {
         UNREAD_TIMEOUT,
     };
     use super::{history_report, land_report, parse_packet_counts, PacketCounts};
+    use super::{parse_header, request_headers};
     use crate::cli::Chain;
     use crate::outcome::ErrorCode;
     use crate::profile::Profile;
@@ -3282,11 +3285,6 @@ toon_fees_earned_total 40\n";
             report.text
         );
     }
-}
-
-#[cfg(test)]
-mod header_tests {
-    use super::*;
 
     fn pair(name: &str, value: &str) -> (String, String) {
         (name.to_owned(), value.to_owned())
