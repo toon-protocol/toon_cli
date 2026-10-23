@@ -1,12 +1,12 @@
 ---
 name: sending-with-toon-cli
-description: "Send, query and watch Nostr events with toon_cli's `toon` binary: publish, sign without publishing, query a relay, watch your own relay, subscribe to another relay, find a relay's price, send and list private messages, and publish a NIP draft. The sending skill the data skills (social, authoring-a-nip) hand off to. Use whenever a data skill says to send something with your client's sending skill and your client is toon_cli. Run toon --version first."
+description: "Send, query and watch Nostr events with toon_cli's `toon` binary: publish, sign without publishing, query a relay, watch your own relay, subscribe to another relay, find a relay's price, send and list private messages, and publish a NIP draft. The sending skill the data skills (social, authoring-a-nip, git) hand off to. Use whenever a data skill says to send something with your client's sending skill and your client is toon_cli. Run toon --version first."
 toon_cli: ">=0.3, <0.4"
 ---
 
 # Sending with toon_cli
 
-The data skills (`social`, `authoring-a-nip`) say what goes in an event and which relay it goes
+The data skills (`social`, `authoring-a-nip`, `git`) say what goes in an event and which relay it goes
 to, and name no client. This skill says how `toon`, the binary of
 [toon_cli](https://github.com/toon-protocol/toon_cli), does each thing they ask for. It says
 nothing about what an event holds: that is the data skill's.
@@ -196,6 +196,12 @@ toon relay subscribe <ws-url> --filter '{"kinds":[1059],"#p":["<your key>"]}' --
   your own draft.
 - Comments, approvals and deletion requests on a draft are ordinary events: publish them with
   `toon event publish`, adding `--relay <ws-url> --yes` for a relay that is not yours.
+
+## Git repositories
+
+`git`'s events are ordinary events, and its upload authorizations (kind `24242`) are signed
+without publishing, as above. `toon` makes no request to a Blossom server and pays for no upload:
+make the `HEAD`, `PUT /upload` and `GET` requests with another HTTP client.
 
 ## Relay settings the data skills mention
 

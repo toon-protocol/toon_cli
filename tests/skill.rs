@@ -297,6 +297,7 @@ fn skill_install_ships_both_plugins_and_never_the_client_plugin() {
         installed,
         [
             "authoring-a-nip",
+            "git",
             "operating-an-agent-node",
             "sending-with-toon-cli",
             "social"
