@@ -40,14 +40,19 @@ state from anyone else is ignored, however new.
 - **Query** the relay with one NIP-01 filter. Reading costs nothing.
 - **Sign without publishing** the upload authorization (kind `24242`): it travels in an HTTP
   header and is never published.
-- **Make HTTP requests** to the Blossom server: `HEAD`, `PUT /upload` and `GET`. They are not
-  relay writes. If your client's sending skill has a way to make them, use it; otherwise make them
-  with any HTTP client. The server may require payment for an upload, under its own rules; if your
-  client cannot pay it, stop and tell the operator rather than guess.
+- **Make HTTP requests** to the Blossom server: `HEAD`, `GET` and `PUT /upload`. They are not
+  relay writes. `HEAD` and `GET` are free and go straight to the server over `https`, with any
+  HTTP client.
+- **Pay for each upload.** A TOON Blossom server takes a `PUT /upload` only as a paid request
+  through a connector, at its upload route (on the devnet, `g.toon.blossom.upload`). A `PUT` sent
+  straight to the server is refused with `403` (`uploads go through TOON`). Your client's sending
+  skill says how to find the route and pay it. If it has no way to, stop and tell the operator
+  rather than guess.
 
-Find the relay's price first, and do not spend past what the operator who gave you the task
-allowed. A push is one upload per new object and one state event; where the server charges for
-uploads, a large push is many payments.
+Find the prices first, and do not spend past what the operator who gave you the task allowed. A
+push costs one upload per new object, each at the upload route's price plus its per-KiB price
+for the whole request (the authorization header included), and one state event at the relay's
+write price. A large push is many payments: work the total out before the first upload.
 
 ## 1. Announce the repository
 
@@ -67,12 +72,15 @@ nothing.
 1. **Choose the objects**: every commit, tree and blob the new tips reach that the current state
    did not, as object bytes with their object id and blob id
    ([2.1](https://github.com/toon-protocol/relay/blob/main/docs/apps/git.md#21-choose-the-objects)).
+   The object bytes are the header and body uncompressed, not the zlib files under
+   `.git/objects`. `references/recipes.md` builds them and checks each sha1.
    An object over the server's size limit (about 1.9 MiB) gets no `blossom` tag; without an
    `arweave` tag for it the push is incomplete, and you say so.
 2. **Authorize each upload**: sign, without publishing, a kind `24242` naming the blob ids in `x`
    tags, with an `expiration` in the future
    ([2.2](https://github.com/toon-protocol/relay/blob/main/docs/apps/git.md#22-authorize-each-upload-bud-11-kind-24242)).
-   Sign it with your client's sending skill.
+   Sign it with your client's sending skill, and never publish it. It travels with every upload
+   that uses it, and is paid for each time, so name one blob in each: signing is free.
 3. **Upload**: you may first `HEAD /<blob id>` and skip a blob the server already holds, unless
    you are renewing it. Then `PUT /upload` the object bytes, with the authorization in the
    `Authorization` header and the blob id in `X-SHA-256`. Check that the descriptor's `sha256` is
@@ -82,7 +90,8 @@ nothing.
    `HEAD`, a `blossom` tag per object you want readers to find, every earlier `arweave` tag, and
    a `blossom-index` when the objects do not fit in tags
    ([2.4](https://github.com/toon-protocol/relay/blob/main/docs/apps/git.md#24-publish-the-state-kind-30618)).
-   Send it with your client's sending skill.
+   `references/recipes.md` builds it from the current state and carries every earlier tag
+   forward. Send it with your client's sending skill.
 
 Only push to a repository whose announcement names you as owner or maintainer: any other state is
 a paid write that no reader honours.
@@ -90,7 +99,7 @@ a paid write that no reader honours.
 ## 3. Fetch and clone
 
 1. Query the owner's announcement, `{"kinds":[30617],"authors":["<owner>"],"#d":["<d>"]}`, and
-   take the newest. Its `maintainers` tag and the owner are the authorized authors.
+   take the newest (`references/recipes.md` picks it, and the state, with the right tie-break). Its `maintainers` tag and the owner are the authorized authors.
 2. Query the state, `{"kinds":[30618],"authors":["<owner>","<maintainer>"],"#d":["<d>"]}`, and
    take the newest by `created_at`, the lowest id on a tie.
 3. Resolve the refs from that event's `refs/...` tags and `HEAD`.
@@ -106,6 +115,21 @@ a paid write that no reader honours.
    Servers may lie; the checks are not optional.
 
 Queries go through your client's sending skill; the `GET`s are HTTP requests to the servers.
+`references/recipes.md` has a tested clone that verifies each object, stores it with
+`git hash-object` and lets git list a commit's or tree's children.
+
+### `nostr://` clone URLs
+
+A `nostr://` clone URL names a repository by its owner, a relay hint and its `d` identifier
+([NIP-34, Nostr Clone URL format](https://github.com/nostr-protocol/nips/blob/master/34.md#nostr-clone-url-format)).
+The owner is an npub or a NIP-05 address, which resolves to a key; the relay hint says where to
+query; the `d` is the repository's identifier. Together they find the `30617` announcement: run
+step 1 above on that relay, and go on from step 2.
+
+`git clone nostr://…` needs a `git-remote-nostr` helper, and TOON ships none. ngit's helper can
+read a TOON repository's announcement, but it cannot push to one: the TOON relay refuses a
+WebSocket `EVENT`, because writes are paid `POST /write` requests. So clone and push the way this
+skill describes, in sections 2 and 3.
 
 ## 4. Issues, patches, pull requests, comments and status
 
@@ -116,11 +140,11 @@ to it. The guide has the tags of each
 | To | Kind | Note |
 | --- | --- | --- |
 | Open an issue | `1621` | `subject` tag; Markdown content |
-| Send a patch | `1617` | `git format-patch` output; a series chains with `e` `reply`, the first carries `t` `root` (`root-revision` for a revision) |
+| Send a patch | `1617` | `git format-patch` output; a series chains with `e` `reply`, the first carries `t` `root` (`root-revision` for a revision); the guide's `commit`, `parent-commit` and `committer` tags (time zone offset in minutes) |
 | Open a pull request | `1618` | the tip as a `c` tag, and where to fetch it |
 | Move a pull request's tip | `1619` | `E` names the `1618` |
 | Comment | `1111` | NIP-22: upper-case tags name the issue, patch or pull request, lower-case the parent |
-| Set status | `1630` open, `1631` applied or merged, `1632` closed, `1633` draft | `e` `root` names the target |
+| Set status | `1630` open, `1631` applied or merged, `1632` closed, `1633` draft | `e` `root` names the target; the guide's `a`, `p` and `r` tags too. A `1631` also names each applied patch (`q`) and the commits as pushed (`applied-as-commits` or `merge-commit`): push them first (section 2) |
 
 Issues, patches, pull requests and status name the repository with an `a` tag and the owner with
 a `p` tag. The current status is the newest one by an honoured author; a status you set on
@@ -141,8 +165,10 @@ the relay are not affected
   readable.
 - **Writing**: renew every blob the state names, the object index included, more often than every
   30 days, by uploading the identical bytes again (or as the server's rules say). The state event
-  does not change, because the blob ids do not. Whether a TOON Blossom server renews at all is an
-  open question in the NIP: check the server.
+  does not change, because the blob ids do not. Whether a server renews this way is an open
+  question in the NIP, so check the server's own rules: the TOON blob app's
+  ([toon-protocol/blossom](https://github.com/toon-protocol/blossom)) README says a paid upload
+  of bytes you already hold extends your holding.
 - A writer who still has expired objects restores them by repeating steps 2 and 3 of the push.
   Nothing is republished to the relay unless the mapping changes.
 

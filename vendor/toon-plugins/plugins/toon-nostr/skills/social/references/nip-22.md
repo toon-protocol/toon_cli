@@ -9,7 +9,9 @@ Upper-case tags name the **root**; lower-case tags name the **parent** being rep
 top-level comment has the same thing in both.
 
 - Root: `["A","<kind>:<key>:<d>","<relay>"]` or `["E","<id>","<relay>","<key>"]` or `["I","<url>"]`,
-  with `["K","<root kind>"]` and `["P","<root author>","<relay>"]`.
+  with `["K","<root kind>"]` and `["P","<root author>"]`.
+- The relay in an `A`, `E`, `a` or `e` tag is the `<ws-url>` the event is on, or `""` when you do
+  not know it. A key may be followed by a relay hint in `P` and `p`, but none is needed.
 - Parent: `["a",...]`/`["e",...]`/`["i",...]`, `["k","<parent kind>"]`, `["p","<parent author>"]`.
 - A reply to a comment: keep the upper-case tags, and the parent is that comment:
   `["e","<comment id>","","<comment author>"]`, `["k","1111"]`, `["p","<comment author>"]`.
@@ -20,7 +22,7 @@ A top-level comment on a long-form article (`nip-23.md`):
 
 - **kind** `1111`
 - **content** `the second section needs a source`
-- **tags** `[["A","30023:<author>:<d>",""],["K","30023"],["P","<author>"],["a","30023:<author>:<d>",""],["e","<revision id>",""],["k","30023"],["p","<author>"]]`
+- **tags** `[["A","30023:<author>:<d>","<ws-url>"],["K","30023"],["P","<author>"],["a","30023:<author>:<d>","<ws-url>"],["e","<revision id>","<ws-url>"],["k","30023"],["p","<author>"]]`
 - **to** the article's relay: a paid write
 
 ## Read

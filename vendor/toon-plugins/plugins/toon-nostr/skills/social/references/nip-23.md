@@ -13,7 +13,7 @@ Markdown articles.
 ## Publish
 
 - **kind** `30023`
-- **tags** `[["d","pricing-a-relay"],["title","Pricing a relay"],["summary","How to set a write price"],["published_at","1790000000"],["t","relays"]]`
+- **tags** `[["d","pricing-a-relay"],["title","Pricing a relay"],["summary","How to set a write price"],["published_at","<now, unix seconds>"],["t","relays"]]`
 - **to** another relay: a paid write
 - **content**:
 
