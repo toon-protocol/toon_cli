@@ -84,8 +84,8 @@ fn a_clearnet_sandbox_agent_node_records_the_sandboxs_hub_and_relay_and_no_notic
     assert!(config(&machine)
         .contains(r#"token_address = "0x0A867CA0442383c2A89951244B955AA19b615b58""#));
     let state = state(&machine);
-    assert_eq!(state["connector_url"], "http://localhost:3200/ilp");
-    assert_eq!(state["relay_url"], "ws://localhost:7100");
+    assert!(state.get("connector_url").is_none(), "{state}");
+    assert!(state.get("relay_url").is_none(), "{state}");
     assert!(!init.json()["notes"].to_string().contains("--connector-url"));
 }
 
@@ -98,7 +98,7 @@ fn a_hidden_sandbox_agent_node_records_no_connector_says_how_to_name_the_hub_and
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
     let state = state(&machine);
     assert!(state["connector_url"].is_null(), "{state}");
-    assert_eq!(state["relay_url"], "ws://localhost:7100");
+    assert!(state.get("relay_url").is_none(), "{state}");
     let notes = init.json()["notes"].to_string();
     for way in ["--connector-url", "--relay-url", "--clearnet"] {
         assert!(notes.contains(way), "{way}: {notes}");
@@ -552,8 +552,8 @@ fn the_devnet_profile_records_the_devnets_connector_and_relay() {
 
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
     let state = state(&machine);
-    assert_eq!(state["connector_url"], "https://toonprotocol.dev/ilp");
-    assert_eq!(state["relay_url"], "wss://relay.toonprotocol.dev");
+    assert!(state.get("connector_url").is_none(), "{state}");
+    assert!(state.get("relay_url").is_none(), "{state}");
 }
 
 #[test]
@@ -564,11 +564,8 @@ fn the_mainnet_profile_records_its_default_connector_and_relay_and_no_note_to_na
 
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
     let state = state(&machine);
-    assert_eq!(
-        state["connector_url"],
-        "https://connector.mainnet.toonprotocol.dev/ilp"
-    );
-    assert_eq!(state["relay_url"], "wss://relay.mainnet.toonprotocol.dev");
+    assert!(state.get("connector_url").is_none(), "{state}");
+    assert!(state.get("relay_url").is_none(), "{state}");
     let notes = init.json()["notes"].to_string();
     for way in ["--connector-url", "--relay-url", "join mainnet"] {
         assert!(!notes.contains(way), "{way}: {notes}");
@@ -583,11 +580,8 @@ fn a_clearnet_mainnet_agent_node_records_the_same_defaults() {
 
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
     let state = state(&machine);
-    assert_eq!(
-        state["connector_url"],
-        "https://connector.mainnet.toonprotocol.dev/ilp"
-    );
-    assert_eq!(state["relay_url"], "wss://relay.mainnet.toonprotocol.dev");
+    assert!(state.get("connector_url").is_none(), "{state}");
+    assert!(state.get("relay_url").is_none(), "{state}");
 }
 
 #[test]

@@ -2317,7 +2317,18 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
                 max_packet_amount: 0,
                 chain: args.chain,
             },
-        )?;
+        )
+        .map_err(|mut error| {
+            if state.connector_url.as_deref() != state.network.connector_url() {
+                error.message = format!(
+                    "{} The connector URL {connector_url} was set at `init` and is saved \
+                     as `connector_url` in {}; change it there.",
+                    error.message,
+                    node::state_path(home).display()
+                );
+            }
+            error
+        })?;
         let deposited = peered.deposited;
         let peered = peered.report;
         let routed = route_add(home, NETWORK_PREFIX, name, 0)?;

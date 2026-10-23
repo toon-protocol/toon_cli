@@ -713,16 +713,24 @@ impl State {
                 })
             })
             .collect();
-        json!({
+        let mut value = json!({
             "version": 1,
             "network": self.network.name(),
             "faucet_url": self.faucet_url,
-            "connector_url": self.connector_url,
-            "relay_url": self.relay_url,
             "joined": self.joined,
             "reads": self.reads,
             "toon_apps": apps,
-        })
+        });
+        // Only an override is recorded, so that the rest follows the profile of the release
+        // that runs. `null` is kept: it means none.
+        let object = value.as_object_mut().expect("a JSON object");
+        if self.connector_url.as_deref() != self.network.connector_url() {
+            object.insert("connector_url".into(), json!(self.connector_url));
+        }
+        if self.relay_url.as_deref() != self.network.relay_url() {
+            object.insert("relay_url".into(), json!(self.relay_url));
+        }
+        value
     }
 
     fn from_json(value: &Value) -> Option<Self> {
@@ -785,19 +793,38 @@ impl State {
             Value::Null => None,
             name => Some(name.as_str()?.to_owned()),
         };
-        let reads = match &value["reads"] {
-            Value::Null => Vec::new(),
-            reads => reads
-                .as_array()?
-                .iter()
-                .map(|url| url.as_str().map(str::to_owned))
-                .collect::<Option<_>>()?,
+        // A URL the profile retired is read as the profile's current one.
+        let current = |url: String, retired: &[&str], now: Option<&str>| match now {
+            Some(now) if retired.contains(&url.as_str()) => now.to_owned(),
+            _ => url,
         };
+        let mut reads: Vec<String> = Vec::new();
+        if let Value::Array(urls) = &value["reads"] {
+            for url in urls {
+                let url = current(
+                    url.as_str()?.to_owned(),
+                    network.retired_relay_urls(),
+                    network.relay_url(),
+                );
+                if !reads.contains(&url) {
+                    reads.push(url);
+                }
+            }
+        } else if !value["reads"].is_null() {
+            return None;
+        }
         Some(Self {
             network,
             faucet_url,
-            connector_url: text("connector_url", network.connector_url())?,
-            relay_url: text("relay_url", network.relay_url())?,
+            connector_url: text("connector_url", network.connector_url())?.map(|url| {
+                current(
+                    url,
+                    network.retired_connector_urls(),
+                    network.connector_url(),
+                )
+            }),
+            relay_url: text("relay_url", network.relay_url())?
+                .map(|url| current(url, network.retired_relay_urls(), network.relay_url())),
             joined,
             reads,
             toon_apps,
@@ -1159,5 +1186,74 @@ mod tests {
             assert_ne!(via_proxy(Some(&overlay), remote), "", "{remote}");
         }
         assert_eq!(via_proxy(None, "https://rpc.example"), "");
+    }
+
+    /// A state as `value` writes the connector, relay and reads of a network.
+    fn state_of(network: &str, extra: Value) -> Value {
+        let mut value = json!({
+            "version": 1,
+            "network": network,
+            "toon_apps": [{
+                "name": "relay", "connector": 0, "segment": "relay",
+                "reach": { "mode": "hidden" }, "listen": "127.0.0.1:1",
+                "evm": null, "solana": null, "apps": [],
+            }],
+        });
+        value
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        value
+    }
+
+    #[test]
+    fn retired_devnet_urls_load_as_the_current_ones_and_are_not_saved_again() {
+        let old = state_of(
+            "devnet",
+            json!({
+                "connector_url": "https://proxy.relay.devnet.toonprotocol.dev/ilp",
+                "relay_url": "wss://relay-ws.devnet.toonprotocol.dev",
+                "reads": [
+                    "wss://relay-ws.devnet.toonprotocol.dev",
+                    "wss://relay.toonprotocol.dev",
+                ],
+            }),
+        );
+
+        let state = State::from_json(&old).unwrap();
+
+        assert_eq!(
+            state.connector_url.as_deref(),
+            Some("https://toonprotocol.dev/ilp")
+        );
+        assert_eq!(
+            state.relay_url.as_deref(),
+            Some("wss://relay.toonprotocol.dev")
+        );
+        assert_eq!(state.reads, ["wss://relay.toonprotocol.dev"]);
+        let saved = state.json();
+        assert!(saved.get("connector_url").is_none(), "{saved}");
+        assert!(saved.get("relay_url").is_none(), "{saved}");
+        assert!(!saved.to_string().contains("relay-ws"), "{saved}");
+    }
+
+    #[test]
+    fn an_override_is_saved_and_null_stays_none() {
+        let other = state_of(
+            "devnet",
+            json!({ "connector_url": "https://other.example/ilp" }),
+        );
+        let state = State::from_json(&other).unwrap();
+        assert_eq!(
+            state.connector_url.as_deref(),
+            Some("https://other.example/ilp")
+        );
+        assert_eq!(state.json()["connector_url"], "https://other.example/ilp");
+
+        let hidden = state_of("sandbox", json!({ "connector_url": null }));
+        let state = State::from_json(&hidden).unwrap();
+        assert_eq!(state.connector_url, None);
+        assert!(state.json()["connector_url"].is_null());
+        assert_eq!(State::from_json(&state.json()).unwrap(), state);
     }
 }
