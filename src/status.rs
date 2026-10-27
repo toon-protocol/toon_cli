@@ -256,6 +256,8 @@ pub fn status(home: &Path) -> Result<Report, Error> {
         "Subscriber keys of its own relay with a balance: {}.",
         subscribers.map_or_else(|| "unknown".to_owned(), |count| count.to_string())
     ));
+    let tips = crate::tip::status(home, &state);
+    lines.push(tips.0);
     Ok(Report {
         exit: if all_running {
             Exit::Success
@@ -278,6 +280,7 @@ pub fn status(home: &Path) -> Result<Report, Error> {
                     .map(crate::pending::Entry::shown)
                     .collect::<Vec<_>>(),
                 "subscriptions": subscriptions,
+                "tips": tips.1,
                 "totals": {
                     "subscriptions": { "active": active, "exhausted": exhausted_count },
                     "subscribers": subscribers,

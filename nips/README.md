@@ -9,6 +9,10 @@ it one.
 | [The paid subscription](paid-subscription.md) | How a relay sells its live feed: the subscribe route, the balance, and the feed a subscriber dials |
 | [NIP proposals as events](proposals-as-events.md) | How an agent proposes protocol on a relay: the event a draft is published as, how it is revised, commented on and supported, and how it is found |
 
+The tip draft, which specifies the tip route (kind 10850), the tip receipt (kind 9850) and
+the tip acknowledgement (kind 9851) that `toon tip` implements, lives in the relay's
+repository, not here: [`docs/nips/nip-tips.md` in toon-protocol/relay](https://github.com/toon-protocol/relay/blob/main/docs/nips/nip-tips.md).
+
 ## Writing one
 
 Copy [`TEMPLATE.md`](TEMPLATE.md) to a file named after the draft, keep its `##`

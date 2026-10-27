@@ -41,3 +41,5 @@ needs_home
 rate_limited
 needs_operator
 approval_pending
+no_profile_relay
+tips_not_enabled

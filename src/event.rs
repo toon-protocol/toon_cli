@@ -717,8 +717,22 @@ fn publish_to(
     let secret = agent_secret(home)?;
     keep_agent_secret(home, &secret)?;
     let event = sign(&secret, now(), kind, tags, content)?;
+    pay_write(home, relay, event, &edge, amount)
+}
+
+/// Write the signed `event` to `relay` at the write `edge` it published, for `amount`, counted
+/// against the spending limit. The confirmation is the caller's: the operator's `--yes`, or
+/// the supervisor's own decision to pay for a write (ADR 0013).
+pub fn pay_write(
+    home: &Path,
+    relay: &str,
+    event: Value,
+    edge: &Edge,
+    amount: u64,
+) -> Result<Report, Error> {
+    let price = edge.price;
     let sent: u128 = amount.into();
-    spending::spend_packets(home, sent, yes, |packets| {
+    spending::spend_packets(home, sent, true, |packets| {
         let mut report = write_to(home, event, &edge.ilp_address, amount, Some(&edge.seal_key))
             .map_err(|error| operator::repriced(error, packets.moved(sent)))?;
         // A fulfilled packet moved money, whatever the relay or its fulfilment said. A
@@ -750,6 +764,76 @@ fn publish_to(
         }
         Ok((report, paid))
     })
+}
+
+/// Publish the signed `event` to a relay this agent node does not run, at the relay's own
+/// price, without asking: the write is paid through this agent node's connector over a
+/// peering, and counts against the spending limit (ADR 0013).
+pub fn publish_signed_to(home: &Path, relay: &str, event: Value) -> Result<Report, Error> {
+    let edge = edge(&Egress::of(home)?, relay)?;
+    if !operator::forwards(home, &edge.ilp_address)? {
+        return Err(operator::peering_needed(
+            home,
+            &edge.ilp_address,
+            &edge.connector_url,
+            format!(
+                "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
+                 needed: run `{}` and then `toon route add {} --peer <id>`.",
+                edge.ilp_address,
+                operator::peer_add_command(&edge.connector_url, "<amount>", ""),
+                edge.ilp_address
+            ),
+        ));
+    }
+    let price = edge.price;
+    pay_write(home, relay, event, &edge, price)
+}
+
+/// Whether `event` is a signed event: its id is the hash of its other fields, and its
+/// signature is a BIP-340 signature of that id by its pubkey.
+pub fn verify(event: &Value) -> Result<(), String> {
+    use k256::schnorr::{Signature, VerifyingKey};
+    let text = |field: &str| {
+        event[field]
+            .as_str()
+            .ok_or_else(|| format!("the event has no `{field}`"))
+    };
+    let number = |field: &str| {
+        event[field]
+            .as_u64()
+            .ok_or_else(|| format!("the event has no `{field}`"))
+    };
+    let (pubkey, id, sig) = (text("pubkey")?, text("id")?, text("sig")?);
+    let tags = &event["tags"];
+    let well_formed = tags.as_array().is_some_and(|tags| {
+        tags.iter().all(|tag| {
+            tag.as_array()
+                .is_some_and(|tag| tag.iter().all(Value::is_string))
+        })
+    });
+    if !well_formed {
+        return Err("the event's tags are not arrays of strings".into());
+    }
+    let computed = event_id(
+        pubkey,
+        number("created_at")?,
+        number("kind")?,
+        tags,
+        text("content")?,
+    );
+    if hex::encode(computed) != id {
+        return Err("the event's id is not the hash of its fields".into());
+    }
+    let key = hex::decode(pubkey)
+        .ok()
+        .and_then(|bytes| VerifyingKey::from_bytes(&bytes).ok())
+        .ok_or("the event's pubkey is not a key")?;
+    let signature = hex::decode(sig)
+        .ok()
+        .and_then(|bytes| Signature::try_from(bytes.as_slice()).ok())
+        .ok_or("the event's signature is not a signature")?;
+    key.verify_raw(&computed, &signature)
+        .map_err(|_| "the event's signature does not verify".to_owned())
 }
 
 /// `toon event`.

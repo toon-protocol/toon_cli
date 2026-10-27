@@ -78,6 +78,12 @@ pub enum Command {
     },
     /// Join a network: peer toward its connector and read its relay
     Join(JoinArgs),
+    /// Let this agent node be tipped, or stop: a route that is paid whatever arrives, and the
+    /// event that names it
+    Tip {
+        #[command(subcommand)]
+        command: TipCommand,
+    },
     /// Show or change the spending limit
     Limit {
         #[command(subcommand)]
@@ -821,6 +827,29 @@ pub enum RouteCommand {
     Remove {
         /// The ILP address prefix
         prefix: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TipCommand {
+    /// Turn tips on: add the tip route to a TOON app, restart its connector, and publish the
+    /// tip route event to the agent node's own relay and to the relay its profile follows. The
+    /// TOON app is the relay's unless `--app` names another. Run again with another `--minimum`
+    /// to change the price
+    Enable {
+        /// The least a tip has to carry, in the token's base units; 0 takes any amount
+        #[arg(long, default_value_t = 0)]
+        minimum: u64,
+        /// Go ahead although the connector restarts and drops packets in flight
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Turn tips off: remove the tip route, restart its connector, and publish a deletion of the
+    /// tip route event
+    Disable {
+        /// Go ahead although the connector restarts and drops packets in flight
+        #[arg(long)]
+        yes: bool,
     },
 }
 

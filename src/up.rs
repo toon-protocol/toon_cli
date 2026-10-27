@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use sha2::Digest;
 
+use crate::acknowledge::Tips;
 use crate::agent_key::Key;
 use crate::anon;
 use crate::apps;
@@ -273,6 +274,8 @@ pub struct Supervisor {
     receiver: Option<Receiver>,
     /// Opens the private messages that reach the agent node's own relay.
     inbox: Option<Inbox>,
+    /// Listens for the tips of the tip route, and publishes their acknowledgements.
+    tips: Option<Tips>,
 }
 
 /// How a supervisor ended.
@@ -469,6 +472,8 @@ fn launch(
         home: home.to_path_buf(),
         receiver: None,
         inbox: None,
+        // Before the connectors, so that the route they are given has its app listening.
+        tips: Some(Tips::start(home)),
     };
     for app in &state.toon_apps {
         if let Err(error) = supervisor.add(app) {
@@ -1033,6 +1038,7 @@ impl Supervisor {
         // The feeds stop first: they write into the relay.
         self.receiver = None;
         self.inbox = None;
+        self.tips = None;
         for unit in &mut self.units {
             unit.shared.reloads().clear();
             unit.stop(&self.home, &*self.runner);
