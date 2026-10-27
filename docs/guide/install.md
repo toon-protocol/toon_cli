@@ -51,7 +51,7 @@ toon --version
 It prints the release, the connector revision it embeds, and the relay image it runs:
 
 ```
-toon 0.3.0 (connector 18da529a…, relay ghcr.io/toon-protocol/relay:rust-sha-1b02f2e@sha256:3eea…)
+toon 0.3.0 (connector 6dceb8e2…, relay ghcr.io/toon-protocol/relay:rust-sha-1b02f2e@sha256:3eea…)
 ```
 
 ## Upgrading
