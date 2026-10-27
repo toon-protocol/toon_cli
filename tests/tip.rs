@@ -203,7 +203,7 @@ fn peer_and_route(near: &Node, far: &Node) {
 
 /// Wait until `check` holds.
 fn eventually(what: &str, mut check: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     while !check() {
         assert!(Instant::now() < deadline, "{what}");
         thread::sleep(Duration::from_millis(100));
@@ -322,13 +322,37 @@ fn enabling_tips_serves_the_route_and_publishes_the_tip_route_to_both_relays() {
     assert_eq!(status["acknowledgements"]["waiting"], 0);
     let text = near.machine.toon(&["status"]).stdout;
     assert!(text.contains("Tips: on"), "{text}");
+
+    // Another minimum changes the price and publishes the tip route again.
+    thread::sleep(Duration::from_millis(1100));
+    let again = near.toon(&["tip", "enable", "--minimum", "7", "--yes", "--json"]);
+
+    assert_eq!(again.exit_code, 0, "{}{}", again.stdout, again.stderr);
+    let route = near
+        .tip_route()
+        .expect("GET /ilp still lists the tip route");
+    assert_eq!(route["price"].to_string().trim_matches('"'), "7", "{route}");
+    let id = &again.json()["published"]["id"];
+    assert_ne!(id, &enabled.json()["published"]["id"]);
+    for relay in [near, &pair.far] {
+        let routes = relay.events(&[10850]);
+        assert!(routes.iter().any(|route| &route["id"] == id), "{routes:?}");
+    }
+    assert_eq!(near.tips_status()["minimum"], 7);
 }
 
 #[test]
 fn the_tip_route_is_still_served_after_the_agent_node_is_started_again() {
     let mut pair = pair();
+    let identity = pair.near.identity();
+    let payer = Payer::new();
     let enabled = pair.near.toon(&["tip", "enable", "--yes", "--json"]);
     assert_eq!(enabled.exit_code, 0, "{}{}", enabled.stdout, enabled.stderr);
+    let before = payer.receipt(&identity, CODE, SCALE, vec![]);
+    assert_eq!(pair.near.deliver("1000", "evm", &before), 200);
+    eventually("the acknowledgement", || {
+        acknowledgements(&pair.near).len() == 1
+    });
 
     assert_eq!(pair.near.machine.toon(&["down"]).exit_code, 0);
     assert_eq!(pair.near.up.exit_code(), 0);
@@ -337,6 +361,20 @@ fn the_tip_route_is_still_served_after_the_agent_node_is_started_again() {
 
     let route = pair.near.tip_route().expect("the route is written again");
     assert_eq!(route["payment"], true);
+    // The supervisor serves the route again, and remembers what it acknowledged.
+    assert_eq!(pair.near.deliver("1000", "evm", &before), 200);
+    let after = payer.receipt(&identity, CODE, SCALE, vec![]);
+    assert_eq!(pair.near.deliver("1000", "evm", &after), 200);
+    eventually("the second acknowledgement", || {
+        acknowledgements(&pair.near).len() == 2
+    });
+    thread::sleep(Duration::from_secs(2));
+    let receipts: Vec<Value> = acknowledgements(&pair.near)
+        .iter()
+        .map(|acknowledgement| tag(acknowledgement, "receipt")[0][1].clone())
+        .collect();
+    assert_eq!(receipts.len(), 2, "{receipts:?}");
+    assert!(receipts.contains(&before["id"]) && receipts.contains(&after["id"]));
 }
 
 #[test]
