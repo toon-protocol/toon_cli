@@ -193,6 +193,11 @@ pub fn status(home: &Path) -> Result<Report, Error> {
         toon_apps.push(json!({
             "name": app.name,
             "apps": apps,
+            "token": app.evm.as_ref().map(|evm| json!({
+                "address": evm.token,
+                "decimals": evm.decimals,
+                "asset_code": evm.asset_code,
+            })),
             "connector": {
                 "address": field("address"),
                 "ilp_address": app.address(),

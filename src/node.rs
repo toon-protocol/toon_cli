@@ -660,18 +660,27 @@ impl Evm {
         })
     }
 
-    /// `network` supplies the code of a state written before the asset code was kept.
+    /// `network` supplies the code of a state written before the asset code was kept,
+    /// if that state settles in the profile's own token.
     fn from_json(value: &Value, network: Profile) -> Option<Self> {
         let text = |key: &str| value[key].as_str().map(str::to_owned);
+        let token = text("token")?;
         Some(Self {
             rpc_url: text("rpc_url")?,
-            token: text("token")?,
             decimals: u8::try_from(value["decimals"].as_u64()?).ok()?,
             asset_code: match &value["asset_code"] {
-                Value::Null if value.get("asset_code").is_none() => network.evm().asset_code,
+                Value::Null if value.get("asset_code").is_none() => {
+                    let profile = network.evm();
+                    profile
+                        .token
+                        .eq_ignore_ascii_case(&token)
+                        .then_some(profile.asset_code)
+                        .flatten()
+                }
                 Value::Null => None,
                 code => Some(code.as_str()?.to_owned()),
             },
+            token,
             asset_name: text("asset_name")?,
             asset_version: text("asset_version")?,
             transfer_method: text("transfer_method")?,
