@@ -58,6 +58,7 @@ impl Profile {
             rpc_url: rpc_url.into(),
             token: token.into(),
             decimals: 6,
+            asset_code: Some("USDC".into()),
             asset_name: asset_name.into(),
             asset_version: "2".into(),
             transfer_method: "eip3009".into(),

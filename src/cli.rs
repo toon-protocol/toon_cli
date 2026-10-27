@@ -419,6 +419,9 @@ pub struct InitArgs {
     /// The token's decimals, at most 18
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..=18))]
     pub evm_decimals: Option<u8>,
+    /// The token's asset code: 1-12 upper-case ASCII letters and digits, such as `USDC`
+    #[arg(long, value_parser = asset_code)]
+    pub evm_asset_code: Option<String>,
     /// The token's EIP-712 domain name
     #[arg(long)]
     pub evm_asset_name: Option<String>,
@@ -436,6 +439,18 @@ pub struct InitArgs {
     pub max_per_day: u128,
 }
 
+fn asset_code(value: &str) -> Result<String, String> {
+    let valid = (1..=12).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit());
+    if valid {
+        Ok(value.to_owned())
+    } else {
+        Err("an asset code is 1-12 upper-case ASCII letters and digits".into())
+    }
+}
+
 impl InitArgs {
     pub fn options(&self) -> Options {
         let mut evm = self.network.evm();
@@ -447,6 +462,12 @@ impl InitArgs {
         }
         if let Some(decimals) = self.evm_decimals {
             evm.decimals = decimals;
+        }
+        if let Some(code) = &self.evm_asset_code {
+            evm.asset_code = Some(code.clone());
+        } else if self.evm_token.is_some() {
+            // A token of the operator's own has no code the profile could state for it.
+            evm.asset_code = None;
         }
         if let Some(name) = &self.evm_asset_name {
             evm.asset_name = name.clone();
