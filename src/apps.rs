@@ -157,7 +157,7 @@ pub fn checked_request(request: serde_json::Value) -> Result<serde_json::Value, 
     Ok(request)
 }
 
-fn loaded(home: &Path) -> Result<State, Error> {
+pub fn loaded(home: &Path) -> Result<State, Error> {
     State::load(home)?.ok_or_else(|| node::no_agent_node(home))
 }
 
@@ -197,7 +197,7 @@ pub fn app_warning(app: &str, toon_app: &str) -> String {
     )
 }
 
-fn confirm(yes: bool, toon_app: &str) -> Result<(), Error> {
+pub fn confirm(yes: bool, toon_app: &str) -> Result<(), Error> {
     confirmed(yes, warning(toon_app))
 }
 
@@ -292,7 +292,7 @@ pub fn check(home: &Path, changed: &State, toon_app: &str) -> Result<(), Error> 
     node::render(home, app, &addresses, overlay.as_ref()).map(|_| ())
 }
 
-fn restarted(now: bool, toon_app: &str) -> String {
+pub fn restarted(now: bool, toon_app: &str) -> String {
     if now {
         format!("The connector of {toon_app} restarted.")
     } else {

@@ -231,6 +231,7 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
             app
         }],
         relay: node::RelaySettings::default(),
+        tip: None,
     };
     let from = source.name.clone();
     let make = || {

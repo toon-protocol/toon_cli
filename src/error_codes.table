@@ -44,4 +44,6 @@ error_codes! {
     RateLimited => "rate_limited" => Failure,
     NeedsOperator => "needs_operator" => Failure,
     ApprovalPending => "approval_pending" => Failure,
+    NoProfileRelay => "no_profile_relay" => Failure,
+    TipsNotEnabled => "tips_not_enabled" => Failure,
 }

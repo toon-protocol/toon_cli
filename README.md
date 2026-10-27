@@ -173,6 +173,7 @@ toon skill install                  # into ~/.claude/skills; again after every u
 | [Adding an app to a connector](docs/guide/adding-an-app.md) | Writing an app, `toon add`, prices, and taking an app away |
 | [Creating a TOON app](docs/guide/creating-a-toon-app.md) | A second connector with its own keys: `toon create`, `toon destroy` |
 | [The relay](docs/guide/relay.md) | Publishing and reading events, relay settings and prices, selling and buying a live feed |
+| [Being tipped](docs/guide/tips.md) | `toon tip enable` and `disable`, what the minimum means, and where acknowledgements go |
 | [Networks and reachability](docs/guide/networks-and-reachability.md) | devnet, sandbox and mainnet; hidden service or clearnet |
 | [Running it day to day](docs/guide/operations.md) | `up`, `down`, `status`, `logs`, scripting with `--json`, and what an error code means |
 | [Backup and restore](docs/guide/backup-and-restore.md) | Sealing the wallet, restoring it, and what a mnemonic alone does not keep |

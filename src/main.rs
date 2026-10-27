@@ -5,6 +5,7 @@
 //! readable text, and errors go to standard error. The exit codes are in `outcome` and
 //! in `docs/exit-codes.md`.
 
+mod acknowledge;
 mod agent_key;
 mod anon;
 mod apps;
@@ -45,6 +46,7 @@ mod skill;
 mod spending;
 mod status;
 mod subscribe;
+mod tip;
 mod tls;
 mod trusted;
 mod up;
@@ -73,7 +75,11 @@ fn run() -> ExitCode {
     let json = wants_json(env::args_os().skip(1));
     let command = match Cli::from_command_line() {
         Ok(cli) => {
-            operator::target(cli.app.as_deref());
+            // `toon tip` names the TOON app it puts the route on itself; the packets it
+            // sends go through the first, as the supervisor's do.
+            if !matches!(cli.command, Command::Tip { .. }) {
+                operator::target(cli.app.as_deref());
+            }
             let agent_key = cli.agent_key.or_else(|| {
                 env::var_os("TOON_AGENT_KEY")
                     .filter(|path| !path.is_empty())
@@ -200,6 +206,11 @@ fn run() -> ExitCode {
                     Ok((report, paid))
                 })
             }),
+            json,
+        )
+        .into(),
+        Command::Tip { command } => render(
+            home::resolve().and_then(|home| tip::run(&home, app.as_deref(), &command)),
             json,
         )
         .into(),

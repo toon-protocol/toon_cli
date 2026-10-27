@@ -64,6 +64,12 @@ pub fn relay_ephemeral_prefix(segment: &str) -> String {
     format!("{}.ephemeral", relay_write_prefix(segment))
 }
 
+/// The route that is paid whatever arrives, beside the relay's: where a tip is delivered
+/// (ADR 0013).
+pub fn tip_prefix(segment: &str) -> String {
+    format!("{}.tip", connector_address(segment))
+}
+
 /// How a TOON app is reached (ADR 0003).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reach {
@@ -258,6 +264,31 @@ pub struct ToonApp {
     pub apps: Vec<App>,
     /// How the relay behind it is set, if it has one.
     pub relay: RelaySettings,
+    /// The tip route of this TOON app's connector, if the operator turned tips on here.
+    pub tip: Option<Tip>,
+}
+
+/// The tip route of a TOON app (ADR 0013): a route the supervisor itself is the app behind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tip {
+    /// What a packet to the route has to carry at least.
+    pub minimum: u64,
+    /// The loopback port the supervisor serves the route's app on. Picked when tips are turned
+    /// on, and bound again by every supervisor, as a connector's port is.
+    pub port: u16,
+}
+
+impl Tip {
+    fn json(self) -> Value {
+        json!({ "minimum": self.minimum, "port": self.port })
+    }
+
+    fn from_json(value: &Value) -> Option<Self> {
+        Some(Self {
+            minimum: value["minimum"].as_u64()?,
+            port: u16::try_from(value["port"].as_u64()?).ok()?,
+        })
+    }
 }
 
 impl ToonApp {
@@ -723,6 +754,7 @@ impl State {
                 plaintext_peers: options.plaintext_peers,
                 apps: vec![App::relay(segment)],
                 relay: RelaySettings::default(),
+                tip: None,
             }],
         }
     }
@@ -743,6 +775,7 @@ impl State {
                     "plaintext_peers": app.plaintext_peers,
                     "apps": app.apps.iter().map(App::json).collect::<Vec<_>>(),
                     "relay": app.relay.json(),
+                    "tip": app.tip.map(Tip::json),
                 })
             })
             .collect();
@@ -803,6 +836,11 @@ impl State {
                     relay: match &app["relay"] {
                         Value::Null => RelaySettings::default(),
                         relay => RelaySettings::from_json(relay)?,
+                    },
+                    // A state written before tips has none.
+                    tip: match &app["tip"] {
+                        Value::Null => None,
+                        tip => Some(Tip::from_json(tip)?),
                     },
                 })
             })
@@ -1107,6 +1145,15 @@ pub fn render(
                 string(&format!("http://{relay}/subscribe")),
             ));
         }
+    }
+    // The tip route ends at the supervisor itself, on loopback, and is paid whatever arrives.
+    if let Some(tip) = app.tip {
+        config.push_str(&format!(
+            "\n[[routes]]\nprefix = {}\nhandler_url = {}\nprice = {}\npayment = true\n",
+            string(&tip_prefix(&app.segment)),
+            string(&format!("http://127.0.0.1:{}/", tip.port)),
+            tip.minimum,
+        ));
     }
     if operator {
         config.push_str(&format!(
