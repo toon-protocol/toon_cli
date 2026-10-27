@@ -7,7 +7,7 @@ use serde_json::Value;
 use support::fake_chain::FakeChain;
 use support::Machine;
 
-/// ADR 0083: the embedded connector accepts `payment = true` on a route that ends at an
+/// The connector's ADR 0083: the embedded connector accepts `payment = true` on a route that ends at an
 /// app (`handler_url`), which is the key the revision before it refused.
 #[test]
 fn the_embedded_connector_accepts_a_payment_route_with_a_handler_url() {
@@ -31,6 +31,7 @@ fn the_embedded_connector_accepts_a_payment_route_with_a_handler_url() {
     let marked = config.replacen(&route, &format!("payment = true\n{route}"), 1);
     fs::write(&path, marked).unwrap();
 
+    // The connector exits when its standard input closes, as it would when `toon up` is gone.
     let connector = machine.start_with(&["connector", path.to_str().unwrap()], |command| {
         command.stdin(Stdio::piped());
     });
