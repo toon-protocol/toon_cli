@@ -107,6 +107,8 @@ pub struct Evm {
     pub rpc_url: String,
     pub token: String,
     pub decimals: u8,
+    /// The short code of the token, such as `USDC`; none for a custom token with no stated code.
+    pub asset_code: Option<String>,
     pub asset_name: String,
     pub asset_version: String,
     pub transfer_method: String,
@@ -630,24 +632,46 @@ impl Reach {
     }
 }
 
+/// The unit of a chain's settlement token: its asset code and its scale.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unit {
+    pub code: String,
+    pub decimals: u8,
+}
+
 impl Evm {
+    /// The unit of this chain's settlement token, or none if the token has no stated code.
+    pub fn unit(&self) -> Option<Unit> {
+        Some(Unit {
+            code: self.asset_code.clone()?,
+            decimals: self.decimals,
+        })
+    }
+
     fn json(&self) -> Value {
         json!({
             "rpc_url": self.rpc_url,
             "token": self.token,
             "decimals": self.decimals,
+            "asset_code": self.asset_code,
             "asset_name": self.asset_name,
             "asset_version": self.asset_version,
             "transfer_method": self.transfer_method,
         })
     }
 
-    fn from_json(value: &Value) -> Option<Self> {
+    /// `network` supplies the code of a state written before the asset code was kept.
+    fn from_json(value: &Value, network: Profile) -> Option<Self> {
         let text = |key: &str| value[key].as_str().map(str::to_owned);
         Some(Self {
             rpc_url: text("rpc_url")?,
             token: text("token")?,
             decimals: u8::try_from(value["decimals"].as_u64()?).ok()?,
+            asset_code: match &value["asset_code"] {
+                Value::Null if value.get("asset_code").is_none() => network.evm().asset_code,
+                Value::Null => None,
+                code => Some(code.as_str()?.to_owned()),
+            },
             asset_name: text("asset_name")?,
             asset_version: text("asset_version")?,
             transfer_method: text("transfer_method")?,
@@ -737,6 +761,10 @@ impl State {
         if value["version"] != 1 {
             return None;
         }
+        let network = match &value["network"] {
+            Value::Null => Profile::default(),
+            network => Profile::from_name(network.as_str()?)?,
+        };
         let toon_apps = value["toon_apps"]
             .as_array()?
             .iter()
@@ -749,7 +777,7 @@ impl State {
                     listen: app["listen"].as_str()?.to_owned(),
                     evm: match &app["evm"] {
                         Value::Null => None,
-                        evm => Some(Evm::from_json(evm)?),
+                        evm => Some(Evm::from_json(evm, network)?),
                     },
                     solana: match &app["solana"] {
                         Value::Null => None,
@@ -774,10 +802,6 @@ impl State {
         if toon_apps.is_empty() {
             return None;
         }
-        let network = match &value["network"] {
-            Value::Null => Profile::default(),
-            network => Profile::from_name(network.as_str()?)?,
-        };
         let faucet_url = match &value["faucet_url"] {
             Value::Null => None,
             url => Some(url.as_str()?.to_owned()),

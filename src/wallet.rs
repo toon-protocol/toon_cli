@@ -812,8 +812,13 @@ pub fn balances(home: &Path) -> Result<Report, Error> {
                     }, "latest"]),
                 )?;
                 lines.push(format!(
-                    "{} evm {}: {native} native, {token} of token {} ({} decimals)",
-                    app.name, keys.evm, evm.token, evm.decimals
+                    "{} evm {}: {native} native, {token} of token {}{} ({} decimals)",
+                    app.name,
+                    keys.evm,
+                    evm.token,
+                    evm.unit()
+                        .map_or(String::new(), |unit| format!(" {}", unit.code)),
+                    evm.decimals
                 ));
                 json!({
                     "toon_app": app.name,
@@ -823,6 +828,7 @@ pub fn balances(home: &Path) -> Result<Report, Error> {
                     "token": {
                         "address": evm.token,
                         "decimals": evm.decimals,
+                        "asset_code": evm.asset_code,
                         "balance": token.to_string(),
                     },
                 })
