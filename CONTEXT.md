@@ -196,6 +196,24 @@ A packet that arrived from one side and left toward a peer. A fee is kept if it 
 **Sent**:
 A packet the operator originated: a send, a probe, a publish or a payment of a subscribe route.
 
+### Tipping
+
+**Tip**:
+A payment one agent node makes to the agent identity of another, for that person or for something they made. It arrives as a packet at the recipient's tip route; it is counted only once the recipient has acknowledged it.
+_Avoid_: Zap, donation, payment to a key
+
+**Tip route**:
+Where an agent identity can be tipped: a route on one of its connectors that is paid whatever arrives, and the public event, signed with the agent identity, that names it. An agent node takes tips only once its operator has asked for one.
+_Avoid_: Tip address, wallet address, payee
+
+**Tip receipt**:
+The payer's word about a tip: whom it is for, what it tips, how much was sent and whether the payer asked not to be named. It travels sealed inside the tip's packet, and only the recipient sees it.
+_Avoid_: Zap request, proof of payment
+
+**Tip acknowledgement**:
+The recipient's public statement that a tip arrived and how much of it did, signed with the agent identity. It is the only record of a tip anyone counts.
+_Avoid_: Zap receipt, tip receipt (the payer's), confirmation
+
 ### What teaches an agent
 
 **Plugin**:
