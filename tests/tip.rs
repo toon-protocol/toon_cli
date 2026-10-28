@@ -875,48 +875,18 @@ fn an_amount_below_the_path_cost_and_the_minimum_names_the_least_that_would_do()
 }
 
 #[test]
-fn a_seal_key_other_than_the_connectors_is_refused_and_nothing_is_sent() {
-    let three = three();
-    thread::sleep(Duration::from_millis(1100));
-    three.far.publish_route(
-        &three.far.url(),
-        &three.far.tip_prefix(),
-        support::UNSEALABLE_KEY,
-    );
-    let watermark = three.near.outbound_watermark();
-
-    let run = three.tip(&["--amount", &(FORWARD + 50).to_string(), "--yes"]);
-
-    assert_eq!(error_code(&run), "tip_seal_key_mismatch", "{}", run.stdout);
-    assert_eq!(three.near.outbound_watermark(), watermark);
-}
-
-#[test]
-fn a_tip_route_the_connector_does_not_list_as_a_payment_route_is_refused() {
-    let three = three();
-    thread::sleep(Duration::from_millis(1100));
-    let relay_route = three.far.machine.relay_prefix();
-    three.far.publish_route(
-        &three.far.url(),
-        &relay_route,
-        &support::seal_key(&three.far.url()),
-    );
-
-    let run = three.tip(&["--amount", &(FORWARD + 50).to_string(), "--yes"]);
-
-    assert_eq!(error_code(&run), "tip_route_not_listed", "{}", run.stdout);
-}
-
-#[test]
 fn a_recipient_with_no_tip_route_on_any_relay_read_is_not_found() {
     let three = three();
     let nobody = "11".repeat(32);
+
+    let watermark = three.near.outbound_watermark();
 
     let run = three
         .near
         .toon(&["tip", "send", &nobody, "--amount", "500", "--yes", "--json"]);
 
     assert_eq!(error_code(&run), "tip_route_not_found", "{}", run.stdout);
+    assert_eq!(three.near.outbound_watermark(), watermark);
 }
 
 #[test]
@@ -935,4 +905,89 @@ fn a_for_that_is_neither_an_event_id_nor_an_address_is_a_usage_error() {
     ]);
 
     assert_eq!(error_code(&run), "usage", "{}", run.stdout);
+}
+
+/// An agent node on `fake_chain` that pays in `CODE`, has turned tips on and so lists its tip
+/// route as a payment route. It has no peering, so it is its own recipient and no packet
+/// leaves it: a tip send that is refused by the checks is refused before the peering is
+/// looked for.
+fn tipped_on_fake_chain() -> Node {
+    let chain = Box::leak(Box::new(FakeChain::start()));
+    let machine = Machine::new();
+    let decimals = support::fake_chain::TOKEN_DECIMALS.to_string();
+    let init = machine.init_with(&[
+        "--clearnet",
+        "toon.example.com",
+        "--evm-rpc-url",
+        &chain.rpc_url(),
+        "--evm-token",
+        support::fake_chain::TOKEN,
+        "--evm-decimals",
+        &decimals,
+        "--evm-asset-code",
+        CODE,
+        "--evm-asset-name",
+        "USDC",
+        "--evm-asset-version",
+        "2",
+        "--evm-transfer-method",
+        "permit2",
+    ]);
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    let address = up.report()["connector"]["address"]
+        .as_str()
+        .expect("the connector's address")
+        .to_owned();
+    let node = Node {
+        machine,
+        up,
+        address,
+    };
+    node.identity();
+    // The tip route is served even though the profile's relay, which no peering reaches,
+    // could not be told of it.
+    node.toon(&["tip", "enable", "--yes", "--json"]);
+    let listed = node.tip_route().expect("the tip route");
+    assert_eq!(listed["payment"], true, "{listed}");
+    node
+}
+
+#[test]
+fn a_tip_route_the_connector_does_not_list_as_a_payment_route_is_refused() {
+    let node = tipped_on_fake_chain();
+    thread::sleep(Duration::from_millis(1100));
+    let relay_route = node.machine.relay_prefix();
+    node.publish_route(&node.url(), &relay_route, &support::seal_key(&node.url()));
+
+    let run = node.toon(&[
+        "tip",
+        "send",
+        &node.identity(),
+        "--amount",
+        "500",
+        "--yes",
+        "--json",
+    ]);
+
+    assert_eq!(error_code(&run), "tip_route_not_listed", "{}", run.stdout);
+}
+
+#[test]
+fn a_seal_key_other_than_the_connectors_is_refused() {
+    let node = tipped_on_fake_chain();
+    thread::sleep(Duration::from_millis(1100));
+    node.publish_route(&node.url(), &node.tip_prefix(), support::UNSEALABLE_KEY);
+
+    let run = node.toon(&[
+        "tip",
+        "send",
+        &node.identity(),
+        "--amount",
+        "500",
+        "--yes",
+        "--json",
+    ]);
+
+    assert_eq!(error_code(&run), "tip_seal_key_mismatch", "{}", run.stdout);
 }

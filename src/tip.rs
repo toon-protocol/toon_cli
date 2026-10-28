@@ -28,9 +28,6 @@ use crate::subscribe;
 /// The kind of the event that names a tip route: replaceable, one per agent identity.
 pub const ROUTE: u64 = 10_850;
 
-/// The kind of the tip receipt the payer signs.
-const RECEIPT: u64 = 9_850;
-
 /// The kind of NIP-09's deletion request.
 const DELETION: u64 = 5;
 
@@ -756,7 +753,7 @@ fn send(home: &Path, tip: &TipSend) -> Result<Report, Error> {
     let receipt = event::sign(
         &secret,
         event::now(),
-        RECEIPT,
+        acknowledge::RECEIPT,
         Value::Array(tags),
         tip.message.unwrap_or_default(),
     )?;
