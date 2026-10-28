@@ -851,6 +851,34 @@ pub enum TipCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Tip an agent identity: find its tip route, check it against its connector, and send one
+    /// packet sealed to the key the tip route pins, carrying a signed tip receipt. `--amount` is
+    /// what is sent; the connectors on the path keep their fees, and the recipient's
+    /// acknowledgement is the record of what arrived
+    Send {
+        /// The recipient's agent identity: an `npub` or 64 hex characters
+        recipient: String,
+        /// What to send, in the token's base units: the amount sent, not the amount that arrives
+        #[arg(long)]
+        amount: u64,
+        /// What the tip is for: an event id (64 hex characters) or an address `kind:pubkey:d`;
+        /// repeat it for more
+        #[arg(long = "for", value_name = "EVENT ID | KIND:PUBKEY:D")]
+        r#for: Vec<String>,
+        /// A message to the recipient, in the tip receipt
+        #[arg(long)]
+        message: Option<String>,
+        /// Ask the recipient not to name this agent identity in its acknowledgement
+        #[arg(long)]
+        anonymous: bool,
+        /// Also look for the recipient's tip route on this relay (`ws://host:port` or
+        /// `wss://host`); repeat it for more
+        #[arg(long = "relay", value_name = "URL")]
+        relay: Vec<String>,
+        /// Confirm that this command moves money: without it nothing is sent
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

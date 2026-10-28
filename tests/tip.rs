@@ -95,6 +95,58 @@ impl Node {
             .as_u16()
     }
 
+    /// The relay's websocket URL, where its stored events are read.
+    fn relay_url(&self) -> String {
+        let status = self.machine.toon(&["status", "--json"]).json();
+        let address = status["agent_node"]["toon_apps"][0]["apps"][0]["read_address"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the relay has no read address: {status}"));
+        format!("ws://{address}")
+    }
+
+    /// What the watermarks of the outbound channels add up to.
+    fn outbound_watermark(&self) -> u128 {
+        let list = self.toon(&["channel", "list", "--json"]).json();
+        list["channels"]
+            .as_array()
+            .expect("channels")
+            .iter()
+            .filter(|channel| channel["direction"] == "outbound")
+            .map(|channel| match &channel["watermark"] {
+                Value::String(text) => text.parse::<u128>().expect("a watermark"),
+                other => other.as_u64().expect("a watermark") as u128,
+            })
+            .sum()
+    }
+
+    /// The address of the tip route.
+    fn tip_prefix(&self) -> String {
+        format!("g.toon.{}.tip", self.machine.segment("relay"))
+    }
+
+    /// Publish a tip route event to the own relay, naming `url`, `address` and `key`.
+    fn publish_route(&self, url: &str, address: &str, key: &str) {
+        let tags = json!([
+            ["connector_url", url],
+            ["ilp_address", address],
+            ["connector_seal_key", key]
+        ]);
+        let published = self.toon(&[
+            "event",
+            "publish",
+            "--kind",
+            "10850",
+            "--tags",
+            &tags.to_string(),
+            "--json",
+        ]);
+        assert_eq!(
+            published.exit_code, 0,
+            "{}{}",
+            published.stdout, published.stderr
+        );
+    }
+
     fn tips_status(&self) -> Value {
         self.machine.toon(&["status", "--json"]).json()["agent_node"]["tips"].clone()
     }
@@ -645,4 +697,242 @@ fn status_says_tips_are_off_by_default() {
     let tips = &status["agent_node"]["tips"];
     assert_eq!(tips["enabled"], false, "{status}");
     assert_eq!(tips["acknowledgements"]["waiting"], 0);
+}
+
+/// What `mid` keeps of each packet it forwards to `far`.
+const FORWARD: u64 = 101;
+
+/// The least a tip route takes of what arrives.
+const MINIMUM: u64 = 5;
+
+/// `near` tips `far` through `mid`, which charges `FORWARD` to forward it. `far` follows
+/// `mid`'s relay, and has turned tips on.
+struct Three {
+    near: Node,
+    mid: Node,
+    far: Node,
+    _relay: Relay,
+    _chain: AnvilChain,
+}
+
+fn peered(from: &Node, to: &Node, id: &str, fee: u64) {
+    let run = from.toon(&[
+        "peer",
+        "add",
+        &to.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--fee",
+        &fee.to_string(),
+        "--yes",
+        "--id",
+        id,
+    ]);
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+}
+
+fn routed(from: &Node, prefix: &str, peer: &str, extra: &[&str]) {
+    let mut args = vec!["route", "add", prefix, "--peer", peer];
+    args.extend(extra);
+    let run = from.toon(&args);
+    assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+}
+
+fn three() -> Three {
+    let chain = AnvilChain::start();
+    let mid = node_on(&chain, None);
+    let relay = relay_of(&mid);
+    let far = node_on(&chain, Some(&relay.url));
+    let near = node_on(&chain, None);
+    peered(&near, &mid, "mid", 0);
+    peered(&mid, &far, "far", FORWARD);
+    peered(&far, &mid, "mid", 0);
+    routed(&far, &mid.machine.relay_prefix(), "mid", &[]);
+    let enabled = far.toon(&[
+        "tip",
+        "enable",
+        "--minimum",
+        &MINIMUM.to_string(),
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(enabled.exit_code, 0, "{}{}", enabled.stdout, enabled.stderr);
+    let prefix = far.tip_prefix();
+    routed(&mid, &prefix, "far", &[]);
+    routed(&near, &prefix, "mid", &[]);
+    // The tip route event enable published names the hostname of a clearnet agent node, which
+    // a test cannot reach: the newer one names the connector on loopback.
+    thread::sleep(Duration::from_millis(1100));
+    far.publish_route(&far.url(), &prefix, &support::seal_key(&far.url()));
+    Three {
+        near,
+        mid,
+        far,
+        _relay: relay,
+        _chain: chain,
+    }
+}
+
+impl Three {
+    fn tip(&self, extra: &[&str]) -> Run {
+        let identity = self.far.identity();
+        let relay = self.far.relay_url();
+        let mut args = vec!["tip", "send", &identity, "--relay", &relay, "--json"];
+        args.extend(extra);
+        self.near.toon(&args)
+    }
+}
+
+#[test]
+fn a_tip_is_sent_through_a_charging_connector_and_acknowledged_with_what_arrived() {
+    let three = three();
+    let (near, far) = (&three.near, &three.far);
+    let watermark = near.outbound_watermark();
+    let amount = FORWARD + 50;
+    let id = "cd".repeat(32);
+
+    let sent = three.tip(&["--amount", &amount.to_string(), "--for", &id, "--yes"]);
+
+    assert_eq!(sent.exit_code, 0, "{}{}", sent.stdout, sent.stderr);
+    let report = sent.json();
+    assert_eq!(report["sent"], amount, "{report}");
+    assert_eq!(report["path_cost"], FORWARD, "{report}");
+    assert_eq!(report["arrives_about"], amount - FORWARD, "{report}");
+    assert_eq!(report["recipient"], far.identity().as_str());
+    assert_eq!(report["ilp_address"], far.tip_prefix().as_str());
+    assert_eq!(
+        report["receipt_id"].as_str().map(str::len),
+        Some(64),
+        "{report}"
+    );
+    assert_eq!(near.outbound_watermark() - watermark, u128::from(amount));
+    eventually("the acknowledgement", || acknowledgements(far).len() == 1);
+    let acknowledgement = &acknowledgements(far)[0];
+    assert_eq!(acknowledgement["pubkey"], far.identity().as_str());
+    assert_eq!(
+        tag(acknowledgement, "amount")[0],
+        &json!(["amount", (amount - FORWARD).to_string(), CODE, SCALE])
+    );
+    assert_eq!(tag(acknowledgement, "p")[0][1], near.identity().as_str());
+    assert_eq!(tag(acknowledgement, "receipt")[0][1], report["receipt_id"]);
+    assert_eq!(tag(acknowledgement, "e")[0][1], id.as_str());
+    // The receipt is carried by the packet and published nowhere.
+    for node in [near, far, &three.mid] {
+        assert!(node.events(&[9850]).is_empty());
+    }
+
+    let anonymous = three.tip(&["--amount", &amount.to_string(), "--anonymous", "--yes"]);
+
+    assert_eq!(
+        anonymous.exit_code, 0,
+        "{}{}",
+        anonymous.stdout, anonymous.stderr
+    );
+    eventually("the second acknowledgement", || {
+        acknowledgements(far).len() == 2
+    });
+    let second = acknowledgements(far)
+        .into_iter()
+        .find(|event| {
+            event["tags"]
+                .to_string()
+                .contains(anonymous.json()["receipt_id"].as_str().unwrap())
+        })
+        .expect("the acknowledgement of the second receipt");
+    assert!(tag(&second, "p").is_empty(), "{second}");
+}
+
+#[test]
+fn without_yes_nothing_is_sent() {
+    let three = three();
+    let watermark = three.near.outbound_watermark();
+
+    let run = three.tip(&["--amount", &(FORWARD + 50).to_string()]);
+
+    assert_eq!(error_code(&run), "not_confirmed", "{}", run.stdout);
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(three.near.outbound_watermark(), watermark);
+    assert!(acknowledgements(&three.far).is_empty());
+}
+
+#[test]
+fn an_amount_below_the_path_cost_and_the_minimum_names_the_least_that_would_do() {
+    let three = three();
+    let watermark = three.near.outbound_watermark();
+
+    let run = three.tip(&["--amount", &(FORWARD + MINIMUM - 1).to_string(), "--yes"]);
+
+    assert_eq!(error_code(&run), "tip_below_minimum", "{}", run.stdout);
+    let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
+    assert!(
+        message.contains(&format!("is {}", FORWARD + MINIMUM)),
+        "{message}"
+    );
+    assert_eq!(three.near.outbound_watermark(), watermark);
+
+    let enough = three.tip(&["--amount", &(FORWARD + MINIMUM).to_string(), "--yes"]);
+    assert_eq!(enough.exit_code, 0, "{}{}", enough.stdout, enough.stderr);
+}
+
+#[test]
+fn a_seal_key_other_than_the_connectors_is_refused_and_nothing_is_sent() {
+    let three = three();
+    thread::sleep(Duration::from_millis(1100));
+    three.far.publish_route(
+        &three.far.url(),
+        &three.far.tip_prefix(),
+        support::UNSEALABLE_KEY,
+    );
+    let watermark = three.near.outbound_watermark();
+
+    let run = three.tip(&["--amount", &(FORWARD + 50).to_string(), "--yes"]);
+
+    assert_eq!(error_code(&run), "tip_seal_key_mismatch", "{}", run.stdout);
+    assert_eq!(three.near.outbound_watermark(), watermark);
+}
+
+#[test]
+fn a_tip_route_the_connector_does_not_list_as_a_payment_route_is_refused() {
+    let three = three();
+    thread::sleep(Duration::from_millis(1100));
+    let relay_route = three.far.machine.relay_prefix();
+    three.far.publish_route(
+        &three.far.url(),
+        &relay_route,
+        &support::seal_key(&three.far.url()),
+    );
+
+    let run = three.tip(&["--amount", &(FORWARD + 50).to_string(), "--yes"]);
+
+    assert_eq!(error_code(&run), "tip_route_not_listed", "{}", run.stdout);
+}
+
+#[test]
+fn a_recipient_with_no_tip_route_on_any_relay_read_is_not_found() {
+    let three = three();
+    let nobody = "11".repeat(32);
+
+    let run = three
+        .near
+        .toon(&["tip", "send", &nobody, "--amount", "500", "--yes", "--json"]);
+
+    assert_eq!(error_code(&run), "tip_route_not_found", "{}", run.stdout);
+}
+
+#[test]
+fn a_for_that_is_neither_an_event_id_nor_an_address_is_a_usage_error() {
+    let (machine, _up) = running_on_fake_chain();
+    let run = machine.toon(&[
+        "tip",
+        "send",
+        &"11".repeat(32),
+        "--amount",
+        "5",
+        "--for",
+        "note1abc",
+        "--yes",
+        "--json",
+    ]);
+
+    assert_eq!(error_code(&run), "usage", "{}", run.stdout);
 }

@@ -1,10 +1,14 @@
-# Being tipped
+# Tips
+
+Tipping is two halves: [being tipped](#being-tipped), which the recipient turns on, and [tipping another agent](#tip-another-agent).
+
+## Being tipped
 
 Another agent node can tip your agent identity: it pays a route of yours that takes whatever
 arrives, and says in a tip receipt whom the tip is for and what it tips. An agent node takes tips
 only after you turn them on.
 
-## Turn tips on
+### Turn tips on
 
 ```sh
 toon tip enable --minimum 5 --yes
@@ -31,7 +35,7 @@ defaults to 0. A packet below it is rejected, as a packet below any route's pric
 `toon tip enable` again with another `--minimum` to change it: the route restarts and the event is
 published again.
 
-## Turn tips off
+### Turn tips off
 
 ```sh
 toon tip disable --yes
@@ -40,7 +44,7 @@ toon tip disable --yes
 removes the route, restarts the connector, and publishes a deletion (kind 5, NIP-09) of the tip
 route event to the same two relays.
 
-## What happens to a tip
+### What happens to a tip
 
 The supervisor itself is the app behind the route (ADR 0013): it listens on a loopback port that
 `toon tip enable` picked, and the connector delivers each tip there. The money has arrived before
@@ -66,3 +70,40 @@ restarts. `toon status` shows how many wait and the last error:
 ```sh
 toon status --json | jq .agent_node.tips
 ```
+
+## Tip another agent
+
+```sh
+toon tip send <npub|hex> --amount 150 --for <event id> --message "thanks" --yes
+```
+
+`toon tip send` tips an agent identity that has turned tips on. It
+
+1. reads the recipient's newest tip route (kind 10850) from your own relay, from the relay your
+   network profile follows and from each `--relay` (repeat it for more); none found is
+   `tip_route_not_found`;
+2. checks it against the connector it names: the `ilp_address` must be listed in that connector's
+   `GET /ilp` as a route with `"payment": true` (`tip_route_not_listed`), and the connector's
+   sealing key, read from `<connector_url>/identity`, must be the `connector_seal_key` the tip
+   route pins (`tip_seal_key_mismatch`);
+3. probes the path at amount 0 to learn what the connectors that forward it keep, its **path
+   cost**, and refuses an `--amount` that, less the path cost, is below the route's minimum
+   (`tip_below_minimum`, which states the least `--amount` that would do);
+4. signs a tip receipt (kind 9850) with the agent identity: the recipient (`p`), an `e` for each
+   `--for` that is an event id and an `a` for each that is an address `kind:pubkey:d`, the amount
+   with your token's asset code and scale, `anon` with `--anonymous`, and `--message` as its
+   content. The receipt is never published to a relay;
+5. sends one packet of `--amount` to the tip route, sealed to the pinned key and carrying the
+   receipt. Without `--yes` nothing is sent. The packet counts against the spending limit as
+   `toon send` does.
+
+**`--amount` is what you send, not what arrives.** The connectors on the path keep their fees, so
+`toon tip send` reports `sent 150, path cost 100, about 50 arrives`; `--json` has `sent`,
+`path_cost`, `arrives_about`, `receipt_id`, `recipient` and `ilp_address`. A path with several
+connectors that charge states only the fee of the first at amount 0: then `path_cost_complete` is
+`false`, `path_cost` is the least known, and a later connector may keep more.
+
+A fulfilled packet means the money arrived, not that the tip counts. The recipient's
+acknowledgement (kind 9851) is the record, and it names `receipt_id` in its `receipt` tag and the
+amount that did arrive. A packet that is rejected is reported as `toon send` reports one, with
+its exit code.

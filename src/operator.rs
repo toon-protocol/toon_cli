@@ -1808,7 +1808,7 @@ fn is_onion_endpoint(url: &str) -> bool {
 
 /// The sealing key the connector at `seal_to` gives as its identity, asked for the way
 /// `egress` says a request leaves this machine. Nothing has been sent when it fails.
-fn identity(egress: &Egress, seal_to: &str) -> Result<[u8; 65], Error> {
+pub(crate) fn identity(egress: &Egress, seal_to: &str) -> Result<[u8; 65], Error> {
     let not_sent = |message: String| Error {
         nothing_sent: true,
         ..failed(ErrorCode::SendFailed, message)
