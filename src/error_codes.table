@@ -46,4 +46,8 @@ error_codes! {
     ApprovalPending => "approval_pending" => Failure,
     NoProfileRelay => "no_profile_relay" => Failure,
     TipsNotEnabled => "tips_not_enabled" => Failure,
+    TipRouteNotFound => "tip_route_not_found" => Failure,
+    TipRouteNotListed => "tip_route_not_listed" => Failure,
+    TipSealKeyMismatch => "tip_seal_key_mismatch" => Failure,
+    TipBelowMinimum => "tip_below_minimum" => Failure,
 }

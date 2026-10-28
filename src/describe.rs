@@ -60,7 +60,8 @@ pub fn published_addresses(egress: &Egress, url: &str) -> Result<Vec<String>, Er
     Ok(addresses)
 }
 
-fn fetch(egress: &Egress, url: &str) -> Result<Value, Error> {
+/// The self-description of the connector at `url`.
+pub fn fetch(egress: &Egress, url: &str) -> Result<Value, Error> {
     let response = egress
         .client(url, PATIENCE)?
         .get(url)

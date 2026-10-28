@@ -101,6 +101,10 @@ A failed command with `--json` prints:
 | `approval_pending` | 1 | An agent key asked to add an app that only the operator may add at once: an image not on the list of trusted images, an app at a `--url`, an image added with an allowance (`--allow-egress`, `--scratch`, `--memory`, `--cpus`, `--pids`), a variable (`--env`) or a runtime (`--runtime`), or an add that names a secret (`--secret NAME`, `--secret-file <path>`). The app is recorded as a pending app, named in the message, for the operator to `toon approve` or `toon refuse`; nothing was pulled, started or routed. The same add again gives the same answer and records nothing more. |
 | `no_profile_relay` | 1 | `toon tip enable` found no relay that the agent node's network profile follows, so a tip route could not be published to the network's relay; nothing was changed |
 | `tips_not_enabled` | 1 | `toon tip disable` was run on an agent node that has not turned tips on; nothing was changed |
+| `tip_route_not_found` | 1 | `toon tip send` found no tip route (kind 10850) of the recipient on the agent node's own relay, on the relay its profile follows or on any `--relay`, or found one that does not name a `connector_url`, an `ilp_address` and a `connector_seal_key`; nothing was sent |
+| `tip_route_not_listed` | 1 | `toon tip send` read the recipient's tip route, and the connector at its `connector_url` does not list its `ilp_address` as a route with `"payment": true`; nothing was sent |
+| `tip_seal_key_mismatch` | 1 | `toon tip send` read the recipient's tip route, and the sealing key its connector gives at `<connector_url>/identity` is not the `connector_seal_key` the tip route names; nothing was sent |
+| `tip_below_minimum` | 1 | `toon tip send` was given an `--amount` that, less what the connectors on the path charge to forward it, is below the tip route's minimum; the message states the least `--amount` that would do, and nothing was sent |
 
 
 ## The wallet passphrase

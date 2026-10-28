@@ -43,3 +43,7 @@ needs_operator
 approval_pending
 no_profile_relay
 tips_not_enabled
+tip_route_not_found
+tip_route_not_listed
+tip_seal_key_mismatch
+tip_below_minimum

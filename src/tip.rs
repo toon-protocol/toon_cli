@@ -14,12 +14,15 @@ use serde_json::{json, Value};
 use crate::acknowledge;
 use crate::apps;
 use crate::cli::TipCommand;
+use crate::describe;
+use crate::egress::Egress;
 use crate::event;
 use crate::inbox;
 use crate::node::{self, Reach, State, Tip, ToonApp};
-use crate::operator;
+use crate::operator::{self, Answer};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::ports;
+use crate::spending;
 use crate::subscribe;
 
 /// The kind of the event that names a tip route: replaceable, one per agent identity.
@@ -45,6 +48,26 @@ pub fn run(home: &Path, app: Option<&str>, command: &TipCommand) -> Result<Repor
     match command {
         TipCommand::Enable { minimum, yes } => enable(home, app, *minimum, *yes),
         TipCommand::Disable { yes } => disable(home, *yes),
+        TipCommand::Send {
+            recipient,
+            amount,
+            r#for,
+            message,
+            anonymous,
+            relay,
+            yes,
+        } => send(
+            home,
+            &TipSend {
+                recipient,
+                amount: *amount,
+                what: r#for,
+                message: message.as_deref(),
+                anonymous: *anonymous,
+                relays: relay,
+                yes: *yes,
+            },
+        ),
     }
 }
 
@@ -336,4 +359,524 @@ pub fn status(home: &Path, state: &State) -> (String, Value) {
             "acknowledgements": waiting,
         }),
     )
+}
+
+/// What `toon tip send` was asked.
+struct TipSend<'a> {
+    recipient: &'a str,
+    amount: u64,
+    what: &'a [String],
+    message: Option<&'a str>,
+    anonymous: bool,
+    relays: &'a [String],
+    yes: bool,
+}
+
+fn usage(message: String) -> Error {
+    Error {
+        nothing_sent: true,
+        unanswered: None,
+        code: ErrorCode::Usage,
+        message,
+    }
+}
+
+/// An error before a packet is sent.
+fn unsent(code: ErrorCode, message: String) -> Error {
+    Error {
+        nothing_sent: true,
+        ..failed(code, message)
+    }
+}
+
+fn is_hex_key(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// The 32 bytes an `npub` (NIP-19, bech32) encodes.
+fn npub_key(npub: &str) -> Option<String> {
+    const CHARSET: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+    if npub.chars().any(char::is_uppercase) && npub.chars().any(char::is_lowercase) {
+        return None;
+    }
+    let lower = npub.to_ascii_lowercase();
+    let (human, data) = lower.rsplit_once('1')?;
+    if human != "npub" {
+        return None;
+    }
+    let values: Vec<u8> = data
+        .bytes()
+        .map(|byte| CHARSET.iter().position(|&c| c == byte).map(|at| at as u8))
+        .collect::<Option<_>>()?;
+    let polymod = |values: &[u8]| {
+        const GENERATOR: [u32; 5] = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+        values.iter().fold(1u32, |checksum, &value| {
+            let top = checksum >> 25;
+            let mut checksum = ((checksum & 0x1ff_ffff) << 5) ^ u32::from(value);
+            for (bit, generator) in GENERATOR.iter().enumerate() {
+                if (top >> bit) & 1 == 1 {
+                    checksum ^= generator;
+                }
+            }
+            checksum
+        })
+    };
+    let mut checked: Vec<u8> = human.bytes().map(|byte| byte >> 5).collect();
+    checked.push(0);
+    checked.extend(human.bytes().map(|byte| byte & 31));
+    checked.extend(&values);
+    if values.len() < 6 || polymod(&checked) != 1 {
+        return None;
+    }
+    let payload = &values[..values.len() - 6];
+    let (mut accumulator, mut bits, mut bytes) = (0u32, 0u32, Vec::new());
+    for &value in payload {
+        accumulator = (accumulator << 5) | u32::from(value);
+        bits += 5;
+        while bits >= 8 {
+            bits -= 8;
+            bytes.push((accumulator >> bits) as u8);
+            accumulator &= (1 << bits) - 1;
+        }
+    }
+    // Padding is zero and shorter than a byte.
+    (bytes.len() == 32 && bits < 5 && accumulator == 0).then(|| hex::encode(bytes))
+}
+
+/// The recipient's public key as 64 lowercase hex characters, from an `npub` or hex.
+fn recipient_key(text: &str) -> Result<String, Error> {
+    if is_hex_key(text) {
+        return Ok(text.to_ascii_lowercase());
+    }
+    npub_key(text).ok_or_else(|| {
+        usage(format!(
+            "{text} is not an agent identity: give an `npub` or 64 hex characters."
+        ))
+    })
+}
+
+/// The tip receipt's `e` and `a` tags for what the tip is for.
+fn subject_tags(what: &[String]) -> Result<Vec<Value>, Error> {
+    what.iter()
+        .map(|subject| {
+            if is_hex_key(subject) {
+                return Ok(json!(["e", subject.to_ascii_lowercase()]));
+            }
+            let mut parts = subject.splitn(3, ':');
+            match (parts.next(), parts.next(), parts.next()) {
+                (Some(kind), Some(pubkey), Some(_))
+                    if !kind.is_empty()
+                        && kind.bytes().all(|byte| byte.is_ascii_digit())
+                        && is_hex_key(pubkey) =>
+                {
+                    Ok(json!(["a", subject]))
+                }
+                _ => Err(usage(format!(
+                    "--for {subject} is neither an event id (64 hex characters) nor an address \
+                     `kind:pubkey:d`."
+                ))),
+            }
+        })
+        .collect()
+}
+
+/// A tip route as the event names it.
+struct Route {
+    connector_url: String,
+    ilp_address: String,
+    seal_key: [u8; 65],
+}
+
+fn route_of(event: &Value) -> Result<Route, String> {
+    let named = |name: &str| {
+        event["tags"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|tag| tag.as_array())
+            .find(|tag| tag.first().and_then(Value::as_str) == Some(name))
+            .and_then(|tag| tag.get(1))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("no `{name}`"))
+    };
+    let key = named("connector_seal_key")?;
+    let seal_key = hex::decode(key.trim_start_matches("0x"))
+        .ok()
+        .and_then(|bytes| <[u8; 65]>::try_from(bytes).ok())
+        .ok_or_else(|| format!("a `connector_seal_key` that is not 65 bytes of hex: {key}"))?;
+    Ok(Route {
+        connector_url: named("connector_url")?.to_owned(),
+        ilp_address: named("ilp_address")?.to_owned(),
+        seal_key,
+    })
+}
+
+/// The relays a tip route is looked for on: the agent node's own, the one its profile follows
+/// and the ones the operator names.
+fn relays_to_read(home: &Path, state: &State, named: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut relays = Vec::new();
+    let mut unread = Vec::new();
+    let own = subscribe::own_relay_app(state)
+        .and_then(|app| subscribe::own_relay_address(home, &app.name, subscribe::RelayPort::Read));
+    match own {
+        Ok(address) => relays.push(format!("ws://{address}")),
+        Err(error) => unread.push(format!("the agent node's own relay: {}", error.message)),
+    }
+    relays.extend(state.relay_url.clone());
+    relays.extend(named.iter().cloned());
+    let mut seen = Vec::new();
+    relays.retain(|relay| {
+        let new = !seen.contains(relay);
+        seen.push(relay.clone());
+        new
+    });
+    (relays, unread)
+}
+
+/// The newest tip route (kind 10850) `recipient` signed that `relays` hold; of two at the
+/// same second, the lower id, as NIP-01 keeps.
+fn find_route(
+    home: &Path,
+    state: &State,
+    recipient: &str,
+    named: &[String],
+) -> Result<(Value, Route), Error> {
+    let (relays, mut unread) = relays_to_read(home, state, named);
+    let egress = Egress::of(home)?;
+    let filter = json!({ "kinds": [ROUTE], "authors": [recipient] });
+    let mut found: Vec<Value> = Vec::new();
+    for relay in &relays {
+        match event::fetch(&egress, relay, &filter) {
+            Ok(events) => found.extend(events.into_iter().filter(|event| {
+                event["kind"] == ROUTE
+                    && event["pubkey"]
+                        .as_str()
+                        .map(str::to_ascii_lowercase)
+                        .as_deref()
+                        == Some(recipient)
+                    && event::verify(event).is_ok()
+            })),
+            Err(error) => unread.push(format!("{relay}: {}", error.message)),
+        }
+    }
+    let at = |event: &Value| event["created_at"].as_u64().unwrap_or(0);
+    let id = |event: &Value| event["id"].as_str().unwrap_or("").to_owned();
+    let newest = found.into_iter().max_by(|one, other| {
+        at(one)
+            .cmp(&at(other))
+            .then_with(|| id(other).cmp(&id(one)))
+    });
+    let Some(newest) = newest else {
+        let reads = if unread.is_empty() {
+            String::new()
+        } else {
+            format!(" These could not be read: {}", unread.join("; "))
+        };
+        return Err(unsent(
+            ErrorCode::TipRouteNotFound,
+            format!(
+                "No tip route (kind 10850) of {recipient} is on {}. The recipient may not take \
+                 tips, or publishes the tip route elsewhere: name a relay with `--relay`.{reads}",
+                relays.join(", ")
+            ),
+        ));
+    };
+    let route = route_of(&newest).map_err(|why| {
+        unsent(
+            ErrorCode::TipRouteNotFound,
+            format!(
+                "The newest tip route of {recipient}, {}, is unusable: {why}.",
+                id(&newest)
+            ),
+        )
+    })?;
+    Ok((newest, route))
+}
+
+/// A price as the connector's self-description states it, a number or a decimal string.
+fn price_of(route: &Value) -> Option<u128> {
+    match &route["price"] {
+        Value::String(text) => text.parse().ok(),
+        other => other.as_u64().map(u128::from),
+    }
+}
+
+/// The cost of the path to the tip route: what the connectors that forward it keep, and
+/// whether that is the whole of it. A packet of no amount learns it from the reject, as
+/// `toon probe` does, and moves nothing. A path with several connectors that charge states only
+/// the amount to carry past the first, which is then the least that is known of the cost.
+fn path_cost(home: &Path, route: &Route) -> Result<(u128, bool), Error> {
+    let answer = operator::dispatch_with_headers(
+        home,
+        &route.ilp_address,
+        0,
+        &route.seal_key,
+        ("POST", "/"),
+        json_headers(),
+        Vec::new(),
+    )?;
+    let cannot = |why: String| {
+        unsent(
+            ErrorCode::SendFailed,
+            format!(
+                "The cost of the path to {} could not be learned: {why}",
+                route.ilp_address
+            ),
+        )
+    };
+    match answer {
+        Answer::Fulfilled { .. } => Ok((0, true)),
+        Answer::Rejected {
+            code,
+            message,
+            cost,
+        } => match connector_cli::reject_cost_reading(&code) {
+            connector_cli::CostReading::Complete => Ok((cost, true)),
+            connector_cli::CostReading::Partial => Ok((cost, false)),
+            connector_cli::CostReading::NoAnswer => Err(cannot(format!(
+                "the probe was rejected with {code}: {message}"
+            ))),
+        },
+        Answer::WrongFulfilment => Err(cannot("the fulfilment did not match.".into())),
+        Answer::Unanswered => Err(cannot(operator::unanswered_message())),
+    }
+}
+
+fn json_headers() -> Vec<(String, String)> {
+    vec![("content-type".to_owned(), "application/json".to_owned())]
+}
+
+/// `toon tip send`.
+fn send(home: &Path, tip: &TipSend) -> Result<Report, Error> {
+    let recipient = recipient_key(tip.recipient)?;
+    let subjects = subject_tags(tip.what)?;
+    let state = State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
+    let unit = state
+        .toon_apps
+        .first()
+        .and_then(|app| app.evm.as_ref())
+        .and_then(node::Evm::unit)
+        .ok_or_else(|| {
+            unsent(
+                ErrorCode::SendFailed,
+                "The token this agent node pays in has no asset code, so a tip receipt cannot \
+                 state what it tips. Nothing was sent."
+                    .into(),
+            )
+        })?;
+
+    // Find the tip route, and check it against the connector it names.
+    let (_, route) = find_route(home, &state, &recipient, tip.relays)?;
+    let egress = Egress::of(home)?;
+    let description = describe::fetch(&egress, &route.connector_url)?;
+    let listed = description["routes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|listed| listed["prefix"] == route.ilp_address.as_str() && listed["payment"] == true)
+        .ok_or_else(|| {
+            unsent(
+                ErrorCode::TipRouteNotListed,
+                format!(
+                    "The connector at {} does not list {} as a payment route, so a tip to it \
+                     would not be taken. Nothing was sent.",
+                    route.connector_url, route.ilp_address
+                ),
+            )
+        })?;
+    let minimum = price_of(listed).ok_or_else(|| {
+        unsent(
+            ErrorCode::TipRouteNotListed,
+            format!(
+                "The connector at {} states no price for {}. Nothing was sent.",
+                route.connector_url, route.ilp_address
+            ),
+        )
+    })?;
+    let served = operator::identity(&egress, &route.connector_url)?;
+    if served != route.seal_key {
+        return Err(unsent(
+            ErrorCode::TipSealKeyMismatch,
+            format!(
+                "The connector at {} gives a sealing key other than the `connector_seal_key` the \
+                 tip route names. Nothing was sent.",
+                route.connector_url
+            ),
+        ));
+    }
+
+    // Price it.
+    if !operator::forwards(home, &route.ilp_address)? {
+        return Err(operator::peering_needed(
+            home,
+            &route.ilp_address,
+            &route.connector_url,
+            format!(
+                "No peering of this agent node reaches {}, where the tip is taken. A peering is \
+                 needed: run `{}` and then `toon route add {} --peer <id>`.",
+                route.ilp_address,
+                operator::peer_add_command(&route.connector_url, "<amount>", ""),
+                route.ilp_address
+            ),
+        ));
+    }
+    let (cost, whole) = path_cost(home, &route)?;
+    let sent = u128::from(tip.amount);
+    let least = cost + minimum;
+    if sent < least {
+        return Err(unsent(
+            ErrorCode::TipBelowMinimum,
+            format!(
+                "--amount {} is too little: the path costs {cost} and the tip route takes at \
+                 least {minimum} of what arrives, so the least `--amount` that would do is \
+                 {least}. Nothing was sent.",
+                tip.amount
+            ),
+        ));
+    }
+
+    // Write the receipt. It is never published to a relay: it travels in the packet.
+    let secret = event::agent_secret(home)?;
+    event::keep_agent_secret(home, &secret)?;
+    let mut tags = vec![json!(["p", recipient])];
+    tags.extend(subjects);
+    tags.push(json!([
+        "amount",
+        tip.amount.to_string(),
+        unit.code,
+        unit.decimals.to_string()
+    ]));
+    if tip.anonymous {
+        tags.push(json!(["anon"]));
+    }
+    let receipt = event::sign(
+        &secret,
+        event::now(),
+        acknowledge::RECEIPT,
+        Value::Array(tags),
+        tip.message.unwrap_or_default(),
+    )?;
+    let receipt_id = receipt["id"].as_str().unwrap_or_default().to_owned();
+
+    // Send it, sealed to the pinned key, which is not fetched again.
+    spending::spend_packets(home, sent, tip.yes, |packets| {
+        let answer = operator::dispatch_with_headers(
+            home,
+            &route.ilp_address,
+            tip.amount,
+            &route.seal_key,
+            ("POST", "/"),
+            json_headers(),
+            receipt.to_string().into_bytes(),
+        )
+        .map_err(|error| operator::repriced(error, packets.moved(sent)))?;
+        let report = match answer {
+            Answer::Unanswered => {
+                return Err(operator::unanswered_cost(packets.moved(sent), None));
+            }
+            Answer::Fulfilled { status, body } => Report {
+                exit: Exit::Success,
+                json: json!({
+                    "outcome": "fulfilled",
+                    "sent": tip.amount,
+                    "path_cost": cost,
+                    "path_cost_complete": whole,
+                    "arrives_about": sent - cost,
+                    "receipt_id": receipt_id,
+                    "recipient": recipient,
+                    "ilp_address": route.ilp_address,
+                    "paid": tip.amount,
+                    "response": { "status": status, "body": body },
+                }),
+                text: format!(
+                    "Sent {}, path cost {}{cost}, about {} arrives. The tip counts once {recipient} \
+                     acknowledges receipt {receipt_id}.",
+                    tip.amount,
+                    if whole { "" } else { "at least " },
+                    sent - cost
+                ),
+            },
+            Answer::Rejected {
+                code,
+                message,
+                cost: stated,
+            } => {
+                let paid = packets.moved(sent);
+                let mut json = json!({
+                    "outcome": "rejected",
+                    "sent": tip.amount,
+                    "receipt_id": receipt_id,
+                    "recipient": recipient,
+                    "ilp_address": route.ilp_address,
+                    "reject": { "code": code, "message": message },
+                    "paid": paid,
+                });
+                operator::add_cost(&mut json, &code, stated);
+                let mut text = format!(
+                    "Rejected with {code}: {} base units to {}. {message}{}",
+                    tip.amount,
+                    route.ilp_address,
+                    operator::cost_sentence(&code, stated, "--amount")
+                );
+                if paid > 0 {
+                    text.push_str(&format!(" It cost {paid} base units."));
+                }
+                Report {
+                    exit: Exit::Failure,
+                    json,
+                    text,
+                }
+            }
+            Answer::WrongFulfilment => Report {
+                exit: Exit::Failure,
+                json: json!({
+                    "outcome": "wrong_fulfilment",
+                    "sent": tip.amount,
+                    "receipt_id": receipt_id,
+                    "recipient": recipient,
+                    "ilp_address": route.ilp_address,
+                    "paid": packets.moved(sent),
+                }),
+                text: "Fulfilled, but not by this connector: the fulfilment did not match."
+                    .to_owned(),
+            },
+        };
+        let paid = report.json["paid"].as_u64().map_or(sent, u128::from);
+        Ok((report, paid))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEX: &str = "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e";
+    const NPUB: &str = "npub10elfcs4fr0l0r8af98jlmgdh9c8tcxjvz9qkw038js35mp4dma8qzvjptg";
+
+    #[test]
+    fn an_npub_and_its_hex_name_the_same_recipient() {
+        assert_eq!(recipient_key(NPUB).unwrap(), HEX);
+        assert_eq!(recipient_key(&HEX.to_uppercase()).unwrap(), HEX);
+    }
+
+    #[test]
+    fn a_damaged_npub_or_another_word_is_not_a_recipient() {
+        let damaged = NPUB.replace("qzvjptg", "qzvjpth");
+        for text in [damaged.as_str(), "npub1", "nsec10elfcs4", "abc", ""] {
+            assert_eq!(recipient_key(text).unwrap_err().code, ErrorCode::Usage);
+        }
+    }
+
+    #[test]
+    fn a_subject_is_an_event_id_or_an_address_and_nothing_else() {
+        let address = format!("30023:{HEX}:note");
+        let tags = subject_tags(&[HEX.to_owned(), address.clone(), format!("1:{HEX}:")]).unwrap();
+        assert_eq!(tags[0], json!(["e", HEX]));
+        assert_eq!(tags[1], json!(["a", address]));
+        assert_eq!(tags[2][0], "a");
+        for bad in ["note1abc", "x:y:z", &format!("30023:{HEX}"), "ab"] {
+            assert!(subject_tags(&[bad.to_owned()]).is_err(), "{bad}");
+        }
+    }
 }
