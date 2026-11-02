@@ -991,3 +991,419 @@ fn a_seal_key_other_than_the_connectors_is_refused() {
 
     assert_eq!(error_code(&run), "tip_seal_key_mismatch", "{}", run.stdout);
 }
+
+// ---- tipping with an agent key (ADR 0010) ----
+
+/// A key file's path, and the directory the agent runs in, which holds no agent node.
+struct Agent {
+    key: std::path::PathBuf,
+    nowhere: tempfile::TempDir,
+}
+
+impl Node {
+    /// An agent key, made with the wallet. `extra` is more arguments to `agent-key create`.
+    fn agent(&self, extra: &[&str]) -> Agent {
+        let mut args = vec!["agent-key", "create", "--json"];
+        args.extend_from_slice(extra);
+        let run = self.toon(&args);
+        assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+        Agent {
+            key: std::path::PathBuf::from(run.json()["key_file"].as_str().expect("key file")),
+            nowhere: tempfile::tempdir().expect("a directory"),
+        }
+    }
+
+    /// `toon` as the agent runs it: no home, the key file in the environment.
+    fn as_agent(&self, agent: &Agent, args: &[&str]) -> Run {
+        // The supervisor binds its order address a moment after the key is made.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let run = self.machine.toon_with(args, |command| {
+                command
+                    .env("HOME", agent.nowhere.path())
+                    .env("TOON_AGENT_KEY", &agent.key);
+            });
+            if run.exit_code != 1
+                || !run.stdout.contains("did not answer")
+                || Instant::now() > deadline
+            {
+                return run;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Write `event` to this node's own relay as a relay is written to: its write route.
+    fn write(&self, event: &Value) {
+        let status = self.machine.toon(&["status", "--json"]).json();
+        let relay = status["agent_node"]["toon_apps"][0]["apps"][0]["address"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the relay has no address: {status}"))
+            .to_owned();
+        let body = json!({ "event": event }).to_string();
+        let mut stream = std::net::TcpStream::connect(relay).expect("the relay's write port");
+        write!(
+            stream,
+            "POST /write HTTP/1.1\r\nHost: relay\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut answer = String::new();
+        stream.read_to_string(&mut answer).unwrap();
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    }
+
+    /// What is left of today's limit of the key, in base units.
+    fn remaining(&self, agent: &Agent) -> u128 {
+        let shown = self.as_agent(agent, &["limit", "show", "--json"]);
+        assert_eq!(shown.exit_code, 0, "{}{}", shown.stdout, shown.stderr);
+        shown.json()["limits"]
+            .as_object()
+            .and_then(|limits| limits.values().next())
+            .and_then(|limit| limit["remaining_today"].as_str())
+            .and_then(|text| text.parse().ok())
+            .unwrap_or_else(|| panic!("no remaining limit: {}", shown.stdout))
+    }
+}
+
+impl Three {
+    /// The newest tip route of `far` is on `near`'s own relay, where an agent key's tip order
+    /// reads it (it never reads a relay the agent names).
+    fn share_the_route(&self) {
+        let newest = self
+            .far
+            .events(&[10850])
+            .into_iter()
+            .max_by_key(|event| event["created_at"].as_u64())
+            .expect("far's tip route");
+        self.near.write(&newest);
+    }
+
+    fn tip_with(&self, agent: &Agent, extra: &[&str]) -> Run {
+        let identity = self.far.identity();
+        let mut args = vec!["tip", "send", &identity, "--json"];
+        args.extend(extra);
+        self.near.as_agent(agent, &args)
+    }
+}
+
+#[test]
+fn a_key_with_tip_and_send_tips_and_the_tip_counts_against_the_key() {
+    let three = three();
+    three.share_the_route();
+    let (near, far) = (&three.near, &three.far);
+    // The default scope holds `tip`.
+    let agent = near.agent(&[]);
+    let before = near.remaining(&agent);
+    let amount = FORWARD + 50;
+    let id = "cd".repeat(32);
+
+    let sent = three.tip_with(
+        &agent,
+        &["--amount", &amount.to_string(), "--for", &id, "--yes"],
+    );
+
+    assert_eq!(sent.exit_code, 0, "{}{}", sent.stdout, sent.stderr);
+    let report = sent.json();
+    assert_eq!(report["sent"], amount, "{report}");
+    assert_eq!(report["path_cost"], FORWARD, "{report}");
+    assert_eq!(report["arrives_about"], amount - FORWARD, "{report}");
+    assert_eq!(report["recipient"], far.identity().as_str());
+    assert_eq!(report["ilp_address"], far.tip_prefix().as_str());
+    eventually("the acknowledgement", || acknowledgements(far).len() == 1);
+    let acknowledgement = &acknowledgements(far)[0];
+    assert_eq!(
+        tag(acknowledgement, "amount")[0],
+        &json!(["amount", (amount - FORWARD).to_string(), CODE, SCALE])
+    );
+    assert_eq!(tag(acknowledgement, "p")[0][1], near.identity().as_str());
+    assert_eq!(tag(acknowledgement, "receipt")[0][1], report["receipt_id"]);
+    assert_eq!(tag(acknowledgement, "e")[0][1], id.as_str());
+    assert_eq!(near.remaining(&agent), before - u128::from(amount));
+    // The receipt is carried by the packet and published nowhere.
+    assert!(near.events(&[9850]).is_empty());
+
+    let anonymous = three.tip_with(
+        &agent,
+        &["--amount", &amount.to_string(), "--anonymous", "--yes"],
+    );
+
+    assert_eq!(
+        anonymous.exit_code, 0,
+        "{}{}",
+        anonymous.stdout, anonymous.stderr
+    );
+    eventually("the second acknowledgement", || {
+        acknowledgements(far).len() == 2
+    });
+    let second = acknowledgements(far)
+        .into_iter()
+        .find(|event| {
+            event["tags"]
+                .to_string()
+                .contains(anonymous.json()["receipt_id"].as_str().unwrap())
+        })
+        .expect("the acknowledgement of the second receipt");
+    assert!(tag(&second, "p").is_empty(), "{second}");
+}
+
+#[test]
+fn a_key_of_tip_and_send_tips_when_the_supervisor_holds_no_passphrase() {
+    let three = three();
+    three.share_the_route();
+    let near = &three.near;
+    let kept = near.machine.agent_node_home().join("agent.key");
+    std::fs::remove_file(&kept).expect("the kept secret");
+
+    let agent = near.agent(&["--scope", "tip,send"]);
+
+    assert!(
+        kept.exists(),
+        "creating the key keeps the identity's secret"
+    );
+    let sent = three.tip_with(&agent, &["--amount", &(FORWARD + 50).to_string(), "--yes"]);
+    assert_eq!(sent.exit_code, 0, "{}{}", sent.stdout, sent.stderr);
+}
+
+#[test]
+fn a_tip_over_the_keys_limit_is_refused_and_nothing_arrives() {
+    let three = three();
+    three.share_the_route();
+    let near = &three.near;
+    let agent = near.agent(&["--scope", "tip,send", "--max-per-command", "10"]);
+    let watermark = near.outbound_watermark();
+
+    let run = three.tip_with(&agent, &["--amount", &(FORWARD + 50).to_string(), "--yes"]);
+
+    assert_eq!(error_code(&run), "spending_limit", "{}", run.stdout);
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(near.outbound_watermark(), watermark);
+    assert!(acknowledgements(&three.far).is_empty());
+}
+
+#[test]
+fn a_key_needs_tip_for_the_order_and_send_for_the_packet() {
+    let three = three();
+    three.share_the_route();
+    let near = &three.near;
+    let watermark = near.outbound_watermark();
+    let amount = (FORWARD + 50).to_string();
+
+    let no_tip = near.agent(&["--scope", "send"]);
+    let run = three.tip_with(&no_tip, &["--amount", &amount, "--yes"]);
+    assert_ne!(run.exit_code, 0, "{}", run.stdout);
+    let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
+    assert!(
+        message.contains("403") && message.contains("'tip'"),
+        "{message}"
+    );
+
+    let no_send = near.agent(&["--scope", "tip"]);
+    let run = three.tip_with(&no_send, &["--amount", &amount, "--yes"]);
+    assert_ne!(run.exit_code, 0, "{}", run.stdout);
+
+    // A key with `tip` alone gets a receipt signed and nothing else.
+    let signed = near.as_agent(&no_send, &["event", "sign", "--kind", "1", "--json"]);
+    assert_ne!(signed.exit_code, 0, "{}", signed.stdout);
+    assert!(signed.stdout.contains("'sign'"), "{}", signed.stdout);
+
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(near.outbound_watermark(), watermark);
+    assert!(acknowledgements(&three.far).is_empty());
+}
+
+#[test]
+fn with_a_key_the_tip_checks_refuse_as_they_do_with_the_home_and_send_nothing() {
+    let three = three();
+    three.share_the_route();
+    let near = &three.near;
+    let agent = near.agent(&["--scope", "tip,send"]);
+    let watermark = near.outbound_watermark();
+
+    let below = three.tip_with(
+        &agent,
+        &["--amount", &(FORWARD + MINIMUM - 1).to_string(), "--yes"],
+    );
+    assert_eq!(error_code(&below), "tip_below_minimum", "{}", below.stdout);
+    assert!(
+        below.json()["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("is {}", FORWARD + MINIMUM)),
+        "{}",
+        below.stdout
+    );
+
+    let nobody = near.as_agent(
+        &agent,
+        &[
+            "tip",
+            "send",
+            &"11".repeat(32),
+            "--amount",
+            "500",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        error_code(&nobody),
+        "tip_route_not_found",
+        "{}",
+        nobody.stdout
+    );
+
+    // `--relay` is the home's: the supervisor dials no relay a key holder names.
+    let relay = three.far.relay_url();
+    let named = three.tip_with(
+        &agent,
+        &[
+            "--amount",
+            &(FORWARD + 50).to_string(),
+            "--relay",
+            &relay,
+            "--yes",
+        ],
+    );
+    assert_eq!(error_code(&named), "needs_home", "{}", named.stdout);
+
+    let unconfirmed = three.tip_with(&agent, &["--amount", &(FORWARD + 50).to_string()]);
+    assert_eq!(
+        error_code(&unconfirmed),
+        "not_confirmed",
+        "{}",
+        unconfirmed.stdout
+    );
+
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(near.outbound_watermark(), watermark);
+    assert!(acknowledgements(&three.far).is_empty());
+}
+
+#[test]
+fn a_key_is_refused_on_a_toon_app_it_is_not_granted_on() {
+    let three = three();
+    three.share_the_route();
+    let near = &three.near;
+    let agent = near.agent(&["--scope", "tip,send"]);
+    // The key file names a TOON app the record does not grant the key on.
+    let mut file: Value = serde_json::from_slice(&std::fs::read(&agent.key).unwrap()).unwrap();
+    let url = file["toon_apps"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()
+        .clone();
+    file["toon_apps"]["elsewhere"] = url;
+    std::fs::write(&agent.key, file.to_string()).unwrap();
+
+    let run = three.tip_with(
+        &agent,
+        &[
+            "--amount",
+            &(FORWARD + 50).to_string(),
+            "--app",
+            "elsewhere",
+            "--yes",
+        ],
+    );
+
+    assert_eq!(error_code(&run), "unknown_name", "{}", run.stdout);
+    assert!(acknowledgements(&three.far).is_empty());
+}
+
+/// A connector that answers every request with `body`, and the address it is at.
+fn babbling(body: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("address");
+    thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut request = [0u8; 2048];
+            let _ = stream.read(&mut request);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    format!("http://{address}/ilp")
+}
+
+#[test]
+fn a_refusal_carries_nothing_a_connector_the_tip_route_names_answered() {
+    let node = tipped_on_fake_chain();
+    let agent = node.agent(&["--scope", "tip,send"]);
+    let bodies: [&'static str; 3] = [
+        "SECRET-NOT-JSON <b>marker</b>",
+        "{\"routes\": \"SECRET-ROUTES\"}",
+        "{\"routes\": [{\"prefix\": \"SECRET-PREFIX\", \"payment\": true, \"price\": \"SECRET-PRICE\"}], \"publicKey\": \"SECRET-KEY\"}",
+    ];
+    for body in bodies {
+        thread::sleep(Duration::from_millis(1100));
+        let url = babbling(body);
+        node.publish_route(&url, &node.tip_prefix(), &support::seal_key(&node.url()));
+
+        let run = node.as_agent(
+            &agent,
+            &[
+                "tip",
+                "send",
+                &node.identity(),
+                "--amount",
+                "500",
+                "--yes",
+                "--json",
+            ],
+        );
+
+        assert_ne!(run.exit_code, 0, "{}", run.stdout);
+        assert!(!run.stdout.contains("SECRET"), "{}", run.stdout);
+        assert!(!run.stderr.contains("SECRET"), "{}", run.stderr);
+        assert!(!run.stdout.contains(&url), "{}", run.stdout);
+    }
+}
+
+#[test]
+fn with_a_key_a_tip_route_the_connector_does_not_list_or_pins_another_key_for_is_refused() {
+    let node = tipped_on_fake_chain();
+    let agent = node.agent(&["--scope", "tip,send"]);
+    thread::sleep(Duration::from_millis(1100));
+    node.publish_route(
+        &node.url(),
+        &node.machine.relay_prefix(),
+        &support::seal_key(&node.url()),
+    );
+    let run = node.as_agent(
+        &agent,
+        &[
+            "tip",
+            "send",
+            &node.identity(),
+            "--amount",
+            "500",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(error_code(&run), "tip_route_not_listed", "{}", run.stdout);
+
+    thread::sleep(Duration::from_millis(1100));
+    node.publish_route(&node.url(), &node.tip_prefix(), support::UNSEALABLE_KEY);
+    let run = node.as_agent(
+        &agent,
+        &[
+            "tip",
+            "send",
+            &node.identity(),
+            "--amount",
+            "500",
+            "--yes",
+            "--json",
+        ],
+    );
+    assert_eq!(error_code(&run), "tip_seal_key_mismatch", "{}", run.stdout);
+}

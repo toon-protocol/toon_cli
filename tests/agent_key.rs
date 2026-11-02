@@ -131,6 +131,7 @@ fn a_key_with_no_scope_cannot_withdraw_from_or_close_a_channel() {
         "route-price",
         "sign",
         "read-messages",
+        "tip",
     ] {
         assert!(
             scope.as_array().unwrap().iter().any(|name| name == order),

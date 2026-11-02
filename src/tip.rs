@@ -12,6 +12,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::acknowledge;
+use crate::agent_key::Key;
 use crate::apps;
 use crate::cli::TipCommand;
 use crate::describe;
@@ -20,6 +21,7 @@ use crate::event;
 use crate::inbox;
 use crate::node::{self, Reach, State, Tip, ToonApp};
 use crate::operator::{self, Answer};
+use crate::order;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::ports;
 use crate::spending;
@@ -594,80 +596,16 @@ fn find_route(
     Ok((newest, route))
 }
 
-/// A price as the connector's self-description states it, a number or a decimal string.
-fn price_of(route: &Value) -> Option<u128> {
-    match &route["price"] {
-        Value::String(text) => text.parse().ok(),
-        other => other.as_u64().map(u128::from),
-    }
-}
-
-/// The cost of the path to the tip route: what the connectors that forward it keep, and
-/// whether that is the whole of it. A packet of no amount learns it from the reject, as
-/// `toon probe` does, and moves nothing. A path with several connectors that charge states only
-/// the amount to carry past the first, which is then the least that is known of the cost.
-fn path_cost(home: &Path, route: &Route) -> Result<(u128, bool), Error> {
-    let answer = operator::dispatch_with_headers(
-        home,
-        &route.ilp_address,
-        0,
-        &route.seal_key,
-        ("POST", "/"),
-        json_headers(),
-        Vec::new(),
-    )?;
-    let cannot = |why: String| {
-        unsent(
-            ErrorCode::SendFailed,
-            format!(
-                "The cost of the path to {} could not be learned: {why}",
-                route.ilp_address
-            ),
-        )
-    };
-    match answer {
-        Answer::Fulfilled { .. } => Ok((0, true)),
-        Answer::Rejected {
-            code,
-            message,
-            cost,
-        } => match connector_cli::reject_cost_reading(&code) {
-            connector_cli::CostReading::Complete => Ok((cost, true)),
-            connector_cli::CostReading::Partial => Ok((cost, false)),
-            connector_cli::CostReading::NoAnswer => Err(cannot(format!(
-                "the probe was rejected with {code}: {message}"
-            ))),
-        },
-        Answer::WrongFulfilment => Err(cannot("the fulfilment did not match.".into())),
-        Answer::Unanswered => Err(cannot(operator::unanswered_message())),
-    }
-}
-
-fn json_headers() -> Vec<(String, String)> {
-    vec![("content-type".to_owned(), "application/json".to_owned())]
-}
-
-/// `toon tip send`.
-fn send(home: &Path, tip: &TipSend) -> Result<Report, Error> {
-    let recipient = recipient_key(tip.recipient)?;
-    let subjects = subject_tags(tip.what)?;
-    let state = State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
-    let unit = state
-        .toon_apps
-        .first()
-        .and_then(|app| app.evm.as_ref())
-        .and_then(node::Evm::unit)
-        .ok_or_else(|| {
-            unsent(
-                ErrorCode::SendFailed,
-                "The token this agent node pays in has no asset code, so a tip receipt cannot \
-                 state what it tips. Nothing was sent."
-                    .into(),
-            )
-        })?;
-
-    // Find the tip route, and check it against the connector it names.
-    let (_, route) = find_route(home, &state, &recipient, tip.relays)?;
+/// The tip route of `recipient`, found on the relays and checked against the connector it
+/// names and against this agent node's peerings, with the least that route takes of what
+/// arrives.
+fn check_route(
+    home: &Path,
+    state: &State,
+    recipient: &str,
+    named: &[String],
+) -> Result<(Route, u128), Error> {
+    let (_, route) = find_route(home, state, recipient, named)?;
     let egress = Egress::of(home)?;
     let description = describe::fetch(&egress, &route.connector_url)?;
     let listed = description["routes"]
@@ -706,7 +644,6 @@ fn send(home: &Path, tip: &TipSend) -> Result<Report, Error> {
         ));
     }
 
-    // Price it.
     if !operator::forwards(home, &route.ilp_address)? {
         return Err(operator::peering_needed(
             home,
@@ -721,41 +658,369 @@ fn send(home: &Path, tip: &TipSend) -> Result<Report, Error> {
             ),
         ));
     }
-    let (cost, whole) = path_cost(home, &route)?;
-    let sent = u128::from(tip.amount);
-    let least = cost + minimum;
-    if sent < least {
-        return Err(unsent(
-            ErrorCode::TipBelowMinimum,
-            format!(
-                "--amount {} is too little: the path costs {cost} and the tip route takes at \
-                 least {minimum} of what arrives, so the least `--amount` that would do is \
-                 {least}. Nothing was sent.",
-                tip.amount
-            ),
-        ));
-    }
+    Ok((route, minimum))
+}
 
-    // Write the receipt. It is never published to a relay: it travels in the packet.
-    let secret = event::agent_secret(home)?;
-    event::keep_agent_secret(home, &secret)?;
-    let mut tags = vec![json!(["p", recipient])];
-    tags.extend(subjects);
+/// A price as the connector's self-description states it, a number or a decimal string.
+fn price_of(route: &Value) -> Option<u128> {
+    match &route["price"] {
+        Value::String(text) => text.parse().ok(),
+        other => other.as_u64().map(u128::from),
+    }
+}
+
+/// The cost of the path to the tip route: what the connectors that forward it keep, and
+/// whether that is the whole of it. A packet of no amount learns it from the reject, as
+/// `toon probe` does, and moves nothing. A path with several connectors that charge states only
+/// the amount to carry past the first, which is then the least that is known of the cost.
+pub(crate) fn read_cost(ilp_address: &str, answer: Answer) -> Result<(u128, bool), Error> {
+    let cannot = |why: String| {
+        unsent(
+            ErrorCode::SendFailed,
+            format!("The cost of the path to {ilp_address} could not be learned: {why}"),
+        )
+    };
+    match answer {
+        Answer::Fulfilled { .. } => Ok((0, true)),
+        Answer::Rejected {
+            code,
+            message,
+            cost,
+        } => match connector_cli::reject_cost_reading(&code) {
+            connector_cli::CostReading::Complete => Ok((cost, true)),
+            connector_cli::CostReading::Partial => Ok((cost, false)),
+            connector_cli::CostReading::NoAnswer => Err(cannot(format!(
+                "the probe was rejected with {code}: {message}"
+            ))),
+        },
+        Answer::WrongFulfilment => Err(cannot("the fulfilment did not match.".into())),
+        Answer::Unanswered => Err(cannot(operator::unanswered_message())),
+    }
+}
+
+/// The probe of the path to the tip route: a packet of no amount, sealed to the pinned key.
+fn probe_answer(home: &Path, route: &Route) -> Result<Answer, Error> {
+    operator::dispatch_with_headers(
+        home,
+        &route.ilp_address,
+        0,
+        &route.seal_key,
+        ("POST", "/"),
+        json_headers(),
+        Vec::new(),
+    )
+}
+
+/// Refuse a tip that would not cover the path and the tip route's minimum.
+pub(crate) fn check_amount(amount: u64, cost: u128, minimum: u128) -> Result<(), Error> {
+    let least = cost + minimum;
+    if u128::from(amount) >= least {
+        return Ok(());
+    }
+    Err(unsent(
+        ErrorCode::TipBelowMinimum,
+        format!(
+            "--amount {amount} is too little: the path costs {cost} and the tip route takes at \
+             least {minimum} of what arrives, so the least `--amount` that would do is \
+             {least}. Nothing was sent."
+        ),
+    ))
+}
+
+/// The tip receipt: signed by the agent identity, never published to a relay, and carried in
+/// the packet.
+fn sign_receipt(secret: &[u8; 32], tip: &Receipt) -> Result<Value, Error> {
+    let mut tags = vec![json!(["p", tip.recipient])];
+    tags.extend(tip.subjects.iter().cloned());
     tags.push(json!([
         "amount",
         tip.amount.to_string(),
-        unit.code,
-        unit.decimals.to_string()
+        tip.unit.code,
+        tip.unit.decimals.to_string()
     ]));
     if tip.anonymous {
         tags.push(json!(["anon"]));
     }
-    let receipt = event::sign(
-        &secret,
+    event::sign(
+        secret,
         event::now(),
         acknowledge::RECEIPT,
         Value::Array(tags),
-        tip.message.unwrap_or_default(),
+        tip.message,
+    )
+}
+
+/// What a tip receipt says.
+struct Receipt<'a> {
+    recipient: &'a str,
+    subjects: &'a [Value],
+    amount: u64,
+    unit: &'a node::Unit,
+    anonymous: bool,
+    message: &'a str,
+}
+
+fn json_headers() -> Vec<(String, String)> {
+    vec![("content-type".to_owned(), "application/json".to_owned())]
+}
+
+/// The `tip` order, answered by the supervisor (ADR 0010): find the recipient's tip route,
+/// check it as the home path does, and sign the tip receipt with the agent identity's kept
+/// secret. The key holder sends the packet itself, with the key, so the supervisor moves no
+/// money. A connector or a relay answers the supervisor, and the key holder is told none of
+/// what they said: only which refusal applied.
+pub fn order(home: &Path, key: &Key, body: &Value) -> Result<Value, order::Refusal> {
+    let bad = |message: &str| order::Refusal::bad_order("usage", message.to_owned());
+    let recipient = recipient_key(body["recipient"].as_str().unwrap_or_default())
+        .map_err(|error| order::Refusal::of_error(&error))?;
+    let amount = body["amount"]
+        .as_u64()
+        .ok_or_else(|| bad("A tip order names an \"amount\"."))?;
+    let what: Vec<String> = match &body["for"] {
+        Value::Null => Vec::new(),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| item.as_str().map(str::to_owned))
+            .collect::<Option<_>>()
+            .ok_or_else(|| bad("\"for\" is a list of event ids and addresses."))?,
+        _ => return Err(bad("\"for\" is a list of event ids and addresses.")),
+    };
+    let subjects = subject_tags(&what).map_err(|error| order::Refusal::of_error(&error))?;
+    let message = match &body["message"] {
+        Value::Null => "",
+        Value::String(text) => text,
+        _ => return Err(bad("\"message\" is text.")),
+    };
+    let anonymous = body["anonymous"].as_bool().unwrap_or(false);
+    let named = match body["toon_app"].as_str() {
+        Some(name) => name,
+        None => match key.toon_apps.as_slice() {
+            [only] => only,
+            _ => return Err(bad("This key is granted on several TOON apps: name one.")),
+        },
+    };
+    if !key.toon_apps.iter().any(|granted| granted == named) {
+        return Err(order::Refusal::bad_order(
+            "unknown_name",
+            format!("This key is not granted on the TOON app {named}."),
+        ));
+    }
+    let state = State::load(home)
+        .ok()
+        .flatten()
+        .ok_or_else(|| order::Refusal::bad_order("no_agent_node", "No agent node.".into()))?;
+    let app = state
+        .toon_apps
+        .iter()
+        .find(|app| app.name == named)
+        .ok_or_else(|| {
+            order::Refusal::bad_order(
+                "unknown_name",
+                format!("No TOON app {named} in this agent node."),
+            )
+        })?;
+    // The receipt states the unit of the token the packet leaves in: the named TOON app's.
+    let unit = app.evm.as_ref().and_then(node::Evm::unit).ok_or_else(|| {
+        order::Refusal::bad_order(
+            "send_failed",
+            format!(
+                "The token {named} pays in has no asset code, so a tip receipt cannot state \
+                     what it tips. Nothing was sent."
+            ),
+        )
+    })?;
+    let secret =
+        inbox::require_kept_secret(home).map_err(|error| order::Refusal::of_error(&error))?;
+
+    let (route, minimum) =
+        check_route(home, &state, &recipient, &[]).map_err(|error| unrevealing(&error))?;
+    let receipt = sign_receipt(
+        &secret,
+        &Receipt {
+            recipient: &recipient,
+            subjects: &subjects,
+            amount,
+            unit: &unit,
+            anonymous,
+            message,
+        },
+    )
+    .map_err(|error| order::Refusal::of_error(&error))?;
+    Ok(json!({
+        "connector_url": route.connector_url,
+        "ilp_address": route.ilp_address,
+        "connector_seal_key": hex::encode(route.seal_key),
+        "minimum": minimum.to_string(),
+        "receipt": receipt,
+    }))
+}
+
+/// A refusal of the `tip` order for `error`, in words of ours alone. The tip route names a
+/// connector that anyone may have chosen, and the relays hold what anyone published, so
+/// nothing they answered, or the address they named, is passed on.
+fn unrevealing(error: &Error) -> order::Refusal {
+    let message = match error.code {
+        ErrorCode::TipRouteNotFound => {
+            "No usable tip route (kind 10850) of the recipient is on the agent node's own relay \
+             or the relay its profile follows. Nothing was sent."
+        }
+        ErrorCode::TipRouteNotListed => {
+            "The connector the tip route names does not list the tip route as a payment route \
+             with a price, so a tip to it would not be taken. Nothing was sent."
+        }
+        ErrorCode::TipSealKeyMismatch => {
+            "The connector the tip route names gives a sealing key other than the \
+             `connector_seal_key` the tip route names. Nothing was sent."
+        }
+        ErrorCode::PeeringNeeded => {
+            "No peering of this agent node reaches the tip route, so a tip to it could not be \
+             forwarded. The operator needs to add a peering and a route to it. Nothing was sent."
+        }
+        ErrorCode::DescribeFailed | ErrorCode::SendFailed => {
+            "The connector the tip route names did not give an answer that could be used. \
+             Nothing was sent."
+        }
+        _ => "The tip route could not be checked. Nothing was sent.",
+    };
+    order::Refusal::of_error(&Error {
+        message: message.to_owned(),
+        code: error.code,
+        nothing_sent: true,
+        unanswered: None,
+    })
+}
+
+/// A tip that was sent, as far as the sender knows.
+pub(crate) struct Sent<'a> {
+    pub amount: u64,
+    pub cost: u128,
+    pub whole: bool,
+    pub receipt_id: &'a str,
+    pub recipient: &'a str,
+    pub ilp_address: &'a str,
+}
+
+/// What the packet of a tip came to, as a report. `paid` is what the sender knows moved, if it
+/// counts: an agent key's sender does not, the connector does. `answer` is one that
+/// came: an unanswered packet is the caller's.
+pub(crate) fn sent_report(answer: Answer, tip: &Sent, paid: Option<u128>) -> Report {
+    let amount = tip.amount;
+    let arrives = u128::from(amount).saturating_sub(tip.cost);
+    match answer {
+        Answer::Unanswered => unreachable!("an unanswered packet is the caller's"),
+        Answer::Fulfilled { status, body } => Report {
+            exit: Exit::Success,
+            json: json!({
+                "outcome": "fulfilled",
+                "sent": amount,
+                "path_cost": tip.cost,
+                "path_cost_complete": tip.whole,
+                "arrives_about": arrives,
+                "receipt_id": tip.receipt_id,
+                "recipient": tip.recipient,
+                "ilp_address": tip.ilp_address,
+                "paid": amount,
+                "response": { "status": status, "body": body },
+            }),
+            text: format!(
+                "Sent {amount}, path cost {}{}, about {arrives} arrives. The tip counts once {} \
+                 acknowledges receipt {}.",
+                if tip.whole { "" } else { "at least " },
+                tip.cost,
+                tip.recipient,
+                tip.receipt_id
+            ),
+        },
+        Answer::Rejected {
+            code,
+            message,
+            cost: stated,
+        } => {
+            let mut json = json!({
+                "outcome": "rejected",
+                "sent": amount,
+                "receipt_id": tip.receipt_id,
+                "recipient": tip.recipient,
+                "ilp_address": tip.ilp_address,
+                "reject": { "code": code, "message": message },
+            });
+            if let Some(paid) = paid {
+                json["paid"] = json!(paid);
+            }
+            operator::add_cost(&mut json, &code, stated);
+            let mut text = format!(
+                "Rejected with {code}: {amount} base units to {}. {message}{}",
+                tip.ilp_address,
+                operator::cost_sentence(&code, stated, "--amount")
+            );
+            if let Some(paid) = paid.filter(|paid| *paid > 0) {
+                text.push_str(&format!(" It cost {paid} base units."));
+            }
+            Report {
+                exit: Exit::Failure,
+                json,
+                text,
+            }
+        }
+        Answer::WrongFulfilment => {
+            let mut json = json!({
+                "outcome": "wrong_fulfilment",
+                "sent": amount,
+                "receipt_id": tip.receipt_id,
+                "recipient": tip.recipient,
+                "ilp_address": tip.ilp_address,
+            });
+            if let Some(paid) = paid {
+                json["paid"] = json!(paid);
+            }
+            Report {
+                exit: Exit::Failure,
+                json,
+                text: "Fulfilled, but not by this connector: the fulfilment did not match."
+                    .to_owned(),
+            }
+        }
+    }
+}
+
+/// `toon tip send`.
+fn send(home: &Path, tip: &TipSend) -> Result<Report, Error> {
+    let recipient = recipient_key(tip.recipient)?;
+    let subjects = subject_tags(tip.what)?;
+    let state = State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
+    let unit = state
+        .toon_apps
+        .first()
+        .and_then(|app| app.evm.as_ref())
+        .and_then(node::Evm::unit)
+        .ok_or_else(|| {
+            unsent(
+                ErrorCode::SendFailed,
+                "The token this agent node pays in has no asset code, so a tip receipt cannot \
+                 state what it tips. Nothing was sent."
+                    .into(),
+            )
+        })?;
+
+    // Find the tip route, check it, and price the path.
+    let (route, minimum) = check_route(home, &state, &recipient, tip.relays)?;
+    let (cost, whole) = read_cost(&route.ilp_address, probe_answer(home, &route)?)?;
+    check_amount(tip.amount, cost, minimum)?;
+    let sent = u128::from(tip.amount);
+
+    // Write the receipt. It is never published to a relay: it travels in the packet.
+    let secret = event::agent_secret(home)?;
+    event::keep_agent_secret(home, &secret)?;
+    let receipt = sign_receipt(
+        &secret,
+        &Receipt {
+            recipient: &recipient,
+            subjects: &subjects,
+            amount: tip.amount,
+            unit: &unit,
+            anonymous: tip.anonymous,
+            message: tip.message.unwrap_or_default(),
+        },
     )?;
     let receipt_id = receipt["id"].as_str().unwrap_or_default().to_owned();
 
@@ -771,77 +1036,21 @@ fn send(home: &Path, tip: &TipSend) -> Result<Report, Error> {
             receipt.to_string().into_bytes(),
         )
         .map_err(|error| operator::repriced(error, packets.moved(sent)))?;
-        let report = match answer {
-            Answer::Unanswered => {
-                return Err(operator::unanswered_cost(packets.moved(sent), None));
-            }
-            Answer::Fulfilled { status, body } => Report {
-                exit: Exit::Success,
-                json: json!({
-                    "outcome": "fulfilled",
-                    "sent": tip.amount,
-                    "path_cost": cost,
-                    "path_cost_complete": whole,
-                    "arrives_about": sent - cost,
-                    "receipt_id": receipt_id,
-                    "recipient": recipient,
-                    "ilp_address": route.ilp_address,
-                    "paid": tip.amount,
-                    "response": { "status": status, "body": body },
-                }),
-                text: format!(
-                    "Sent {}, path cost {}{cost}, about {} arrives. The tip counts once {recipient} \
-                     acknowledges receipt {receipt_id}.",
-                    tip.amount,
-                    if whole { "" } else { "at least " },
-                    sent - cost
-                ),
+        if matches!(answer, Answer::Unanswered) {
+            return Err(operator::unanswered_cost(packets.moved(sent), None));
+        }
+        let report = sent_report(
+            answer,
+            &Sent {
+                amount: tip.amount,
+                cost,
+                whole,
+                receipt_id: &receipt_id,
+                recipient: &recipient,
+                ilp_address: &route.ilp_address,
             },
-            Answer::Rejected {
-                code,
-                message,
-                cost: stated,
-            } => {
-                let paid = packets.moved(sent);
-                let mut json = json!({
-                    "outcome": "rejected",
-                    "sent": tip.amount,
-                    "receipt_id": receipt_id,
-                    "recipient": recipient,
-                    "ilp_address": route.ilp_address,
-                    "reject": { "code": code, "message": message },
-                    "paid": paid,
-                });
-                operator::add_cost(&mut json, &code, stated);
-                let mut text = format!(
-                    "Rejected with {code}: {} base units to {}. {message}{}",
-                    tip.amount,
-                    route.ilp_address,
-                    operator::cost_sentence(&code, stated, "--amount")
-                );
-                if paid > 0 {
-                    text.push_str(&format!(" It cost {paid} base units."));
-                }
-                Report {
-                    exit: Exit::Failure,
-                    json,
-                    text,
-                }
-            }
-            Answer::WrongFulfilment => Report {
-                exit: Exit::Failure,
-                json: json!({
-                    "outcome": "wrong_fulfilment",
-                    "sent": tip.amount,
-                    "receipt_id": receipt_id,
-                    "recipient": recipient,
-                    "ilp_address": route.ilp_address,
-                    "paid": packets.moved(sent),
-                }),
-                text: "Fulfilled, but not by this connector: the fulfilment did not match."
-                    .to_owned(),
-            },
-        };
+            Some(packets.moved(sent)),
+        );
         let paid = report.json["paid"].as_u64().map_or(sent, u128::from);
         Ok((report, paid))
     })

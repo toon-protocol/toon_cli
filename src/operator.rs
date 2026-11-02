@@ -2139,6 +2139,28 @@ pub fn write_as_agent(
     )
 }
 
+/// One packet of `amount` to `destination`, carrying `body` as a JSON `POST /` request,
+/// originated by a signed write of the connector at `surface` and sealed to the key `public`
+/// the caller holds, which is not fetched from anywhere. The agent node's home is never read
+/// (ADR 0010).
+pub fn write_sealed_as_agent(
+    surface: &Surface,
+    destination: &str,
+    amount: u64,
+    public: &[u8; 65],
+    body: Vec<u8>,
+) -> Result<Answer, Error> {
+    dispatch_with_headers_on(
+        surface,
+        destination,
+        amount,
+        public,
+        ("POST", "/"),
+        vec![("content-type".to_owned(), "application/json".to_owned())],
+        body,
+    )
+}
+
 /// [`send_packet`], the packet sent by `dispatch` once the target is relative to the
 /// route's handler.
 fn send_packet_with(
