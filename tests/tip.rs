@@ -1202,6 +1202,12 @@ fn a_key_needs_tip_for_the_order_and_send_for_the_packet() {
     let no_send = near.agent(&["--scope", "tip"]);
     let run = three.tip_with(&no_send, &["--amount", &amount, "--yes"]);
     assert_ne!(run.exit_code, 0, "{}", run.stdout);
+    // The connector refuses it: a key that holds only orders is on no connector's list.
+    assert!(
+        run.stdout.contains("The connector refused the write"),
+        "{}",
+        run.stdout
+    );
 
     // A key with `tip` alone gets a receipt signed and nothing else.
     let signed = near.as_agent(&no_send, &["event", "sign", "--kind", "1", "--json"]);

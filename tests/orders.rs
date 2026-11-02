@@ -186,6 +186,58 @@ fn a_status_order_names_only_the_toon_apps_the_key_is_granted_on() {
 }
 
 #[test]
+fn a_tip_order_needs_the_tip_scope_and_takes_the_unit_of_the_toon_app_it_names() {
+    let node = node();
+    let send_only = node.create(&["--scope", "send"]);
+
+    let (status, reply) = send_only.send(
+        "/orders/tip",
+        &json!({ "recipient": "7".repeat(64), "amount": 100 }).to_string(),
+    );
+    assert_eq!(status, 403, "{reply}");
+    assert_eq!(reply["error"]["code"], "out_of_scope");
+    assert_eq!(reply["error"]["scope"], "tip");
+
+    // The receipt states the unit of the TOON app the order names, not the first one's: here
+    // only the second's token has an asset code.
+    let state_file = node.machine.agent_node_home().join("state.json");
+    let mut state: Value = serde_json::from_str(&fs::read_to_string(&state_file).unwrap()).unwrap();
+    for app in state["toon_apps"].as_array_mut().unwrap() {
+        if app["name"] == "second" {
+            app["evm"]["asset_code"] = json!("TST");
+        }
+    }
+    fs::write(&state_file, state.to_string()).unwrap();
+    let both = node.create(&[
+        "--scope",
+        "tip",
+        "--toon-app",
+        "relay",
+        "--toon-app",
+        "second",
+    ]);
+    let tip_on = |app: &str| {
+        both.send(
+            "/orders/tip",
+            &json!({ "recipient": "7".repeat(64), "amount": 100, "toon_app": app }).to_string(),
+        )
+    };
+
+    let (status, reply) = tip_on("relay");
+    assert_eq!(status, 400, "{reply}");
+    assert_eq!(reply["error"]["code"], "send_failed", "{reply}");
+    assert!(reply["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("asset code"));
+
+    // Past the unit, the order looks for the recipient's tip route, of which there is none.
+    let (status, reply) = tip_on("second");
+    assert_eq!(status, 400, "{reply}");
+    assert_eq!(reply["error"]["code"], "tip_route_not_found", "{reply}");
+}
+
+#[test]
 fn a_logs_order_needs_the_logs_scope_and_the_answer_names_it() {
     let node = node();
     let status_only = node.create(&["--scope", "status"]);

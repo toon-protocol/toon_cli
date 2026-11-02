@@ -597,13 +597,14 @@ fn find_route(
 }
 
 /// The tip route of `recipient`, found on the relays and checked against the connector it
-/// names and against this agent node's peerings, with the least that route takes of what
-/// arrives.
+/// names and against the peerings of the connector the packet leaves through (`toon_app`, else
+/// the one `--app` names), with the least that route takes of what arrives.
 fn check_route(
     home: &Path,
     state: &State,
     recipient: &str,
     named: &[String],
+    toon_app: Option<&str>,
 ) -> Result<(Route, u128), Error> {
     let (_, route) = find_route(home, state, recipient, named)?;
     let egress = Egress::of(home)?;
@@ -644,7 +645,11 @@ fn check_route(
         ));
     }
 
-    if !operator::forwards(home, &route.ilp_address)? {
+    let forwards = match toon_app {
+        Some(name) => operator::forwards_through(home, name, &route.ilp_address)?,
+        None => operator::forwards(home, &route.ilp_address)?,
+    };
+    if !forwards {
         return Err(operator::peering_needed(
             home,
             &route.ilp_address,
@@ -832,8 +837,8 @@ pub fn order(home: &Path, key: &Key, body: &Value) -> Result<Value, order::Refus
     let secret =
         inbox::require_kept_secret(home).map_err(|error| order::Refusal::of_error(&error))?;
 
-    let (route, minimum) =
-        check_route(home, &state, &recipient, &[]).map_err(|error| unrevealing(&error))?;
+    let (route, minimum) = check_route(home, &state, &recipient, &[], Some(named))
+        .map_err(|error| unrevealing(&error))?;
     let receipt = sign_receipt(
         &secret,
         &Receipt {
@@ -908,9 +913,8 @@ pub(crate) fn sent_report(answer: Answer, tip: &Sent, paid: Option<u128>) -> Rep
     let arrives = u128::from(amount).saturating_sub(tip.cost);
     match answer {
         Answer::Unanswered => unreachable!("an unanswered packet is the caller's"),
-        Answer::Fulfilled { status, body } => Report {
-            exit: Exit::Success,
-            json: json!({
+        Answer::Fulfilled { status, body } => {
+            let mut json = json!({
                 "outcome": "fulfilled",
                 "sent": amount,
                 "path_cost": tip.cost,
@@ -919,10 +923,15 @@ pub(crate) fn sent_report(answer: Answer, tip: &Sent, paid: Option<u128>) -> Rep
                 "receipt_id": tip.receipt_id,
                 "recipient": tip.recipient,
                 "ilp_address": tip.ilp_address,
-                "paid": amount,
                 "response": { "status": status, "body": body },
-            }),
-            text: format!(
+            });
+            if paid.is_some() {
+                json["paid"] = json!(amount);
+            }
+            Report {
+                exit: Exit::Success,
+                json,
+                text: format!(
                 "Sent {amount}, path cost {}{}, about {arrives} arrives. The tip counts once {} \
                  acknowledges receipt {}.",
                 if tip.whole { "" } else { "at least " },
@@ -930,7 +939,8 @@ pub(crate) fn sent_report(answer: Answer, tip: &Sent, paid: Option<u128>) -> Rep
                 tip.recipient,
                 tip.receipt_id
             ),
-        },
+            }
+        }
         Answer::Rejected {
             code,
             message,
@@ -1003,7 +1013,7 @@ fn send(home: &Path, tip: &TipSend) -> Result<Report, Error> {
         })?;
 
     // Find the tip route, check it, and price the path.
-    let (route, minimum) = check_route(home, &state, &recipient, tip.relays)?;
+    let (route, minimum) = check_route(home, &state, &recipient, tip.relays, None)?;
     let (cost, whole) = read_cost(&route.ilp_address, probe_answer(home, &route)?)?;
     check_amount(tip.amount, cost, minimum)?;
     let sent = u128::from(tip.amount);
