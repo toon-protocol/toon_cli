@@ -914,7 +914,7 @@ pub enum AgentKeyCommand {
 #[derive(Debug, Args)]
 pub struct AgentKeyCreateArgs {
     /// What the key may do, comma-separated or repeated: the orders `status`, `logs`, `apps`,
-    /// `route-price`, `sign`, `read-messages`, and the connector's writes `send`, `peer`,
+    /// `route-price`, `sign`, `read-messages`, `tip`, and the connector's writes `send`, `peer`,
     /// `routes`, `channels-open`, `channels-fund`, `channels-withdraw`, `channels-land`.
     /// By default every order and `send`, `peer` and `routes`: nothing that withdraws from or
     /// closes a channel

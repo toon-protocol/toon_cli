@@ -33,7 +33,7 @@ toon agent-key revoke <public key>
 
 | Scope | What it lets the key do |
 |---|---|
-| `status`, `logs`, `apps`, `route-price`, `sign`, `read-messages` | The orders the supervisor answers for the key. They move no money. |
+| `status`, `logs`, `apps`, `route-price`, `sign`, `read-messages`, `tip` | The orders the supervisor answers for the key. They move no money. |
 | `send` | Originate packets (`POST /packets`) |
 | `peer` | Add and remove peerings |
 | `routes` | Write forwarding routes, runtime and leased |
@@ -43,7 +43,10 @@ With no `--scope` the key gets every order scope and `send`, `peer` and `routes`
 that withdraws from or closes a channel. The channel scopes must be named. A key whose scope
 holds only orders is on no connector's list, because a connector's list takes only writes.
 
-`sign` lets the agent sign anything as the agent identity; the secret stays in the home.
+`sign` lets the agent sign anything as the agent identity; the secret stays in the home. `tip` lets
+it get a kind 9850 tip receipt signed and nothing else; it does not need `sign`. A key made with no
+`--scope` has `tip`; an existing key gains it only through `toon agent-key set`. Sending the tip
+needs `send` as well.
 
 ## Limits and expiry
 
@@ -101,11 +104,12 @@ that is not loopback is never bound.
 | `POST /orders/remove` | `apps` | `{"app", "yes"}` | What `toon remove` reports, as `{"result", "text"}`. |
 | `POST /orders/sign` | `sign` | `{"kind": N, "content": "", "tags": [], "toon_app": NAME}`, `toon_app` optional | `{"event": <signed event>, "relay": <the relay's write address>}`, the relay when `toon_app` is named. Any kind: signing is not bounded by it. |
 | `POST /orders/seal` | `sign` | `{"recipients": [...], "content": "", "reply_to", "subject", "toon_app"}` | The rumor and the sealed, signed wraps of a private message (`to_recipients`, `to_sender`), and the relay as above. Nothing is sent. |
+| `POST /orders/tip` | `tip` | `{"recipient", "amount", "for", "message", "anonymous", "toon_app"}` | The recipient's tip route, checked as `toon tip send` checks it with the home (`connector_url`, `ilp_address`, `connector_seal_key`), the route's `minimum`, and the signed `receipt` (kind 9850). The unit in its `amount` tag is the named TOON app's. Nothing is sent, and no refusal carries anything a connector or relay answered: only which refusal applied (`tip_route_not_found`, `tip_route_not_listed`, `tip_seal_key_mismatch`, `peering_needed`, all `400`). |
 | `POST /orders/messages` | `read-messages` | `{"with": [...], "since": N, "limit": N}`, all optional | What `toon message list` prints with the home, and its `text`. |
 
 No answer holds the agent identity's secret. The supervisor signs with the copy kept in the
-home (ADR 0008); `toon agent-key create` and `set` keep it when the scope holds `sign` or
-`read-messages`. An order that finds none is answered `agent_key_not_kept`.
+home (ADR 0008); `toon agent-key create` and `set` keep it when the scope holds `sign`,
+`read-messages` or `tip`. An order that finds none is answered `agent_key_not_kept`.
 
 The supervisor reads the record on every order, so a revoke or a change takes effect on the
 next one. It refuses, with `401`, an unsigned order, a key not on the record, a signature that
@@ -145,6 +149,7 @@ toon limit show
 | `toon event sign` | The `sign` order: prints the signed event and sends nothing |
 | `toon message send` | The `seal` order, then each wrap is sent with the key as above. `--relay` needs the home |
 | `toon message list` | The `messages` order (`read-messages` scope) |
+| `toon tip send <recipient> --amount N --yes` | The `tip` order (`tip` scope), then the path is priced and one packet of `N` carrying the receipt is sent with the key (`send` scope), sealed to the key the tip route pins, so the connector counts `N` against the key. `--relay` needs the home |
 | `toon limit show` | The key's spending limit and what is left of today's, read from each connector the key file names (`--app` picks one) |
 
 `--app <toon app>` picks which TOON app's connector `send` and `peer add` use. Without it, the
@@ -160,7 +165,7 @@ key file's only TOON app is used, else `relay`.
 - Every other command answers `needs_home` (exit 1) before anything else is tried, and the
   message names the command and says the operator must run it: `wallet`, `limit set`, `init`,
   `create`, `up`, `down`, `agent-key`, and also, until their tickets land, `route` (except
-  `route price`), `event query`, `event watch`, `nip` and the subscribe commands, and `event publish` and `message send` with `--relay`.
+  `route price`), `event query`, `event watch`, `nip` and the subscribe commands, and `event publish`, `message send` and `tip send` with `--relay`.
 - An agent whose loopback cannot reach the supervisor's order address needs a tunnel the
   deployer provides; reaching an agent node on another host is not offered.
 

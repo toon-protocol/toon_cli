@@ -16,10 +16,11 @@ use zeroize::Zeroizing;
 
 use crate::cli::{
     AddArgs, Command, EventCommand, LimitCommand, MessageCommand, PeerCommand, RouteCommand,
+    TipCommand,
 };
 use crate::event;
 use crate::message;
-use crate::operator::{self, PeerAdd, Surface};
+use crate::operator::{self, Answer, PeerAdd, Surface};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 
 /// How long an order waits for the supervisor.
@@ -568,6 +569,80 @@ fn message_send(key: &KeyFile, app: Option<&str>, mut body: Value) -> Result<Rep
     )
 }
 
+/// What `toon tip send` asks, without `--relay` and `--yes`, which are settled before.
+struct TipOrder<'a> {
+    recipient: &'a str,
+    amount: u64,
+    what: &'a [String],
+    message: Option<&'a str>,
+    anonymous: bool,
+}
+
+/// `toon tip send` with an agent key: the supervisor finds the tip route, checks it and signs
+/// the receipt (the `tip` order); this prices the path and sends the one packet with the key,
+/// sealed to the key the order pins, which the connector counts.
+fn tip_send(key: &KeyFile, app: Option<&str>, tip: &TipOrder) -> Result<Report, Error> {
+    let (name, _) = key.choose(app)?;
+    let reply = order(
+        key,
+        "tip",
+        &json!({
+            "recipient": tip.recipient,
+            "amount": tip.amount,
+            "for": tip.what,
+            "message": tip.message,
+            "anonymous": tip.anonymous,
+            "toon_app": name,
+        }),
+        PATIENCE,
+    )?;
+    let text = |field: &str| reply[field].as_str().ok_or_else(unexpected);
+    let (ilp_address, receipt) = (text("ilp_address")?, reply["receipt"].clone());
+    let seal_key: [u8; 65] = hex::decode(text("connector_seal_key")?.trim_start_matches("0x"))
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(unexpected)?;
+    let minimum: u128 = text("minimum")?.parse().map_err(|_| unexpected())?;
+    let recipient = receipt["tags"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|tag| tag[0] == "p")
+        .and_then(|tag| tag[1].as_str())
+        .ok_or_else(unexpected)?
+        .to_owned();
+    let receipt_id = receipt["id"].as_str().ok_or_else(unexpected)?.to_owned();
+    let surface = key.surface(app)?;
+
+    let probe = operator::write_sealed_as_agent(&surface, ilp_address, 0, &seal_key, Vec::new())?;
+    let (cost, whole) = crate::tip::read_cost(ilp_address, probe)?;
+    // The unsent receipt is dropped.
+    crate::tip::check_amount(tip.amount, cost, minimum)?;
+
+    let answer = operator::write_sealed_as_agent(
+        &surface,
+        ilp_address,
+        tip.amount,
+        &seal_key,
+        receipt.to_string().into_bytes(),
+    )?;
+    if matches!(answer, Answer::Unanswered) {
+        return Err(operator::unanswered_cost(u128::from(tip.amount), None));
+    }
+    Ok(crate::tip::sent_report(
+        answer,
+        &crate::tip::Sent {
+            amount: tip.amount,
+            cost,
+            whole,
+            receipt_id: &receipt_id,
+            recipient: &recipient,
+            ilp_address,
+        },
+        None,
+    ))
+}
+
 fn message_list(key: &KeyFile, body: &Value) -> Result<Report, Error> {
     let mut reply = order(key, "messages", body, PATIENCE)?;
     let text = reply["text"].as_str().unwrap_or_default().to_owned();
@@ -722,6 +797,31 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
             &KeyFile::load(path)?,
             &json!({ "with": with, "since": since, "limit": limit }),
         ),
+        Command::Tip {
+            command:
+                TipCommand::Send {
+                    recipient,
+                    amount,
+                    r#for,
+                    message,
+                    anonymous,
+                    relay,
+                    yes,
+                },
+        } if relay.is_empty() => {
+            confirmed(amount.into(), yes)?;
+            tip_send(
+                &KeyFile::load(path)?,
+                app,
+                &TipOrder {
+                    recipient: &recipient,
+                    amount,
+                    what: &r#for,
+                    message: message.as_deref(),
+                    anonymous,
+                },
+            )
+        }
         other => Err(needs_home(&other)),
     }
 }

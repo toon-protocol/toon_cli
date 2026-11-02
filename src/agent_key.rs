@@ -24,13 +24,14 @@ use crate::{keystore, ports, spending};
 
 /// The scopes of the supervisor's own orders. The supervisor answers them; the connector
 /// knows none of them.
-const ORDER_SCOPES: [&str; 6] = [
+const ORDER_SCOPES: [&str; 7] = [
     "status",
     "logs",
     "apps",
     "route-price",
     "sign",
     "read-messages",
+    "tip",
 ];
 
 /// The scopes that name writes of a connector. `send`, `peer` and `routes` are `toon`'s words
@@ -282,7 +283,7 @@ fn state(home: &Path) -> Result<State, Error> {
 }
 
 /// Open the keystore, to prove the passphrase, and keep the agent identity's secret for the
-/// supervisor when `scope` lets the key sign or read messages: the supervisor has no
+/// supervisor when `scope` lets the key sign, read messages or tip: the supervisor has no
 /// passphrase to derive it with (ADR 0008).
 fn require_passphrase(home: &Path, scope: &[String]) -> Result<(), Error> {
     if !keystore::exists(home) {
@@ -292,7 +293,7 @@ fn require_passphrase(home: &Path, scope: &[String]) -> Result<(), Error> {
     let phrase = keystore::open(home, &passphrase)?;
     if scope
         .iter()
-        .any(|name| name == "sign" || name == "read-messages")
+        .any(|name| matches!(name.as_str(), "sign" | "read-messages" | "tip"))
     {
         crate::event::keep_agent_secret_of(home, &phrase)?;
     }

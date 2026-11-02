@@ -13,6 +13,7 @@ Three choices shape this.
 ## Consequences
 
 - An agent key with the signing scope can sign anything as the agent identity. The secret stays in the home and the key can be revoked, but what is signed is not bounded by kind.
+- A key with the `tip` scope can get a kind 9850 tip receipt signed and nothing else: `tip` is a signing scope bounded by kind, and the receipt's tags are fixed by the order. To check a tip route the supervisor makes its fixed `GET /ilp` and `/identity` to the `connector_url` the tip route names, which a third party chose. That cannot be refused for loopback, because local connectors use it, so no refusal carries anything the connector or a relay returned: a key holder learns only which refusal applied. The answer to an order that is not refused carries the checked tip route, which the key holder could read from the relay itself.
 - A key is granted per TOON app and its spending limit is per connector. A key granted on three TOON apps can spend three times its daily limit. A total across the agent node would put the supervisor in the path of every payment.
 - The supervisor listens for orders on loopback only (ADR 0003). An agent in a place that cannot reach the machine's loopback needs a tunnel the deployer provides.
 - The wallet's spending limit still bounds commands run with the home. An agent key's is a different limit, kept by the connector, so the two are not one total.

@@ -778,6 +778,7 @@ impl Shared {
                 Ok(sealed)
             }
             "messages" => message::list_order(home, &order.body).map_err(refused),
+            "tip" => crate::tip::order(home, key, &order.body),
             "route-price" => {
                 let prefix = order.body["prefix"].as_str();
                 let price = order.body["price"].as_u64();

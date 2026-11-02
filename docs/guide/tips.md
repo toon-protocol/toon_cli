@@ -107,3 +107,19 @@ A fulfilled packet means the money arrived, not that the tip counts. The recipie
 acknowledgement (kind 9851) is the record, and it names `receipt_id` in its `receipt` tag and the
 amount that did arrive. A packet that is rejected is reported as `toon send` reports one, with
 its exit code.
+
+### Tipping with an agent key
+
+An agent key with the `tip` and `send` scopes tips without the home (ADR 0010):
+
+```sh
+TOON_AGENT_KEY=/run/secrets/agent-key.json toon tip send <npub|hex> --amount 150 --yes
+```
+
+The supervisor finds the tip route on the agent node's own relay and the relay its profile
+follows, makes the checks above and signs the receipt (the `tip` order); `toon` prices the path,
+refuses a too small `--amount` with `tip_below_minimum`, and sends the one packet with the key,
+sealed to the key the tip route pins. The connector counts the amount against the key's spending
+limit, and a tip over it exits with `spending_limit`. The output is the same as with the home.
+`--relay` needs the home: the supervisor never dials a relay a key holder names, so it answers
+`needs_home`. The receipt states the unit of the TOON app the packet leaves through (`--app`).

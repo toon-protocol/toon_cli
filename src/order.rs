@@ -27,8 +27,9 @@ use sha2::{Digest, Sha256};
 use crate::agent_key::{Key, Record};
 
 /// The orders the supervisor answers, by name (`/orders/<name>`), with the scope each one
-/// needs. `sign` and `seal` both sign as the agent identity, so both need `sign`.
-const ORDERS: [(&str, &str); 8] = [
+/// needs. `sign` and `seal` both sign as the agent identity, so both need `sign`; `tip` signs
+/// only a tip receipt, so it needs only `tip`.
+const ORDERS: [(&str, &str); 9] = [
     ("status", "status"),
     ("logs", "logs"),
     ("add", "apps"),
@@ -37,6 +38,7 @@ const ORDERS: [(&str, &str); 8] = [
     ("sign", "sign"),
     ("seal", "sign"),
     ("messages", "read-messages"),
+    ("tip", "tip"),
 ];
 
 /// The components a signature covers: exactly these, as a connector's write signature does.
@@ -99,7 +101,13 @@ impl Refusal {
         use crate::outcome::ErrorCode;
         let status = match error.code {
             ErrorCode::RateLimited => 429,
-            ErrorCode::UnknownName | ErrorCode::Usage | ErrorCode::ConfirmationRequired => 400,
+            ErrorCode::UnknownName
+            | ErrorCode::Usage
+            | ErrorCode::ConfirmationRequired
+            | ErrorCode::TipRouteNotFound
+            | ErrorCode::TipRouteNotListed
+            | ErrorCode::TipSealKeyMismatch
+            | ErrorCode::PeeringNeeded => 400,
             _ => 500,
         };
         Self {

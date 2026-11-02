@@ -364,7 +364,16 @@ fn covers(prefix: &str, address: &str) -> bool {
 /// Whether a packet to `address` would leave through a peering: the longest route that
 /// covers it forwards to a peer, and does not end at an app of this connector.
 pub fn forwards(home: &Path, address: &str) -> Result<bool, Error> {
-    let surface = surface(home)?;
+    forwards_on(&surface(home)?, address)
+}
+
+/// [`forwards`], on the connector of the TOON app `toon_app`: the one a packet sent with an
+/// agent key leaves through, which `--app` did not name to this process.
+pub fn forwards_through(home: &Path, toon_app: &str, address: &str) -> Result<bool, Error> {
+    forwards_on(&surface_of(home, Some(toon_app))?, address)
+}
+
+fn forwards_on(surface: &Surface, address: &str) -> Result<bool, Error> {
     let prefix_of = |route: &Value| route["prefix"].as_str().unwrap_or_default().to_owned();
     let longest = |routes: &[Value]| {
         routes
@@ -374,8 +383,8 @@ pub fn forwards(home: &Path, address: &str) -> Result<bool, Error> {
             .map(|prefix| prefix.len())
             .max()
     };
-    let terminating = longest(&read(&surface, "/routes")?);
-    let forwarding = longest(&read(&surface, "/routes/peers")?);
+    let terminating = longest(&read(surface, "/routes")?);
+    let forwarding = longest(&read(surface, "/routes/peers")?);
     Ok(match (forwarding, terminating) {
         (Some(forwarding), Some(terminating)) => forwarding >= terminating,
         (Some(_), None) => true,
@@ -2136,6 +2145,28 @@ pub fn write_as_agent(
         ("POST", "/"),
         vec![("content-type".to_owned(), "application/json".to_owned())],
         body.into_bytes(),
+    )
+}
+
+/// One packet of `amount` to `destination`, carrying `body` as a JSON `POST /` request,
+/// originated by a signed write of the connector at `surface` and sealed to the key `public`
+/// the caller holds, which is not fetched from anywhere. The agent node's home is never read
+/// (ADR 0010).
+pub fn write_sealed_as_agent(
+    surface: &Surface,
+    destination: &str,
+    amount: u64,
+    public: &[u8; 65],
+    body: Vec<u8>,
+) -> Result<Answer, Error> {
+    dispatch_with_headers_on(
+        surface,
+        destination,
+        amount,
+        public,
+        ("POST", "/"),
+        vec![("content-type".to_owned(), "application/json".to_owned())],
+        body,
     )
 }
 
