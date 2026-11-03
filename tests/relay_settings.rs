@@ -322,7 +322,7 @@ fn connector_env(machine: &Machine) -> String {
 fn selling_the_feed_renders_a_subscribe_route_and_hands_the_relay_its_settings() {
     let chain = FakeChain::start();
     let machine = Machine::new();
-    machine.init_on(&chain);
+    let init = machine.init_on(&chain).json();
     let up = machine.start(&["up", "--foreground", "--json"]);
     up.report();
     assert!(
@@ -378,7 +378,14 @@ fn selling_the_feed_renders_a_subscribe_route_and_hands_the_relay_its_settings()
         "{env}"
     );
     assert!(env.contains("TOON_BROADCAST_PRICE=10\n"), "{env}");
-    assert!(env.contains("TOON_RELAY_URL=ws://"), "{env}");
+    // A subscriber pays the URL it reads the relay at, so the port is part of it (#290).
+    let onion = init["toon_apps"][0]["onion_endpoint"]
+        .as_str()
+        .expect("the onion endpoint");
+    assert!(
+        env.contains(&format!("TOON_RELAY_URL=ws://{onion}:7100\n")),
+        "{env}"
+    );
     let routes = machine.toon(&["route", "list", "--json"]).json();
     let subscribe = routes["routes"]
         .as_array()
