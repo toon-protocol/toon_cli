@@ -1220,8 +1220,19 @@ impl Unit {
             ))));
         };
         // An app whose definition changed (its image, allowances, variables or secrets), or
-        // the relay with new settings, is started again, and the old one goes first: the two
-        // would share a name.
+        // the relay with new settings or a new write price, is started again, and the old one
+        // goes first: the two would share a name.
+        let relay_price = |toon: &ToonApp| {
+            toon.apps
+                .iter()
+                .find(|behind| behind.name == node::RELAY)
+                .map(|relay| relay.price)
+        };
+        // The relay reads its connector's routes once when it starts, and waits for a connector
+        // that does not answer. So a new price takes the connector down first, or the relay
+        // would read the old routes from the connector about to be replaced.
+        let priced = relay_price(&self.app) != relay_price(app)
+            || self.app.relay.selling() != app.relay.selling();
         let mut touched = false;
         for behind in &app.apps {
             let old = self.app.apps.iter().find(|old| old.name == behind.name);
@@ -1233,7 +1244,7 @@ impl Unit {
                     || old.secret_variables != behind.secret_variables
                     || old.secret_files != behind.secret_files
                     || old.secret_revision != behind.secret_revision
-                    || (behind.name == node::RELAY && self.app.relay != app.relay)
+                    || (behind.name == node::RELAY && (self.app.relay != app.relay || priced))
             });
             if let Some(position) = self.apps.iter().position(|(name, _)| *name == behind.name) {
                 if changed {
@@ -1262,6 +1273,9 @@ impl Unit {
             error,
             stopped: touched,
         };
+        if priced && touched {
+            self.connector_down();
+        }
         let mut fresh = StartedApps::new();
         // Apps that were started again are stopped so that they can be started where they
         // were again; any other is stopped for good.
@@ -1314,12 +1328,7 @@ impl Unit {
         let alone =
             self.connector.is_some() && before.is_some() && fs::read(&files.config).ok() == before;
         if !alone {
-            self.stop_connector();
-            let mut live = self.shared.live();
-            live.running = false;
-            live.pid = None;
-            live.address = None;
-            drop(live);
+            self.connector_down();
         }
         let (kept, removed): (StartedApps, StartedApps) = std::mem::take(&mut self.apps)
             .into_iter()
@@ -1376,6 +1385,15 @@ impl Unit {
         self.connector = Some(started);
         self.delay = FIRST_RESTART_DELAY;
         Ok(true)
+    }
+
+    /// Stop the connector for a reload, and say that it is down.
+    fn connector_down(&mut self) {
+        self.stop_connector();
+        let mut live = self.shared.live();
+        live.running = false;
+        live.pid = None;
+        live.address = None;
     }
 
     /// The name of an app that has stopped, if one has. Each app's status is kept current.

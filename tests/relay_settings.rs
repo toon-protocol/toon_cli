@@ -318,6 +318,64 @@ fn connector_env(machine: &Machine) -> String {
     fs::read_to_string(machine.agent_node_home().join("apps/relay/data/connector")).unwrap()
 }
 
+/// What the relay learned from its connector the last time it started, once it has
+/// learned something holding `expected`.
+fn eventually_told(machine: &Machine, expected: &str) -> String {
+    let routes = machine
+        .agent_node_home()
+        .join("apps/relay/data/connector-routes");
+    let mut told = String::new();
+    for _ in 0..200 {
+        told = fs::read_to_string(&routes).unwrap_or_default();
+        if told.contains(expected) {
+            return told;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("the relay was never told {expected}: {told}");
+}
+
+// The relay reads its connector's routes once when it starts, so it must not read them from
+// the connector that is about to be replaced (#296).
+#[test]
+fn a_running_relay_given_a_subscribe_price_learns_the_route_from_the_new_connector() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+
+    let run = machine.toon(&[
+        "relay",
+        "price",
+        "--subscribe",
+        "1000",
+        "--broadcast",
+        "10",
+        "--yes",
+        "--json",
+    ]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    let subscribe = format!("{}.subscribe", machine.relay_prefix());
+    eventually_told(&machine, &subscribe);
+}
+
+#[test]
+fn a_running_relay_given_a_write_price_learns_it_from_the_new_connector() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+    eventually_told(&machine, &machine.relay_prefix());
+
+    let run = machine.toon(&["relay", "price", "77", "--yes", "--json"]);
+
+    assert_eq!(run.exit_code, 0, "{}", run.stdout);
+    eventually_told(&machine, r#""price":"77""#);
+}
+
 #[test]
 fn selling_the_feed_renders_a_subscribe_route_and_hands_the_relay_its_settings() {
     let chain = FakeChain::start();
