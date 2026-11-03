@@ -988,11 +988,14 @@ pub fn onion_endpoint(home: &Path, app: &ToonApp) -> Option<String> {
 
 /// The URL clients reach a relay at, which a relay that sells its feed checks the `relay`
 /// tag of an `AUTH` against: the public hostname, or the onion endpoint of a hidden
-/// service. None for a hidden service whose endpoint is not known.
+/// service with the port its relay is read on. None for a hidden service whose endpoint is
+/// not known.
 pub fn reached_at(reach: &Reach, onion: Option<&str>) -> Option<String> {
     match (reach, onion) {
         (Reach::Clearnet { hostname }, _) => Some(format!("wss://{hostname}")),
-        (Reach::Hidden, Some(endpoint)) => Some(format!("ws://{endpoint}")),
+        (Reach::Hidden, Some(endpoint)) => {
+            Some(format!("ws://{endpoint}:{}", overlay::RELAY_READ_PORT))
+        }
         (Reach::Hidden, None) => None,
     }
 }
