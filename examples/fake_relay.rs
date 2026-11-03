@@ -28,6 +28,9 @@
 //! tag naming the host of `TOON_RELAY_URL`, as the Rust relay does. For anyone else it
 //! sends `CLOSED` with `payment-required:` after `EOSE`.
 //!
+//! As the relay does, it asks `TOON_CONNECTOR_URL` once what it terminates, repeating only
+//! while nothing answers, and writes the first answer to `connector-routes`.
+//!
 //! A relay told `TOON_NIP17_RECIPIENT_ONLY=true` follows the Rust relay's rule for gift
 //! wraps: it challenges every connection and records every key the connection proves; a
 //! wrap (kind 1059) is served, stored or live, only to a connection that has proven a key in
@@ -121,6 +124,16 @@ fn main() {
     .filter_map(|name| env::var(name).ok().map(|value| format!("{name}={value}\n")))
     .collect();
     fs::write(data.join("connector"), connector).expect("write");
+    if let Ok(url) = env::var("TOON_CONNECTOR_URL") {
+        let routes = data.join("connector-routes");
+        thread::spawn(move || loop {
+            if let Some(answer) = ask_connector(&url) {
+                fs::write(&routes, answer).expect("write");
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        });
+    }
 
     thread::spawn(|| {
         let mut ignored = [0u8; 64];
@@ -567,4 +580,25 @@ fn rand_bytes() -> [u8; 16] {
     let mut bytes = [0u8; 16];
     let _ = fs::File::open("/dev/urandom").and_then(|mut file| file.read_exact(&mut bytes));
     bytes
+}
+
+/// The body of `GET` on the connector at `url` (`http://host:port/path`), if it answers.
+fn ask_connector(url: &str) -> Option<String> {
+    let (host, path) = url.strip_prefix("http://")?.split_once('/')?;
+    let mut stream = std::net::TcpStream::connect(host).ok()?;
+    write!(
+        stream,
+        "GET /{path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    )
+    .ok()?;
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).ok()?;
+    answer
+        .starts_with("HTTP/1.1 200")
+        .then(|| {
+            answer
+                .split_once("\r\n\r\n")
+                .map(|(_, body)| body.to_owned())
+        })
+        .flatten()
 }
