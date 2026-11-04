@@ -252,8 +252,10 @@ $E/toon add archive --to second --image $RELAY_IMAGE --yes --json
 **Expect** `restarted: true` in `add.json`, the packet `fulfilled` over the route `create`
 made (a packet sent before the forwarding connector has seen the old session close is
 rejected `T01` as soon as that close arrives, not after the answer timeout, and is not
-sent again; the rejected packet costs nothing, so `paid` is 0 and sending it again is
-safe), and status showing `second` with two apps, both running. The last
+sent again; its report may say `paid: 2`, the packet's amount, from a voucher the next
+forward then drops, as on a cold link below, so the rejected packet finally costs nothing;
+sending it again is safe, and once the retry is `fulfilled` the outbound watermark has
+moved by 2 over the whole step, not 4), and status showing `second` with two apps, both running. The last
 command is refused with `one_relay`: an agent node runs one relay.
 
 ### What an app may and may not do
