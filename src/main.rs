@@ -13,6 +13,7 @@ mod bounded;
 mod cli;
 mod connector;
 mod control;
+mod deployment;
 mod derive;
 mod describe;
 mod egress;
@@ -370,6 +371,7 @@ fn run() -> ExitCode {
         .into(),
         Command::Event { command } => render(event::run(command), json).into(),
         Command::Message { command } => render(message::run(command), json).into(),
+        Command::Deployment { command } => render(deployment::run(command), json).into(),
         Command::Nip { command } => render(nip::run(command), json).into(),
         Command::Skill { command } => render(skill::run(command), json).into(),
         Command::Relay { command } => render(

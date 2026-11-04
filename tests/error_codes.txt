@@ -26,6 +26,7 @@ spending_limit
 name_taken
 query_failed
 draft_refused
+deployment_refused
 confirmation_required
 overlay_unavailable
 funds_held

@@ -29,6 +29,7 @@ error_codes! {
     NameTaken => "name_taken" => Failure,
     QueryFailed => "query_failed" => Failure,
     DraftRefused => "draft_refused" => Failure,
+    DeploymentRefused => "deployment_refused" => Failure,
     ConfirmationRequired => "confirmation_required" => Failure,
     OverlayUnavailable => "overlay_unavailable" => Failure,
     FundsHeld => "funds_held" => Failure,

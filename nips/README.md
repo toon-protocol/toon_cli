@@ -13,6 +13,10 @@ The tip draft, which specifies the tip route (kind 10850), the tip receipt (kind
 the tip acknowledgement (kind 9851) that `toon tip` implements, lives in the relay's
 repository, not here: [`docs/nips/nip-tips.md` in toon-protocol/relay](https://github.com/toon-protocol/relay/blob/main/docs/nips/nip-tips.md).
 
+The Deployment draft, which specifies the TOON Compute Deployment (kind 30437) that
+`toon deployment` publishes and maintains, lives there too:
+[`docs/nips/nip-deployment.md` in toon-protocol/relay](https://github.com/toon-protocol/relay/blob/main/docs/nips/nip-deployment.md).
+
 ## Writing one
 
 Copy [`TEMPLATE.md`](TEMPLATE.md) to a file named after the draft, keep its `##`
