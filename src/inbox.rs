@@ -136,7 +136,7 @@ impl Drop for Inbox {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            crate::bounded::join(thread);
         }
     }
 }

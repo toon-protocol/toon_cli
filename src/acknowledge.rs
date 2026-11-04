@@ -408,7 +408,7 @@ impl Drop for Listener {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            crate::bounded::join(thread);
         }
     }
 }
@@ -495,7 +495,7 @@ impl Drop for Tips {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            crate::bounded::join(thread);
         }
     }
 }

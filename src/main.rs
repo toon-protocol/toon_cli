@@ -9,6 +9,7 @@ mod acknowledge;
 mod agent_key;
 mod anon;
 mod apps;
+mod bounded;
 mod cli;
 mod connector;
 mod control;

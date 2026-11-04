@@ -124,6 +124,7 @@ fn main() {
     .filter_map(|name| env::var(name).ok().map(|value| format!("{name}={value}\n")))
     .collect();
     fs::write(data.join("connector"), connector).expect("write");
+    fs::write(data.join("pid"), process::id().to_string()).expect("write");
     if let Ok(url) = env::var("TOON_CONNECTOR_URL") {
         let routes = data.join("connector-routes");
         thread::spawn(move || loop {
@@ -139,6 +140,12 @@ fn main() {
         let mut ignored = [0u8; 64];
         let mut stdin = std::io::stdin().lock();
         while matches!(stdin.read(&mut ignored), Ok(read) if read > 0) {}
+        // An app given `FAKE_APP_STUBBORN` ignores its cue to stop and exits only when killed.
+        if env::var_os("FAKE_APP_STUBBORN").is_some() {
+            loop {
+                thread::park();
+            }
+        }
         process::exit(0);
     });
     if env::var_os("FAKE_RELAY_EXIT_AFTER_START").is_some() {
