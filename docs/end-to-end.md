@@ -18,7 +18,8 @@ step.
 
 | Step | What happens today | Ticket |
 | --- | --- | --- |
-| 1, the sandbox | Its relays do not sell their feed, hence `feed.yml` and the routes added by hand | infra #53 |
+
+No step is known to fail.
 
 ## What it needs
 
@@ -44,8 +45,6 @@ docker build -t toon-e2e-app docs/end-to-end/app
 ## 1. The sandbox, with its hub hidden
 
 ```sh
-export COMPOSE_FILE=docker-compose.yml:$PWD/docs/end-to-end/feed.yml
-export FEED_RELAY_IMAGE=ghcr.io/toon-protocol/relay:rust-sha-1b02f2e
 make -C ../infra/sandbox clean
 make -C ../infra/sandbox up-topology NODES="relay relay2" CHAINS=evm HS=relay
 ```
@@ -69,35 +68,24 @@ export USDC=0x0A867CA0442383c2A89951244B955AA19b615b58   # the sandbox's FiatTok
 export RPC=http://localhost:8545
 ```
 
-`feed.yml`, above, puts the sandbox's relays on a relay image that sells its feed and gives
-them the feed's settings (infra #53). Each connector also needs a route to its relay's
-subscribe handler, and each relay must start after that route, since
-it reads its connector's routes once. `up-topology` renders the connectors' configs
-itself, so the route is added to what it rendered:
+`up-topology` gives each relay its subscribe route and feed settings itself, and recreates
+a hidden relay once its route exists. Check each relay's information document; it can take
+a minute after `up-topology` returns for the relays to come up, so wait for it:
 
 ```sh
-R=../infra/sandbox/conf/.rendered/topology
-for n in relay relay2; do
-  printf '\n[[routes]]\nprefix = "g.toon.%s.subscribe"\nhandler_url = "http://%s:3100/subscribe"\nprice = 1\n' \
-    $n $n >> $R/connector-$n.toml
-done
-docker restart toon-sandbox-relay-connector-1 toon-sandbox-relay2-connector-1
-for i in $(seq 60); do
-  curl -sf localhost:3200/ilp | grep -q relay.subscribe \
-    && curl -sf localhost:3290/ilp | grep -q relay2.subscribe && break
-  sleep 2
-done
-(cd ../infra/sandbox && HUB_RELAY_URL=ws://$HUB:7100 docker compose --profile relay \
-  up -d --no-deps relay)
-docker restart toon-sandbox-relay2-1
 for p in 7100 7110; do
+  for i in $(seq 60); do
+    curl -sf -H 'Accept: application/nostr+json' http://localhost:$p/ \
+      | jq -e .toon_subscription >/dev/null && break
+    sleep 2
+  done
   curl -s -H 'Accept: application/nostr+json' http://localhost:$p/ | jq -c .toon_subscription
 done
 ```
 
 **Expect** each relay's `toon_subscription` to name its subscribe route
 (`g.toon.relay.subscribe`, `g.toon.relay2.subscribe`), a price of 1 and a broadcast price
-of 1. It appears a few seconds after the relay starts.
+of 1.
 
 ## 2. A hidden agent node against the sandbox
 
@@ -499,6 +487,14 @@ containers and the `anon` daemon.
 This part settles whether a hidden agent node reaches a network that is on clearnet, the
 devnet, through the overlay.
 
+The devnet profile's defaults for the connector and the relay, which `state.json` does not
+record (`src/profile.rs`; take them again if the profile moves):
+
+```sh
+export DEVNET_CONNECTOR=https://toonprotocol.dev/ilp
+export DEVNET_RELAY=wss://relay.toonprotocol.dev
+```
+
 ```sh
 export HOME=$E/devnet
 $E/toon init --network devnet --accept-anyone-terms --json > $E/devnet-init.json
@@ -521,8 +517,8 @@ via() { curl -s -m 60 --socks5-hostname $P -o /dev/null -w "%{http_code} $1\n" "
 via https://base-sepolia-rpc.publicnode.com -H 'content-type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
 via https://faucet.devnet.toonprotocol.dev/
-via "$(jq -r .connector_url $HOME/.toon/agent-node/state.json)"
-via "$(jq -r .relay_url $HOME/.toon/agent-node/state.json | sed 's/^ws/http/')" \
+via "$DEVNET_CONNECTOR"
+via "$(echo "$DEVNET_RELAY" | sed 's/^ws/http/')" \
   -H 'Accept: application/nostr+json'
 kill $ANON
 ```
@@ -536,7 +532,7 @@ $E/toon up --foreground --json
 
 ```sh
 grep -E 'socks_proxy|listening' $HOME/.toon/agent-node/connectors/0/connector.log
-$E/toon event query "$(jq -r .relay_url $HOME/.toon/agent-node/state.json)" \
+$E/toon event query "$DEVNET_RELAY" \
   --filter '{"kinds":[1],"limit":2}' --json
 $E/toon join devnet --deposit 1000000 --yes --json
 ```
@@ -570,7 +566,7 @@ connector's ticket, toon-protocol/connector#1447.
 Then pay the devnet's relay over the new channel:
 
 ```sh
-RELAY=$(jq -r .relay_url $HOME/.toon/agent-node/state.json)
+RELAY=$DEVNET_RELAY
 $E/toon event publish --kind 1 --content "end-to-end run" --relay "$RELAY" --yes --json \
   > $E/devnet-event.json
 $E/toon event query "$RELAY" \
