@@ -554,6 +554,9 @@ pub struct State {
     pub joined: Option<String>,
     /// The relays the agent reads: those of the networks it has joined.
     pub reads: Vec<String>,
+    /// The connector URL each peering made by `toon peer add` reaches, by the peering's id.
+    /// The connector's listing carries no URL, so this is how a custom id is recognised.
+    pub peerings: BTreeMap<String, String>,
     pub toon_apps: Vec<ToonApp>,
 }
 
@@ -743,6 +746,7 @@ impl State {
             relay_url: options.relay_url.clone(),
             joined: None,
             reads: Vec::new(),
+            peerings: BTreeMap::new(),
             toon_apps: vec![ToonApp {
                 name: RELAY.into(),
                 connector: 0,
@@ -785,6 +789,7 @@ impl State {
             "faucet_url": self.faucet_url,
             "joined": self.joined,
             "reads": self.reads,
+            "peerings": self.peerings,
             "toon_apps": apps,
         });
         // Only an override is recorded, so that the rest follows the profile of the release
@@ -884,6 +889,17 @@ impl State {
         } else if !value["reads"].is_null() {
             return None;
         }
+        // A state written before peerings were recorded has none.
+        let mut peerings = BTreeMap::new();
+        match &value["peerings"] {
+            Value::Null => {}
+            Value::Object(members) => {
+                for (id, url) in members {
+                    peerings.insert(id.clone(), url.as_str()?.to_owned());
+                }
+            }
+            _ => return None,
+        }
         Some(Self {
             network,
             faucet_url,
@@ -898,6 +914,7 @@ impl State {
                 .map(|url| current(url, network.retired_relay_urls(), network.relay_url())),
             joined,
             reads,
+            peerings,
             toon_apps,
         })
     }
@@ -1337,6 +1354,21 @@ mod tests {
         let state = State::from_json(&hidden).unwrap();
         assert_eq!(state.connector_url, None);
         assert!(state.json()["connector_url"].is_null());
+        assert_eq!(State::from_json(&state.json()).unwrap(), state);
+    }
+
+    #[test]
+    fn peerings_are_saved_and_a_state_without_them_loads() {
+        let state = State::from_json(&state_of("devnet", json!({}))).unwrap();
+        assert!(state.peerings.is_empty());
+        assert!(state.json()["peerings"].as_object().unwrap().is_empty());
+
+        let recorded = state_of(
+            "devnet",
+            json!({ "peerings": { "first": "http://127.0.0.1:1/ilp" } }),
+        );
+        let state = State::from_json(&recorded).unwrap();
+        assert_eq!(state.peerings["first"], "http://127.0.0.1:1/ilp");
         assert_eq!(State::from_json(&state.json()).unwrap(), state);
     }
 }

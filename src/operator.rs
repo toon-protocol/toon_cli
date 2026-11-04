@@ -394,7 +394,8 @@ fn forwards_on(surface: &Surface, address: &str) -> Result<bool, Error> {
 
 /// The id of the peering of this agent node that reaches the connector at `connector_url`,
 /// if one is recognised. The connector's listing carries no URL, so a peering is known by
-/// its id: the name of the network joined from that URL, or the label `peer add` derives.
+/// its id: the name of the network joined from that URL, the label `peer add` derives, or an
+/// id `peer add` recorded for that URL.
 pub fn peering_toward(home: &Path, connector_url: &str) -> Result<Option<String>, Error> {
     let surface = surface(home)?;
     let ids: Vec<String> = read(&surface, "/peers")?
@@ -408,6 +409,13 @@ pub fn peering_toward(home: &Path, connector_url: &str) -> Result<Option<String>
                 candidates.push(joined.clone());
             }
         }
+        candidates.extend(
+            state
+                .peerings
+                .iter()
+                .filter(|(_, url)| url.as_str() == connector_url)
+                .map(|(id, _)| id.clone()),
+        );
     }
     candidates.push(label(connector_url));
     Ok(candidates.into_iter().find(|id| ids.contains(id)))
@@ -651,12 +659,25 @@ pub struct Peered {
     pub report: Report,
     /// False when the channel was already open and nothing was deposited.
     pub deposited: bool,
+    /// The id the peering was made under.
+    pub id: String,
 }
 
 /// `toon peer add`: create a peering toward the connector at `address`, opening and
 /// funding the channel it pays on with `deposit`.
 pub fn peer_add(home: &Path, add: &PeerAdd) -> Result<Peered, Error> {
-    peer_add_on(&surface(home)?, add)
+    let peered = peer_add_on(&surface(home)?, add)?;
+    // The peering exists, and a deposit may be spent on it: a record that cannot be kept
+    // only costs the recognition of a custom id, so it does not fail the command.
+    if let Ok(Some(mut state)) = State::load(home) {
+        if state.peerings.get(&peered.id).map(String::as_str) != Some(add.address) {
+            state
+                .peerings
+                .insert(peered.id.clone(), add.address.to_owned());
+            let _ = state.save(home);
+        }
+    }
+    Ok(peered)
 }
 
 /// `peer_add`, on the connector whose operator surface is `surface`.
@@ -793,6 +814,7 @@ pub fn peer_add_on(surface: &Surface, add: &PeerAdd) -> Result<Peered, Error> {
             ),
         },
         deposited,
+        id,
     })
 }
 
@@ -1156,6 +1178,11 @@ pub fn peer_remove(home: &Path, id: &str) -> Result<Report, Error> {
     )?;
     if status != 204 {
         return Err(refused(ErrorCode::PeerFailed, status, &text));
+    }
+    if let Ok(Some(mut state)) = State::load(home) {
+        if state.peerings.remove(id).is_some() {
+            let _ = state.save(home);
+        }
     }
     Ok(Report {
         exit: Exit::Success,
