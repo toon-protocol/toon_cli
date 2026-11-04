@@ -108,7 +108,8 @@ toon event publish --kind 1 --content "hi Bob" --relay ws://bob…anyone:7100 --
 
 Had she skipped step 2, the publish would fail with `peering_needed` and print the exact
 `peer add` and `route add` to run (only the `route add`, with no new deposit, when a peering
-already reaches the relay's connector). Nothing is paid and nothing is created for her.
+already reaches the relay's connector, whatever id `peer add` gave it). Nothing is paid and
+nothing is created for her.
 
 **4. For Bob to pay Alice**, he repeats steps 1 and 2 in the other direction.
 

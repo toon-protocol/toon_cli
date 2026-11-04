@@ -833,6 +833,45 @@ fn with_a_peering_toward_the_connector_the_command_asks_only_for_a_route() {
 }
 
 #[test]
+fn a_peering_made_under_a_custom_id_is_recognised_until_it_is_removed() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let relay = information_document(&far);
+    let peered = near.toon(&[
+        "peer",
+        "add",
+        &far.url(),
+        "--id",
+        "first",
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+    ]);
+    assert_eq!(peered.exit_code, 0, "{}{}", peered.stdout, peered.stderr);
+    let publish = || {
+        near.toon(&[
+            "event", "publish", "--relay", &relay, "--kind", "1", "--yes", "--json",
+        ])
+        .json()["error"]
+            .clone()
+    };
+
+    let error = publish();
+    assert_eq!(error["code"], "peering_needed", "{error}");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("--peer first"), "{message}");
+    assert!(!message.contains("peer add"), "{message}");
+
+    let removed = near.toon(&["peer", "remove", "first"]);
+    assert_eq!(removed.exit_code, 0, "{}{}", removed.stdout, removed.stderr);
+    let error = publish();
+    assert_eq!(error["code"], "peering_needed", "{error}");
+    let message = error["message"].as_str().unwrap();
+    assert!(message.contains("peer add"), "{message}");
+}
+
+#[test]
 fn relay_describe_of_a_relay_that_sells_no_feed_says_so() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);
