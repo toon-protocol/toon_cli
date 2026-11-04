@@ -43,7 +43,21 @@ use crate::receive::{Feeds, Receiver, Surroundings};
 use crate::runner::{self, AppRunner, AppSpec, Place, RunningApp};
 
 /// How long a connector gets to exit once its supervisor is stopping, before it is killed.
-const GRACE: Duration = Duration::from_secs(10);
+pub const GRACE: Duration = Duration::from_secs(10);
+
+/// The most a shutdown takes, however many apps there are: the feeds, then the connectors
+/// together, then the apps together (a container's `docker stop` included), and a margin for
+/// the rest of docker's work. `toon down` waits this long.
+pub fn stop_bound() -> Duration {
+    crate::bounded::FEED_GRACE
+        + GRACE
+        + crate::runner::GRACE.max(crate::runner::DOCKER_STOP_GRACE)
+        + DOCKER_OVERHEAD
+}
+
+/// What is allowed for docker's own work in a shutdown: keeping an app's output, removing
+/// its container and its network.
+const DOCKER_OVERHEAD: Duration = Duration::from_secs(60);
 
 /// How often a supervisor asks whether its apps still run. Asking a container is a
 /// `docker` process, so not on every tick.
@@ -1040,10 +1054,16 @@ impl Supervisor {
         self.receiver = None;
         self.inbox = None;
         self.tips = None;
-        for unit in &mut self.units {
-            unit.shared.reloads().clear();
-            unit.stop(&self.home, &*self.runner);
-        }
+        // Together, so that the time this takes does not grow with the number of units.
+        let (home, runner) = (&self.home, &*self.runner);
+        thread::scope(|scope| {
+            for unit in &mut self.units {
+                scope.spawn(move || {
+                    unit.shared.reloads().clear();
+                    unit.stop(home, runner);
+                });
+            }
+        });
         self.units.clear();
         self.shared.units().clear();
         if let Some(edge) = self.edge.take() {
@@ -1412,9 +1432,12 @@ impl Unit {
     /// Stop the connector, and then the apps behind it.
     fn stop(&mut self, home: &Path, runner: &dyn AppRunner) {
         self.stop_connector();
-        for (_, app) in &mut self.apps {
-            app.stop();
-        }
+        // Together: each app has its own grace period, and they run side by side.
+        thread::scope(|scope| {
+            for (_, app) in &mut self.apps {
+                scope.spawn(move || app.stop());
+            }
+        });
         for (name, place) in std::mem::take(&mut self.places) {
             runner.discard(&app_instance(home, &name), &place);
         }

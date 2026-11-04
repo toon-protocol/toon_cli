@@ -50,4 +50,5 @@ error_codes! {
     TipRouteNotListed => "tip_route_not_listed" => Failure,
     TipSealKeyMismatch => "tip_seal_key_mismatch" => Failure,
     TipBelowMinimum => "tip_below_minimum" => Failure,
+    StopTimedOut => "stop_timed_out" => Failure,
 }

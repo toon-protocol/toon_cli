@@ -34,7 +34,10 @@ pub const READ_PORT: u16 = crate::overlay::RELAY_READ_PORT;
 const HEALTHY_WITHIN: Duration = Duration::from_secs(120);
 
 /// How long an app gets to exit once asked to stop, before it is killed.
-const GRACE: Duration = Duration::from_secs(10);
+pub const GRACE: Duration = Duration::from_secs(10);
+
+/// How long `docker stop` waits for a container to exit before it kills it.
+pub const DOCKER_STOP_GRACE: Duration = Duration::from_secs(10);
 
 /// The default limit on an app's memory, in bytes (ADR 0011).
 pub const DEFAULT_MEMORY: u64 = 512 * 1024 * 1024;
@@ -432,7 +435,7 @@ pub struct Place {
 /// another address.
 pub const MOVE_MARKER: &str = ".toon-move";
 
-pub trait AppRunner {
+pub trait AppRunner: Sync {
     /// Start the app and return once it answers its health check.
     fn start(&self, spec: &AppSpec) -> Result<Box<dyn RunningApp>, Error>;
     /// Remove what `stop_to_restart` left of the app `instance` at `place`, for an app that
@@ -974,7 +977,12 @@ impl RunningApp for Container {
         if std::mem::replace(&mut self.stopped, true) {
             return;
         }
-        let _ = docker(&["stop", "--time", "10", &self.name]);
+        let _ = docker(&[
+            "stop",
+            "--time",
+            &DOCKER_STOP_GRACE.as_secs().to_string(),
+            &self.name,
+        ]);
         keep_output(&self.name, &self.log);
         let _ = docker(&["rm", "--force", &self.name]);
         if let Some(network) = &self.network {

@@ -13,7 +13,18 @@ use crate::runner;
 use crate::service;
 
 /// How long `down` waits for the supervisor to finish stopping.
-const STOPPING: Duration = Duration::from_secs(30);
+/// Replaces how long `toon down` waits for the supervisor, in milliseconds, so that a test
+/// can make a stop overrun without waiting out the real bound.
+const WAIT_VARIABLE: &str = "TOON_DOWN_WAIT_MS";
+
+/// How long `toon down` waits for the supervisor to stop: as long as a shutdown can take.
+fn stopping() -> Duration {
+    std::env::var(WAIT_VARIABLE)
+        .ok()
+        .and_then(|millis| millis.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_else(crate::up::stop_bound)
+}
 
 /// The agent node at `home`: no agent node until `toon init` has recorded a TOON app,
 /// and then what the supervisor says is running. Anything down exits 1, and the report
@@ -307,14 +318,15 @@ pub fn down(home: &Path) -> Result<Report, Error> {
     if was_running {
         // The supervisor removes its socket last, when the connector has exited. One that
         // dies on the way leaves its socket behind, but nothing answers on it.
-        let deadline = Instant::now() + STOPPING;
+        let deadline = Instant::now() + stopping();
         while control::running(home) {
             if Instant::now() >= deadline {
                 return Err(Error {
                     nothing_sent: false,
                     unanswered: None,
-                    code: ErrorCode::ConnectorFailed,
-                    message: "The supervisor was asked to stop and had not stopped in time.".into(),
+                    code: ErrorCode::StopTimedOut,
+                    message: "The agent node is still stopping. `toon status` shows when it has."
+                        .into(),
                 });
             }
             thread::sleep(Duration::from_millis(20));

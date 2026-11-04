@@ -363,3 +363,82 @@ fn relay_config_without_yes_says_what_is_certain_and_what_is_possible() {
         "{message}"
     );
 }
+
+/// Add `count` apps behind the relay that ignore their cue to stop, and the pid of each.
+fn stubborn_apps(machine: &Machine, count: usize) -> Vec<u64> {
+    for index in 0..count {
+        let name = format!("stubborn{index}");
+        let address = format!("g.toon.{name}");
+        let run = machine.toon(&[
+            "add",
+            &name,
+            "--to",
+            "relay",
+            "--image",
+            "n:1",
+            "--address",
+            &address,
+            "--price",
+            "0",
+            "--env",
+            "FAKE_APP_STUBBORN=1",
+            "--yes",
+            "--json",
+        ]);
+        assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+    }
+    (0..count)
+        .map(|index| {
+            let pid = machine
+                .agent_node_home()
+                .join("apps")
+                .join(format!("stubborn{index}"))
+                .join("data")
+                .join("pid");
+            fs::read_to_string(pid)
+                .expect("the app wrote its pid")
+                .parse()
+                .expect("a pid")
+        })
+        .collect()
+}
+
+fn alive(pid: u64) -> bool {
+    std::path::Path::new("/proc").join(pid.to_string()).exists()
+}
+
+#[test]
+fn down_takes_one_grace_period_however_many_apps_ignore_the_stop() {
+    let (machine, _chain, mut up) = running();
+    let pids = stubborn_apps(&machine, 4);
+    assert_eq!(pids.len(), 4, "every app reports its pid");
+
+    let started = Instant::now();
+    let down = machine.toon(&["down", "--json"]);
+    let took = started.elapsed();
+
+    assert_eq!(down.exit_code, 0, "{}{}", down.stdout, down.stderr);
+    assert_eq!(down.json()["stopped"], true);
+    // The connector exits at once; the apps share one grace period of 10 s.
+    assert!(took < Duration::from_secs(20), "down took {took:?}");
+    assert_eq!(up.exit_code(), 0);
+    for pid in pids {
+        assert!(!alive(pid), "app {pid} is still running");
+    }
+    assert!(!machine.agent_node_home().join("supervisor.sock").exists());
+}
+
+#[test]
+fn down_that_outlasts_its_wait_says_the_node_is_still_stopping() {
+    let (machine, _chain, mut up) = running();
+    stubborn_apps(&machine, 1);
+
+    let down = machine.toon_with(&["down", "--json"], |command| {
+        command.env("TOON_DOWN_WAIT_MS", "500");
+    });
+
+    assert_eq!(down.exit_code, 1, "{}{}", down.stdout, down.stderr);
+    assert_eq!(down.json()["error"]["code"], "stop_timed_out");
+    // The stop goes on, and ends.
+    assert_eq!(up.exit_code(), 0);
+}
