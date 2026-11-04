@@ -85,7 +85,7 @@ done
 
 **Expect** each relay's `toon_subscription` to name its subscribe route
 (`g.toon.relay.subscribe`, `g.toon.relay2.subscribe`), a price of 1 and a broadcast price
-of 1. It appears a few seconds after the relay starts.
+of 1.
 
 ## 2. A hidden agent node against the sandbox
 
@@ -485,12 +485,15 @@ This part settles whether a hidden agent node reaches a network that is on clear
 devnet, through the overlay.
 
 The devnet profile's defaults for the connector and the relay, which `state.json` does not
-record:
+record (`src/profile.rs`; take them again if the profile moves):
+
+```sh
+export DEVNET_CONNECTOR=https://toonprotocol.dev/ilp
+export DEVNET_RELAY=wss://relay.toonprotocol.dev
+```
 
 ```sh
 export HOME=$E/devnet
-DEVNET_CONNECTOR=https://toonprotocol.dev/ilp
-DEVNET_RELAY=wss://relay.toonprotocol.dev
 $E/toon init --network devnet --accept-anyone-terms --json > $E/devnet-init.json
 $E/toon wallet fund --json
 $E/toon wallet balances --json
@@ -512,7 +515,7 @@ via https://base-sepolia-rpc.publicnode.com -H 'content-type: application/json' 
   -d '{"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}'
 via https://faucet.devnet.toonprotocol.dev/
 via "$DEVNET_CONNECTOR"
-via "$(echo $DEVNET_RELAY | sed 's/^ws/http/')" \
+via "$(echo "$DEVNET_RELAY" | sed 's/^ws/http/')" \
   -H 'Accept: application/nostr+json'
 kill $ANON
 ```
