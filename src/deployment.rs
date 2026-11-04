@@ -310,8 +310,10 @@ fn amend(now: u64, current: &Value, changes: &Changes) -> Result<(Tags, String),
             })?,
         };
         let standby = if changes.standby.is_empty() {
+            // A standby that takes over is the primary now, not a standby too.
             values(&tags, "p", "standby")
                 .into_iter()
+                .filter(|key| *key != primary)
                 .map(str::to_owned)
                 .collect()
         } else {
@@ -328,7 +330,12 @@ fn amend(now: u64, current: &Value, changes: &Changes) -> Result<(Tags, String),
         let listing = coordinate("--listing", LISTING, "a Listing address", text)?;
         replace(
             &mut tags,
-            |tag| tag[0] == "a" && tag.get(1).is_some_and(|a| a.starts_with("30432:")),
+            |tag| {
+                tag[0] == "a"
+                    && tag
+                        .get(1)
+                        .is_some_and(|a| a.starts_with(&format!("{LISTING}:")))
+            },
             vec![tag("a", &[&listing])],
         );
     }
@@ -371,7 +378,12 @@ fn check(now: u64, tags: &Tags) -> Result<(), Error> {
     }) {
         return Err(refused("A `p` tag must be marked `primary` or `standby`."));
     }
-    if values(tags, "x", "workload").len() != 1 || count("x") > 2 {
+    if tags.iter().any(|tag| {
+        tag[0] == "x" && !matches!(tag.get(2).map(String::as_str), Some("workload" | "image"))
+    }) {
+        return Err(refused("An `x` tag must be marked `workload` or `image`."));
+    }
+    if values(tags, "x", "workload").len() != 1 || values(tags, "x", "image").len() > 1 {
         return Err(refused(
             "A Deployment has one `x` tag marked `workload` and at most one marked `image`.",
         ));
@@ -408,7 +420,7 @@ fn repository_of(event: &Value) -> Option<&str> {
         .iter()
         .filter(|tag| tag[0] == "a")
         .filter_map(|tag| tag[1].as_str())
-        .find(|a| a.starts_with("30617:"))
+        .find(|a| a.starts_with(&format!("{REPOSITORY}:")))
 }
 
 fn primary_of(event: &Value) -> Option<&str> {
@@ -543,11 +555,15 @@ fn second_relay(state: &State, named: Option<&str>) -> Result<String, Error> {
 fn held(home: &Path, state: &State, author: &str) -> Result<Vec<Value>, Error> {
     let app = subscribe::own_relay_app(state)?;
     let address = subscribe::own_relay_address(home, &app.name, subscribe::RelayPort::Read)?;
-    event::fetch(
+    let events = event::fetch(
         &Egress::of(home)?,
         &format!("ws://{address}"),
         &json!({ "kinds": [KIND], "authors": [author] }),
-    )
+    )?;
+    Ok(events
+        .into_iter()
+        .filter(|event| event::verify(event).is_ok())
+        .collect())
 }
 
 fn current(home: &Path, state: &State, author: &str, environment: &str) -> Result<Value, Error> {
@@ -663,6 +679,11 @@ fn check_flags(now: u64, changes: &Changes) -> Result<(), Error> {
     Ok(())
 }
 
+/// A NIP-09 deletion request's tags: the Deployment's address, and its kind.
+fn deletion_tags(address: &str) -> Value {
+    json!([["a", address], ["k", KIND.to_string()]])
+}
+
 fn delete(home: &Path, environment: &str, relay: Option<&str>, now: u64) -> Result<Report, Error> {
     let state = apps::loaded(home)?;
     let second = second_relay(&state, relay)?;
@@ -671,13 +692,7 @@ fn delete(home: &Path, environment: &str, relay: Option<&str>, now: u64) -> Resu
     let old = current(home, &state, &author, environment)?;
     let address = format!("{KIND}:{author}:{environment}");
     let created_at = now.max(old["created_at"].as_u64().unwrap_or(0) + 1);
-    let signed = event::sign(
-        &secret,
-        created_at,
-        DELETION,
-        json!([["a", address], ["k", KIND.to_string()]]),
-        "",
-    )?;
+    let signed = event::sign(&secret, created_at, DELETION, deletion_tags(&address), "")?;
     let published = tip::publish(home, &second, &signed).map_err(|mut error| {
         error.message = format!(
             "The deletion is signed but not published everywhere: {} Run the command again.",
@@ -912,6 +927,46 @@ mod tests {
         assert_eq!(values(&tags, "p", "primary"), vec![P2]);
         assert_eq!(values(&tags, "p", "standby"), vec![P3]);
         assert!(tags.contains(&tag("a", &[&new_listing])));
+    }
+
+    #[test]
+    fn a_takeover_by_a_standby_leaves_it_out_of_the_standbys() {
+        let old = first(&[P2.to_owned(), P3.to_owned()]);
+        let changes = Changes {
+            primary: Some(P2),
+            ..Changes::default()
+        };
+        let (tags, _) = amend(NOW, &old, &changes).unwrap();
+        assert_eq!(values(&tags, "p", "primary"), vec![P2]);
+        assert_eq!(values(&tags, "p", "standby"), vec![P3]);
+    }
+
+    #[test]
+    fn an_unmarked_workload_tag_is_refused() {
+        let mut old = first(&[]);
+        old["tags"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!(["x", "9".repeat(64)]));
+        let changes = Changes {
+            commit: Some(&"7".repeat(40)),
+            ..Changes::default()
+        };
+        let error = amend(NOW, &old, &changes).unwrap_err();
+        assert!(
+            error.message.contains("`x` tag must be marked"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_deletion_names_the_deployments_address() {
+        let address = format!("{KIND}:{P1}:production");
+        assert_eq!(
+            deletion_tags(&address),
+            json!([["a", format!("30437:{P1}:production")], ["k", "30437"]])
+        );
     }
 
     #[test]

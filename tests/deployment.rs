@@ -184,13 +184,6 @@ fn list_says_so_when_the_own_relay_holds_none() {
 #[test]
 fn a_deployment_on_the_own_relay_is_listed_with_its_time_left() {
     let node = running();
-    let identity = node
-        .toon(&["event", "sign", "--kind", "1", "--json"])
-        .json()["event"]["pubkey"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let _ = identity;
     let soon = (std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
