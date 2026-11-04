@@ -2455,6 +2455,10 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
         let (forwarded, unrouted) = route_published(home, &state, &connector_url, name);
         let relay = state.relay_url.clone();
         state.joined = Some(name.to_owned());
+        // `peer_add` recorded the peering in the state on disk, which this copy predates.
+        state
+            .peerings
+            .insert(name.to_owned(), connector_url.clone());
         if let Some(relay) = &relay {
             if !state.reads.contains(relay) {
                 state.reads.push(relay.clone());

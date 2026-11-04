@@ -43,8 +43,8 @@ one of your peerings. Two things can stop it before anything is paid:
 
 - `peering_needed`: no route forwards the relay's address. If none of your peerings reaches
   that relay's connector, the message prints the `toon peer add … --yes` and `toon route add`
-  to run; if one does (a peering made with `toon peer add`, under any id), it prints only the `toon route add … --peer <id>`, and no new deposit
-  is needed ([Peering](peering.md)).
+  to run; if one does (a peering made with `toon peer add`, under any id), it prints only the
+  `toon route add … --peer <id>`, and no new deposit is needed ([Peering](peering.md)).
 - `relay_not_payable`: the relay does not say how it is paid.
 
 If a connector on the way charges to forward, it rejects the write with `F03`. State the
