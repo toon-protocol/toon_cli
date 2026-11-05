@@ -214,11 +214,11 @@ _Avoid_: Zap request, proof of payment
 The recipient's public statement that a tip arrived and how much of it did, signed with the agent identity. It is the only record of a tip anyone counts.
 _Avoid_: Zap receipt, tip receipt (the payer's), confirmation
 
-### Deployments
+### What runs elsewhere
 
 **Deployment**:
-An agent identity's public claim, a kind 30437 event, that one environment of one repository is served by a TOON Compute lease on a provider until a stated time. It is a claim about a workload somewhere else and never a TOON app. It is optional, and it ties the agent identity to the workload id and its gateway name. _Lease_, _Listing_, _Extension_ and _Takeover_ mean here what TOON Compute means by them.
-_Avoid_: App, deploy, release
+The operator's public statement, a kind 30437 event signed with the agent identity, that one environment of a repository is served by a lease on a TOON Compute provider until a stated time. It is a claim about a workload somewhere else, never about something the agent node runs. Optional: renting compute needs none. Lease, Listing, Extension and Takeover keep TOON Compute's meanings.
+_Avoid_: TOON app, lease, workload, environment (each is part of a Deployment, not one)
 
 ### What teaches an agent
 
