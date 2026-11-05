@@ -138,7 +138,7 @@ fn taken(report: &Report) -> Result<(), String> {
 
 /// Publish the signed `event` to the agent node's own relay and to the relay the profile
 /// follows, which is paid for. Returns where each went, or what stopped it.
-fn publish(home: &Path, relay: &str, event: &Value) -> Result<Value, Error> {
+pub fn publish(home: &Path, relay: &str, event: &Value) -> Result<Value, Error> {
     let own = event::write(home, event.clone(), 0)?;
     taken(&own).map_err(|why| {
         failed(
@@ -396,7 +396,7 @@ fn is_hex_key(text: &str) -> bool {
 }
 
 /// The 32 bytes an `npub` (NIP-19, bech32) encodes.
-fn npub_key(npub: &str) -> Option<String> {
+pub fn npub_key(npub: &str) -> Option<String> {
     const CHARSET: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
     if npub.chars().any(char::is_uppercase) && npub.chars().any(char::is_lowercase) {
         return None;

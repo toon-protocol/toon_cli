@@ -161,6 +161,13 @@ pub enum Command {
         #[command(subcommand)]
         command: NipCommand,
     },
+    /// Publish and maintain a TOON Compute Deployment (kind 30437): an optional, public claim
+    /// that one environment of a repository is served by a lease. It ties the agent identity
+    /// to the workload id and so to its gateway name, and to the public URL if you give one
+    Deployment {
+        #[command(subcommand)]
+        command: DeploymentCommand,
+    },
     /// Manage the channels the connector pays and is paid on
     Channel {
         #[command(subcommand)]
@@ -796,6 +803,105 @@ pub enum NipCommand {
         #[arg(long, default_value_t = 0)]
         amount: u64,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DeploymentCommand {
+    /// Publish a Deployment for an environment, signed with the agent identity, to the agent
+    /// node's own relay and to the relay its network profile follows (paid), or to `--relay`
+    /// instead of the second. A Deployment is optional and public: it ties the agent identity
+    /// to the workload id and its gateway name, and to the public URL if you give one. Nothing
+    /// is sent if any input breaks the Deployment NIP's shape
+    Publish {
+        /// The environment's name, the Deployment's `d` tag: `production`, `preview-42`
+        environment: String,
+        /// The repository: its NIP-34 address, `30617:<owner pubkey>:<repository>`
+        #[arg(long)]
+        repo: String,
+        /// The full commit id (40 or 64 hex characters) the image was built from
+        #[arg(long)]
+        commit: String,
+        /// The Listing the lease was bought on: `30432:<provider pubkey>:<listing name>`
+        #[arg(long)]
+        listing: String,
+        /// The provider serving the lease: 64 hex characters or an `npub`
+        #[arg(long)]
+        primary: String,
+        /// A standby provider, in the Standby Set's order; may be repeated
+        #[arg(long = "standby")]
+        standby: Vec<String>,
+        /// The workload id: 64 lower-case hex characters
+        #[arg(long)]
+        workload: String,
+        /// The image digest: 64 hex characters, with or without a leading `sha256:`
+        #[arg(long)]
+        image: Option<String>,
+        /// Where people reach the workload: an `https` URL
+        #[arg(long)]
+        url: Option<String>,
+        /// The lease's `expires_at`, in unix time, as the Spawn or last Extension returned it
+        #[arg(long)]
+        expires_at: u64,
+        /// When the Deployment expires, in unix time; it defaults to `--expires-at` and may not
+        /// be later
+        #[arg(long)]
+        expiration: Option<u64>,
+        /// A short note for people, the event's content
+        #[arg(long, default_value = "")]
+        note: String,
+        /// Publish to this relay (`ws://host:port` or `wss://host`) instead of the one the
+        /// network profile follows
+        #[arg(long)]
+        relay: Option<String>,
+    },
+    /// Re-sign an environment's Deployment, found as the latest one on the agent node's own
+    /// relay, changing only what the flags name: `--expires-at` (an Extension), `--primary`,
+    /// `--standby` and `--listing` (a Takeover) or `--commit` and `--image` (a new build)
+    Update {
+        /// The environment's name
+        environment: String,
+        /// The lease's new `expires_at` after an Extension, in unix time
+        #[arg(long)]
+        expires_at: Option<u64>,
+        /// The new expiration; it needs `--expires-at` and defaults to it
+        #[arg(long, requires = "expires_at")]
+        expiration: Option<u64>,
+        /// The new primary provider after a Takeover: 64 hex characters or an `npub`
+        #[arg(long)]
+        primary: Option<String>,
+        /// The standby providers after a Takeover, replacing the old ones; may be repeated
+        #[arg(long = "standby")]
+        standby: Vec<String>,
+        /// The Listing the new lease was bought on: `30432:<provider pubkey>:<listing name>`
+        #[arg(long)]
+        listing: Option<String>,
+        /// The commit of a new build: 40 or 64 hex characters
+        #[arg(long)]
+        commit: Option<String>,
+        /// The image digest of a new build: 64 hex characters, with or without `sha256:`
+        #[arg(long)]
+        image: Option<String>,
+        /// A new note; `--note ""` clears it, and without the flag the old one is kept
+        #[arg(long)]
+        note: Option<String>,
+        /// Publish to this relay instead of the one the network profile follows
+        #[arg(long)]
+        relay: Option<String>,
+    },
+    /// Take an environment's Deployment down: publish a NIP-09 deletion naming its address
+    Delete {
+        /// The environment's name
+        environment: String,
+        /// Publish to this relay instead of the one the network profile follows
+        #[arg(long)]
+        relay: Option<String>,
+    },
+    /// List the Deployments the agent node's own relay holds for the agent identity: each one's
+    /// environment, repository, primary and time left. Those that end within 24 hours are marked
+    /// expiring. A lapsed Deployment is not listed: relays stop serving it (NIP-40). Nothing is
+    /// kept locally. A `/repo` page shows a Deployment only when its signer is the repository's
+    /// owner or a maintainer; this command does not check that
+    List,
 }
 
 #[derive(Debug, Subcommand)]
