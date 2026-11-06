@@ -90,6 +90,8 @@ pub struct Listing {
     pub name: String,
     pub version: u64,
     pub price: u64,
+    /// How long one Lease Interval is, in seconds, if the Listing says.
+    pub lease_interval_s: Option<u64>,
 }
 
 /// What a tenant reads from a Provider Profile.
@@ -156,6 +158,9 @@ fn listing_of(event: &Value, name: &str) -> Option<Listing> {
         name: name.to_owned(),
         version: content["version"].as_u64()?,
         price: content["price"].as_u64()?,
+        lease_interval_s: content["lease_interval_s"]
+            .as_u64()
+            .filter(|seconds| *seconds > 0),
     })
 }
 

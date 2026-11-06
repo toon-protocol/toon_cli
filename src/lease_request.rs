@@ -17,6 +17,7 @@ use crate::outcome::{Error, ErrorCode};
 pub enum Route {
     Spawn,
     Availability,
+    Extend,
     Status,
     Terminate,
     Rotate,
@@ -30,7 +31,7 @@ impl Route {
             Route::Status => Some("status"),
             Route::Terminate => Some("terminate"),
             Route::Rotate => Some("rotate"),
-            Route::Availability => None,
+            Route::Availability | Route::Extend => None,
         }
     }
 
@@ -38,6 +39,7 @@ impl Route {
         match self {
             Route::Spawn => "spawn",
             Route::Availability => "availability",
+            Route::Extend => "extend",
             Route::Status => "status",
             Route::Terminate => "terminate",
             Route::Rotate => "rotate",
@@ -49,7 +51,9 @@ impl Route {
 /// provider `ilp_address`.
 pub fn destination(ilp_address: &str, route: Route, listing: &str, version: u64) -> String {
     match route {
-        Route::Spawn => format!("{ilp_address}.{listing}.v{version}.{}", route.name()),
+        Route::Spawn | Route::Extend => {
+            format!("{ilp_address}.{listing}.v{version}.{}", route.name())
+        }
         Route::Availability | Route::Status | Route::Terminate | Route::Rotate => {
             format!("{ilp_address}.{}", route.name())
         }
@@ -151,7 +155,8 @@ fn only_keys(
 
 /// Check `body` against spec §5's table for `route`, before the packet leaves: the shape is
 /// the one mistake that is free to catch and expensive to make. A spawn, status or terminate
-/// carries `{ "request": <Lease Request> }` and nothing else, never a bare content object.
+/// carries `{ "request": <Lease Request> }` and nothing else, never a bare content object; an
+/// extend is the opposite: the bare `{ "workload_id": … }`, never wrapped in `request`.
 pub fn check_shape(route: Route, body: &Value) -> Result<(), Error> {
     let object = body
         .as_object()
@@ -162,6 +167,13 @@ pub fn check_shape(route: Route, body: &Value) -> Result<(), Error> {
             &["listing", "version", "image", "role"],
             &["listing", "version", "image"],
         ),
+        Route::Extend => only_keys(object, &["workload_id"], &["workload_id"]).and_then(|()| {
+            if is_hex(&object["workload_id"], 64) {
+                Ok(())
+            } else {
+                Err("`workload_id` is not 64 lowercase hex characters".into())
+            }
+        }),
         authenticated => check_request(authenticated, object),
     };
     checked.map_err(|why| refused(route, why))
@@ -345,6 +357,23 @@ mod tests {
             let unwrapped = fixture(name)["request"].clone();
             assert!(check_shape(route, &unwrapped).is_err(), "{name}");
         }
+    }
+
+    #[test]
+    fn an_extend_is_bare_and_a_wrapped_one_is_refused() {
+        let fixture = fixture("extend.ok");
+        let body = &fixture["request_body"];
+        check_shape(Route::Extend, body).expect("the fixture's body");
+        let wrapped = json!({ "request": { "workload_id": body["workload_id"] } });
+        let error = check_shape(Route::Extend, &wrapped).expect_err("wrapped");
+        assert_eq!(error.code, ErrorCode::LeaseBodyShape);
+        assert!(error.nothing_sent);
+        assert!(check_shape(Route::Extend, &json!({ "workload_id": "aa" })).is_err());
+        assert!(check_shape(Route::Spawn, body).is_err());
+        assert_eq!(
+            destination("g.fixture", Route::Extend, "basic", 1),
+            fixture["route"].as_str().unwrap()
+        );
     }
 
     #[test]

@@ -816,11 +816,17 @@ pub enum NipCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ComputeCommand {
-    /// Rent one Lease Interval of a Listing: resolve it and its provider's Profile, ask the
-    /// provider whether the spawn would run (free), write the lease file, pay the spawn and
-    /// print the access details and `expires_at`. The Lease Interval is paid up front and
-    /// not refunded
+    /// Rent a Listing: resolve it and its provider's Profile, ask the provider whether the
+    /// spawn would run (free), write the lease file, pay the spawn and print the access
+    /// details and `expires_at`. One Lease Interval is bought unless `--intervals` or `--for`
+    /// says more, which pays the spawn and then an `.extend` packet for each interval after
+    /// the first, in this command. Every interval is paid up front and not refunded
     Spawn(Box<ComputeSpawnArgs>),
+    /// Prepay more Lease Intervals of a lease this node holds, one `.extend` packet each, all
+    /// in this command: nothing extends a lease in the background, and there is no
+    /// `--until-done`: an agent extends by calling `extend` again before `expires_at`. The
+    /// intervals are paid up front and not refunded
+    Extend(ComputeExtendArgs),
     /// Ask a provider about a lease this node holds, free: its state, `expires_at` and
     /// access details. It settles a lease whose spawn nobody answered
     Status {
@@ -889,12 +895,37 @@ pub struct ComputeSpawnArgs {
     /// The lease limit: the most this lease may pay in total, in base units. None if omitted
     #[arg(long, value_name = "BASE_UNITS")]
     pub max: Option<u64>,
+    /// How many Lease Intervals to pay now: the spawn and then `n-1` extends. Default 1.
+    /// There is no `--until-done`: nothing runs in the background, and an agent extends by
+    /// calling `extend`
+    #[arg(long, value_name = "N", conflicts_with = "for_duration", value_parser = clap::value_parser!(u64).range(1..))]
+    pub intervals: Option<u64>,
+    /// How long the lease should run, `<n>s`, `<n>m`, `<n>h`, `<n>d` or `<n>w`, rounded up to
+    /// whole Lease Intervals; the rounded count and the total are printed before paying
+    #[arg(long = "for", value_name = "DURATION")]
+    pub for_duration: Option<String>,
     /// Read the Listing and Profile from this relay as well; repeatable
     #[arg(long = "relay", value_name = "URL")]
     pub relays: Vec<String>,
     /// Do not ask the free availability route before paying
     #[arg(long)]
     pub no_check: bool,
+    /// Go ahead and pay
+    #[arg(long)]
+    pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ComputeExtendArgs {
+    /// The lease's workload id, as `list` shows it
+    pub workload: String,
+    /// How many Lease Intervals to prepay, one `.extend` packet each
+    #[arg(long, value_name = "N", default_value_t = 1, value_parser = clap::value_parser!(u64).range(1..))]
+    pub intervals: u64,
+    /// Change the lease limit: the most this lease may pay in total, counting what it has paid
+    /// already, in base units
+    #[arg(long, value_name = "BASE_UNITS")]
+    pub max: Option<u64>,
     /// Go ahead and pay
     #[arg(long)]
     pub yes: bool,

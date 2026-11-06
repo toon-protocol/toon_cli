@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::{json, Map, Value};
 use zeroize::Zeroizing;
 
-use crate::cli::{ComputeCommand, ComputeSpawnArgs};
+use crate::cli::{ComputeCommand, ComputeExtendArgs, ComputeSpawnArgs};
 use crate::egress::Egress;
 use crate::keystore;
 use crate::lease_file::{Lease, Leases, State};
@@ -356,28 +356,82 @@ struct Plan {
     resolved: Resolved,
     coordinate: listing::Coordinate,
     content: Value,
+    /// How many Lease Intervals this command pays: the spawn and `intervals - 1` extends.
+    intervals: u64,
     total: u64,
 }
 
-fn limits_refuse(renter: &Renter, args: &ComputeSpawnArgs, total: u64) -> Result<(), Error> {
-    let over = |what: &str, limit: u64| {
+/// `--for`'s `<n>s`, `<n>m`, `<n>h`, `<n>d` or `<n>w`, in seconds.
+fn duration_s(text: &str) -> Result<u64, Error> {
+    let bad = || {
+        usage(format!(
+            "--for {text} is not a duration: give `<n>s`, `<n>m`, `<n>h`, `<n>d` or `<n>w`, \
+             a whole number and a unit."
+        ))
+    };
+    let unit = text.chars().last().ok_or_else(bad)?;
+    let each: u64 = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 3600,
+        'd' => 86_400,
+        'w' => 604_800,
+        _ => return Err(bad()),
+    };
+    let number: u64 = text[..text.len() - 1].parse().map_err(|_| bad())?;
+    number
+        .checked_mul(each)
+        .filter(|seconds| *seconds > 0)
+        .ok_or_else(bad)
+}
+
+/// What `price` for `intervals` comes to, refused if it does not fit.
+fn total_of(price: u64, intervals: u64) -> Result<u64, Error> {
+    price.checked_mul(intervals).ok_or_else(|| {
+        usage(format!(
+            "{intervals} Lease Intervals at {} each is more than any amount can be.",
+            amount_text(price)
+        ))
+    })
+}
+
+/// Refuse, before any packet, a command that pays `total` in packets of `price` each when
+/// that breaks the lease limit (counting the `already_paid` of the lease), `toon limit`, or
+/// the agent key's limit.
+fn limits_refuse(
+    renter: &Renter,
+    what: &str,
+    lease_limit: Option<u64>,
+    already_paid: u64,
+    price: u64,
+    total: u64,
+) -> Result<(), Error> {
+    let over = |what_limit: &str, limit: u64| {
         unsent(
             ErrorCode::LeaseLimit,
             format!(
-                "The spawn would pay {}, which is over {what} of {}. Nothing was sent.",
+                "The {what} would pay {}, which is over {what_limit} of {}. Nothing was sent.",
                 amount_text(total),
                 amount_text(limit)
             ),
         )
     };
-    if let Some(max) = args.max.filter(|max| total > *max) {
-        return Err(over("the lease limit (--max)", max));
+    if let Some(max) = lease_limit.filter(|max| already_paid.saturating_add(total) > *max) {
+        let counted = if already_paid > 0 {
+            format!(
+                "the lease limit (--max), counting the {} the lease has paid already,",
+                amount_text(already_paid)
+            )
+        } else {
+            "the lease limit (--max)".to_owned()
+        };
+        return Err(over(&counted, max));
     }
     if let Renter::Home(home) = renter {
         return spending::check(home, u128::from(total)).map_err(|error| Error {
             nothing_sent: true,
             message: format!(
-                "The spawn would pay {}: {} Nothing was sent.",
+                "The {what} would pay {}: {} Nothing was sent.",
                 amount_text(total),
                 error.message
             ),
@@ -388,10 +442,16 @@ fn limits_refuse(renter: &Renter, args: &ComputeSpawnArgs, total: u64) -> Result
         let Some(limit) = &agent.limit else {
             return Ok(());
         };
-        if let Some(per_write) = limit.per_write.filter(|limit| total > *limit) {
+        if let Some(per_write) = limit.per_write.filter(|limit| price > *limit) {
             return Err(Error {
                 code: ErrorCode::SpendingLimit,
-                ..over("the agent key's per-write limit", per_write)
+                ..over(
+                    &format!(
+                        "the agent key's per-write limit (one packet pays {})",
+                        amount_text(price)
+                    ),
+                    per_write,
+                )
             });
         }
         if let Some(remaining) = limit.remaining_today.filter(|left| total > *left) {
@@ -402,6 +462,29 @@ fn limits_refuse(renter: &Renter, args: &ComputeSpawnArgs, total: u64) -> Result
         }
     }
     Ok(())
+}
+
+/// Pay `total` for a command that sends packets: through `toon limit` as one `spend_packets`
+/// call with a home, directly with an agent key. `act` is given what moved so far, capped.
+fn paying(
+    renter: &Renter,
+    total: u64,
+    act: impl FnOnce(&dyn Fn(u128) -> u128) -> Result<Report, Error>,
+) -> Result<Report, Error> {
+    match renter {
+        Renter::Home(home) => spending::spend_packets(home, u128::from(total), true, |packets| {
+            let result = act(&|cap| packets.moved(cap));
+            let paid = match &result {
+                Ok(_) => u128::from(total),
+                Err(error) => error
+                    .unanswered
+                    .as_ref()
+                    .map_or_else(|| packets.moved(u128::from(total)), |u| u.paid),
+            };
+            result.map(|report| (report, paid))
+        }),
+        Renter::Agent(_) => act(&|_| 0),
+    }
 }
 
 fn relays_for(
@@ -505,11 +588,27 @@ fn plan(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Plan, Error> {
             ),
         ));
     }
-    let total = resolved.listing.price;
+    let price = resolved.listing.price;
+    let intervals = match (&args.for_duration, args.intervals) {
+        (Some(text), _) => {
+            let seconds = duration_s(text)?;
+            let interval = resolved.listing.lease_interval_s.ok_or_else(|| {
+                usage(format!(
+                    "--for needs the Listing's `lease_interval_s`, and {} states none. Give \
+                     --intervals instead.",
+                    coordinate.text()
+                ))
+            })?;
+            seconds.div_ceil(interval)
+        }
+        (None, intervals) => intervals.unwrap_or(1),
+    };
+    let total = total_of(price, intervals)?;
     Ok(Plan {
         resolved,
         coordinate,
         content,
+        intervals,
         total,
     })
 }
@@ -519,12 +618,21 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
         resolved,
         coordinate,
         mut content,
+        intervals,
         total,
     } = plan(renter, args)?;
+    let price = resolved.listing.price;
     let profile = &resolved.profile;
     renter.reaches(&profile.ilp_address, &profile.connector_url)?;
     // Every limit before any packet, the free `availability` question included.
-    limits_refuse(renter, args, total)?;
+    limits_refuse(renter, "spawn", args.max, 0, price, total)?;
+    if let Some(duration) = &args.for_duration {
+        eprintln!(
+            "--for {duration} rounds up to {}: {} in all.",
+            intervals_text(intervals),
+            amount_text(total)
+        );
+    }
     if !args.no_check {
         check_availability(renter, &resolved, &content["image"])?;
     }
@@ -534,9 +642,10 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
             ..unsent(
                 ErrorCode::NotConfirmed,
                 format!(
-                    "This spawn pays {} for one Lease Interval of {}, which is not refunded. \
-                     Add `--yes` to say that you mean it.",
+                    "This spawn pays {} for {} of {}, which is not refunded. Add `--yes` to say \
+                     that you mean it.",
                     amount_text(total),
+                    intervals_text(intervals),
                     coordinate.text()
                 ),
             )
@@ -557,6 +666,7 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
         listing: coordinate.text(),
         listing_name: resolved.listing.name.clone(),
         listing_version: resolved.listing.version,
+        price: Some(price),
         role: "standalone".into(),
         expires_at: None,
         paid: 0,
@@ -583,7 +693,7 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
         resolved.listing.version,
     );
     let leases = renter.leases();
-    let pay = |moved: &dyn Fn(u128) -> u128| -> Result<Report, Error> {
+    paying(renter, total, |moved| -> Result<Report, Error> {
         // The file first: a spawn whose file cannot be written is not sent.
         leases.write(&lease)?;
         let answer = renter
@@ -603,32 +713,65 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
                     let _ = leases.write(&failed);
                 }
             })?;
-        settle_spawn(&leases, lease.clone(), answer, total, moved)
-    };
-    match renter {
-        Renter::Home(home) => spending::spend_packets(home, u128::from(total), true, |packets| {
-            let result = pay(&|cap| packets.moved(cap));
-            let paid = match &result {
-                Ok(_) => u128::from(total),
-                Err(error) => error
-                    .unanswered
-                    .as_ref()
-                    .map_or_else(|| packets.moved(u128::from(total)), |u| u.paid),
-            };
-            result.map(|report| (report, paid))
-        }),
-        Renter::Agent(_) => pay(&|_| 0),
+        let (report, mut lease) = settle_spawn(&leases, lease.clone(), answer, price, moved)?;
+        if intervals == 1 {
+            return Ok(report);
+        }
+        // The lease is live and paid for: what reaches it is printed whatever the extends do.
+        let access = access_text(&report.json["access"]);
+        extend_lease(
+            renter,
+            &leases,
+            &mut lease,
+            Pay {
+                intervals: intervals - 1,
+                total,
+                bought: 1,
+                billed: price,
+            },
+            moved,
+        )
+        .map_err(|error| Error {
+            message: format!("{}{access}", error.message),
+            ..error
+        })?;
+        Ok(spawn_report(report, &lease, intervals, total))
+    })
+}
+
+fn intervals_text(intervals: u64) -> String {
+    match intervals {
+        1 => "one Lease Interval".to_owned(),
+        n => format!("{n} Lease Intervals"),
     }
 }
 
-/// Record what the spawn's answer says in the lease file and report it.
+/// The spawn's report once the extends that followed it are paid.
+fn spawn_report(mut report: Report, lease: &Lease, intervals: u64, total: u64) -> Report {
+    let access = report.json["access"].clone();
+    report.json["expires_at"] = json!(lease.expires_at);
+    report.json["paid"] = json!(lease.paid);
+    report.json["intervals"] = json!(intervals);
+    report.text = format!(
+        "Lease {} is live until {} (unix time), paid {} for {}.{}",
+        lease.workload_id,
+        lease.expires_at.unwrap_or_default(),
+        amount_text(total),
+        intervals_text(intervals),
+        access_text(&access)
+    );
+    report
+}
+
+/// Record what the spawn's answer says in the lease file and report it, with the lease as
+/// settled.
 fn settle_spawn(
     leases: &Leases,
     mut lease: Lease,
     answer: Answer,
     total: u64,
     moved: &dyn Fn(u128) -> u128,
-) -> Result<Report, Error> {
+) -> Result<(Report, Lease), Error> {
     let id = lease.workload_id.clone();
     let kept = |lease: &Lease| {
         leases.write(lease).err().map(|error| {
@@ -661,7 +804,7 @@ fn settle_spawn(
             }
             let warning = kept(&lease).unwrap_or_default();
             let access = body["access"].clone();
-            Ok(Report {
+            let report = Report {
                 exit: Exit::Success,
                 json: json!({
                     "workload_id": id,
@@ -679,7 +822,8 @@ fn settle_spawn(
                     amount_text(total),
                     access_text(&access)
                 ),
-            })
+            };
+            Ok((report, lease))
         }
         Reply::Error { error, message } => {
             lease.paid = total;
@@ -737,6 +881,227 @@ fn access_text(access: &Value) -> String {
         ));
     }
     text
+}
+
+// ---- extend ----
+
+/// What a run of `.extend` packets is to pay, and what the command has paid before it.
+struct Pay {
+    /// How many `.extend` packets to send.
+    intervals: u64,
+    /// What the whole command pays, which caps what `moved` may say.
+    total: u64,
+    /// The Lease Intervals this command bought before these packets: the spawn's.
+    bought: u64,
+    /// What this command paid before these packets.
+    billed: u64,
+}
+
+/// Pay `pay.intervals` `.extend` packets for `lease`, one at a time, recording each answer's
+/// real `expires_at` and amount in its file. It stops at the first packet that fails and
+/// never retries a paid route by itself.
+fn extend_lease(
+    renter: &Renter,
+    leases: &Leases,
+    lease: &mut Lease,
+    pay: Pay,
+    moved: &dyn Fn(u128) -> u128,
+) -> Result<Report, Error> {
+    let id = lease.workload_id.clone();
+    let price = lease_price(lease)?;
+    let paid_start = lease.paid.saturating_sub(pay.billed);
+    let destination = lease_request::destination(
+        &lease.ilp_address,
+        Route::Extend,
+        &lease.listing_name,
+        lease.listing_version,
+    );
+    let seal_key = lease.seal_key()?;
+    let (mut billed, mut bought) = (pay.billed, pay.bought);
+    let wanted = pay.bought + pay.intervals;
+    let cause = 'packets: {
+        for _ in 0..pay.intervals {
+            let answer = match renter.send(
+                Route::Extend,
+                &destination,
+                price,
+                &seal_key,
+                &json!({ "workload_id": id }),
+            ) {
+                Ok(answer) => answer,
+                Err(error) => break 'packets error,
+            };
+            let reply = reply_of(answer);
+            let mut cause = None;
+            match &reply {
+                Reply::Body(_) | Reply::Error { .. } => billed += price,
+                _ => {
+                    billed =
+                        billed.max(u64::try_from(moved(u128::from(pay.total))).unwrap_or(pay.total))
+                }
+            }
+            lease.paid = paid_start + billed;
+            match reply {
+                Reply::Body(body) => {
+                    match body["expires_at"]
+                        .as_u64()
+                        .filter(|_| body["workload_id"] == id.as_str())
+                    {
+                        Some(expires_at) => {
+                            bought += 1;
+                            lease.expires_at = Some(expires_at);
+                        }
+                        None => {
+                            cause = Some(failure(
+                                ErrorCode::LeaseRefused,
+                                format!(
+                                    "The provider answered the extend with something that is \
+                                     not an extension: {body}. It was billed all the same."
+                                ),
+                            ));
+                        }
+                    }
+                }
+                Reply::Error { error, message } => {
+                    if error == "expired" {
+                        lease.state = State::Ended;
+                    }
+                    cause = Some(failure(
+                        ErrorCode::LeaseRefused,
+                        format!(
+                            "The provider refused the extend with {error}: {message} It was \
+                             billed all the same."
+                        ),
+                    ));
+                }
+                Reply::Rejected { code, message } => {
+                    cause = Some(failure(
+                        ErrorCode::SendFailed,
+                        format!("The extend was rejected with {code}: {message}"),
+                    ));
+                }
+                Reply::Unanswered | Reply::Strange(_) => {
+                    cause = Some(operator::unanswered_cost(
+                        u128::from(lease.paid - paid_start),
+                        None,
+                    ));
+                }
+            }
+            // What was bought is in the file before anything else happens.
+            if let Err(error) = leases.write(lease) {
+                break 'packets cause.unwrap_or(error);
+            }
+            if let Some(cause) = cause {
+                break 'packets cause;
+            }
+        }
+        let now_paid = billed - pay.billed;
+        let expires_at = lease.expires_at;
+        return Ok(Report {
+            exit: Exit::Success,
+            json: json!({
+                "workload_id": id,
+                "intervals": pay.intervals,
+                "expires_at": expires_at,
+                "paid_now": now_paid,
+                "paid": lease.paid,
+                "lease_limit": lease.lease_limit,
+            }),
+            text: format!(
+                "Lease {id} is extended by {}, paid {}: it is live until {} (unix time), and \
+                 has paid {} in all.",
+                intervals_text(pay.intervals),
+                amount_text(now_paid),
+                expires_at.unwrap_or_default(),
+                amount_text(lease.paid)
+            ),
+        });
+    };
+    if bought == 0 {
+        return Err(cause);
+    }
+    Err(Error {
+        unanswered: cause.unanswered,
+        ..failure(
+            ErrorCode::LeasePartlyPaid,
+            format!(
+                "Bought {bought} of {wanted} Lease Intervals and stopped at the first packet that \
+             failed: {} Lease {id} runs until {} (unix time) and has paid {} in all, as its \
+             file says. Nothing was retried: the routes already paid are not paid again.",
+                cause.message,
+                lease.expires_at.unwrap_or_default(),
+                amount_text(lease.paid)
+            ),
+        )
+    })
+}
+
+/// What one `.extend` packet of `lease` pays, as its file states.
+fn lease_price(lease: &Lease) -> Result<u64, Error> {
+    lease.price.ok_or_else(|| {
+        usage(format!(
+            "The lease file {} states no price for a Lease Interval, so what an extend pays is \
+             not known. Nothing was sent.",
+            lease.workload_id
+        ))
+    })
+}
+
+pub fn extend(renter: &Renter, args: &ComputeExtendArgs) -> Result<Report, Error> {
+    let leases = renter.leases();
+    let mut lease = leases.read(&args.workload)?;
+    if lease.state != State::Live {
+        return Err(usage(format!(
+            "Lease {} is {}, and only a live lease is extended.{}",
+            args.workload,
+            lease.state.name(),
+            if lease.state == State::Unknown {
+                format!(" `toon compute status {}` settles it.", args.workload)
+            } else {
+                String::new()
+            }
+        )));
+    }
+    lease.lease_limit = args.max.or(lease.lease_limit);
+    let price = lease_price(&lease)?;
+    let total = total_of(price, args.intervals)?;
+    renter.reaches(&lease.ilp_address, &lease.connector_url)?;
+    limits_refuse(
+        renter,
+        "extend",
+        lease.lease_limit,
+        lease.paid,
+        price,
+        total,
+    )?;
+    if !args.yes {
+        return Err(unsent(
+            ErrorCode::NotConfirmed,
+            format!(
+                "This extend pays {} for {} of lease {}, which is not refunded. Add `--yes` to \
+                 say that you mean it.",
+                amount_text(total),
+                intervals_text(args.intervals),
+                args.workload
+            ),
+        ));
+    }
+    // A changed lease limit is kept before anything is paid.
+    leases.write(&lease)?;
+    paying(renter, total, |moved| {
+        extend_lease(
+            renter,
+            &leases,
+            &mut lease,
+            Pay {
+                intervals: args.intervals,
+                total,
+                bought: 0,
+                billed: 0,
+            },
+            moved,
+        )
+    })
 }
 
 // ---- status, terminate, list, forget ----
@@ -1089,6 +1454,7 @@ pub fn forget(renter: &Renter, workload: &str) -> Result<Report, Error> {
 pub fn run(renter: &Renter, command: &ComputeCommand) -> Result<Report, Error> {
     match command {
         ComputeCommand::Spawn(args) => spawn(renter, args),
+        ComputeCommand::Extend(args) => extend(renter, args),
         ComputeCommand::Status { workload } => status(renter, workload),
         ComputeCommand::Terminate { workload, yes } => terminate(renter, workload, *yes),
         ComputeCommand::Rotate { workload } => rotate(renter, workload),
@@ -1130,6 +1496,21 @@ mod tests {
         assert!(image_object(&format!("alpine:3@{DIGEST}"), None, None).is_err());
         assert!(image_object(&format!("alpine@{DIGEST}"), Some(&entry), None).is_err());
         assert!(image_object(DIGEST, Some("30434:nope"), None).is_err());
+    }
+
+    #[test]
+    fn a_duration_is_a_whole_number_and_a_unit() {
+        assert_eq!(duration_s("90s").unwrap(), 90);
+        assert_eq!(duration_s("150m").unwrap(), 9000);
+        assert_eq!(duration_s("2h").unwrap(), 7200);
+        assert_eq!(duration_s("1d").unwrap(), 86_400);
+        assert_eq!(duration_s("1w").unwrap(), 604_800);
+        for bad in ["", "h", "10", "0m", "1.5h", "-1h", "5y"] {
+            assert!(duration_s(bad).is_err(), "{bad}");
+        }
+        assert_eq!(7200_u64.div_ceil(3600), 2);
+        assert_eq!(7201_u64.div_ceil(3600), 3);
+        assert!(total_of(u64::MAX, 2).is_err());
     }
 
     #[test]
