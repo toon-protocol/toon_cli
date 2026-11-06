@@ -680,7 +680,9 @@ fn a_spawn_over_a_limit_is_refused_with_the_total_and_the_limit_and_sends_nothin
         "{message}"
     );
 
+    // Not even the free `availability` question.
     assert_eq!(world.provider.count("spawn"), 0);
+    assert_eq!(world.provider.count("availability"), 0);
     assert!(lease_files(&world.leases()).is_empty());
 
     // The agent key's limit, read from the connector.
@@ -729,6 +731,7 @@ fn a_spawn_over_a_limit_is_refused_with_the_total_and_the_limit_and_sends_nothin
         "{message}"
     );
     assert_eq!(world.provider.count("spawn"), 0);
+    assert_eq!(world.provider.count("availability"), 0);
     assert!(!keys.path().join("leases").exists());
 
     // Raised, the same agent rents, and its lease file sits beside its key file.

@@ -933,7 +933,7 @@ pub fn backup(home: &Path, out: &Path) -> Result<Report, Error> {
     let lease_files = lease_file::files(&Leases::of_home(home))?;
     let mut leases = serde_json::Map::new();
     for (name, text) in &lease_files {
-        leases.insert(name.clone(), json!(text));
+        leases.insert(name.clone(), json!(text.as_str()));
     }
     let plain = zeroize::Zeroizing::new(
         json!({

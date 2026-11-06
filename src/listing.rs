@@ -128,7 +128,7 @@ fn authentic(event: &Value, kind: u64, author: &str) -> bool {
 }
 
 /// The `connector_seal_key`: 65 bytes of hex beginning `04`, with or without `0x`.
-fn seal_key(text: &str) -> Option<[u8; 65]> {
+pub fn seal_key(text: &str) -> Option<[u8; 65]> {
     hex::decode(text.strip_prefix("0x").unwrap_or(text))
         .ok()
         .and_then(|key| key.try_into().ok())

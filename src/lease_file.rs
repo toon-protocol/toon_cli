@@ -144,15 +144,12 @@ impl Lease {
 
     /// The connector's sealing key, which every packet of the lease is sealed to.
     pub fn seal_key(&self) -> Result<[u8; 65], Error> {
-        hex::decode(self.connector_seal_key.trim_start_matches("0x"))
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or_else(|| {
-                io_error(format!(
-                    "The lease file of {} holds no connector seal key of 65 bytes.",
-                    self.workload_id
-                ))
-            })
+        crate::listing::seal_key(&self.connector_seal_key).ok_or_else(|| {
+            io_error(format!(
+                "The lease file of {} holds no connector seal key of 65 bytes.",
+                self.workload_id
+            ))
+        })
     }
 }
 
@@ -281,11 +278,12 @@ fn parse(text: &str) -> Option<Lease> {
 }
 
 /// Every lease file of `leases` as `(file name, contents)`, for a backup.
-pub fn files(leases: &Leases) -> Result<Vec<(String, String)>, Error> {
+pub fn files(leases: &Leases) -> Result<Vec<(String, Zeroizing<String>)>, Error> {
     let mut found = Vec::new();
     for lease in leases.list()? {
         let path = leases.path(&lease.workload_id)?;
         let text = fs::read_to_string(&path)
+            .map(Zeroizing::new)
             .map_err(|source| io_error(format!("{}: {source}.", path.display())))?;
         found.push((format!("{}.json", lease.workload_id), text));
     }

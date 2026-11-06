@@ -373,6 +373,17 @@ fn limits_refuse(renter: &Renter, args: &ComputeSpawnArgs, total: u64) -> Result
     if let Some(max) = args.max.filter(|max| total > *max) {
         return Err(over("the lease limit (--max)", max));
     }
+    if let Renter::Home(home) = renter {
+        return spending::check(home, u128::from(total)).map_err(|error| Error {
+            nothing_sent: true,
+            message: format!(
+                "The spawn would pay {}: {} Nothing was sent.",
+                amount_text(total),
+                error.message
+            ),
+            ..error
+        });
+    }
     if let Renter::Agent(agent) = renter {
         let Some(limit) = &agent.limit else {
             return Ok(());
@@ -512,10 +523,11 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
     } = plan(renter, args)?;
     let profile = &resolved.profile;
     renter.reaches(&profile.ilp_address, &profile.connector_url)?;
+    // Every limit before any packet, the free `availability` question included.
+    limits_refuse(renter, args, total)?;
     if !args.no_check {
         check_availability(renter, &resolved, &content["image"])?;
     }
-    limits_refuse(renter, args, total)?;
     if !args.yes {
         return Err(Error {
             code: ErrorCode::NotConfirmed,
