@@ -58,24 +58,34 @@ pub struct FakeChain {
 impl FakeChain {
     /// A chain on which every address is funded.
     pub fn start() -> Self {
-        Self::spawn(true, true, true)
+        Self::spawn(true, true, true, TOKEN_BALANCE.into())
     }
 
     /// A chain on which every address holds the token and no gas.
     pub fn start_gasless() -> Self {
-        Self::spawn(true, false, true)
+        Self::spawn(true, false, true, TOKEN_BALANCE.into())
     }
 
     /// A chain on which every address holds nothing until `fund` is called.
     pub fn start_unfunded() -> Self {
-        Self::spawn(false, true, true)
+        Self::spawn(false, true, true, TOKEN_BALANCE.into())
     }
 
     /// A chain on which every address holds gas and the token, and which refuses to estimate
     /// any transaction as a node does for a key that holds too little ETH: the balance
     /// the key is checked against is not what the chain then says.
     pub fn start_unestimable() -> Self {
-        Self::spawn(true, true, false)
+        Self::spawn(true, true, false, TOKEN_BALANCE.into())
+    }
+
+    /// A chain on which every address holds gas and no token.
+    pub fn start_tokenless() -> Self {
+        Self::spawn(true, true, true, 0)
+    }
+
+    /// A chain on which every address holds gas and `token` base units of the token.
+    pub fn start_with_token(token: u128) -> Self {
+        Self::spawn(true, true, true, token)
     }
 
     /// What a faucet does: from now on every address holds gas and the token.
@@ -83,7 +93,7 @@ impl FakeChain {
         Arc::clone(&self.funded)
     }
 
-    fn spawn(funded: bool, gas: bool, estimates: bool) -> Self {
+    fn spawn(funded: bool, gas: bool, estimates: bool, token: u128) -> Self {
         let funded = Arc::new(AtomicBool::new(funded));
         let held = Arc::clone(&funded);
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -92,7 +102,7 @@ impl FakeChain {
             .build()
             .expect("a runtime for the fake chain");
         let rpc = runtime.block_on(FakeRpc::spawn(move |call: &RpcCall| {
-            answer(call, held.load(Ordering::SeqCst), gas, estimates)
+            answer(call, held.load(Ordering::SeqCst), gas, estimates, token)
         }));
         Self {
             rpc,
@@ -111,7 +121,7 @@ impl FakeChain {
     }
 }
 
-fn answer(call: &RpcCall, funded: bool, gas: bool, estimates: bool) -> RpcReply {
+fn answer(call: &RpcCall, funded: bool, gas: bool, estimates: bool, token: u128) -> RpcReply {
     match call.method.as_str() {
         "eth_chainId" => RpcReply::Result(json!(format!("{CHAIN_ID:#x}"))),
         "eth_blockNumber" => RpcReply::Result(json!("0x1")),
@@ -122,13 +132,13 @@ fn answer(call: &RpcCall, funded: bool, gas: bool, estimates: bool) -> RpcReply 
         } else {
             "0x0".into()
         })),
-        "eth_call" => eth_call(call, funded, estimates),
+        "eth_call" => eth_call(call, funded, estimates, token),
         "eth_estimateGas" if !estimates => out_of_gas(),
         other => not_served(other),
     }
 }
 
-fn eth_call(call: &RpcCall, funded: bool, estimates: bool) -> RpcReply {
+fn eth_call(call: &RpcCall, funded: bool, estimates: bool, token: u128) -> RpcReply {
     let request = &call.params[0];
     let data = request["data"]
         .as_str()
@@ -140,7 +150,7 @@ fn eth_call(call: &RpcCall, funded: bool, estimates: bool) -> RpcReply {
         return RpcReply::Result(json!(format!("0x{:064x}", TOKEN_DECIMALS)));
     }
     if selector == BALANCE_OF {
-        let held = if funded { TOKEN_BALANCE } else { 0 };
+        let held = if funded { token } else { 0 };
         return RpcReply::Result(json!(format!("0x{held:064x}")));
     }
     if selector == RECEIVERS {

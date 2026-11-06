@@ -249,7 +249,16 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
         return Ok(created(home, &new, &from, restarted, Vec::new()));
     };
     // Each key sends a deposit, so each needs gas. The new key is checked in `made`.
-    funding::ensure_gas(home, state.network, source)?;
+    // The source key pays both deposits, so it must hold twice the amount. A deposit over
+    // the limit is refused as such, whatever the wallet holds.
+    spending::check(home, deposit.saturating_mul(2))?;
+    funding::ensure_deposit(
+        home,
+        state.network,
+        source,
+        create.chain,
+        deposit.saturating_mul(2),
+    )?;
     // The two channels are two payments out of the wallet.
     spending::spend(home, deposit.saturating_mul(2), create.yes, || {
         let restarted = match make() {
@@ -359,6 +368,7 @@ fn made(
     // deposit only if one was asked for, and that needs gas.
     let wanted = if deposit {
         funding::needs(home, new)
+            .map(|needs| needs.into_iter().filter(|need| need.is_gas()).collect())
     } else {
         funding::start_needs(home, new)
     }

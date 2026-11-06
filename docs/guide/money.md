@@ -20,7 +20,7 @@ Each connector's settlement key needs two things:
 
 | What | Needed for | If missing |
 | --- | --- | --- |
-| At least one whole token | `toon up` to start that connector | `toon up` fails with `unfunded` |
+| The amount to deposit, in the token | `join`, `peer add` and `create` with a deposit (`create` needs twice it, for its two channels), `channel open`, `channel fund` | That command fails with `unfunded`, before anything is charged or sent |
 | A little ETH for gas | Anything that sends a transaction: `join`, `peer add` and `create` with a deposit, `channel open`, `fund`, `withdraw`, `land` | That command fails with `unfunded`, before anything is charged or sent |
 
 The `unfunded` message names each address and the amount it needs. Where the funds come
@@ -31,7 +31,7 @@ from depends on the network:
 - **sandbox** and **mainnet**: there is no faucet (`faucet_unavailable`). Send funds to the
   addresses `toon wallet show` lists.
 
-With `--solana` at `init`, the Solana key also needs the token and 0.01 SOL before `up`.
+With `--solana` at `init`, the Solana key needs 0.01 SOL before `up`. `toon up` needs no token: it is checked where it is spent. Where an app settles on both chains and no `--chain` is given, `toon` leaves the token to the connector's own refusal.
 
 ## Commands that move money
 

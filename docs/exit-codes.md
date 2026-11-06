@@ -68,7 +68,7 @@ A failed command with `--json` prints:
 | `connector_failed` | 1 | A connector did not start; the message carries the connector's own reason |
 | `already_running` | 1 | A supervisor is already running this agent node: `toon down` stops it |
 | `app_failed` | 1 | An app behind a connector did not start, or stopped; the message carries the reason |
-| `unfunded` | 1 | A settlement key does not hold what is needed, so `toon up` did not start the connector (the token; on Solana also SOL), or a command that has a connector send a transaction did not (EVM gas, 0.001 ETH, whether the check finds too little or the connector reports the chain refused to estimate for lack of it: `toon join`, `toon peer add` with a deposit, `toon create` with a deposit, `toon channel open`, `fund`, `withdraw`, `land`); the message names each address and the amount |
+| `unfunded` | 1 | A settlement key does not hold what is needed, so `toon up` did not start the connector (on Solana, 0.01 SOL), or a command that has a connector send a transaction did not (EVM gas, 0.001 ETH, whether the check finds too little or the connector reports the chain refused to estimate for lack of it: `toon join`, `toon peer add` with a deposit, `toon create` with a deposit, `toon channel open`, `fund`, `withdraw`, `land`; and, for those that deposit, less of the token than the deposit moves); the message names each address and the amount |
 | `faucet_unavailable` | 1 | `toon wallet fund` has no faucet to ask: the network is not the devnet, or the faucet did not answer or refused every address (one refusal does not fail the command while another address is funded) |
 | `not_running` | 1 | The command needs the agent node's connector running: run `toon up`. With an agent key, the supervisor did not answer at the key file's address |
 | `send_failed` | 1 | The packet (or, for `toon event publish` and `toon nip publish`, the event; for `toon message send`, a wrap) could not be sent: the connector's operator surface refused the write, could not be reached, or did not answer within the wait (the packet's 30-second expiry and five seconds more); the message carries the reason. A packet that went unanswered has expired and will not be delivered, so the command can be run again; the failure's JSON carries `paid` and, for `toon event publish --relay`, the `event` with its id (see Spending limit) |
@@ -135,12 +135,13 @@ key is not kept (the file is absent or not a whole key).
 
 `toon init --network` takes `devnet` (the default), `sandbox` or `mainnet`. Solana
 settlement is off unless `--solana` is given. `toon up` does not start a connector whose
-settlement key holds less than one whole token, or on Solana less than 0.01 SOL for fees; it
+Solana settlement key holds less than 0.01 SOL for fees; it
 fails with `unfunded`, or, without `--foreground`, with `systemd_failed` and the supervisor's
 reason. An EVM connector starts without gas: gas is spent when it sends a
 transaction, so `toon join`, `toon peer add` with a deposit, `toon create` with a deposit (both
 keys send one) and `toon channel open`, `fund`, `withdraw` and `land` fail with `unfunded` while
-the EVM settlement key holds less than 0.001 ETH. They refuse before the spending limit is
+the EVM settlement key holds less than 0.001 ETH, or when the key holds less of the token than
+the deposit moves (`toon create` needs twice its `--deposit`). They refuse before the spending limit is
 charged and before anything is sent. A connector that refuses such a write because the chain
 would not estimate the transaction for lack of gas (a 502 whose text says `out of gas`,
 `gas required exceeds` or `insufficient funds`, as RPC nodes word it) is reported the same way,
