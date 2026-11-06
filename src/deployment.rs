@@ -267,7 +267,7 @@ pub fn retry_command(claim: &Claim, lease: &Lease, expires_at: u64) -> String {
     let mut command = format!(
         "toon deployment publish {} --repo {} --commit {} --listing {} --primary {} --workload {} \
          --expires-at {expires_at}",
-        claim.environment,
+        shell_word(&claim.environment),
         claim.repo,
         claim.commit,
         lease.listing,
@@ -275,9 +275,18 @@ pub fn retry_command(claim: &Claim, lease: &Lease, expires_at: u64) -> String {
         lease.workload_id
     );
     if let Some(url) = &claim.url {
-        command.push_str(&format!(" --url {url}"));
+        command.push_str(&format!(" --url {}", shell_word(url)));
     }
     command
+}
+
+/// `word` as a POSIX shell reads it back: as it is if nothing in it is special, else quoted.
+fn shell_word(word: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "-_./:@=+,".contains(c);
+    if !word.is_empty() && word.chars().all(plain) {
+        return word.to_owned();
+    }
+    format!("'{}'", word.replace('\'', "'\\''"))
 }
 
 /// What `update` was told to change. A group that is `None` or empty is left as it is.
@@ -838,6 +847,18 @@ mod tests {
     const W: &str = "4444444444444444444444444444444444444444444444444444444444444444";
     const IMG: &str = "5555555555555555555555555555555555555555555555555555555555555555";
     const COMMIT: &str = "6666666666666666666666666666666666666666";
+
+    #[test]
+    fn a_retry_command_quotes_what_a_shell_would_split() {
+        assert_eq!(shell_word("production"), "production");
+        assert_eq!(
+            shell_word("https://example.com/a?b=1"),
+            "'https://example.com/a?b=1'"
+        );
+        assert_eq!(shell_word("blue green"), "'blue green'");
+        assert_eq!(shell_word("it's"), "'it'\\''s'");
+        assert_eq!(shell_word(""), "''");
+    }
 
     fn inputs<'a>(standby: &'a [String]) -> Inputs<'a> {
         Inputs {

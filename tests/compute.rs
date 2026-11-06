@@ -1125,12 +1125,27 @@ fn deployment_flags(environment: &str) -> [&str; 7] {
     ]
 }
 
+/// The Deployments on the near node's own relay.
+fn deployments(world: &World) -> Vec<Value> {
+    let list = world.near.toon(&["deployment", "list", "--json"]);
+    assert_eq!(list.exit_code, 0, "{}{}", list.stdout, list.stderr);
+    list.json()["deployments"].as_array().unwrap().clone()
+}
+
 #[test]
-fn a_deployment_that_cannot_be_published_never_fails_the_lease_command() {
+fn a_deployment_the_relay_refuses_never_fails_the_lease_command() {
     let chain = AnvilChain::start();
     let world = world(&chain);
+    // The profile follows a relay that takes no write: the Deployment reaches the agent node's
+    // own relay, and the publish fails after the lease is bought.
+    let path = world.near.machine.agent_node_home().join("state.json");
+    let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    state["relay_url"] = json!("ws://127.0.0.1:9");
+    world
+        .near
+        .machine
+        .write_agent_node_file("state.json", state.to_string());
 
-    // This node follows no relay to publish to, so the publish fails after the lease is bought.
     let flags = deployment_flags("production").to_vec();
     let spawned = world.spawn(&flags);
     assert_eq!(spawned.exit_code, 0, "{}{}", spawned.stdout, spawned.stderr);
@@ -1140,6 +1155,12 @@ fn a_deployment_that_cannot_be_published_never_fails_the_lease_command() {
     let retry = deployment["retry"].as_str().unwrap().to_owned();
     let workload = spawned.json()["workload_id"].as_str().unwrap().to_owned();
     let expires_at = spawned.json()["expires_at"].as_u64().unwrap();
+    let held = deployments(&world);
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0]["environment"], "production");
+    assert_eq!(held[0]["repository"], REPO);
+    assert_eq!(held[0]["primary"], public_key(PROVIDER));
+    assert_eq!(held[0]["expiration"], expires_at);
     for part in [
         "toon deployment publish production",
         &format!("--workload {workload}"),
@@ -1174,6 +1195,9 @@ fn a_deployment_that_cannot_be_published_never_fails_the_lease_command() {
         .as_str()
         .unwrap()
         .contains(&format!("--expires-at {new_expiry}")));
+    let held = deployments(&world);
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0]["expiration"], new_expiry);
 
     // A lease without the flag carries no environment and touches no Deployment.
     let plain = world.spawn(&["--yes"]);

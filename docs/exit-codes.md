@@ -82,7 +82,7 @@ A failed command with `--json` prints:
 | `name_taken` | 1 | `toon add` or `toon create` was given a name that is not usable, or that a TOON app or an app of this agent node already has; or an agent key's `toon add` named a pending app another key asked for, or one of its own asked for differently |
 | `query_failed` | 1 | `toon event query`, or `toon nip publish` asking for a draft's current revision, could not read events from the relay: it did not answer, is not a `ws://` or `wss://` relay (or its certificate did not verify), or closed the subscription with a reason the message carries; or `toon relay subscriptions --incoming` could not read the running relay's list of subscribers, or the agent node's relay does not sell its live feed |
 | `draft_refused` | 1 | `toon nip new` or `toon nip publish` would not write or publish a draft: the file exists already, does not name a draft or begin with its title, is not UTF-8, or the relay holds the identifier under another title and `--title-changed` was not given; the message says which |
-| `deployment_refused` | 1 | `toon deployment` would not publish: an input breaks the Deployment NIP's shape (an expiration past `--expires-at`, or either in the past, a non-https `--url`, a malformed repository, Listing, provider, commit, workload id or image, a missing or unmarked tag, more than one primary), `update` was given nothing to change, or `update` and `delete` found no current Deployment of the environment on the agent node's own relay; nothing was sent |
+| `deployment_refused` | 1 | `toon deployment`, or `toon compute spawn --deployment` before it pays, would not publish: an input breaks the Deployment NIP's shape (an expiration past `--expires-at`, or either in the past, a non-https `--url`, a malformed repository, Listing, provider, commit, workload id or image, a missing or unmarked tag, more than one primary), `update` was given nothing to change, or `update` and `delete` found no current Deployment of the environment on the agent node's own relay; nothing was sent |
 | `stop_timed_out` | 1 | `toon down` asked the supervisor to stop and it was still stopping after the longest a shutdown can take; the node is not down yet, and `toon status` shows when it is |
 | `lease_limit` | 1 | `toon compute spawn` would pay more than the lease's own limit, `--max`, which counts everything the lease pays in total; the message names the total and the limit, and nothing was sent |
 | `image_not_pinned` | 1 | `toon compute spawn --image` is not pinned by digest (a tag, or a repository alone), or is not one of the three forms the spec allows; nothing was sent |
@@ -338,6 +338,14 @@ network profile follows, or to `--relay` in its place; without either relay it e
 `no_profile_relay`. Every malformed input, `update` or `delete` with no current Deployment of the
 environment on the agent node's own relay, and `update` with nothing to change exit 1 with
 `deployment_refused`; it always means nothing was sent. The other outcomes are those of `toon tip`.
+
+`toon compute spawn --deployment <environment>` builds the lease's Deployment the same way and
+exits 1 with `deployment_refused` before anything is paid if an input is malformed; an agent key
+without the `sign` scope is refused before anything is paid as well, as any order outside its
+scope is. Once the lease is bought, it and every
+`toon compute extend` of the lease publish the Deployment with the lease's `expires_at`. A publish
+that fails then does not change the exit code: the lease command exits 0, warns on stderr and
+names, in the JSON's `deployment.retry`, the `toon deployment publish` command that retries it.
 
 ## Backup and restore
 
