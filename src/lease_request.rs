@@ -16,8 +16,12 @@ use crate::outcome::{Error, ErrorCode};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Route {
     Spawn,
+    /// A Warm Standby's reservation (spec §7): a spawn of the member that waits.
+    Standby,
     Availability,
     Extend,
+    /// The extension of a reserved standby, bare like `Extend`.
+    StandbyExtend,
     Status,
     Terminate,
     Rotate,
@@ -28,18 +32,21 @@ impl Route {
     fn op(self) -> Option<&'static str> {
         match self {
             Route::Spawn => Some("spawn"),
+            Route::Standby => Some("standby"),
             Route::Status => Some("status"),
             Route::Terminate => Some("terminate"),
             Route::Rotate => Some("rotate"),
-            Route::Availability | Route::Extend => None,
+            Route::Availability | Route::Extend | Route::StandbyExtend => None,
         }
     }
 
     fn name(self) -> &'static str {
         match self {
             Route::Spawn => "spawn",
+            Route::Standby => "standby",
             Route::Availability => "availability",
             Route::Extend => "extend",
+            Route::StandbyExtend => "standby.extend",
             Route::Status => "status",
             Route::Terminate => "terminate",
             Route::Rotate => "rotate",
@@ -51,7 +58,7 @@ impl Route {
 /// provider `ilp_address`.
 pub fn destination(ilp_address: &str, route: Route, listing: &str, version: u64) -> String {
     match route {
-        Route::Spawn | Route::Extend => {
+        Route::Spawn | Route::Extend | Route::Standby | Route::StandbyExtend => {
             format!("{ilp_address}.{listing}.v{version}.{}", route.name())
         }
         Route::Availability | Route::Status | Route::Terminate | Route::Rotate => {
@@ -72,6 +79,18 @@ pub fn continuation(root: &[u8; 32], provider: &str) -> String {
         )
         .expect("32 bytes is a valid HKDF-SHA256 output length");
     hex::encode(token)
+}
+
+/// The content of a spawn: what the tenant asked to run, under the lease's `workload_id` and,
+/// for a member of a Standby Set, the `standby_set` (spec §7): every member's public key,
+/// the primary first, the same for each member.
+pub fn member_content(base: &Value, workload_id: &str, standby_set: &[String]) -> Value {
+    let mut content = base.clone();
+    content["workload_id"] = json!(workload_id);
+    if !standby_set.is_empty() {
+        content["standby_set"] = json!(standby_set);
+    }
+    content
 }
 
 /// The `content` of a rotate (§6.8): `next` is the token `member` holds from the new root
@@ -167,13 +186,15 @@ pub fn check_shape(route: Route, body: &Value) -> Result<(), Error> {
             &["listing", "version", "image", "role"],
             &["listing", "version", "image"],
         ),
-        Route::Extend => only_keys(object, &["workload_id"], &["workload_id"]).and_then(|()| {
-            if is_hex(&object["workload_id"], 64) {
-                Ok(())
-            } else {
-                Err("`workload_id` is not 64 lowercase hex characters".into())
-            }
-        }),
+        Route::Extend | Route::StandbyExtend => {
+            only_keys(object, &["workload_id"], &["workload_id"]).and_then(|()| {
+                if is_hex(&object["workload_id"], 64) {
+                    Ok(())
+                } else {
+                    Err("`workload_id` is not 64 lowercase hex characters".into())
+                }
+            })
+        }
         authenticated => check_request(authenticated, object),
     };
     checked.map_err(|why| refused(route, why))
@@ -291,6 +312,69 @@ mod tests {
             assert_eq!(built, recorded, "{name}");
             assert_eq!(built.to_string(), recorded.to_string(), "{name}");
         }
+    }
+
+    /// A member's request as `fixture` records it, built again over the content of
+    /// `lease_request.standby` with that member's set and workload id.
+    fn member_body(fixture_name: &str) -> (Value, Value) {
+        let fixture = fixture(fixture_name);
+        let request = &fixture["request_body"]["request"];
+        let base = &self::fixture("lease_request.standby")["request"]["content"];
+        let mut base = base.clone();
+        base.as_object_mut().unwrap().remove("standby_set");
+        let set: Vec<String> = request["content"]["standby_set"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|key| text(key).to_owned())
+            .collect();
+        let built = Request {
+            op: text(&request["op"]),
+            request_id: text(&request["request_id"]),
+            provider: text(&request["provider"]),
+            expiration: request["expiration"].as_u64().unwrap(),
+            continuation: text(&request["continuation"]),
+            content: member_content(&base, text(&request["content"]["workload_id"]), &set),
+        };
+        (built.body(), fixture["request_body"].clone())
+    }
+
+    #[test]
+    fn a_standby_is_a_request_of_op_standby_at_its_own_route() {
+        let (built, recorded) = rebuilt("lease_request.standby");
+        assert_eq!(built, recorded);
+        check_shape(Route::Standby, &built).expect("standby");
+        assert!(check_shape(Route::Spawn, &built).is_err());
+        for name in ["spawn.standby", "spawn.primary"] {
+            let (built, recorded) = member_body(name);
+            assert_eq!(built.to_string(), recorded.to_string(), "{name}");
+        }
+        check_shape(Route::Standby, &member_body("spawn.standby").0).expect("standby");
+        check_shape(Route::Spawn, &member_body("spawn.primary").0).expect("primary");
+        let spawn = fixture("spawn.standby");
+        assert_eq!(
+            destination("g.fixture", Route::Standby, "warm", 1),
+            spawn["route"].as_str().unwrap()
+        );
+        let primary = fixture("spawn.primary");
+        assert_eq!(
+            destination("g.fixture", Route::Spawn, "warm", 1),
+            primary["route"].as_str().unwrap()
+        );
+        let extend = fixture("standby_extend.ok");
+        check_shape(Route::StandbyExtend, &extend["request_body"]).expect("standby extend");
+        assert_eq!(
+            destination("g.fixture", Route::StandbyExtend, "warm", 1),
+            extend["route"].as_str().unwrap()
+        );
+        let wrapped =
+            json!({ "request": { "workload_id": extend["request_body"]["workload_id"] } });
+        assert!(check_shape(Route::StandbyExtend, &wrapped).is_err());
+        check_shape(
+            Route::Availability,
+            &fixture("availability.standby_role")["request_body"],
+        )
+        .expect("availability with a role");
     }
 
     #[test]
