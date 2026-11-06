@@ -220,6 +220,10 @@ _Avoid_: Zap receipt, tip receipt (the payer's), confirmation
 The operator's public statement, a kind 30437 event signed with the agent identity, that one environment of a repository is served by a lease on a TOON Compute provider until a stated time. It is a claim about a workload somewhere else, never about something the agent node runs. Optional: renting compute needs none. Lease, Listing, Extension and Takeover keep TOON Compute's meanings.
 _Avoid_: TOON app, lease, workload, environment (each is part of a Deployment, not one)
 
+**Lease limit**:
+The most one lease may pay out in total, its spawn, its standbys and every extension, set by whoever spawns it. It adds to the spending limit and never loosens it: the lowest that applies is the one that counts.
+_Avoid_: Cap (the connector's word for the largest packet a peering carries), budget
+
 ### What teaches an agent
 
 **Plugin**:
