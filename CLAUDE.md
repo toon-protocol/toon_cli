@@ -45,6 +45,17 @@ full SHA. Do not edit the copy: change a skill in `toon-plugins`, then refresh w
 `tests/skill.rs` checks that every command a vendored skill names exists, and that the
 `toon_cli` range in the `sending-with-toon-cli` frontmatter includes this crate's version.
 
+## The vendored wire fixtures
+
+`vendor/toon-network-fixtures/` holds Appendix B's wire fixtures of the TOON Compute spec
+(`docs/spec/fixtures/wire/` in `toon-protocol/TOON_Network`) at one commit, `REV` (a full
+SHA). They are test vectors: the unit tests of `src/lease_request.rs` build a Lease Request
+for each fixture and require the packet body to match it. Do not edit the copy: refresh it with
+`scripts/vendor-toon-network-fixtures.sh <sha>` in an ordinary PR. `toon compute` keeps a
+lease's root secret in a lease file, `<home>/leases/` or `leases/` beside the agent key file
+(ADR 0015, mode 0600, never printed, never deleted by `toon`; `toon wallet backup` carries the
+home's).
+
 ## The embedded connector
 
 `toon` depends on the connector's crates at one git revision (ADR 0001). The `rev` is

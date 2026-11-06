@@ -9,7 +9,9 @@
 
 pub mod anvil_chain;
 pub mod fake_chain;
+pub mod fake_directory;
 pub mod fake_faucet;
+pub mod fake_provider;
 pub mod fake_remote_relay;
 pub mod fake_solana;
 pub mod local_chain;

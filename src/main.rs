@@ -11,6 +11,7 @@ mod anon;
 mod apps;
 mod bounded;
 mod cli;
+mod compute;
 mod connector;
 mod control;
 mod deployment;
@@ -24,9 +25,13 @@ mod gift_wrap;
 mod home;
 mod inbox;
 mod keystore;
+mod lease_file;
+mod lease_request;
 mod lifecycle;
+mod listing;
 mod message;
 mod nip;
+mod nip19;
 mod nip44;
 mod node;
 mod operator;
@@ -371,6 +376,11 @@ fn run() -> ExitCode {
         .into(),
         Command::Event { command } => render(event::run(command), json).into(),
         Command::Message { command } => render(message::run(command), json).into(),
+        Command::Compute { command } => render(
+            home::resolve().and_then(|home| compute::run(&compute::Renter::Home(&home), &command)),
+            json,
+        )
+        .into(),
         Command::Deployment { command } => render(deployment::run(command), json).into(),
         Command::Nip { command } => render(nip::run(command), json).into(),
         Command::Skill { command } => render(skill::run(command), json).into(),

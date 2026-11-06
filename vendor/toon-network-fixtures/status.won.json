@@ -1,0 +1,42 @@
+{
+  "fixture": {
+    "case": "won",
+    "description": "Status of the Warm Standby of `spawn.standby` after it WON the Takeover of its workload (spec §6.5, §7.1 steps 3–4). The primary provider went silent on its Relay Set; this provider announced `directory.takeover` at `now`, waited the settle window of two cadences, found its own claim the earliest from any member of the `standby_set`, and started the workload from the image exactly as a spawn would, with no state carried over (ADR 0010). `state` is now `running` and `access` is where the workload runs; `role` is still `standby`, because a role is a position in the set and never changes; and `takeover.winner` names this provider. `expires_at` is the reservation's own: winning buys no time, so a full-price `.extend` is due before it or the sweep ends the lease. `.standby.extend` is refused `not_standby` from here on.",
+    "generated_by": "toon-provider tests/wire_fixtures.rs",
+    "surface": "status"
+  },
+  "http_path": "/status",
+  "request_body": {
+    "request": {
+      "content": {
+        "workload_id": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+      },
+      "continuation": "13aaa05ae89d8fb81acd101b9daabd5b037135291deac980842ee8b7c282fb6d",
+      "expiration": 1700000060,
+      "op": "status",
+      "provider": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "request_id": "a3cea99d18cef47979f26007f8cd8e5cb38dcc54f26b4846585f4391d6b6e91c"
+    }
+  },
+  "response_body": {
+    "access": {
+      "host": "203.0.113.7",
+      "ports": [
+        {
+          "container_port": 443,
+          "host_port": 41000
+        }
+      ],
+      "ssh_port": 40000
+    },
+    "expires_at": 1700003600,
+    "role": "standby",
+    "state": "running",
+    "takeover": {
+      "winner": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27"
+    },
+    "workload_id": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+  },
+  "response_status": 200,
+  "route": "g.fixture.status"
+}

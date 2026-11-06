@@ -397,52 +397,8 @@ fn is_hex_key(text: &str) -> bool {
 
 /// The 32 bytes an `npub` (NIP-19, bech32) encodes.
 pub fn npub_key(npub: &str) -> Option<String> {
-    const CHARSET: &[u8] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-    if npub.chars().any(char::is_uppercase) && npub.chars().any(char::is_lowercase) {
-        return None;
-    }
-    let lower = npub.to_ascii_lowercase();
-    let (human, data) = lower.rsplit_once('1')?;
-    if human != "npub" {
-        return None;
-    }
-    let values: Vec<u8> = data
-        .bytes()
-        .map(|byte| CHARSET.iter().position(|&c| c == byte).map(|at| at as u8))
-        .collect::<Option<_>>()?;
-    let polymod = |values: &[u8]| {
-        const GENERATOR: [u32; 5] = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
-        values.iter().fold(1u32, |checksum, &value| {
-            let top = checksum >> 25;
-            let mut checksum = ((checksum & 0x1ff_ffff) << 5) ^ u32::from(value);
-            for (bit, generator) in GENERATOR.iter().enumerate() {
-                if (top >> bit) & 1 == 1 {
-                    checksum ^= generator;
-                }
-            }
-            checksum
-        })
-    };
-    let mut checked: Vec<u8> = human.bytes().map(|byte| byte >> 5).collect();
-    checked.push(0);
-    checked.extend(human.bytes().map(|byte| byte & 31));
-    checked.extend(&values);
-    if values.len() < 6 || polymod(&checked) != 1 {
-        return None;
-    }
-    let payload = &values[..values.len() - 6];
-    let (mut accumulator, mut bits, mut bytes) = (0u32, 0u32, Vec::new());
-    for &value in payload {
-        accumulator = (accumulator << 5) | u32::from(value);
-        bits += 5;
-        while bits >= 8 {
-            bits -= 8;
-            bytes.push((accumulator >> bits) as u8);
-            accumulator &= (1 << bits) - 1;
-        }
-    }
-    // Padding is zero and shorter than a byte.
-    (bytes.len() == 32 && bits < 5 && accumulator == 0).then(|| hex::encode(bytes))
+    let (human, bytes) = crate::nip19::decode(npub)?;
+    (human == "npub" && bytes.len() == 32).then(|| hex::encode(bytes))
 }
 
 /// The recipient's public key as 64 lowercase hex characters, from an `npub` or hex.

@@ -11,6 +11,7 @@ use crate::egress::Egress;
 use crate::event;
 use crate::funding;
 use crate::keystore;
+use crate::lease_file::{self, Leases};
 use crate::node::{self, Reach};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::overlay::{self, Edge};
@@ -927,11 +928,19 @@ pub fn backup(home: &Path, out: &Path) -> Result<Report, Error> {
             "onion_endpoint": node::onion_endpoint(home, app),
         }));
     }
+    // The lease files hold the root secrets that control rented compute (ADR 0015): losing
+    // them loses the leases, so the backup carries them, sealed with the rest.
+    let lease_files = lease_file::files(&Leases::of_home(home))?;
+    let mut leases = serde_json::Map::new();
+    for (name, text) in &lease_files {
+        leases.insert(name.clone(), json!(text.as_str()));
+    }
     let plain = zeroize::Zeroizing::new(
         json!({
             "version": BACKUP_VERSION,
             "mnemonic": &*mnemonic,
             "onion_keys": onion_keys,
+            "leases": leases,
         })
         .to_string(),
     );
@@ -959,12 +968,14 @@ pub fn backup(home: &Path, out: &Path) -> Result<Report, Error> {
     }
     Ok(Report {
         exit: Exit::Success,
-        json: json!({ "backup": out, "onion_endpoints": endpoints }),
+        json: json!({ "backup": out, "onion_endpoints": endpoints, "leases": lease_files.len() }),
         text: format!(
-            "Backup written to {}. It holds the mnemonic and {} address key(s), sealed under \
-             the wallet's passphrase: keep both somewhere other than this machine.",
+            "Backup written to {}. It holds the mnemonic, {} address key(s) and {} lease \
+             file(s), sealed under the wallet's passphrase: keep both somewhere other than \
+             this machine.",
             out.display(),
-            endpoints.len()
+            endpoints.len(),
+            lease_files.len()
         ),
     })
 }
@@ -1037,6 +1048,13 @@ pub fn restore(home: &Path, from: &Path) -> Result<Report, Error> {
         }
         keys.push((connector, key));
     }
+    // A backup from before the lease files carries none.
+    let mut lease_files = Vec::new();
+    if let Some(leases) = document["leases"].as_object() {
+        for (name, text) in leases {
+            lease_files.push((name.clone(), text.as_str().ok_or_else(corrupt)?.to_owned()));
+        }
+    }
     // The address keys first: if one cannot be written there is no wallet that lacks them.
     let mut endpoints = Vec::new();
     let mut lines = Vec::new();
@@ -1071,6 +1089,13 @@ pub fn restore(home: &Path, from: &Path) -> Result<Report, Error> {
         lines.push(format!("connector {connector} onion endpoint: {endpoint}"));
         endpoints.push(json!({ "connector": connector, "onion_endpoint": endpoint }));
     }
+    match lease_file::restore(&Leases::of_home(home), &lease_files) {
+        Ok(files) => written.extend(files),
+        Err(error) => {
+            undo(&written);
+            return Err(error);
+        }
+    }
     match keystore::create(home, &passphrase, &phrase) {
         Ok(true) => {
             // Where it cannot be kept, the next command that opens the keystore keeps it.
@@ -1092,12 +1117,18 @@ pub fn restore(home: &Path, from: &Path) -> Result<Report, Error> {
     }
     Ok(Report {
         exit: Exit::Success,
-        json: json!({ "restored": true, "wallet": wallet, "onion_endpoints": endpoints }),
+        json: json!({
+            "restored": true,
+            "wallet": wallet,
+            "onion_endpoints": endpoints,
+            "leases": lease_files.len(),
+        }),
         text: format!(
-            "Wallet restored at {}.\n\n{}\n{}\n\nRun `toon init` to make the TOON app: it keeps these onion endpoints.",
+            "Wallet restored at {}.\n\n{}\n{}\n{} lease file(s) restored.\n\nRun `toon init` to make the TOON app: it keeps these onion endpoints.",
             keystore::path(home).display(),
             listing(&wallet),
-            lines.join("\n")
+            lines.join("\n"),
+            lease_files.len()
         ),
     })
 }

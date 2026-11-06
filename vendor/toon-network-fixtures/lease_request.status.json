@@ -1,0 +1,34 @@
+{
+  "content": {
+    "workload_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "fixture": {
+    "case": "status",
+    "description": "Asks after the lease on the free `<addr>.status` route. The body of `status.running`.",
+    "generated_by": "toon-provider tests/wire_fixtures.rs",
+    "surface": "lease_request"
+  },
+  "packet_body": {
+    "request": {
+      "content": {
+        "workload_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "continuation": "13aaa05ae89d8fb81acd101b9daabd5b037135291deac980842ee8b7c282fb6d",
+      "expiration": 1700000060,
+      "op": "status",
+      "provider": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "request_id": "e833663192557ab39024f03a5f78a920ad836da2b085c021a2ece1847b55f2bd"
+    }
+  },
+  "packet_body_encoding": "The HTTP request body is this JSON object: the request, unmodified, as the value of the single key `request`. No other key is allowed, and nothing is signed — a Lease Request is a plain JSON object carrying the lease's Continuation Token (spec §6.1, ADR 0016). The connector carries the whole HTTP request inside its sealed envelope; the provider app receives this body as plaintext JSON.",
+  "request": {
+    "content": {
+      "workload_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "continuation": "13aaa05ae89d8fb81acd101b9daabd5b037135291deac980842ee8b7c282fb6d",
+    "expiration": 1700000060,
+    "op": "status",
+    "provider": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+    "request_id": "e833663192557ab39024f03a5f78a920ad836da2b085c021a2ece1847b55f2bd"
+  }
+}

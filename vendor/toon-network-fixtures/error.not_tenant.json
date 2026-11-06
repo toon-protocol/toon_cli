@@ -1,0 +1,28 @@
+{
+  "fixture": {
+    "case": "not_tenant",
+    "description": "Status presenting a Continuation Token this lease was not taken with, and asserting no delegation (spec §6.1.2, §6.5.1). A request that DOES assert one hears `bad_grant` instead: the assertion decides the refusal.",
+    "generated_by": "toon-provider tests/wire_fixtures.rs",
+    "surface": "error"
+  },
+  "http_path": "/status",
+  "request_body": {
+    "request": {
+      "content": {
+        "workload_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "continuation": "322e0a76e5bd865675d4a2d9b1cbfcec78af4abd68576759ef79162fdabcf3f2",
+      "expiration": 1700000060,
+      "op": "status",
+      "provider": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "request_id": "d1ea51546a2d1d32bb897d4e69dc1a3fe6d0d4cc79af1a841dc846cd113fab46"
+    }
+  },
+  "response_body": {
+    "error": "not_tenant",
+    "message": "this lease was taken with another continuation token"
+  },
+  "response_status": 403,
+  "route": "g.fixture.status",
+  "validation_step": "§6.1.2 step 4: the request MUST present the token the lease was taken with"
+}

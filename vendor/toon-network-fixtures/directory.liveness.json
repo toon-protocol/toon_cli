@@ -1,0 +1,35 @@
+{
+  "content": {
+    "available": {
+      "basic": 2,
+      "gpu": 1,
+      "warm": 1
+    }
+  },
+  "event": {
+    "content": "{\"available\":{\"basic\":2,\"gpu\":1,\"warm\":1}}",
+    "created_at": 1700000000,
+    "id": "4cf7e9d507819c3aab6d5cef35231ae48475e3f0eb128f6a57f27e980a90f4a1",
+    "kind": 10433,
+    "pubkey": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+    "sig": "d59d2cea90ca2b116fe0897a495a92d57372434ca6edb4db447dd8ad2264945891c80d40a8004032538be1346ac60dcee098a41d3e8f5f1ecd9ad71c72d838b5",
+    "tags": [
+      [
+        "L",
+        "toon.network"
+      ],
+      [
+        "expiration",
+        "1700000300"
+      ]
+    ]
+  },
+  "fixture": {
+    "case": "liveness",
+    "description": "Liveness (spec §4.3) published at `now`, before any lease: `available` is each listing's full capacity, and `expiration` is `now + 5 × liveness_cadence_s` (ADR 0007).",
+    "generated_by": "toon-provider tests/wire_fixtures.rs",
+    "surface": "directory"
+  },
+  "kind_name": "K_LIVENESS",
+  "nip01_serialization": "[0,\"466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27\",1700000000,10433,[[\"L\",\"toon.network\"],[\"expiration\",\"1700000300\"]],\"{\\\"available\\\":{\\\"basic\\\":2,\\\"gpu\\\":1,\\\"warm\\\":1}}\"]"
+}

@@ -1,0 +1,29 @@
+{
+  "fixture": {
+    "case": "reserved",
+    "description": "Status of that Warm Standby before Takeover (spec §6.5, §6.7): `state` is the one word `reserved`, `role` is `standby`, and there is NO `access` — the capacity is held and paid for, and nothing is running to reach. The reservation counts against the listing's capacity exactly as a running lease does, so Liveness `available` and `availability` both subtract it.",
+    "generated_by": "toon-provider tests/wire_fixtures.rs",
+    "surface": "status"
+  },
+  "http_path": "/status",
+  "request_body": {
+    "request": {
+      "content": {
+        "workload_id": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+      },
+      "continuation": "13aaa05ae89d8fb81acd101b9daabd5b037135291deac980842ee8b7c282fb6d",
+      "expiration": 1700000060,
+      "op": "status",
+      "provider": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "request_id": "89928ff501b7c5d26e4d4d0e5a4c61a1ecf47be67bb194007b5b172246bfddc0"
+    }
+  },
+  "response_body": {
+    "expires_at": 1700003600,
+    "role": "standby",
+    "state": "reserved",
+    "workload_id": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+  },
+  "response_status": 200,
+  "route": "g.fixture.status"
+}

@@ -52,4 +52,13 @@ error_codes! {
     TipSealKeyMismatch => "tip_seal_key_mismatch" => Failure,
     TipBelowMinimum => "tip_below_minimum" => Failure,
     StopTimedOut => "stop_timed_out" => Failure,
+    LeaseLimit => "lease_limit" => Failure,
+    ImageNotPinned => "image_not_pinned" => Failure,
+    SealKeyMismatch => "seal_key_mismatch" => Failure,
+    ListingNotFound => "listing_not_found" => Failure,
+    ListingWithdrawn => "listing_withdrawn" => Failure,
+    WouldNotRun => "would_not_run" => Failure,
+    LeaseRefused => "lease_refused" => Failure,
+    LeaseNotHeld => "lease_not_held" => Failure,
+    LeaseBodyShape => "lease_body_shape" => Failure,
 }

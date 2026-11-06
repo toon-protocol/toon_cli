@@ -15,8 +15,8 @@ use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
 use crate::cli::{
-    AddArgs, Command, EventCommand, LimitCommand, MessageCommand, PeerCommand, RouteCommand,
-    TipCommand,
+    AddArgs, Command, ComputeCommand, EventCommand, LimitCommand, MessageCommand, PeerCommand,
+    RouteCommand, TipCommand,
 };
 use crate::event;
 use crate::message;
@@ -435,6 +435,33 @@ fn confirmed(amount: u128, yes: bool) -> Result<(), Error> {
     ))
 }
 
+/// What the key may still spend through the connector of the TOON app a command works on, read
+/// as `toon limit show` reads it: `None` for a limit the key does not state.
+fn agent_limit(key: &KeyFile, app: Option<&str>) -> Result<crate::compute::AgentLimit, Error> {
+    let (name, url) = key.choose(app)?;
+    let surface = Surface::of_agent_key(url, name, *key.secret);
+    let mine = operator::write_keys(&surface)?
+        .into_iter()
+        .find(|listed| {
+            listed["keyid"]
+                .as_str()
+                .is_some_and(|id| id.eq_ignore_ascii_case(&key.public))
+        })
+        .ok_or_else(|| {
+            failed(
+                ErrorCode::ConnectorFailed,
+                format!("The connector of {name} does not list this agent key."),
+            )
+        })?;
+    let limit = &mine["spending_limit"];
+    let per_day = limit["per_day"].as_u64();
+    Ok(crate::compute::AgentLimit {
+        per_write: limit["per_write"].as_u64(),
+        remaining_today: per_day
+            .map(|per_day| per_day.saturating_sub(limit["counted_today"].as_u64().unwrap_or(0))),
+    })
+}
+
 fn limit_show(key: &KeyFile, app: Option<&str>) -> Result<Report, Error> {
     let apps: Vec<&(String, String)> = match app {
         Some(name) => vec![key
@@ -747,6 +774,21 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
         Command::Limit {
             command: LimitCommand::Show,
         } => limit_show(&KeyFile::load(path)?, app),
+        Command::Compute { command } => {
+            let key = KeyFile::load(path)?;
+            let limit = match &command {
+                ComputeCommand::Spawn(_) => Some(agent_limit(&key, app)?),
+                _ => None,
+            };
+            crate::compute::run(
+                &crate::compute::Renter::Agent(Box::new(crate::compute::AgentRenter {
+                    surface: key.surface(app)?,
+                    leases: crate::lease_file::Leases::beside(path),
+                    limit,
+                })),
+                &command,
+            )
+        }
         Command::Event {
             command:
                 EventCommand::Sign {

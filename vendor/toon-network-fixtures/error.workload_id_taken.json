@@ -1,0 +1,50 @@
+{
+  "fixture": {
+    "case": "workload_id_taken",
+    "description": "A second spawn naming a workload id this provider already holds a live lease for — here by the same tenant, which is refused too: a spawn buys a NEW lease.",
+    "generated_by": "toon-provider tests/wire_fixtures.rs",
+    "surface": "error"
+  },
+  "http_path": "/listings/basic/v1/spawn",
+  "request_body": {
+    "request": {
+      "content": {
+        "args": [
+          "-c",
+          "sleep 300"
+        ],
+        "entrypoint": [
+          "/bin/sh"
+        ],
+        "env": {
+          "GREETING": "hello"
+        },
+        "image": {
+          "digest": "sha256:c02a7c7b9cac8e709f8cc42dc9e7aa8fdc36e35acfa19da7cd7dff2b8bd94fdd",
+          "reference": "docker.io/library/alpine"
+        },
+        "ports": [
+          {
+            "container_port": 443,
+            "protocol": "tcp"
+          }
+        ],
+        "ssh_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxvbmdlbm91Z2hmb3JhdGVzdGtleQ tenant@fixture",
+        "volume_gb": 2,
+        "workload_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "continuation": "13aaa05ae89d8fb81acd101b9daabd5b037135291deac980842ee8b7c282fb6d",
+      "expiration": 1700000060,
+      "op": "spawn",
+      "provider": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "request_id": "3ebe6061f433dfac86ea14c49a358a638d20bcef655ca032040163d5348aa456"
+    }
+  },
+  "response_body": {
+    "error": "workload_id_taken",
+    "message": "a lease with this workload_id is already held on this provider"
+  },
+  "response_status": 409,
+  "route": "g.fixture.basic.v1.spawn",
+  "validation_step": "§6.2 step 4: workload_id is not held here"
+}

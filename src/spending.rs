@@ -397,6 +397,17 @@ pub fn spend<T, M: Into<Moved> + Copy>(
     outcome.map(|(report, _)| report)
 }
 
+/// Whether `amount` fits the per-command limit and what is left of today's, without
+/// counting it: for a command that must refuse before it sends even a free packet.
+/// [`spend`] still counts it, and checks again under the lock.
+pub fn check(home: &Path, amount: u128) -> Result<(), Error> {
+    let limits = read_limits(home)?;
+    read_ledger(home)?
+        .charge(&limits, today(), amount)
+        .map(|_| ())
+        .map_err(|refusal| limit_error(refusal.message(amount)))
+}
+
 /// What the outbound channels' watermarks were before a packet, read under the lock that
 /// keeps another `toon` command's packet from moving them meanwhile.
 pub struct Packets<'a> {
