@@ -1354,6 +1354,18 @@ fn a_standby_set_is_bought_in_order_extended_on_each_route_and_read_and_ended_as
         primary_request["continuation"],
         standby_request["continuation"]
     );
+    let root = read_lease(&world.leases())["root_secret"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        primary_request["continuation"],
+        continuation(&root, PROVIDER)
+    );
+    assert_eq!(
+        standby_request["continuation"],
+        continuation(&root, STANDBY)
+    );
 
     // Each member extended on its own route.
     assert_eq!(world.primary.count("/warm/v1/extend"), 1);
@@ -1435,6 +1447,19 @@ fn a_standby_set_is_bought_in_order_extended_on_each_route_and_read_and_ended_as
     assert_eq!(lease["standbys"][0]["state"], "ended");
 }
 
+/// The token a member with the key of `provider` is presented: its own derivation of the
+/// lease's root secret (spec §6.1.1).
+fn continuation(root: &str, provider: u8) -> String {
+    let mut token = [0u8; 32];
+    hkdf::Hkdf::<sha2::Sha256>::new(None, &hex::decode(root).unwrap())
+        .expand(
+            format!("toon-network-continuation:{}", public_key(provider)).as_bytes(),
+            &mut token,
+        )
+        .unwrap();
+    hex::encode(token)
+}
+
 #[test]
 fn a_set_whose_total_breaches_a_limit_sends_nothing() {
     let chain = AnvilChain::start();
@@ -1505,4 +1530,20 @@ fn a_standby_that_fails_leaves_the_members_bought_in_the_file() {
     assert_eq!(lease["standbys"][0]["state"], "failed");
     assert_eq!(lease["standbys"][0]["paid"], STANDBY_PRICE);
     assert_eq!(lease["standbys"][0]["error"]["code"], "no_capacity");
+
+    // `terminate` ends the primary and asks nothing of the standby that was never bought.
+    let workload = lease["workload_id"].as_str().unwrap().to_owned();
+    let terminated = world
+        .near
+        .toon(&["compute", "terminate", &workload, "--yes", "--json"]);
+    assert_eq!(
+        terminated.exit_code, 0,
+        "{}{}",
+        terminated.stdout, terminated.stderr
+    );
+    assert_eq!(world.primary.count("terminate"), 1);
+    assert_eq!(world.standby.count("terminate"), 0);
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["state"], "ended");
+    assert_eq!(lease["standbys"][0]["state"], "failed");
 }

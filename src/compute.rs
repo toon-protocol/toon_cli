@@ -728,6 +728,11 @@ impl<'a> Ledger<'a> {
     fn paid(&self) -> u64 {
         self.counted.get()
     }
+
+    /// A packet that bought a Lease Interval.
+    fn bought_one(&self) {
+        self.bought.set(self.bought.get() + 1);
+    }
 }
 
 fn short(provider: &str) -> &str {
@@ -1058,7 +1063,7 @@ fn settle_spawn(
             if let Some(role) = body["role"].as_str() {
                 lease.role = role.to_owned();
             }
-            ledger.bought.set(ledger.bought.get() + 1);
+            ledger.bought_one();
             // Not a failure if the file cannot be updated: the lease is bought.
             let warning = keep(leases, members);
             if !warning.is_empty() {
@@ -1179,7 +1184,7 @@ fn extend_once(
             .filter(|_| body["workload_id"] == id.as_str())
         {
             Some(expires_at) => {
-                ledger.bought.set(ledger.bought.get() + 1);
+                ledger.bought_one();
                 lease.expires_at = Some(expires_at);
                 None
             }
@@ -1554,9 +1559,15 @@ pub fn terminate(renter: &Renter, workload: &str, yes: bool) -> Result<Report, E
             )
         });
     }
+    let set = members.len() > 1;
     let mut failures: Vec<(String, Error)> = Vec::new();
     let mut entries = Vec::new();
     for member in &mut members {
+        // A member of a set that was never bought, or has ended, has nothing to end.
+        if set && matches!(member.state, State::Failed | State::Ended) {
+            entries.push(member_json(member));
+            continue;
+        }
         let answer = match ask(renter, member, Route::Terminate, "terminate") {
             Ok(Reply::Body(body)) => {
                 member.state = State::Ended;
@@ -1588,7 +1599,7 @@ pub fn terminate(renter: &Renter, workload: &str, yes: bool) -> Result<Report, E
         entries.push(entry);
     }
     let written = leases.write(&members);
-    if members.len() == 1 {
+    if !set {
         if let Some((_, error)) = failures.pop() {
             return Err(error);
         }
