@@ -414,7 +414,7 @@ pub struct InitArgs {
     /// The network profile the chain settings come from
     #[arg(long, value_enum, default_value_t = Profile::Devnet)]
     pub network: Profile,
-    /// Settle on Solana too: its key then needs SOL and the token before `up`
+    /// Settle on Solana too: its key then needs SOL before `up`
     #[arg(long)]
     pub solana: bool,
     /// Where `wallet fund` asks for funds, instead of the profile's faucet

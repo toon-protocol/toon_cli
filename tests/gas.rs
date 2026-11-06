@@ -47,19 +47,15 @@ fn up_starts_on_a_key_that_holds_the_token_and_no_gas() {
 }
 
 #[test]
-fn up_on_a_key_that_holds_nothing_asks_for_the_token_and_no_eth() {
+fn up_on_a_key_that_holds_nothing_asks_for_nothing() {
     let chain = FakeChain::start_unfunded();
     let machine = Machine::new();
     machine.init_on(&chain);
 
-    let up = machine.toon(&["up", "--foreground", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
 
-    let error = &up.json()["error"];
-    assert_eq!(error["code"], "unfunded");
-    let message = error["message"].as_str().unwrap();
-    assert!(message.contains("1000000 base units"), "{message}");
-    assert!(!message.contains("ETH"), "{message}");
-    assert!(message.contains("toon wallet fund"), "{message}");
+    up.report();
+    assert_eq!(machine.toon(&["status", "--json"]).exit_code, 0);
 }
 
 #[test]
