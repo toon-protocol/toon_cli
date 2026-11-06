@@ -6,6 +6,7 @@
 //! operator (with a home) and an agent holding only an agent key (ADR 0010) both rent: they
 //! differ in how a packet is paid and how the limits are read, and in nothing else.
 
+use std::cell::Cell;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -351,14 +352,26 @@ fn amount_text(amount: u64) -> String {
 
 // ---- spawn ----
 
-/// What `spawn` works out before it pays anything.
-struct Plan {
+/// One member of what `spawn` buys: a Listing and its provider's Profile.
+struct Target {
     resolved: Resolved,
     coordinate: listing::Coordinate,
+    /// What one Lease Interval of this member costs: the Listing's `price` for the primary or a
+    /// standalone, its `standby_price` for a standby.
+    price: u64,
+}
+
+/// What `spawn` works out before it pays anything.
+struct Plan {
+    /// The primary first, then each standby in the order given.
+    targets: Vec<Target>,
     content: Value,
-    /// How many Lease Intervals this command pays: the spawn and `intervals - 1` extends.
+    /// How many Lease Intervals this command pays for each member: the spawn and
+    /// `intervals - 1` extends.
     intervals: u64,
     total: u64,
+    /// The dearest packet: what a per-write limit is held against.
+    max_price: u64,
 }
 
 /// `--for`'s `<n>s`, `<n>m`, `<n>h`, `<n>d` or `<n>w`, in seconds.
@@ -522,14 +535,23 @@ fn availability_refusal(error: &str, message: &str) -> Error {
     )
 }
 
-/// The free `availability` route: refuses, for free, a spawn that would not run.
-fn check_availability(renter: &Renter, resolved: &Resolved, image: &Value) -> Result<(), Error> {
-    let profile = &resolved.profile;
-    let body = json!({
+/// The free `availability` route: refuses, for free, a spawn that would not run. A member of
+/// a Standby Set is asked with its `role` (spec §6.4).
+fn check_availability(
+    renter: &Renter,
+    target: &Target,
+    image: &Value,
+    role: Option<&str>,
+) -> Result<(), Error> {
+    let (resolved, profile) = (&target.resolved, &target.resolved.profile);
+    let mut body = json!({
         "listing": resolved.listing.name,
         "version": resolved.listing.version,
         "image": image,
     });
+    if let Some(role) = role {
+        body["role"] = json!(role);
+    }
     let destination = lease_request::destination(&profile.ilp_address, Route::Availability, "", 0);
     let answer = renter.send(
         Route::Availability,
@@ -557,22 +579,14 @@ fn check_availability(renter: &Renter, resolved: &Resolved, image: &Value) -> Re
     }
 }
 
-fn plan(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Plan, Error> {
-    let image = image_object(
-        &args.image,
-        args.registry_entry.as_deref(),
-        args.registry_relay.as_deref(),
-    )?;
-    let mut content = json!({
-        "image": image,
-        "env": env(&args.env)?,
-        "ports": ports(&args.ports)?,
-        "ssh_public_key": ssh_key(&args.ssh_key)?,
-    });
-    if let Some(gb) = args.volume_gb {
-        content["volume_gb"] = json!(gb);
-    }
-    let coordinate = listing::parse_coordinate(&args.listing)?;
+/// Read the Listing `text` names and its provider's Profile, and check the connector says
+/// the seal key the Profile does.
+fn resolve_target(
+    renter: &Renter,
+    args: &ComputeSpawnArgs,
+    text: &str,
+) -> Result<(Resolved, listing::Coordinate), Error> {
+    let coordinate = listing::parse_coordinate(text)?;
     let relays = relays_for(renter, args, &coordinate)?;
     let resolved = listing::resolve(&renter.egress()?, &relays, &coordinate)?;
     // The Profile pins the key a packet is sealed to; the connector must say the same.
@@ -588,44 +602,227 @@ fn plan(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Plan, Error> {
             ),
         ));
     }
+    Ok((resolved, coordinate))
+}
+
+fn plan(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Plan, Error> {
+    let image = image_object(
+        &args.image,
+        args.registry_entry.as_deref(),
+        args.registry_relay.as_deref(),
+    )?;
+    let mut content = json!({
+        "image": image,
+        "env": env(&args.env)?,
+        "ports": ports(&args.ports)?,
+        "ssh_public_key": ssh_key(&args.ssh_key)?,
+    });
+    if let Some(gb) = args.volume_gb {
+        content["volume_gb"] = json!(gb);
+    }
+    let mut targets = Vec::new();
+    let (resolved, coordinate) = resolve_target(renter, args, &args.listing)?;
     let price = resolved.listing.price;
+    targets.push(Target {
+        resolved,
+        coordinate,
+        price,
+    });
+    for text in &args.standbys {
+        let (resolved, coordinate) = resolve_target(renter, args, text)?;
+        let Some(price) = resolved.listing.standby_price else {
+            return Err(usage(format!(
+                "{} states no `standby_price`, so it sells no Warm Standby. Nothing was sent.",
+                coordinate.text()
+            )));
+        };
+        if let Some(first) = targets
+            .iter()
+            .find(|target| target.coordinate.author == coordinate.author)
+        {
+            return Err(usage(format!(
+                "--standby {} is provider {}, which is already in the Standby Set as {}: a \
+                 provider is in a set once.",
+                coordinate.text(),
+                coordinate.author,
+                first.coordinate.text()
+            )));
+        }
+        targets.push(Target {
+            resolved,
+            coordinate,
+            price,
+        });
+    }
+    let primary = &targets[0];
     let intervals = match (&args.for_duration, args.intervals) {
         (Some(text), _) => {
             let seconds = duration_s(text)?;
-            let interval = resolved.listing.lease_interval_s.ok_or_else(|| {
+            let interval = primary.resolved.listing.lease_interval_s.ok_or_else(|| {
                 usage(format!(
                     "--for needs the Listing's `lease_interval_s`, and {} states none. Give \
                      --intervals instead.",
-                    coordinate.text()
+                    primary.coordinate.text()
                 ))
             })?;
             seconds.div_ceil(interval)
         }
         (None, intervals) => intervals.unwrap_or(1),
     };
-    let total = total_of(price, intervals)?;
+    let mut total = 0u64;
+    for target in &targets {
+        total = total
+            .checked_add(total_of(target.price, intervals)?)
+            .ok_or_else(|| usage("The total is more than any amount can be."))?;
+    }
+    let max_price = targets.iter().map(|target| target.price).max().unwrap_or(0);
     Ok(Plan {
-        resolved,
-        coordinate,
+        targets,
         content,
         intervals,
         total,
+        max_price,
     })
 }
 
+// ---- what one command has paid and bought ----
+
+/// What the packets of one command have cost and bought so far, across every member of the
+/// lease. `moved` is the connector's own count of what left, for a packet nobody answered.
+struct Ledger<'a> {
+    /// What the command pays in all, which caps what `moved` may say.
+    total: u64,
+    moved: &'a dyn Fn(u128) -> u128,
+    /// How many packets the command means to pay.
+    wanted: u64,
+    counted: Cell<u64>,
+    bought: Cell<u64>,
+}
+
+impl<'a> Ledger<'a> {
+    fn new(total: u64, moved: &'a dyn Fn(u128) -> u128, wanted: u64) -> Self {
+        Self {
+            total,
+            moved,
+            wanted,
+            counted: Cell::new(0),
+            bought: Cell::new(0),
+        }
+    }
+
+    /// A packet the provider answered, with a lease or an error: billed in full.
+    fn answered(&self, price: u64) -> u64 {
+        self.counted.set(self.counted.get().saturating_add(price));
+        price
+    }
+
+    /// A packet nobody answered, or the connector refused: what moved since the last packet,
+    /// at most its price.
+    fn unanswered(&self, price: u64) -> u64 {
+        let moved = u64::try_from((self.moved)(u128::from(self.total))).unwrap_or(self.total);
+        let amount = moved.saturating_sub(self.counted.get()).min(price);
+        self.counted.set(self.counted.get() + amount);
+        amount
+    }
+
+    fn paid(&self) -> u64 {
+        self.counted.get()
+    }
+}
+
+fn short(provider: &str) -> &str {
+    &provider[..provider.len().min(8)]
+}
+
+fn paid_in_all(members: &[Lease]) -> u64 {
+    members.iter().map(|member| member.paid).sum()
+}
+
+/// What each member runs until, for a message.
+fn members_text(members: &[Lease]) -> String {
+    members
+        .iter()
+        .map(|member| {
+            let until = match (member.state, member.expires_at) {
+                (State::Live, Some(at)) => format!("runs until {at} (unix time)"),
+                (state, _) => state.name().to_owned(),
+            };
+            format!("{} {} {until}", member.role, short(&member.provider))
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A command that paid several packets and failed at one of them after at least one bought
+/// time: say what was bought. A command that bought nothing fails as its cause did.
+fn partly_paid(cause: Error, members: &[Lease], ledger: &Ledger) -> Error {
+    let bought = ledger.bought.get();
+    if bought == 0 {
+        return cause;
+    }
+    Error {
+        unanswered: cause.unanswered,
+        ..failure(
+            ErrorCode::LeasePartlyPaid,
+            format!(
+                "Bought {bought} of {} Lease Intervals and stopped at the first packet that \
+                 failed: {} Lease {} has paid {} in all, as its file says: {}. Nothing was \
+                 retried: the routes already paid are not paid again.",
+                ledger.wanted,
+                cause.message,
+                members[0].workload_id,
+                amount_text(paid_in_all(members)),
+                members_text(members)
+            ),
+        )
+    }
+}
+
+/// What the lease's file says of one member, for a report.
+fn member_json(lease: &Lease) -> Value {
+    json!({
+        "provider": lease.provider,
+        "listing": lease.listing,
+        "listing_version": lease.listing_version,
+        "role": lease.role,
+        "state": lease.state.name(),
+        "expires_at": lease.expires_at,
+        "paid": lease.paid,
+    })
+}
+
+fn members_json(members: &[Lease]) -> Value {
+    Value::Array(members.iter().map(member_json).collect())
+}
+
+/// Write the lease file after a packet's answer, giving back a sentence for the report when it
+/// could not be.
+fn keep(leases: &Leases, members: &[Lease]) -> String {
+    match leases.write(members) {
+        Ok(()) => String::new(),
+        Err(error) => format!(
+            " The lease file could not be updated ({}): `toon compute status {}` settles it.",
+            error.message, members[0].workload_id
+        ),
+    }
+}
+
+// ---- spawn ----
+
 pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> {
     let Plan {
-        resolved,
-        coordinate,
-        mut content,
+        targets,
+        content: base,
         intervals,
         total,
+        max_price,
     } = plan(renter, args)?;
-    let price = resolved.listing.price;
-    let profile = &resolved.profile;
-    renter.reaches(&profile.ilp_address, &profile.connector_url)?;
+    for target in &targets {
+        let profile = &target.resolved.profile;
+        renter.reaches(&profile.ilp_address, &profile.connector_url)?;
+    }
     // Every limit before any packet, the free `availability` question included.
-    limits_refuse(renter, "spawn", args.max, 0, price, total)?;
+    limits_refuse(renter, "spawn", args.max, 0, max_price, total)?;
     if let Some(duration) = &args.for_duration {
         eprintln!(
             "--for {duration} rounds up to {}: {} in all.",
@@ -633,20 +830,38 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
             amount_text(total)
         );
     }
+    let in_set = targets.len() > 1;
+    let role_of = |index: usize| match (in_set, index) {
+        (false, _) => "standalone",
+        (true, 0) => "primary",
+        (true, _) => "standby",
+    };
     if !args.no_check {
-        check_availability(renter, &resolved, &content["image"])?;
+        for (index, target) in targets.iter().enumerate() {
+            let role = in_set.then(|| role_of(index));
+            check_availability(renter, target, &base["image"], role)?;
+        }
     }
     if !args.yes {
+        let set = if in_set {
+            format!(
+                ", and {} for each of {} Warm Standby(s)",
+                intervals_text(intervals),
+                targets.len() - 1
+            )
+        } else {
+            String::new()
+        };
         return Err(Error {
             code: ErrorCode::NotConfirmed,
             ..unsent(
                 ErrorCode::NotConfirmed,
                 format!(
-                    "This spawn pays {} for {} of {}, which is not refunded. Add `--yes` to say \
-                     that you mean it.",
+                    "This spawn pays {} for {} of {}{set}, which is not refunded. Add `--yes` to \
+                     say that you mean it.",
                     amount_text(total),
                     intervals_text(intervals),
-                    coordinate.text()
+                    targets[0].coordinate.text()
                 ),
             )
         });
@@ -654,86 +869,110 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
 
     let root = Zeroizing::new(keystore::random::<32>()?);
     let workload_id = fresh_hex()?;
-    content["workload_id"] = json!(workload_id);
-    let provider = coordinate.author.clone();
-    let lease = Lease {
-        workload_id: workload_id.clone(),
-        root_secret: Zeroizing::new(hex::encode(*root)),
-        provider: provider.clone(),
-        ilp_address: profile.ilp_address.clone(),
-        connector_url: profile.connector_url.clone(),
-        connector_seal_key: format!("0x{}", hex::encode(profile.connector_seal_key)),
-        listing: coordinate.text(),
-        listing_name: resolved.listing.name.clone(),
-        listing_version: resolved.listing.version,
-        price: Some(price),
-        role: "standalone".into(),
-        expires_at: None,
-        paid: 0,
-        lease_limit: args.max,
-        state: State::Unknown,
-        error: None,
-        created_at: now(),
+    let standby_set: Vec<String> = if in_set {
+        targets
+            .iter()
+            .map(|target| target.coordinate.author.clone())
+            .collect()
+    } else {
+        Vec::new()
     };
-    let request = Request {
-        op: "spawn",
-        request_id: &fresh_hex()?,
-        provider: &provider,
-        expiration: now() + REQUEST_TTL_S,
-        continuation: &lease_request::continuation(&root, &provider),
-        content,
-    }
-    .body();
-    let destination = lease_request::destination(
-        &profile.ilp_address,
-        Route::Spawn,
-        &resolved.listing.name,
-        resolved.listing.version,
-    );
     let leases = renter.leases();
     paying(renter, total, |moved| -> Result<Report, Error> {
-        // The file first: a spawn whose file cannot be written is not sent.
-        leases.write(&lease)?;
-        let answer = renter
-            .send(
-                Route::Spawn,
-                &destination,
-                total,
-                &profile.connector_seal_key,
-                &request,
-            )
-            .inspect_err(|error| {
-                if error.nothing_sent {
-                    // Nothing left, so nothing was paid: the file says the spawn failed.
-                    let mut failed = lease.clone();
-                    failed.state = State::Failed;
-                    failed.error = Some((error.code.as_str().to_owned(), error.message.clone()));
-                    let _ = leases.write(&failed);
+        let ledger = Ledger::new(total, moved, intervals * targets.len() as u64);
+        let mut members: Vec<Lease> = Vec::new();
+        let mut access = Value::Null;
+        let bought = (|| -> Result<(), Error> {
+            for (index, target) in targets.iter().enumerate() {
+                let profile = &target.resolved.profile;
+                let provider = target.coordinate.author.clone();
+                members.push(Lease {
+                    workload_id: workload_id.clone(),
+                    root_secret: Zeroizing::new(hex::encode(*root)),
+                    provider: provider.clone(),
+                    ilp_address: profile.ilp_address.clone(),
+                    connector_url: profile.connector_url.clone(),
+                    connector_seal_key: format!("0x{}", hex::encode(profile.connector_seal_key)),
+                    listing: target.coordinate.text(),
+                    listing_name: target.resolved.listing.name.clone(),
+                    listing_version: target.resolved.listing.version,
+                    price: Some(target.price),
+                    role: role_of(index).into(),
+                    expires_at: None,
+                    paid: 0,
+                    lease_limit: args.max,
+                    state: State::Unknown,
+                    error: None,
+                    created_at: now(),
+                });
+                let request = Request {
+                    op: if index == 0 { "spawn" } else { "standby" },
+                    request_id: &fresh_hex()?,
+                    provider: &provider,
+                    expiration: now() + REQUEST_TTL_S,
+                    continuation: &lease_request::continuation(&root, &provider),
+                    content: lease_request::member_content(&base, &workload_id, &standby_set),
                 }
-            })?;
-        let (report, mut lease) = settle_spawn(&leases, lease.clone(), answer, price, moved)?;
-        if intervals == 1 {
-            return Ok(report);
+                .body();
+                let (route, listing) = (
+                    if index == 0 {
+                        Route::Spawn
+                    } else {
+                        Route::Standby
+                    },
+                    &target.resolved.listing,
+                );
+                let destination = lease_request::destination(
+                    &profile.ilp_address,
+                    route,
+                    &listing.name,
+                    listing.version,
+                );
+                // The file first: a packet whose file cannot be written is not sent.
+                leases.write(&members).inspect_err(|_| {
+                    members.pop();
+                })?;
+                let answer = renter
+                    .send(
+                        route,
+                        &destination,
+                        target.price,
+                        &profile.connector_seal_key,
+                        &request,
+                    )
+                    .inspect_err(|error| {
+                        if !error.nothing_sent {
+                            return;
+                        }
+                        // Nothing left, so nothing was paid. A spawn is marked failed; a
+                        // standby that was never sent was never bought, and leaves the file.
+                        if index == 0 {
+                            members[0].state = State::Failed;
+                            members[0].error =
+                                Some((error.code.as_str().to_owned(), error.message.clone()));
+                        } else {
+                            members.pop();
+                        }
+                        let _ = leases.write(&members);
+                    })?;
+                let reply = settle_spawn(&leases, &mut members, index, answer, &ledger)?;
+                if index == 0 {
+                    access = reply;
+                }
+            }
+            // The lease is live and paid for: what reaches it is printed whatever the extends do.
+            extend_rounds(renter, &leases, &mut members, intervals - 1, &ledger)
+        })();
+        match bought {
+            Ok(()) => Ok(spawn_report(&members, &access, intervals)),
+            Err(error) => {
+                let mut error = partly_paid(error, &members, &ledger);
+                if ledger.bought.get() > 0 {
+                    error.message.push_str(&access_text(&access));
+                }
+                Err(error)
+            }
         }
-        // The lease is live and paid for: what reaches it is printed whatever the extends do.
-        let access = access_text(&report.json["access"]);
-        extend_lease(
-            renter,
-            &leases,
-            &mut lease,
-            Pay {
-                intervals: intervals - 1,
-                total,
-                bought: 1,
-                billed: price,
-            },
-            moved,
-        )
-        .map_err(|error| Error {
-            message: format!("{}{access}", error.message),
-            ..error
-        })?;
-        Ok(spawn_report(report, &lease, intervals, total))
     })
 }
 
@@ -744,122 +983,135 @@ fn intervals_text(intervals: u64) -> String {
     }
 }
 
-/// The spawn's report once the extends that followed it are paid.
-fn spawn_report(mut report: Report, lease: &Lease, intervals: u64, total: u64) -> Report {
-    let access = report.json["access"].clone();
-    report.json["expires_at"] = json!(lease.expires_at);
-    report.json["paid"] = json!(lease.paid);
-    report.json["intervals"] = json!(intervals);
-    report.text = format!(
-        "Lease {} is live until {} (unix time), paid {} for {}.{}",
-        lease.workload_id,
-        lease.expires_at.unwrap_or_default(),
-        amount_text(total),
-        intervals_text(intervals),
-        access_text(&access)
-    );
-    report
+/// The spawn's report once everything it pays is paid.
+fn spawn_report(members: &[Lease], access: &Value, intervals: u64) -> Report {
+    let lease = &members[0];
+    let paid = paid_in_all(members);
+    let set = if members.len() > 1 {
+        format!("\nThe Standby Set: {}.", members_text(members))
+    } else {
+        String::new()
+    };
+    Report {
+        exit: Exit::Success,
+        json: json!({
+            "workload_id": lease.workload_id,
+            "provider": lease.provider,
+            "listing": lease.listing,
+            "listing_version": lease.listing_version,
+            "role": lease.role,
+            "expires_at": lease.expires_at,
+            "access": access,
+            "paid": paid,
+            "lease_limit": lease.lease_limit,
+            "intervals": intervals,
+            "members": members_json(members),
+        }),
+        text: format!(
+            "Lease {} is live until {} (unix time), paid {} for {}.{}{set}",
+            lease.workload_id,
+            lease.expires_at.unwrap_or_default(),
+            amount_text(paid),
+            intervals_text(intervals),
+            access_text(access)
+        ),
+    }
 }
 
-/// Record what the spawn's answer says in the lease file and report it, with the lease as
-/// settled.
+/// Record what the answer to the spawn (or standby) packet of `members[index]` says in the
+/// lease file. A lease the provider took gives back its `access`.
 fn settle_spawn(
     leases: &Leases,
-    mut lease: Lease,
+    members: &mut [Lease],
+    index: usize,
     answer: Answer,
-    total: u64,
-    moved: &dyn Fn(u128) -> u128,
-) -> Result<(Report, Lease), Error> {
-    let id = lease.workload_id.clone();
-    let kept = |lease: &Lease| {
-        leases.write(lease).err().map(|error| {
-            format!(
-                " The lease file could not be updated ({}): `toon compute status {id}` settles it.",
-                error.message
-            )
-        })
+    ledger: &Ledger,
+) -> Result<Value, Error> {
+    let price = members[index].price.unwrap_or_default();
+    let id = members[0].workload_id.clone();
+    let what = if index == 0 {
+        "the spawn".to_owned()
+    } else {
+        format!("the standby at {}", short(&members[index].provider))
     };
     match reply_of(answer) {
         Reply::Body(body) => {
-            let expires_at = body["expires_at"].as_u64();
-            lease.paid = total;
-            let Some(expires_at) = expires_at.filter(|_| body["workload_id"] == id.as_str()) else {
-                lease.state = State::Unknown;
-                kept(&lease);
+            members[index].paid = ledger.answered(price);
+            let expires_at = body["expires_at"]
+                .as_u64()
+                .filter(|_| body["workload_id"] == id.as_str());
+            let Some(expires_at) = expires_at else {
+                members[index].state = State::Unknown;
+                let _ = keep(leases, members);
                 return Err(failure(
                     ErrorCode::LeaseRefused,
                     format!(
-                        "The provider answered the spawn with something that is not a lease: \
+                        "The provider answered {what} with something that is not a lease: \
                          {body}. The lease file {id} is marked unknown; `toon compute status \
                          {id}` settles it."
                     ),
                 ));
             };
+            let lease = &mut members[index];
             lease.state = State::Live;
             lease.expires_at = Some(expires_at);
             if let Some(role) = body["role"].as_str() {
                 lease.role = role.to_owned();
             }
-            let warning = kept(&lease).unwrap_or_default();
-            let access = body["access"].clone();
-            let report = Report {
-                exit: Exit::Success,
-                json: json!({
-                    "workload_id": id,
-                    "provider": lease.provider,
-                    "listing": lease.listing,
-                    "listing_version": lease.listing_version,
-                    "role": lease.role,
-                    "expires_at": expires_at,
-                    "access": access,
-                    "paid": total,
-                    "lease_limit": lease.lease_limit,
-                }),
-                text: format!(
-                    "Lease {id} is live until {expires_at} (unix time), paid {}.{}{warning}",
-                    amount_text(total),
-                    access_text(&access)
-                ),
-            };
-            Ok((report, lease))
+            ledger.bought.set(ledger.bought.get() + 1);
+            // Not a failure if the file cannot be updated: the lease is bought.
+            let warning = keep(leases, members);
+            if !warning.is_empty() {
+                eprintln!("{}", warning.trim());
+            }
+            Ok(body["access"].clone())
         }
         Reply::Error { error, message } => {
-            lease.paid = total;
+            let lease = &mut members[index];
+            lease.paid = ledger.answered(price);
             lease.state = State::Failed;
             lease.error = Some((error.clone(), message.clone()));
-            let warning = kept(&lease).unwrap_or_default();
+            let paid = lease.paid;
+            let warning = keep(leases, members);
             Err(failure(
                 ErrorCode::LeaseRefused,
                 format!(
-                    "The provider refused the spawn with {error}: {message} It was billed all \
-                     the same: {} paid. The lease file {id} is marked failed.{warning}",
-                    amount_text(total)
+                    "The provider refused {what} with {error}: {message} It was billed all \
+                     the same: {} paid. The lease file {id} is marked {}.{warning}",
+                    amount_text(paid),
+                    if index == 0 {
+                        "failed".to_owned()
+                    } else {
+                        format!("failed at the standby {}", short(&members[index].provider))
+                    }
                 ),
             ))
         }
         Reply::Rejected { code, message } => {
-            lease.paid = u64::try_from(moved(u128::from(total))).unwrap_or(total);
+            let lease = &mut members[index];
+            lease.paid = ledger.unanswered(price);
             lease.state = State::Failed;
             lease.error = Some((format!("rejected {code}"), message.clone()));
-            let warning = kept(&lease).unwrap_or_default();
+            let paid = lease.paid;
+            let warning = keep(leases, members);
             Err(failure(
                 ErrorCode::SendFailed,
                 format!(
                     "The packet was rejected with {code}: {message} {} paid. The lease file {id} \
                      is marked failed.{warning}",
-                    amount_text(lease.paid)
+                    amount_text(paid)
                 ),
             ))
         }
         Reply::Unanswered | Reply::Strange(_) => {
-            let paid = moved(u128::from(total));
-            lease.paid = u64::try_from(paid).unwrap_or(total);
+            let lease = &mut members[index];
+            lease.paid = ledger.unanswered(price);
             lease.state = State::Unknown;
-            kept(&lease);
-            let mut error = operator::unanswered_cost(paid, None);
+            let _ = keep(leases, members);
+            let mut error = operator::unanswered_cost(u128::from(ledger.paid()), None);
             error.message = format!(
                 "{} The lease file {id} is marked unknown: `toon compute status {id}` asks the \
-                 provider whether the spawn took.",
+                 provider whether {what} took.",
                 error.message
             );
             Err(error)
@@ -883,155 +1135,107 @@ fn access_text(access: &Value) -> String {
 
 // ---- extend ----
 
-/// What a run of `.extend` packets is to pay, and what the command has paid before it.
-struct Pay {
-    /// How many `.extend` packets to send.
-    intervals: u64,
-    /// What the whole command pays, which caps what `moved` may say.
-    total: u64,
-    /// The Lease Intervals this command bought before these packets: the spawn's.
-    bought: u64,
-    /// What this command paid before these packets.
-    billed: u64,
-}
-
-/// Pay `pay.intervals` `.extend` packets for `lease`, one at a time, recording each answer's
-/// real `expires_at` and amount in its file. It stops at the first packet that fails and
-/// never retries a paid route by itself.
-fn extend_lease(
+/// One `.extend` packet for `members[index]`, or `.standby.extend` while it is a reserved
+/// standby, recording the answer's real `expires_at` and the amount in the file. It never
+/// retries a paid route by itself.
+fn extend_once(
     renter: &Renter,
     leases: &Leases,
-    lease: &mut Lease,
-    pay: Pay,
-    moved: &dyn Fn(u128) -> u128,
-) -> Result<Report, Error> {
-    let id = lease.workload_id.clone();
-    let price = lease_price(lease)?;
-    let paid_start = lease.paid.saturating_sub(pay.billed);
+    members: &mut [Lease],
+    index: usize,
+    ledger: &Ledger,
+) -> Result<(), Error> {
+    let id = members[0].workload_id.clone();
+    let price = lease_price(&members[index])?;
+    let member = &members[index];
+    let route = if member.role == "standby" {
+        Route::StandbyExtend
+    } else {
+        Route::Extend
+    };
     let destination = lease_request::destination(
-        &lease.ilp_address,
-        Route::Extend,
-        &lease.listing_name,
-        lease.listing_version,
+        &member.ilp_address,
+        route,
+        &member.listing_name,
+        member.listing_version,
     );
-    let seal_key = lease.seal_key()?;
-    let (mut billed, mut bought) = (pay.billed, pay.bought);
-    let wanted = pay.bought + pay.intervals;
-    let cause = 'packets: {
-        for _ in 0..pay.intervals {
-            let answer = match renter.send(
-                Route::Extend,
-                &destination,
-                price,
-                &seal_key,
-                &json!({ "workload_id": id }),
-            ) {
-                Ok(answer) => answer,
-                Err(error) => break 'packets error,
-            };
-            let reply = reply_of(answer);
-            let mut cause = None;
-            match &reply {
-                Reply::Body(_) | Reply::Error { .. } => billed += price,
-                _ => {
-                    billed =
-                        billed.max(u64::try_from(moved(u128::from(pay.total))).unwrap_or(pay.total))
-                }
+    let answer = renter.send(
+        route,
+        &destination,
+        price,
+        &member.seal_key()?,
+        &json!({ "workload_id": id }),
+    )?;
+    let reply = reply_of(answer);
+    let billed = match &reply {
+        Reply::Body(_) | Reply::Error { .. } => ledger.answered(price),
+        _ => ledger.unanswered(price),
+    };
+    let lease = &mut members[index];
+    lease.paid += billed;
+    let cause = match reply {
+        Reply::Body(body) => match body["expires_at"]
+            .as_u64()
+            .filter(|_| body["workload_id"] == id.as_str())
+        {
+            Some(expires_at) => {
+                ledger.bought.set(ledger.bought.get() + 1);
+                lease.expires_at = Some(expires_at);
+                None
             }
-            lease.paid = paid_start + billed;
-            match reply {
-                Reply::Body(body) => {
-                    match body["expires_at"]
-                        .as_u64()
-                        .filter(|_| body["workload_id"] == id.as_str())
-                    {
-                        Some(expires_at) => {
-                            bought += 1;
-                            lease.expires_at = Some(expires_at);
-                        }
-                        None => {
-                            cause = Some(failure(
-                                ErrorCode::LeaseRefused,
-                                format!(
-                                    "The provider answered the extend with something that is \
-                                     not an extension: {body}. It was billed all the same."
-                                ),
-                            ));
-                        }
-                    }
-                }
-                Reply::Error { error, message } => {
-                    if error == "expired" {
-                        lease.state = State::Ended;
-                    }
-                    cause = Some(failure(
-                        ErrorCode::LeaseRefused,
-                        format!(
-                            "The provider refused the extend with {error}: {message} It was \
-                             billed all the same."
-                        ),
-                    ));
-                }
-                Reply::Rejected { code, message } => {
-                    cause = Some(failure(
-                        ErrorCode::SendFailed,
-                        format!("The extend was rejected with {code}: {message}"),
-                    ));
-                }
-                Reply::Unanswered | Reply::Strange(_) => {
-                    cause = Some(operator::unanswered_cost(
-                        u128::from(lease.paid - paid_start),
-                        None,
-                    ));
-                }
+            None => Some(failure(
+                ErrorCode::LeaseRefused,
+                format!(
+                    "The provider answered the extend with something that is not an extension: \
+                     {body}. It was billed all the same."
+                ),
+            )),
+        },
+        Reply::Error { error, message } => {
+            if error == "expired" {
+                lease.state = State::Ended;
             }
-            // What was bought is in the file before anything else happens.
-            if let Err(error) = leases.write(lease) {
-                break 'packets cause.unwrap_or(error);
-            }
-            if let Some(cause) = cause {
-                break 'packets cause;
+            Some(failure(
+                ErrorCode::LeaseRefused,
+                format!(
+                    "The provider refused the extend with {error}: {message} It was billed all \
+                     the same."
+                ),
+            ))
+        }
+        Reply::Rejected { code, message } => Some(failure(
+            ErrorCode::SendFailed,
+            format!("The extend was rejected with {code}: {message}"),
+        )),
+        Reply::Unanswered | Reply::Strange(_) => {
+            Some(operator::unanswered_cost(u128::from(ledger.paid()), None))
+        }
+    };
+    // What was bought is in the file before anything else happens.
+    match (leases.write(members), cause) {
+        (_, Some(cause)) => Err(cause),
+        (Err(error), None) => Err(error),
+        (Ok(()), None) => Ok(()),
+    }
+}
+
+/// `rounds` rounds of `.extend` packets, one to each member that is live, in order. It stops
+/// at the first packet that fails.
+fn extend_rounds(
+    renter: &Renter,
+    leases: &Leases,
+    members: &mut [Lease],
+    rounds: u64,
+    ledger: &Ledger,
+) -> Result<(), Error> {
+    for _ in 0..rounds {
+        for index in 0..members.len() {
+            if members[index].state == State::Live {
+                extend_once(renter, leases, members, index, ledger)?;
             }
         }
-        let now_paid = billed - pay.billed;
-        let expires_at = lease.expires_at;
-        return Ok(Report {
-            exit: Exit::Success,
-            json: json!({
-                "workload_id": id,
-                "intervals": pay.intervals,
-                "expires_at": expires_at,
-                "paid_now": now_paid,
-                "paid": lease.paid,
-                "lease_limit": lease.lease_limit,
-            }),
-            text: format!(
-                "Lease {id} is extended by {}, paid {}: it is live until {} (unix time), and \
-                 has paid {} in all.",
-                intervals_text(pay.intervals),
-                amount_text(now_paid),
-                expires_at.unwrap_or_default(),
-                amount_text(lease.paid)
-            ),
-        });
-    };
-    if bought == 0 {
-        return Err(cause);
     }
-    Err(Error {
-        unanswered: cause.unanswered,
-        ..failure(
-            ErrorCode::LeasePartlyPaid,
-            format!(
-                "Bought {bought} of {wanted} Lease Intervals and stopped at the first packet that \
-             failed: {} Lease {id} runs until {} (unix time) and has paid {} in all, as its \
-             file says. Nothing was retried: the routes already paid are not paid again.",
-                cause.message,
-                lease.expires_at.unwrap_or_default(),
-                amount_text(lease.paid)
-            ),
-        )
-    })
+    Ok(())
 }
 
 /// What one `.extend` packet of `lease` pays, as its file states.
@@ -1047,69 +1251,112 @@ fn lease_price(lease: &Lease) -> Result<u64, Error> {
 
 pub fn extend(renter: &Renter, args: &ComputeExtendArgs) -> Result<Report, Error> {
     let leases = renter.leases();
-    let mut lease = leases.read(&args.workload)?;
-    if lease.state != State::Live {
+    let mut members = leases.read(&args.workload)?;
+    let live: Vec<usize> = (0..members.len())
+        .filter(|index| members[*index].state == State::Live)
+        .collect();
+    if live.is_empty() {
+        let state = members[0].state;
         return Err(usage(format!(
             "Lease {} is {}, and only a live lease is extended.{}",
             args.workload,
-            lease.state.name(),
-            if lease.state == State::Unknown {
+            state.name(),
+            if state == State::Unknown {
                 format!(" `toon compute status {}` settles it.", args.workload)
             } else {
                 String::new()
             }
         )));
     }
-    lease.lease_limit = args.max.or(lease.lease_limit);
-    let price = lease_price(&lease)?;
-    let total = total_of(price, args.intervals)?;
-    renter.reaches(&lease.ilp_address, &lease.connector_url)?;
+    let lease_limit = args.max.or(members[0].lease_limit);
+    for member in &mut members {
+        member.lease_limit = lease_limit;
+    }
+    let (mut total, mut max_price) = (0u64, 0u64);
+    for index in &live {
+        let price = lease_price(&members[*index])?;
+        total = total
+            .checked_add(total_of(price, args.intervals)?)
+            .ok_or_else(|| usage("The total is more than any amount can be."))?;
+        max_price = max_price.max(price);
+    }
+    for index in &live {
+        renter.reaches(&members[*index].ilp_address, &members[*index].connector_url)?;
+    }
     limits_refuse(
         renter,
         "extend",
-        lease.lease_limit,
-        lease.paid,
-        price,
+        lease_limit,
+        paid_in_all(&members),
+        max_price,
         total,
     )?;
     if !args.yes {
         return Err(unsent(
             ErrorCode::NotConfirmed,
             format!(
-                "This extend pays {} for {} of lease {}, which is not refunded. Add `--yes` to \
+                "This extend pays {} for {} of lease {}{}, which is not refunded. Add `--yes` to \
                  say that you mean it.",
                 amount_text(total),
                 intervals_text(args.intervals),
-                args.workload
+                args.workload,
+                if live.len() > 1 {
+                    format!(" for each of its {} live members", live.len())
+                } else {
+                    String::new()
+                }
             ),
         ));
     }
     // A changed lease limit is kept before anything is paid.
-    leases.write(&lease)?;
+    leases.write(&members)?;
     paying(renter, total, |moved| {
-        extend_lease(
-            renter,
-            &leases,
-            &mut lease,
-            Pay {
-                intervals: args.intervals,
-                total,
-                bought: 0,
-                billed: 0,
-            },
-            moved,
-        )
+        let ledger = Ledger::new(total, moved, args.intervals * live.len() as u64);
+        match extend_rounds(renter, &leases, &mut members, args.intervals, &ledger) {
+            Ok(()) => Ok(extend_report(&members, args.intervals, ledger.paid())),
+            Err(error) => Err(partly_paid(error, &members, &ledger)),
+        }
     })
+}
+
+fn extend_report(members: &[Lease], intervals: u64, paid_now: u64) -> Report {
+    let lease = &members[0];
+    let set = if members.len() > 1 {
+        format!("\nThe Standby Set: {}.", members_text(members))
+    } else {
+        String::new()
+    };
+    Report {
+        exit: Exit::Success,
+        json: json!({
+            "workload_id": lease.workload_id,
+            "intervals": intervals,
+            "expires_at": lease.expires_at,
+            "paid_now": paid_now,
+            "paid": paid_in_all(members),
+            "lease_limit": lease.lease_limit,
+            "members": members_json(members),
+        }),
+        text: format!(
+            "Lease {} is extended by {}, paid {}: it is live until {} (unix time), and has \
+             paid {} in all.{set}",
+            lease.workload_id,
+            intervals_text(intervals),
+            amount_text(paid_now),
+            lease.expires_at.unwrap_or_default(),
+            amount_text(paid_in_all(members))
+        ),
+    }
 }
 
 // ---- status, terminate, list, forget ----
 
-/// What a lease's provider says about it.
+/// What a lease's providers say about it.
 struct Asked {
     report: Report,
 }
 
-fn ask(renter: &Renter, lease: &mut Lease, route: Route, op: &str) -> Result<Reply, Error> {
+fn ask(renter: &Renter, lease: &Lease, route: Route, op: &str) -> Result<Reply, Error> {
     renter.reaches(&lease.ilp_address, &lease.connector_url)?;
     let request = lease_request(lease, op, json!({ "workload_id": lease.workload_id }))?;
     let destination = lease_request::destination(
@@ -1143,10 +1390,10 @@ fn ended(state: &Value) -> bool {
     state.get("ended").is_some()
 }
 
-fn status_of(renter: &Renter, leases: &Leases, workload: &str) -> Result<Asked, Error> {
-    let mut lease = leases.read(workload)?;
+/// Ask one member for its status and record the answer in `lease`; the caller writes the file.
+fn status_member(renter: &Renter, lease: &mut Lease) -> Result<Value, Error> {
     let was = lease.state;
-    match ask(renter, &mut lease, Route::Status, "status")? {
+    match ask(renter, lease, Route::Status, "status")? {
         Reply::Body(body) => {
             lease.state = if ended(&body["state"]) {
                 State::Ended
@@ -1163,42 +1410,15 @@ fn status_of(renter: &Renter, leases: &Leases, workload: &str) -> Result<Asked, 
                 // A refused spawn that now answers is a lease the file did not know of.
                 lease.error = None;
             }
-            leases.write(&lease)?;
-            let access = body["access"].clone();
-            Ok(Asked {
-                report: Report {
-                    exit: Exit::Success,
-                    json: json!({
-                        "workload_id": lease.workload_id,
-                        "role": lease.role,
-                        "state": body["state"],
-                        "expires_at": lease.expires_at,
-                        "access": access,
-                        "takeover": body["takeover"],
-                    }),
-                    text: format!(
-                        "Lease {} is {}, until {} (unix time).{}",
-                        lease.workload_id,
-                        state_text(&body["state"]),
-                        lease
-                            .expires_at
-                            .map_or("unknown".to_owned(), |at| at.to_string()),
-                        access_text(&access)
-                    ),
-                },
-            })
+            Ok(body)
         }
         Reply::Error { error, message } => {
             match (error.as_str(), was) {
                 ("unknown_workload", State::Unknown) => {
                     lease.state = State::Failed;
                     lease.error = Some((error.clone(), message.clone()));
-                    leases.write(&lease)?;
                 }
-                ("expired", _) => {
-                    lease.state = State::Ended;
-                    leases.write(&lease)?;
-                }
+                ("expired", _) => lease.state = State::Ended,
                 _ => {}
             }
             Err(failure(
@@ -1208,6 +1428,88 @@ fn status_of(renter: &Renter, leases: &Leases, workload: &str) -> Result<Asked, 
         }
         other => Err(unreached(other)),
     }
+}
+
+fn status_of(renter: &Renter, leases: &Leases, workload: &str) -> Result<Asked, Error> {
+    let mut members = leases.read(workload)?;
+    let mut answers = Vec::new();
+    for member in &mut members {
+        answers.push(status_member(renter, member));
+    }
+    let written = leases.write(&members);
+    if answers.iter().all(Result::is_err) {
+        return Err(answers
+            .into_iter()
+            .next()
+            .and_then(Result::err)
+            .expect("a member"));
+    }
+    written?;
+    let mut entries = Vec::new();
+    let mut lines = Vec::new();
+    let mut first: Option<Value> = None;
+    for (member, answer) in members.iter().zip(&answers) {
+        let mut entry = member_json(member);
+        match answer {
+            Ok(body) => {
+                entry["state"] = body["state"].clone();
+                entry["access"] = body["access"].clone();
+                entry["takeover"] = body["takeover"].clone();
+                lines.push(format!(
+                    "{} {} is {}, until {} (unix time).{}",
+                    member.role,
+                    short(&member.provider),
+                    state_text(&body["state"]),
+                    member
+                        .expires_at
+                        .map_or("unknown".to_owned(), |at| at.to_string()),
+                    access_text(&body["access"])
+                ));
+                first.get_or_insert_with(|| entry.clone());
+            }
+            Err(error) => {
+                entry["error"] = json!({ "code": error.code.as_str(), "message": error.message });
+                lines.push(format!(
+                    "{} {} did not answer: {}",
+                    member.role,
+                    short(&member.provider),
+                    error.message
+                ));
+            }
+        }
+        entries.push(entry);
+    }
+    let first = first.expect("a member answered");
+    let lease = &members[0];
+    let text = if members.len() == 1 {
+        let body = answers[0].as_ref().expect("the member answered");
+        format!(
+            "Lease {} is {}, until {} (unix time).{}",
+            lease.workload_id,
+            state_text(&body["state"]),
+            lease
+                .expires_at
+                .map_or("unknown".to_owned(), |at| at.to_string()),
+            access_text(&body["access"])
+        )
+    } else {
+        format!("Lease {}:\n{}", lease.workload_id, lines.join("\n"))
+    };
+    Ok(Asked {
+        report: Report {
+            exit: Exit::Success,
+            json: json!({
+                "workload_id": lease.workload_id,
+                "role": first["role"],
+                "state": first["state"],
+                "expires_at": first["expires_at"],
+                "access": first["access"],
+                "takeover": first["takeover"],
+                "members": entries,
+            }),
+            text,
+        },
+    })
 }
 
 fn state_text(state: &Value) -> String {
@@ -1223,9 +1525,10 @@ pub fn status(renter: &Renter, workload: &str) -> Result<Report, Error> {
 
 pub fn terminate(renter: &Renter, workload: &str, yes: bool) -> Result<Report, Error> {
     let leases = renter.leases();
-    let mut lease = leases.read(workload)?;
+    let mut members = leases.read(workload)?;
     if !yes {
-        let left = match lease.expires_at {
+        let latest = members.iter().filter_map(|member| member.expires_at).max();
+        let left = match latest {
             Some(at) if at > now() => {
                 let seconds = at - now();
                 format!(
@@ -1235,42 +1538,89 @@ pub fn terminate(renter: &Renter, workload: &str, yes: bool) -> Result<Report, E
             }
             _ => "whatever paid time is left".to_owned(),
         };
+        let of = if members.len() > 1 {
+            " and of every member of its Standby Set"
+        } else {
+            ""
+        };
         return Err(Error {
             code: ErrorCode::NotConfirmed,
             ..unsent(
                 ErrorCode::NotConfirmed,
                 format!(
-                    "Terminating lease {workload} loses {left}: nothing is refunded. Add \
+                    "Terminating lease {workload}{of} loses {left}: nothing is refunded. Add \
                      `--yes` to say that you mean it."
                 ),
             )
         });
     }
-    match ask(renter, &mut lease, Route::Terminate, "terminate")? {
-        Reply::Body(body) => {
-            lease.state = State::Ended;
-            leases.write(&lease)?;
-            Ok(Report {
-                exit: Exit::Success,
-                json: json!({ "workload_id": lease.workload_id, "state": body["state"] }),
-                text: format!(
-                    "Lease {} is terminated; nothing is refunded.",
-                    lease.workload_id
-                ),
-            })
-        }
-        Reply::Error { error, message } => {
-            if error == "expired" {
-                lease.state = State::Ended;
-                leases.write(&lease)?;
+    let mut failures: Vec<(String, Error)> = Vec::new();
+    let mut entries = Vec::new();
+    for member in &mut members {
+        let answer = match ask(renter, member, Route::Terminate, "terminate") {
+            Ok(Reply::Body(body)) => {
+                member.state = State::Ended;
+                Ok(body)
             }
-            Err(failure(
-                ErrorCode::LeaseRefused,
-                format!("The provider answered {error}: {message}"),
-            ))
+            Ok(Reply::Error { error, message }) => {
+                if error == "expired" {
+                    member.state = State::Ended;
+                }
+                Err(failure(
+                    ErrorCode::LeaseRefused,
+                    format!("The provider answered {error}: {message}"),
+                ))
+            }
+            Ok(other) => Err(unreached(other)),
+            Err(error) => Err(error),
+        };
+        let mut entry = member_json(member);
+        match answer {
+            Ok(body) => entry["state"] = body["state"].clone(),
+            Err(error) => {
+                entry["error"] = json!({ "code": error.code.as_str(), "message": error.message });
+                failures.push((
+                    format!("{} {}", member.role, short(&member.provider)),
+                    error,
+                ));
+            }
         }
-        other => Err(unreached(other)),
+        entries.push(entry);
     }
+    let written = leases.write(&members);
+    if members.len() == 1 {
+        if let Some((_, error)) = failures.pop() {
+            return Err(error);
+        }
+        written?;
+    } else if !failures.is_empty() {
+        let code = failures[0].1.code;
+        return Err(failure(
+            code,
+            format!(
+                "Terminated {} of {} members of lease {workload}; {}. Run `toon compute \
+                 terminate {workload} --yes` again to end the rest.",
+                members.len() - failures.len(),
+                members.len(),
+                failures
+                    .iter()
+                    .map(|(who, error)| format!("{who} did not end: {}", error.message))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ),
+        ));
+    } else {
+        written?;
+    }
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({
+            "workload_id": workload,
+            "state": entries[0]["state"],
+            "members": entries,
+        }),
+        text: format!("Lease {workload} is terminated; nothing is refunded."),
+    })
 }
 
 fn row(lease: &Lease) -> String {
@@ -1282,7 +1632,7 @@ fn row(lease: &Lease) -> String {
         lease.listing_name,
         lease.listing_version,
         lease.role,
-        &lease.provider[..lease.provider.len().min(8)],
+        short(&lease.provider),
         lease
             .expires_at
             .map_or_else(|| "-".to_owned(), |at| at.to_string()),
@@ -1298,13 +1648,44 @@ fn row(lease: &Lease) -> String {
     )
 }
 
+/// The line of a member after the first, under its lease's.
+fn member_row(lease: &Lease) -> String {
+    format!(
+        "  member {} {} {}@v{} provider {} expires {} paid {}{}",
+        lease.role,
+        lease.state.name(),
+        lease.listing_name,
+        lease.listing_version,
+        short(&lease.provider),
+        lease
+            .expires_at
+            .map_or_else(|| "-".to_owned(), |at| at.to_string()),
+        lease.paid,
+        lease
+            .error
+            .as_ref()
+            .map(|(code, _)| format!(" error {code}"))
+            .unwrap_or_default()
+    )
+}
+
 pub fn list(renter: &Renter, check: bool) -> Result<Report, Error> {
     let leases = renter.leases();
     let mut entries = Vec::new();
     let mut lines = Vec::new();
-    for lease in leases.list()? {
+    for members in leases.list()? {
+        let lease = &members[0];
         let mut entry = lease.public();
-        let mut line = row(&lease);
+        entry["paid"] = json!(paid_in_all(&members));
+        entry["members"] = Value::Array(members.iter().map(Lease::public).collect());
+        let mut line = row(lease);
+        if members.len() > 1 {
+            line = format!("{line} (members: {})", members.len());
+            for member in &members[1..] {
+                line.push('\n');
+                line.push_str(&member_row(member));
+            }
+        }
         if check {
             match status_of(renter, &leases, &lease.workload_id) {
                 Ok(asked) => {
@@ -1332,16 +1713,18 @@ pub fn list(renter: &Renter, check: bool) -> Result<Report, Error> {
 
 pub fn forget(renter: &Renter, workload: &str) -> Result<Report, Error> {
     let leases = renter.leases();
-    let lease = leases.read(workload)?;
-    let may_be_live = matches!(lease.state, State::Live | State::Unknown)
-        && lease.expires_at.is_none_or(|at| at > now());
+    let members = leases.read(workload)?;
+    let may_be_live = members.iter().any(|lease| {
+        matches!(lease.state, State::Live | State::Unknown)
+            && lease.expires_at.is_none_or(|at| at > now())
+    });
+    let latest = members.iter().filter_map(|lease| lease.expires_at).max();
     leases.remove(workload)?;
     let warning = may_be_live.then(|| {
         format!(
             "The lease may still be live{}: its root secret went with the file, so nobody can \
              read, extend or end it any more.",
-            lease
-                .expires_at
+            latest
                 .map(|at| format!(" until {at} (unix time)"))
                 .unwrap_or_default()
         )

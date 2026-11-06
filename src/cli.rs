@@ -885,6 +885,12 @@ pub struct ComputeSpawnArgs {
     /// A persistent volume, in GB, no more than the Listing's storage
     #[arg(long, value_name = "GB")]
     pub volume_gb: Option<u64>,
+    /// A Warm Standby for the workload, a Listing that states a `standby_price`: an `naddr` or
+    /// `30432:<provider pubkey>:<listing name>`; repeatable. The set is the primary and each
+    /// standby, in this order, with one provider each; the standbys are paid on `.standby` and
+    /// every total and limit counts every member
+    #[arg(long = "standby", value_name = "LISTING")]
+    pub standbys: Vec<String>,
     /// The lease limit: the most this lease may pay in total, in base units. None if omitted
     #[arg(long, value_name = "BASE_UNITS")]
     pub max: Option<u64>,

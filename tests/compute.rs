@@ -1109,3 +1109,400 @@ fn a_provider_that_fails_the_second_extend_leaves_the_first_in_the_file() {
     // The lease is live and paid for, so what reaches it is printed all the same.
     assert!(message.contains("ssh -p 40000 203.0.113.7"), "{message}");
 }
+
+// ---- Standby Sets ----
+
+/// The second provider's key.
+const STANDBY: u8 = 0x33;
+
+/// What a Warm Standby costs per Lease Interval.
+const STANDBY_PRICE: u64 = 400;
+
+struct SetWorld {
+    near: Node,
+    _far: Node,
+    primary: FakeProvider,
+    standby: FakeProvider,
+    directory: FakeDirectory,
+    primary_coordinate: String,
+    standby_coordinate: String,
+}
+
+/// A provider behind `far` whose routes are paid at `<ilp>.<route>`: the Listing `warm`, with
+/// its standby routes if `standby_price` is given.
+fn serve_provider(
+    far: &Node,
+    toon_app: &str,
+    provider: &FakeProvider,
+    ilp: &str,
+    standby_price: Option<u64>,
+) {
+    let mut routes: Vec<(&str, &str, u64)> = vec![
+        ("availability", "/availability", 0),
+        ("status", "/status", 0),
+        ("terminate", "/terminate", 0),
+        ("warm.v1.spawn", "/listings/warm/v1/spawn", PRICE),
+        ("warm.v1.extend", "/listings/warm/v1/extend", PRICE),
+    ];
+    if let Some(price) = standby_price {
+        routes.push(("warm.v1.standby", "/listings/warm/v1/standby", price));
+        routes.push((
+            "warm.v1.standby.extend",
+            "/listings/warm/v1/standby/extend",
+            price,
+        ));
+    }
+    for (route, path, price) in routes {
+        let added = far.toon(&[
+            "add",
+            &format!("{}-{route}", ilp.rsplit('.').next().unwrap()),
+            "--to",
+            toon_app,
+            "--url",
+            &provider.url(path),
+            "--address",
+            &format!("{ilp}.{route}"),
+            "--price",
+            &price.to_string(),
+            "--yes",
+        ]);
+        assert_eq!(added.exit_code, 0, "{}{}", added.stdout, added.stderr);
+    }
+}
+
+fn warm_listing(
+    key: u8,
+    ilp_address: &str,
+    connector_url: &str,
+    seal_key: &str,
+    directory: &FakeDirectory,
+    standby_price: Option<u64>,
+) -> String {
+    let profile = json!({
+        "ilp_address": ilp_address,
+        "connector_url": connector_url,
+        "connector_seal_key": seal_key,
+        "relays": [directory.url()],
+        "hidden": false,
+        "liveness_cadence_s": 60,
+    });
+    directory.publish(signed(
+        key,
+        1_700_000_000,
+        10432,
+        json!([["L", "toon.network"]]),
+        &profile.to_string(),
+    ));
+    let mut listing = json!({
+        "version": 1,
+        "resources": { "cpu_millicores": 500, "memory_mb": 256, "storage_gb": 4 },
+        "arch": "amd64",
+        "lease_interval_s": 3600,
+        "price": PRICE,
+        "capabilities": [],
+    });
+    if let Some(price) = standby_price {
+        listing["standby_price"] = json!(price);
+    }
+    directory.publish(signed(
+        key,
+        1_700_000_000,
+        30432,
+        json!([["d", "warm"], ["L", "toon.network"]]),
+        &listing.to_string(),
+    ));
+    format!("30432:{}:warm", public_key(key))
+}
+
+/// Two providers behind one far node, each with its own address, and a near node that peers
+/// with it. Both sell the Listing `warm`; the second prices standbys when `standby_priced`.
+fn set_world(chain: &AnvilChain, standby_priced: bool) -> SetWorld {
+    let near = node_on(chain);
+    let far = node_on(chain);
+    let (primary, standby) = (
+        FakeProvider::start(&public_key(PROVIDER)),
+        FakeProvider::start(&public_key(STANDBY)),
+    );
+    let status = far.machine.toon(&["status", "--json"]).json();
+    let toon_app = status["agent_node"]["toon_apps"][0]["name"]
+        .as_str()
+        .expect("a TOON app")
+        .to_owned();
+    let root = format!("g.toon.{}", far.machine.segment("relay"));
+    let (primary_ilp, standby_ilp) = (format!("{root}.one"), format!("{root}.two"));
+    serve_provider(&far, &toon_app, &primary, &primary_ilp, Some(STANDBY_PRICE));
+    serve_provider(
+        &far,
+        &toon_app,
+        &standby,
+        &standby_ilp,
+        standby_priced.then_some(STANDBY_PRICE),
+    );
+    let peered = near.toon(&[
+        "peer",
+        "add",
+        &far.url(),
+        "--deposit",
+        &DEPOSIT.to_string(),
+        "--yes",
+        "--id",
+        "far",
+    ]);
+    assert_eq!(peered.exit_code, 0, "{}{}", peered.stdout, peered.stderr);
+    let routed = near.toon(&["route", "add", &root, "--peer", "far"]);
+    assert_eq!(routed.exit_code, 0, "{}{}", routed.stdout, routed.stderr);
+    let directory = FakeDirectory::start();
+    let seal_key = support::seal_key(&far.url());
+    let primary_coordinate = warm_listing(
+        PROVIDER,
+        &primary_ilp,
+        &far.url(),
+        &seal_key,
+        &directory,
+        Some(STANDBY_PRICE),
+    );
+    let standby_coordinate = warm_listing(
+        STANDBY,
+        &standby_ilp,
+        &far.url(),
+        &seal_key,
+        &directory,
+        standby_priced.then_some(STANDBY_PRICE),
+    );
+    SetWorld {
+        near,
+        _far: far,
+        primary,
+        standby,
+        directory,
+        primary_coordinate,
+        standby_coordinate,
+    }
+}
+
+impl SetWorld {
+    fn leases(&self) -> PathBuf {
+        self.near.machine.agent_node_home().join("leases")
+    }
+
+    fn spawn(&self, extra: &[&str]) -> Run {
+        let relay = self.directory.url();
+        let image = image();
+        let mut args = spawn_args(&self.primary_coordinate, &relay, &["--image", &image]);
+        args.extend_from_slice(&["--standby", &self.standby_coordinate]);
+        args.extend_from_slice(extra);
+        self.near.toon(&args)
+    }
+
+    /// Nothing reached either provider's paid routes.
+    fn nothing_paid(&self) {
+        for provider in [&self.primary, &self.standby] {
+            for route in ["spawn", "standby", "extend", "standby/extend"] {
+                assert_eq!(provider.count(route), 0, "{route}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_standby_set_is_bought_in_order_extended_on_each_route_and_read_and_ended_as_one() {
+    let chain = AnvilChain::start();
+    let world = set_world(&chain, true);
+
+    let remaining_before = remaining_today(&world.near);
+    let spawned = world.spawn(&["--intervals", "2", "--port", "443", "--yes"]);
+    assert_eq!(spawned.exit_code, 0, "{}{}", spawned.stdout, spawned.stderr);
+    let report = spawned.json();
+    let workload = report["workload_id"].as_str().unwrap().to_owned();
+    // Two intervals of the primary at its price and of the standby at its own.
+    let total = 2 * PRICE + 2 * STANDBY_PRICE;
+    assert_eq!(report["paid"], total);
+    assert_eq!(report["role"], "primary");
+    assert_eq!(report["members"][1]["role"], "standby");
+    assert_eq!(
+        remaining_today(&world.near) + u128::from(total),
+        remaining_before
+    );
+
+    // The primary on `.spawn`, the standby on `.standby`, each asked `availability` as itself.
+    assert_eq!(world.primary.count("spawn"), 1);
+    assert_eq!(world.primary.count("standby"), 0);
+    assert_eq!(world.standby.count("standby"), 1);
+    assert_eq!(world.standby.count("spawn"), 0);
+    assert_eq!(
+        world.primary.last("availability").unwrap()["role"],
+        "primary"
+    );
+    assert_eq!(
+        world.standby.last("availability").unwrap()["role"],
+        "standby"
+    );
+    let primary_request = world.primary.last("spawn").unwrap()["request"].clone();
+    let standby_request = world.standby.last("standby").unwrap()["request"].clone();
+    assert_eq!(primary_request["op"], "spawn");
+    assert_eq!(standby_request["op"], "standby");
+    assert_eq!(primary_request["provider"], public_key(PROVIDER));
+    assert_eq!(standby_request["provider"], public_key(STANDBY));
+
+    // One workload id and one set, the primary first; a token for each member.
+    let set = json!([public_key(PROVIDER), public_key(STANDBY)]);
+    for request in [&primary_request, &standby_request] {
+        assert_eq!(request["content"]["workload_id"], workload.as_str());
+        assert_eq!(request["content"]["standby_set"], set);
+    }
+    assert_ne!(
+        primary_request["continuation"],
+        standby_request["continuation"]
+    );
+
+    // Each member extended on its own route.
+    assert_eq!(world.primary.count("/warm/v1/extend"), 1);
+    assert_eq!(world.standby.count("standby/extend"), 1);
+    assert_eq!(world.standby.count("/warm/v1/extend"), 0);
+
+    // One file holds the members in order, with each role and expiry.
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["state"], "live");
+    assert_eq!(lease["role"], "primary");
+    assert_eq!(lease["provider"], public_key(PROVIDER));
+    assert_eq!(lease["expires_at"], world.primary.expires_at());
+    assert_eq!(lease["standbys"][0]["provider"], public_key(STANDBY));
+    assert_eq!(lease["standbys"][0]["role"], "standby");
+    assert_eq!(
+        lease["standbys"][0]["expires_at"],
+        world.standby.expires_at()
+    );
+    assert_eq!(lease["standbys"][0]["paid"], 2 * STANDBY_PRICE);
+    assert_eq!(lease["paid"], 2 * PRICE);
+
+    let list = world.near.toon(&["compute", "list", "--json"]);
+    let entry = &list.json()["leases"][0];
+    assert_eq!(entry["paid"], total);
+    assert_eq!(entry["members"][0]["role"], "primary");
+    assert_eq!(entry["members"][1]["role"], "standby");
+    assert_eq!(entry["members"][1]["provider"], public_key(STANDBY));
+    let text = world.near.toon(&["compute", "list"]);
+    assert!(text.stdout.contains("standby"), "{}", text.stdout);
+
+    // `status` asks every member, each with its own token.
+    let status = world.near.toon(&["compute", "status", &workload, "--json"]);
+    assert_eq!(status.exit_code, 0, "{}{}", status.stdout, status.stderr);
+    assert_eq!(status.json()["members"][0]["state"], "running");
+    assert_eq!(status.json()["members"][1]["state"], "reserved");
+    assert_eq!(
+        world.primary.last("status").unwrap()["request"]["continuation"],
+        primary_request["continuation"]
+    );
+    assert_eq!(
+        world.standby.last("status").unwrap()["request"]["continuation"],
+        standby_request["continuation"]
+    );
+
+    // `extend` pays `.extend` to the primary and `.standby.extend` to the reserved member.
+    let extended = world
+        .near
+        .toon(&["compute", "extend", &workload, "--yes", "--json"]);
+    assert_eq!(
+        extended.exit_code, 0,
+        "{}{}",
+        extended.stdout, extended.stderr
+    );
+    assert_eq!(extended.json()["paid_now"], PRICE + STANDBY_PRICE);
+    assert_eq!(world.primary.count("/warm/v1/extend"), 2);
+    assert_eq!(world.standby.count("standby/extend"), 2);
+    assert_eq!(world.standby.count("/warm/v1/extend"), 0);
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["expires_at"], world.primary.expires_at());
+    assert_eq!(
+        lease["standbys"][0]["expires_at"],
+        world.standby.expires_at()
+    );
+    assert_eq!(lease["standbys"][0]["paid"], 3 * STANDBY_PRICE);
+
+    // `terminate` ends every member.
+    let terminated = world
+        .near
+        .toon(&["compute", "terminate", &workload, "--yes", "--json"]);
+    assert_eq!(
+        terminated.exit_code, 0,
+        "{}{}",
+        terminated.stdout, terminated.stderr
+    );
+    assert_eq!(world.primary.count("terminate"), 1);
+    assert_eq!(world.standby.count("terminate"), 1);
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["state"], "ended");
+    assert_eq!(lease["standbys"][0]["state"], "ended");
+}
+
+#[test]
+fn a_set_whose_total_breaches_a_limit_sends_nothing() {
+    let chain = AnvilChain::start();
+    let world = set_world(&chain, true);
+    // 2 × 1000 + 2 × 400 is 2800 for two intervals.
+    let refused = world.spawn(&["--intervals", "2", "--max", "2799", "--yes"]);
+    assert_eq!(error_code(&refused), "lease_limit", "{}", refused.stdout);
+    let message = refused.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        message.contains("2800") && message.contains("2799"),
+        "{message}"
+    );
+    world.nothing_paid();
+    assert_eq!(world.primary.count("availability"), 0);
+    assert!(lease_files(&world.leases()).is_empty());
+}
+
+#[test]
+fn a_standby_listing_that_prices_no_standby_is_refused_before_anything_is_sent() {
+    let chain = AnvilChain::start();
+    let world = set_world(&chain, false);
+    let refused = world.spawn(&["--yes"]);
+    assert_eq!(error_code(&refused), "usage", "{}", refused.stdout);
+    assert!(refused.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("standby_price"));
+    world.nothing_paid();
+    assert_eq!(world.primary.count("availability"), 0);
+    assert!(lease_files(&world.leases()).is_empty());
+}
+
+#[test]
+fn a_provider_named_twice_is_refused() {
+    let chain = AnvilChain::start();
+    let world = set_world(&chain, true);
+    let relay = world.directory.url();
+    let image = image();
+    let mut args = spawn_args(&world.primary_coordinate, &relay, &["--image", &image]);
+    args.extend_from_slice(&["--standby", &world.primary_coordinate, "--yes"]);
+    let refused = world.near.toon(&args);
+    assert_eq!(error_code(&refused), "usage", "{}", refused.stdout);
+    world.nothing_paid();
+}
+
+#[test]
+fn a_standby_that_fails_leaves_the_members_bought_in_the_file() {
+    let chain = AnvilChain::start();
+    let world = set_world(&chain, true);
+    world
+        .standby
+        .with(|state| state.spawn_error = Some("no_capacity".into()));
+    let run = world.spawn(&["--yes"]);
+    assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
+    assert_eq!(error_code(&run), "lease_partly_paid", "{}", run.stdout);
+    assert_eq!(world.primary.count("spawn"), 1);
+    assert_eq!(world.standby.count("standby"), 1);
+    // The primary runs, and its access is printed; the refused standby was billed all the same.
+    let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
+    assert!(message.contains("ssh -p 40000 203.0.113.7"), "{message}");
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["state"], "live");
+    assert_eq!(lease["paid"], PRICE);
+    assert_eq!(lease["expires_at"], world.primary.expires_at());
+    assert_eq!(lease["standbys"][0]["state"], "failed");
+    assert_eq!(lease["standbys"][0]["paid"], STANDBY_PRICE);
+    assert_eq!(lease["standbys"][0]["error"]["code"], "no_capacity");
+}

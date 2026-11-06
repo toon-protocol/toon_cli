@@ -94,22 +94,54 @@ impl Lease {
         })
     }
 
-    fn to_json(&self) -> Value {
-        let mut file = self.public();
+    /// What the lease file keeps of one member: everything `public` shows and what a packet
+    /// to the member needs.
+    fn member_json(&self) -> Value {
+        let mut member = self.public();
+        member["connector_url"] = json!(self.connector_url);
+        member["connector_seal_key"] = json!(self.connector_seal_key);
+        member["listing_name"] = json!(self.listing_name);
+        member["price"] = json!(self.price);
+        member
+    }
+
+    /// The file of a lease: its first member and the secret, then the other members, in order.
+    fn file_json(members: &[Lease]) -> Value {
+        let lease = &members[0];
+        let mut file = lease.member_json();
         file["version"] = json!(1);
-        file["root_secret"] = json!(&*self.root_secret);
-        file["connector_url"] = json!(self.connector_url);
-        file["connector_seal_key"] = json!(self.connector_seal_key);
-        file["listing_name"] = json!(self.listing_name);
-        file["price"] = json!(self.price);
+        file["root_secret"] = json!(&*lease.root_secret);
+        if members.len() > 1 {
+            file["standbys"] = Value::Array(
+                members[1..]
+                    .iter()
+                    .map(|member| {
+                        let mut json = member.member_json();
+                        let shared = json.as_object_mut().expect("an object");
+                        for field in ["workload_id", "lease_limit", "created_at"] {
+                            shared.remove(field);
+                        }
+                        json
+                    })
+                    .collect(),
+            );
+        }
         file
     }
 
-    fn from_json(file: &Value) -> Option<Self> {
+    /// A member of the lease `shared` (its first member) names: the workload id, the root
+    /// secret, the lease limit and the creation time are the lease's, not the member's.
+    fn from_json(file: &Value, shared: Option<&Lease>) -> Option<Self> {
         let text = |field: &str| file[field].as_str().map(str::to_owned);
         Some(Self {
-            workload_id: text("workload_id")?,
-            root_secret: Zeroizing::new(text("root_secret")?),
+            workload_id: match shared {
+                Some(lease) => lease.workload_id.clone(),
+                None => text("workload_id")?,
+            },
+            root_secret: match shared {
+                Some(lease) => lease.root_secret.clone(),
+                None => Zeroizing::new(text("root_secret")?),
+            },
             provider: text("provider")?,
             ilp_address: text("ilp_address")?,
             connector_url: text("connector_url")?,
@@ -125,7 +157,10 @@ impl Lease {
             role: text("role")?,
             expires_at: file["expires_at"].as_u64(),
             paid: file["paid"].as_u64()?,
-            lease_limit: file["lease_limit"].as_u64(),
+            lease_limit: match shared {
+                Some(lease) => lease.lease_limit,
+                None => file["lease_limit"].as_u64(),
+            },
             state: State::parse(file["state"].as_str()?)?,
             error: match &file["error"] {
                 Value::Null => None,
@@ -134,7 +169,10 @@ impl Lease {
                     error["message"].as_str()?.to_owned(),
                 )),
             },
-            created_at: file["created_at"].as_u64()?,
+            created_at: match shared {
+                Some(lease) => lease.created_at,
+                None => file["created_at"].as_u64()?,
+            },
         })
     }
 
@@ -218,10 +256,14 @@ impl Leases {
         Ok(self.dir.join(format!("{workload_id}.json")))
     }
 
-    /// Write the lease in full or not at all, mode 0600. A failure sent nothing.
-    pub fn write(&self, lease: &Lease) -> Result<(), Error> {
+    /// Write the lease, its members in order and the first one a primary or a standalone, in
+    /// full or not at all, mode 0600. A failure sent nothing.
+    pub fn write(&self, members: &[Lease]) -> Result<(), Error> {
+        let lease = members
+            .first()
+            .ok_or_else(|| io_error("A lease with no member is not written.".into()))?;
         let path = self.path(&lease.workload_id)?;
-        let text = Zeroizing::new(lease.to_json().to_string());
+        let text = Zeroizing::new(Lease::file_json(members).to_string());
         node::write(&path, text.as_bytes(), 0o600).map_err(|error| Error {
             nothing_sent: true,
             message: format!(
@@ -232,8 +274,8 @@ impl Leases {
         })
     }
 
-    /// The lease `workload_id` names, or `lease_not_held`.
-    pub fn read(&self, workload_id: &str) -> Result<Lease, Error> {
+    /// The members of the lease `workload_id` names, in order, or `lease_not_held`.
+    pub fn read(&self, workload_id: &str) -> Result<Vec<Lease>, Error> {
         let path = self.path(workload_id)?;
         let text = match fs::read_to_string(&path) {
             Ok(text) => Zeroizing::new(text),
@@ -261,7 +303,7 @@ impl Leases {
 
     /// Every lease file, by workload id. A file that is not a lease file is an error, not
     /// skipped: it may be a lease the operator is relying on.
-    pub fn list(&self) -> Result<Vec<Lease>, Error> {
+    pub fn list(&self) -> Result<Vec<Vec<Lease>>, Error> {
         let entries = match fs::read_dir(&self.dir) {
             Ok(entries) => entries,
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -282,14 +324,21 @@ impl Leases {
     }
 }
 
-fn parse(text: &str) -> Option<Lease> {
-    Lease::from_json(&serde_json::from_str(text).ok()?)
+fn parse(text: &str) -> Option<Vec<Lease>> {
+    let file: Value = serde_json::from_str(text).ok()?;
+    let first = Lease::from_json(&file, None)?;
+    let mut members = vec![first];
+    for member in file["standbys"].as_array().into_iter().flatten() {
+        members.push(Lease::from_json(member, Some(&members[0]))?);
+    }
+    Some(members)
 }
 
 /// Every lease file of `leases` as `(file name, contents)`, for a backup.
 pub fn files(leases: &Leases) -> Result<Vec<(String, Zeroizing<String>)>, Error> {
     let mut found = Vec::new();
-    for lease in leases.list()? {
+    for members in leases.list()? {
+        let lease = &members[0];
         let path = leases.path(&lease.workload_id)?;
         let text = fs::read_to_string(&path)
             .map(Zeroizing::new)
@@ -304,9 +353,11 @@ pub fn files(leases: &Leases) -> Result<Vec<(String, Zeroizing<String>)>, Error>
 pub fn restore(leases: &Leases, files: &[(String, String)]) -> Result<Vec<PathBuf>, Error> {
     let mut written = Vec::new();
     for (name, text) in files {
-        let lease = parse(text).ok_or_else(|| {
-            io_error("The backup holds a lease file this version does not read.".into())
-        })?;
+        let lease = parse(text)
+            .and_then(|members| members.into_iter().next())
+            .ok_or_else(|| {
+                io_error("The backup holds a lease file this version does not read.".into())
+            })?;
         if format!("{}.json", lease.workload_id) != *name {
             return Err(io_error(format!(
                 "The backup's lease file {name} is for another workload."

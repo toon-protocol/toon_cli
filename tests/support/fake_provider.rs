@@ -30,6 +30,8 @@ pub struct State {
     extends: usize,
     token: Option<String>,
     workload: Option<String>,
+    /// `standalone`, or `standby` for a reservation made on `.standby`.
+    role: String,
     ended: bool,
     expires_at: u64,
 }
@@ -168,6 +170,7 @@ impl FakeProvider {
         }
         // `extend` is the one paid route with a bare body: `{ "workload_id" }` and nothing else.
         if route.ends_with("/extend") {
+            let standby_route = route.ends_with("/standby/extend");
             let Some(workload) = body["workload_id"]
                 .as_str()
                 .filter(|_| body.as_object().is_some_and(|object| object.len() == 1))
@@ -180,6 +183,16 @@ impl FakeProvider {
             }
             if state.workload.as_deref() != Some(workload) {
                 return error("unknown_workload", "no such lease");
+            }
+            if standby_route != (state.role == "standby") {
+                return if standby_route {
+                    error("not_standby", "this lease is not a Warm Standby")
+                } else {
+                    error(
+                        "not_running",
+                        "this lease is a reservation; extend it on .standby.extend",
+                    )
+                };
             }
             state.expires_at += 3600;
             return json!({ "workload_id": workload, "expires_at": state.expires_at });
@@ -194,6 +207,8 @@ impl FakeProvider {
         let field = |name: &str| request[name].as_str().unwrap_or_default().to_owned();
         let op = if route.ends_with("/spawn") {
             "spawn"
+        } else if route.ends_with("/standby") {
+            "standby"
         } else if route.ends_with("/status") {
             "status"
         } else if route.ends_with("/terminate") {
@@ -208,7 +223,7 @@ impl FakeProvider {
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        if op == "spawn" {
+        if op == "spawn" || op == "standby" {
             if let Some(code) = &state.spawn_error {
                 return error(code, "the spawn was refused");
             }
@@ -222,9 +237,22 @@ impl FakeProvider {
             state.token = Some(field("continuation"));
             state.workload = Some(workload.clone());
             state.expires_at = unix_now() + 3600;
+            if op == "standby" {
+                state.role = "standby".to_owned();
+                return json!({
+                    "workload_id": workload,
+                    "role": "standby",
+                    "expires_at": state.expires_at,
+                });
+            }
+            state.role = if request["content"]["standby_set"].is_array() {
+                "primary".to_owned()
+            } else {
+                "standalone".to_owned()
+            };
             return json!({
                 "workload_id": workload,
-                "role": "standalone",
+                "role": state.role,
                 "expires_at": state.expires_at,
                 "access": {
                     "host": "203.0.113.7",
@@ -246,9 +274,17 @@ impl FakeProvider {
             state.ended = true;
             return json!({ "workload_id": workload, "state": { "ended": "termination" } });
         }
+        if state.role == "standby" {
+            return json!({
+                "workload_id": workload,
+                "role": "standby",
+                "state": "reserved",
+                "expires_at": state.expires_at,
+            });
+        }
         json!({
             "workload_id": workload,
-            "role": "standalone",
+            "role": state.role,
             "state": "running",
             "expires_at": state.expires_at,
             "access": { "host": "203.0.113.7", "ssh_port": 40000, "ports": [] },
