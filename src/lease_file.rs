@@ -44,6 +44,16 @@ impl State {
     }
 }
 
+/// The Deployment (kind 30437) a lease publishes and refreshes: what `toon deployment publish`
+/// needs besides what the lease itself holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Claim {
+    pub environment: String,
+    pub repo: String,
+    pub commit: String,
+    pub url: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Lease {
     pub workload_id: String,
@@ -73,6 +83,8 @@ pub struct Lease {
     /// The error that left the lease `failed`, as the provider or the connector gave it.
     pub error: Option<(String, String)>,
     pub created_at: u64,
+    /// The Deployment to publish with this lease, if `--deployment` named an environment.
+    pub deployment: Option<Claim>,
 }
 
 impl Lease {
@@ -91,6 +103,7 @@ impl Lease {
             "state": self.state.name(),
             "error": self.error.as_ref().map(|(code, message)| json!({ "code": code, "message": message })),
             "created_at": self.created_at,
+            "deployment": self.deployment.as_ref().map(|claim| &claim.environment),
         })
     }
 
@@ -102,6 +115,15 @@ impl Lease {
         file["connector_seal_key"] = json!(self.connector_seal_key);
         file["listing_name"] = json!(self.listing_name);
         file["price"] = json!(self.price);
+        file["deployment"] = match &self.deployment {
+            Some(claim) => json!({
+                "environment": claim.environment,
+                "repo": claim.repo,
+                "commit": claim.commit,
+                "url": claim.url,
+            }),
+            None => Value::Null,
+        };
         file
     }
 
@@ -135,6 +157,15 @@ impl Lease {
                 )),
             },
             created_at: file["created_at"].as_u64()?,
+            deployment: match &file["deployment"] {
+                Value::Null => None,
+                claim => Some(Claim {
+                    environment: claim["environment"].as_str()?.to_owned(),
+                    repo: claim["repo"].as_str()?.to_owned(),
+                    commit: claim["commit"].as_str()?.to_owned(),
+                    url: claim["url"].as_str().map(str::to_owned),
+                }),
+            },
         })
     }
 

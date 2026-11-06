@@ -787,6 +787,20 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
                     surface: key.surface(app)?,
                     leases: crate::lease_file::Leases::beside(path),
                     limit,
+                    sign_deployment: {
+                        let signer = KeyFile::load(path)?;
+                        let app = app.map(str::to_owned);
+                        Box::new(move |tags, content, publish| {
+                            let tags = json!(tags).to_string();
+                            let parts = (crate::deployment::KIND, content, tags.as_str());
+                            if publish {
+                                event_publish(&signer, app.as_deref(), parts, 0).map(|_| ())
+                            } else {
+                                let (name, _) = signer.choose(app.as_deref())?;
+                                signed(&signer, Some(name), parts.0, parts.1, parts.2).map(|_| ())
+                            }
+                        })
+                    },
                 })),
                 &command,
             )

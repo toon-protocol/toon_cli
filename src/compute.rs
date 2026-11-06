@@ -13,9 +13,10 @@ use serde_json::{json, Map, Value};
 use zeroize::Zeroizing;
 
 use crate::cli::{ComputeCommand, ComputeExtendArgs, ComputeSpawnArgs};
+use crate::deployment::{self, Tags};
 use crate::egress::Egress;
 use crate::keystore;
-use crate::lease_file::{Lease, Leases, State};
+use crate::lease_file::{Claim, Lease, Leases, State};
 use crate::lease_request::{self, Request, Route};
 use crate::listing::{self, Resolved};
 use crate::node;
@@ -32,12 +33,19 @@ pub struct AgentLimit {
     pub remaining_today: Option<u64>,
 }
 
+/// Signs and, if told to, publishes a Deployment's tags and content.
+pub type SignDeployment = Box<dyn Fn(&Tags, &str, bool) -> Result<(), Error>>;
+
 /// An agent key with no home.
 pub struct AgentRenter {
     pub surface: Surface,
     pub leases: Leases,
     /// Read from the connector, for a command that pays.
     pub limit: Option<AgentLimit>,
+    /// Signs a Deployment's tags with the agent identity (the `sign` order) and, when the last
+    /// argument is true, writes it to the agent node's own relay. False signs and discards: a
+    /// probe of the key's scope, free.
+    pub sign_deployment: SignDeployment,
 }
 
 /// Who rents: the operator, or an agent key with no home.
@@ -626,6 +634,35 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
     renter.reaches(&profile.ilp_address, &profile.connector_url)?;
     // Every limit before any packet, the free `availability` question included.
     limits_refuse(renter, "spawn", args.max, 0, price, total)?;
+    let root = Zeroizing::new(keystore::random::<32>()?);
+    let workload_id = fresh_hex()?;
+    content["workload_id"] = json!(workload_id);
+    let provider = coordinate.author.clone();
+    let lease = Lease {
+        workload_id: workload_id.clone(),
+        root_secret: Zeroizing::new(hex::encode(*root)),
+        provider: provider.clone(),
+        ilp_address: profile.ilp_address.clone(),
+        connector_url: profile.connector_url.clone(),
+        connector_seal_key: format!("0x{}", hex::encode(profile.connector_seal_key)),
+        listing: coordinate.text(),
+        listing_name: resolved.listing.name.clone(),
+        listing_version: resolved.listing.version,
+        price: Some(price),
+        role: "standalone".into(),
+        expires_at: None,
+        paid: 0,
+        lease_limit: args.max,
+        state: State::Unknown,
+        error: None,
+        created_at: now(),
+        deployment: claim(args),
+    };
+    // A Deployment that cannot be made, or a key that cannot sign it, is refused before any
+    // packet is sent.
+    if let Some(claim) = &lease.deployment {
+        deploy(renter, &lease, claim, now() + REQUEST_TTL_S, true)?;
+    }
     if let Some(duration) = &args.for_duration {
         eprintln!(
             "--for {duration} rounds up to {}: {} in all.",
@@ -652,29 +689,6 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
         });
     }
 
-    let root = Zeroizing::new(keystore::random::<32>()?);
-    let workload_id = fresh_hex()?;
-    content["workload_id"] = json!(workload_id);
-    let provider = coordinate.author.clone();
-    let lease = Lease {
-        workload_id: workload_id.clone(),
-        root_secret: Zeroizing::new(hex::encode(*root)),
-        provider: provider.clone(),
-        ilp_address: profile.ilp_address.clone(),
-        connector_url: profile.connector_url.clone(),
-        connector_seal_key: format!("0x{}", hex::encode(profile.connector_seal_key)),
-        listing: coordinate.text(),
-        listing_name: resolved.listing.name.clone(),
-        listing_version: resolved.listing.version,
-        price: Some(price),
-        role: "standalone".into(),
-        expires_at: None,
-        paid: 0,
-        lease_limit: args.max,
-        state: State::Unknown,
-        error: None,
-        created_at: now(),
-    };
     let request = Request {
         op: "spawn",
         request_id: &fresh_hex()?,
@@ -713,7 +727,7 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
             })?;
         let (report, mut lease) = settle_spawn(&leases, lease.clone(), answer, price, moved)?;
         if intervals == 1 {
-            return Ok(report);
+            return Ok(announce(renter, &lease, report));
         }
         // The lease is live and paid for: what reaches it is printed whatever the extends do.
         let access = access_text(&report.json["access"]);
@@ -733,8 +747,74 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
             message: format!("{}{access}", error.message),
             ..error
         })?;
-        Ok(spawn_report(report, &lease, intervals, total))
+        Ok(announce(
+            renter,
+            &lease,
+            spawn_report(report, &lease, intervals, total),
+        ))
     })
+}
+
+/// The Deployment `--deployment` names, if it does.
+fn claim(args: &ComputeSpawnArgs) -> Option<Claim> {
+    Some(Claim {
+        environment: args.deployment.clone()?,
+        repo: args.repo.clone()?,
+        commit: args.commit.clone()?,
+        url: args.url.clone(),
+    })
+}
+
+/// Make the Deployment of `lease`, through the code `toon deployment` uses. With `probe` it
+/// builds it and, with an agent key, has it signed and thrown away, and sends nothing.
+fn deploy(
+    renter: &Renter,
+    lease: &Lease,
+    claim: &Claim,
+    expires_at: u64,
+    probe: bool,
+) -> Result<(), Error> {
+    let (tags, content) = deployment::for_lease(now(), claim, lease, expires_at)?;
+    match renter {
+        Renter::Home(_) if probe => Ok(()),
+        Renter::Home(home) => {
+            deployment::publish_deployment(home, &claim.environment, tags, content, None)
+                .map(|_| ())
+        }
+        Renter::Agent(agent) => (agent.sign_deployment)(&tags, &content, !probe),
+    }
+}
+
+/// Publish the Deployment a bought lease carries, with its `expires_at`. A publish that fails
+/// never fails the command: the lease is bought either way, so it warns and says how to retry.
+fn announce(renter: &Renter, lease: &Lease, mut report: Report) -> Report {
+    let (Some(claim), Some(expires_at)) = (&lease.deployment, lease.expires_at) else {
+        return report;
+    };
+    let environment = &claim.environment;
+    match deploy(renter, lease, claim, expires_at, false) {
+        Ok(()) => {
+            report.json["deployment"] = json!({ "environment": environment, "published": true });
+            report
+                .text
+                .push_str(&format!(" Deployment {environment} is published."));
+        }
+        Err(error) => {
+            let retry = deployment::retry_command(claim, lease, expires_at);
+            eprintln!(
+                "warning: the lease is bought, but its Deployment {environment} was not \
+                 published: {} Run `{retry}` to retry.",
+                error.message
+            );
+            report.json["deployment"] = json!({
+                "environment": environment,
+                "published": false,
+                "error": error.message,
+                "retry": retry,
+            });
+        }
+    }
+    report
 }
 
 fn intervals_text(intervals: u64) -> String {
@@ -1087,7 +1167,7 @@ pub fn extend(renter: &Renter, args: &ComputeExtendArgs) -> Result<Report, Error
     // A changed lease limit is kept before anything is paid.
     leases.write(&lease)?;
     paying(renter, total, |moved| {
-        extend_lease(
+        let report = extend_lease(
             renter,
             &leases,
             &mut lease,
@@ -1098,7 +1178,8 @@ pub fn extend(renter: &Renter, args: &ComputeExtendArgs) -> Result<Report, Error
                 billed: 0,
             },
             moved,
-        )
+        )?;
+        Ok(announce(renter, &lease, report))
     })
 }
 

@@ -16,13 +16,14 @@ use crate::cli::DeploymentCommand;
 use crate::egress::Egress;
 use crate::event;
 use crate::home;
+use crate::lease_file::{Claim, Lease};
 use crate::node::State;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::subscribe;
 use crate::tip;
 
 /// The kind of a Deployment: addressable by `(kind, pubkey, d)`.
-const KIND: u64 = 30_437;
+pub const KIND: u64 = 30_437;
 
 /// The kind of a repository announcement (NIP-34), and of a Listing.
 const REPOSITORY: &str = "30617";
@@ -34,7 +35,7 @@ const DELETION: u64 = 5;
 /// A Deployment that ends within this many seconds is marked expiring.
 const EXPIRING: u64 = 24 * 60 * 60;
 
-type Tags = Vec<Vec<String>>;
+pub type Tags = Vec<Vec<String>>;
 
 fn refused(message: impl Into<String>) -> Error {
     Error {
@@ -232,6 +233,51 @@ fn build(now: u64, inputs: &Inputs) -> Result<(Tags, String), Error> {
     tags.push(tag("expiration", &[&expiration.to_string()]));
     tags.push(tag("L", &["toon.network"]));
     Ok((tags, inputs.note.to_owned()))
+}
+
+/// The tags and content of the Deployment of `lease`, as `toon compute` publishes it: the
+/// lease names the Listing, the provider and the workload, and the claim the rest.
+pub fn for_lease(
+    now: u64,
+    claim: &Claim,
+    lease: &Lease,
+    expires_at: u64,
+) -> Result<(Tags, String), Error> {
+    build(
+        now,
+        &Inputs {
+            environment: &claim.environment,
+            repo: &claim.repo,
+            commit: &claim.commit,
+            listing: &lease.listing,
+            primary: &lease.provider,
+            standby: &[],
+            workload: &lease.workload_id,
+            image: None,
+            url: claim.url.as_deref(),
+            expires_at,
+            expiration: None,
+            note: "",
+        },
+    )
+}
+
+/// The `toon deployment publish` command that makes the Deployment of `lease` by hand.
+pub fn retry_command(claim: &Claim, lease: &Lease, expires_at: u64) -> String {
+    let mut command = format!(
+        "toon deployment publish {} --repo {} --commit {} --listing {} --primary {} --workload {} \
+         --expires-at {expires_at}",
+        claim.environment,
+        claim.repo,
+        claim.commit,
+        lease.listing,
+        lease.provider,
+        lease.workload_id
+    );
+    if let Some(url) = &claim.url {
+        command.push_str(&format!(" --url {url}"));
+    }
+    command
 }
 
 /// What `update` was told to change. A group that is `None` or empty is left as it is.
@@ -579,7 +625,7 @@ fn current(home: &Path, state: &State, author: &str, environment: &str) -> Resul
         })
 }
 
-fn publish_deployment(
+pub fn publish_deployment(
     home: &Path,
     environment: &str,
     tags: Tags,
