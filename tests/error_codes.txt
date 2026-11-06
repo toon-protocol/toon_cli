@@ -58,3 +58,4 @@ would_not_run
 lease_refused
 lease_not_held
 lease_body_shape
+rotation_incomplete

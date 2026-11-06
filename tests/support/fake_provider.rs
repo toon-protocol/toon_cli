@@ -1,6 +1,6 @@
 //! A TOON Compute provider's app, written from §5 and §6 of the spec and the wire fixtures,
 //! for the tests of `toon compute`. Each route of the provider is served by its own connector
-//! route, whose handler URL is `<provider>/<path>`: `availability`, `status`, `terminate` and
+//! route, whose handler URL is `<provider>/<path>`: `availability`, `status`, `terminate`, `rotate` and
 //! `listings/<name>/v<n>/spawn`. It keeps what it was sent, so a test can say what reached it.
 
 use std::io::{Read, Write};
@@ -25,6 +25,11 @@ pub struct State {
     /// found: whether the file was there, and its mode.
     pub lease_dir: Option<PathBuf>,
     pub file_at_spawn: Option<(bool, u32)>,
+    /// A rotate that is answered `unavailable`, changing nothing.
+    pub rotate_unavailable: bool,
+    /// A rotate that takes effect but whose answer is an `unavailable` all the same, as if
+    /// the confirmation were lost.
+    pub rotate_answer_lost: bool,
     token: Option<String>,
     workload: Option<String>,
     ended: bool,
@@ -172,6 +177,8 @@ impl FakeProvider {
             "status"
         } else if route.ends_with("/terminate") {
             "terminate"
+        } else if route.ends_with("/rotate") {
+            "rotate"
         } else {
             return error("invalid_request", "unknown route");
         };
@@ -215,6 +222,17 @@ impl FakeProvider {
         }
         if state.ended {
             return error("expired", "the lease has ended");
+        }
+        if op == "rotate" {
+            if state.rotate_unavailable {
+                return error("unavailable", "could not save that right now; try again");
+            }
+            let next = request["content"]["next"].as_str().unwrap_or_default();
+            state.token = Some(next.to_owned());
+            if state.rotate_answer_lost {
+                return error("unavailable", "could not save that right now; try again");
+            }
+            return json!({ "workload_id": workload, "rotated": true });
         }
         if op == "terminate" {
             state.ended = true;

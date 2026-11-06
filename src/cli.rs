@@ -836,6 +836,13 @@ pub enum ComputeCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Replace a lease's token, free: mint a fresh root secret, keep it in the lease file beside
+    /// the old one, and send each member of the lease the `rotate` request. The old secret is
+    /// dropped once every member has confirmed; run it again to finish a rotation that stopped
+    Rotate {
+        /// The lease's workload id
+        workload: String,
+    },
     /// List the leases this node holds, from their files: provider, Listing, version, role,
     /// `expires_at`, what was paid, the lease limit and whether the spawn failed or went
     /// unanswered
