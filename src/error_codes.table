@@ -61,5 +61,6 @@ error_codes! {
     LeaseRefused => "lease_refused" => Failure,
     LeaseNotHeld => "lease_not_held" => Failure,
     LeaseBodyShape => "lease_body_shape" => Failure,
+    RotationIncomplete => "rotation_incomplete" => Failure,
     LeasePartlyPaid => "lease_partly_paid" => Failure,
 }

@@ -1,7 +1,7 @@
 //! A TOON Compute provider's app, written from §5 and §6 of the spec and the wire fixtures,
 //! for the tests of `toon compute`. Each route of the provider is served by its own connector
-//! route, whose handler URL is `<provider>/<path>`: `availability`, `status`, `terminate` and
-//! `listings/<name>/v<n>/spawn`. It keeps what it was sent, so a test can say what reached it.
+//! route, whose handler URL is `<provider>/<path>`: `availability`, `status`, `terminate`,
+//! `rotate` and `listings/<name>/v<n>/spawn`. It keeps what it was sent, so a test can say what reached it.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -25,11 +25,20 @@ pub struct State {
     /// found: whether the file was there, and its mode.
     pub lease_dir: Option<PathBuf>,
     pub file_at_spawn: Option<(bool, u32)>,
+    /// The `next_secret` the lease file in `lease_dir` held when the first rotate arrived.
+    pub next_secret_at_rotate: Option<Option<String>>,
+    /// A rotate that is answered `unavailable`, changing nothing.
+    pub rotate_unavailable: bool,
+    /// A rotate that takes effect but whose answer is an `unavailable` all the same, as if
+    /// the confirmation were lost.
+    pub rotate_answer_lost: bool,
     /// The nth `extend` (counting from 1) is answered with an error instead of an extension.
     pub fail_extend_at: Option<usize>,
     extends: usize,
     token: Option<String>,
     workload: Option<String>,
+    /// `standalone`, or `standby` for a reservation made on `.standby`.
+    role: String,
     ended: bool,
     expires_at: u64,
 }
@@ -168,6 +177,7 @@ impl FakeProvider {
         }
         // `extend` is the one paid route with a bare body: `{ "workload_id" }` and nothing else.
         if route.ends_with("/extend") {
+            let standby_route = route.ends_with("/standby/extend");
             let Some(workload) = body["workload_id"]
                 .as_str()
                 .filter(|_| body.as_object().is_some_and(|object| object.len() == 1))
@@ -180,6 +190,16 @@ impl FakeProvider {
             }
             if state.workload.as_deref() != Some(workload) {
                 return error("unknown_workload", "no such lease");
+            }
+            if standby_route != (state.role == "standby") {
+                return if standby_route {
+                    error("not_standby", "this lease is not a Warm Standby")
+                } else {
+                    error(
+                        "not_running",
+                        "this lease is a reservation; extend it on .standby.extend",
+                    )
+                };
             }
             state.expires_at += 3600;
             return json!({ "workload_id": workload, "expires_at": state.expires_at });
@@ -194,10 +214,14 @@ impl FakeProvider {
         let field = |name: &str| request[name].as_str().unwrap_or_default().to_owned();
         let op = if route.ends_with("/spawn") {
             "spawn"
+        } else if route.ends_with("/standby") {
+            "standby"
         } else if route.ends_with("/status") {
             "status"
         } else if route.ends_with("/terminate") {
             "terminate"
+        } else if route.ends_with("/rotate") {
+            "rotate"
         } else {
             return error("invalid_request", "unknown route");
         };
@@ -208,7 +232,7 @@ impl FakeProvider {
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        if op == "spawn" {
+        if op == "spawn" || op == "standby" {
             if let Some(code) = &state.spawn_error {
                 return error(code, "the spawn was refused");
             }
@@ -222,9 +246,22 @@ impl FakeProvider {
             state.token = Some(field("continuation"));
             state.workload = Some(workload.clone());
             state.expires_at = unix_now() + 3600;
+            if op == "standby" {
+                state.role = "standby".to_owned();
+                return json!({
+                    "workload_id": workload,
+                    "role": "standby",
+                    "expires_at": state.expires_at,
+                });
+            }
+            state.role = if request["content"]["standby_set"].is_array() {
+                "primary".to_owned()
+            } else {
+                "standalone".to_owned()
+            };
             return json!({
                 "workload_id": workload,
-                "role": "standalone",
+                "role": state.role,
                 "expires_at": state.expires_at,
                 "access": {
                     "host": "203.0.113.7",
@@ -242,13 +279,39 @@ impl FakeProvider {
         if state.ended {
             return error("expired", "the lease has ended");
         }
+        if op == "rotate" {
+            if let (Some(dir), None) = (state.lease_dir.clone(), &state.next_secret_at_rotate) {
+                let file = std::fs::read_to_string(dir.join(format!("{workload}.json")))
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+                state.next_secret_at_rotate =
+                    Some(file.and_then(|file| file["next_secret"].as_str().map(str::to_owned)));
+            }
+            if state.rotate_unavailable {
+                return error("unavailable", "could not save that right now; try again");
+            }
+            let next = request["content"]["next"].as_str().unwrap_or_default();
+            state.token = Some(next.to_owned());
+            if state.rotate_answer_lost {
+                return error("unavailable", "could not save that right now; try again");
+            }
+            return json!({ "workload_id": workload, "rotated": true });
+        }
         if op == "terminate" {
             state.ended = true;
             return json!({ "workload_id": workload, "state": { "ended": "termination" } });
         }
+        if state.role == "standby" {
+            return json!({
+                "workload_id": workload,
+                "role": "standby",
+                "state": "reserved",
+                "expires_at": state.expires_at,
+            });
+        }
         json!({
             "workload_id": workload,
-            "role": "standalone",
+            "role": state.role,
             "state": "running",
             "expires_at": state.expires_at,
             "access": { "host": "203.0.113.7", "ssh_port": 40000, "ports": [] },

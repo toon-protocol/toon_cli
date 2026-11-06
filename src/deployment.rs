@@ -16,7 +16,7 @@ use crate::cli::DeploymentCommand;
 use crate::egress::Egress;
 use crate::event;
 use crate::home;
-use crate::lease_file::{Claim, Lease};
+use crate::lease_file::{self, Claim, Lease};
 use crate::node::State;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::subscribe;
@@ -240,9 +240,10 @@ fn build(now: u64, inputs: &Inputs) -> Result<(Tags, String), Error> {
 pub fn for_lease(
     now: u64,
     claim: &Claim,
-    lease: &Lease,
+    members: &[Lease],
     expires_at: u64,
 ) -> Result<(Tags, String), Error> {
+    let lease = &members[0];
     build(
         now,
         &Inputs {
@@ -251,7 +252,7 @@ pub fn for_lease(
             commit: &claim.commit,
             listing: &lease.listing,
             primary: &lease.provider,
-            standby: &[],
+            standby: &standby_providers(members),
             workload: &lease.workload_id,
             image: None,
             url: claim.url.as_deref(),
@@ -262,8 +263,24 @@ pub fn for_lease(
     )
 }
 
-/// The `toon deployment publish` command that makes the Deployment of `lease` by hand.
-pub fn retry_command(claim: &Claim, lease: &Lease, expires_at: u64) -> String {
+/// The standbys of a lease that a Deployment names: each one bought and not ended.
+fn standby_providers(members: &[Lease]) -> Vec<String> {
+    members[1..]
+        .iter()
+        .filter(|member| {
+            !matches!(
+                member.state,
+                lease_file::State::Failed | lease_file::State::Ended
+            )
+        })
+        .map(|member| member.provider.clone())
+        .collect()
+}
+
+/// The `toon deployment publish` command that makes the Deployment of the lease `members`
+/// make up by hand.
+pub fn retry_command(claim: &Claim, members: &[Lease], expires_at: u64) -> String {
+    let lease = &members[0];
     let mut command = format!(
         "toon deployment publish {} --repo {} --commit {} --listing {} --primary {} --workload {} \
          --expires-at {expires_at}",
@@ -274,6 +291,9 @@ pub fn retry_command(claim: &Claim, lease: &Lease, expires_at: u64) -> String {
         lease.provider,
         lease.workload_id
     );
+    for standby in standby_providers(members) {
+        command.push_str(&format!(" --standby {standby}"));
+    }
     if let Some(url) = &claim.url {
         command.push_str(&format!(" --url {}", shell_word(url)));
     }
