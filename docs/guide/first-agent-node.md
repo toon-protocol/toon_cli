@@ -46,7 +46,8 @@ toon wallet fund
 toon wallet balances
 ```
 
-The devnet faucet sends the token the connector is paid in. That is enough for `toon up`.
+The devnet faucet sends the token the connector is paid in, which a deposit moves into a channel.
+`toon up` needs none of it.
 It sends no ETH: depositing into a channel, which joining a network does, costs gas, so send
 a little Base Sepolia ETH from a public faucet to the address `toon wallet show` lists. See
 [Money](money.md#funding) for what each command needs.

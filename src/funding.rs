@@ -219,21 +219,23 @@ pub fn ensure_deposit(
     chain: Option<Chain>,
     amount: u128,
 ) -> Result<(), Error> {
-    let mut wanted = deposit_needs(home, app)?;
-    let chain = chain.map(Chain::name).or(match (&app.evm, &app.solana) {
-        (Some(_), None) => Some("evm"),
-        (None, Some(_)) => Some("solana"),
+    let chain = chain.or(match (&app.evm, &app.solana) {
+        (Some(_), None) => Some(Chain::Evm),
+        (None, Some(_)) => Some(Chain::Solana),
         _ => None,
     });
-    if let (Some(chain), true) = (chain, amount > 0) {
-        let mut tokens = needs(home, app)?;
-        tokens.retain(|need| need.chain == chain && !need.gas);
-        for need in &mut tokens {
+    let mut wanted = needs(home, app)?;
+    wanted.retain_mut(|need| {
+        if need.gas {
+            return need.purpose == Purpose::Deposit;
+        }
+        let moved = amount > 0 && chain.is_some_and(|chain| chain.name() == need.chain);
+        if moved {
             need.amount = amount;
             need.shown = format!("{amount} base units of {} to deposit", need.token);
         }
-        wanted.extend(tokens);
-    }
+        moved
+    });
     let lacking = shortfalls(&Egress::of(home)?, wanted).unwrap_or_default();
     if lacking.is_empty() {
         return Ok(());

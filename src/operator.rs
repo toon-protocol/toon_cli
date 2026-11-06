@@ -2308,7 +2308,9 @@ pub fn channel(home: &Path, command: ChannelCommand) -> Result<Report, Error> {
 pub fn peer(home: &Path, command: &PeerCommand) -> Result<Report, Error> {
     match command {
         PeerCommand::Add(args) => {
-            // Refused before the spending limit is charged: nothing is sent.
+            // Refused before the spending limit is charged: nothing is sent. A deposit over
+            // the limit is refused as such, whatever the wallet holds.
+            spending::check(home, args.deposit)?;
             ensure_deposit(home, args.chain, args.deposit)?;
             spending::spend(home, args.deposit, args.yes, || {
                 let peered = peer_add(

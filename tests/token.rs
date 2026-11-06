@@ -202,3 +202,81 @@ fn create_without_a_deposit_succeeds_when_the_new_key_holds_no_token() {
 
     assert_eq!(created.exit_code, 0, "{}", created.stdout);
 }
+
+#[test]
+fn deposits_of_what_the_wallet_holds_pass_the_check() {
+    let (machine, _chain, _address, _up) = running(2000);
+    let terms = machine.home().join("terms.json");
+    fs::write(&terms, "{}").unwrap();
+    let terms = terms.to_str().unwrap().to_owned();
+
+    let open = machine.toon(&[
+        "channel",
+        "open",
+        "--terms",
+        &terms,
+        "--deposit",
+        "2000",
+        "--json",
+    ]);
+    let fund = machine.toon(&["channel", "fund", "0xab", "--amount", "2000", "--json"]);
+    let create = machine.toon_with(
+        &[
+            "create",
+            "second",
+            "--image",
+            "second:1",
+            "--clearnet",
+            "second.example.com",
+            "--deposit",
+            "1000",
+            "--yes",
+            "--json",
+        ],
+        |command| {
+            command.env("TOON_PASSPHRASE", support::PASSPHRASE);
+        },
+    );
+
+    // The fake chain takes no transaction, so the connector refuses what comes after.
+    for run in [open, fund, create] {
+        assert_ne!(run.json()["error"]["code"], "unfunded", "{}", run.stdout);
+    }
+}
+
+#[test]
+fn a_deposit_whose_chain_the_connector_chooses_is_not_checked() {
+    let (evm, solana) = (
+        FakeChain::start_tokenless(),
+        FakeSolana::start_with(SOLANA_FEES, 0),
+    );
+    let machine = Machine::new();
+    init_on_solana(&machine, &evm, &solana);
+
+    let fund = machine.toon(&["channel", "fund", "0xab", "--amount", "5", "--json"]);
+
+    // Past the check, nothing runs to send it to.
+    assert_eq!(
+        fund.json()["error"]["code"],
+        "not_running",
+        "{}",
+        fund.stdout
+    );
+}
+
+#[test]
+fn a_chain_that_cannot_be_asked_is_not_a_verdict() {
+    let chain = FakeChain::start_tokenless();
+    let machine = Machine::new();
+    assert_eq!(machine.init_on_clearnet(&chain).exit_code, 0);
+    drop(chain);
+
+    let fund = machine.toon(&["channel", "fund", "0xab", "--amount", "5", "--json"]);
+
+    assert_eq!(
+        fund.json()["error"]["code"],
+        "not_running",
+        "{}",
+        fund.stdout
+    );
+}

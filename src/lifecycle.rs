@@ -249,7 +249,9 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
         return Ok(created(home, &new, &from, restarted, Vec::new()));
     };
     // Each key sends a deposit, so each needs gas. The new key is checked in `made`.
-    // The source key pays both deposits, so it must hold twice the amount.
+    // The source key pays both deposits, so it must hold twice the amount. A deposit over
+    // the limit is refused as such, whatever the wallet holds.
+    spending::check(home, deposit.saturating_mul(2))?;
     funding::ensure_deposit(
         home,
         state.network,
@@ -364,11 +366,13 @@ fn made(
     // A connector whose key holds nothing would fail later and not say why. A chain that
     // cannot be asked is not a verdict, as it is not for `toon up`. The key sends a
     // deposit only if one was asked for, and that needs gas.
-    let mut wanted = funding::start_needs(home, new).map_err(undo)?;
-    if deposit {
-        wanted = funding::needs(home, new).map_err(undo)?;
-        wanted.retain(|need| need.is_gas());
+    let wanted = if deposit {
+        funding::needs(home, new)
+            .map(|needs| needs.into_iter().filter(|need| need.is_gas()).collect())
+    } else {
+        funding::start_needs(home, new)
     }
+    .map_err(undo)?;
     if let Ok(lacking) = funding::shortfalls(&Egress::of_state(home, &changed), wanted) {
         if !lacking.is_empty() {
             return Err(undo(funding::unfunded(
