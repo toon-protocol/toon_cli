@@ -25,6 +25,9 @@ pub struct State {
     /// found: whether the file was there, and its mode.
     pub lease_dir: Option<PathBuf>,
     pub file_at_spawn: Option<(bool, u32)>,
+    /// The nth `extend` (counting from 1) is answered with an error instead of an extension.
+    pub fail_extend_at: Option<usize>,
+    extends: usize,
     token: Option<String>,
     workload: Option<String>,
     ended: bool,
@@ -100,6 +103,11 @@ impl FakeProvider {
         })
     }
 
+    /// When the lease the provider holds now ends.
+    pub fn expires_at(&self) -> u64 {
+        self.with(|state| state.expires_at)
+    }
+
     fn serve(&self, mut stream: TcpStream) {
         let mut buffer = Vec::new();
         let mut chunk = [0u8; 4096];
@@ -157,6 +165,24 @@ impl FakeProvider {
                 Some(code) => json!({ "would_run": false, "error": code, "message": "refused" }),
                 None => json!({ "would_run": true }),
             };
+        }
+        // `extend` is the one paid route with a bare body: `{ "workload_id" }` and nothing else.
+        if route.ends_with("/extend") {
+            let Some(workload) = body["workload_id"]
+                .as_str()
+                .filter(|_| body.as_object().is_some_and(|object| object.len() == 1))
+            else {
+                return error("invalid_request", "not the bare extend body");
+            };
+            state.extends += 1;
+            if state.fail_extend_at == Some(state.extends) {
+                return error("unavailable", "the extension failed");
+            }
+            if state.workload.as_deref() != Some(workload) {
+                return error("unknown_workload", "no such lease");
+            }
+            state.expires_at += 3600;
+            return json!({ "workload_id": workload, "expires_at": state.expires_at });
         }
         // Every other route carries a Lease Request, and nothing else (spec §5).
         let Some(request) = body["request"]
