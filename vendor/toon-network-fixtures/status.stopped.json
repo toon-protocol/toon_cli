@@ -1,0 +1,29 @@
+{
+  "fixture": {
+    "case": "stopped",
+    "description": "The same primary after five Liveness cadences that reached no relay of its own Relay Set (spec §7.1, \"Primary self-stop\"): `state` is the one word `stopped` and there is NO `access`, because the workload's container is off. Nothing about the LEASE ended — `role` is still `primary`, `expires_at` is unchanged, and `.extend` still buys another interval — and the workload starts again if the relays come back before any member of the Standby Set has claimed the workload id. The request is the same question as `status.primary`, asked with a longer TTL so that it is a different event (§6.1).",
+    "generated_by": "toon-provider tests/wire_fixtures.rs",
+    "surface": "status"
+  },
+  "http_path": "/status",
+  "request_body": {
+    "request": {
+      "content": {
+        "workload_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+      },
+      "continuation": "13aaa05ae89d8fb81acd101b9daabd5b037135291deac980842ee8b7c282fb6d",
+      "expiration": 1700000060,
+      "op": "status",
+      "provider": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "request_id": "64691bc9ebb42d6214cce83bf75cde4aad0b75e0050a5c615f38e5deb30ba67d"
+    }
+  },
+  "response_body": {
+    "expires_at": 1700003600,
+    "role": "primary",
+    "state": "stopped",
+    "workload_id": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+  },
+  "response_status": 200,
+  "route": "g.fixture.status"
+}

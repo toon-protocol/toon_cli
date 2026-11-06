@@ -49,3 +49,12 @@ tip_route_not_listed
 tip_seal_key_mismatch
 tip_below_minimum
 stop_timed_out
+lease_limit
+image_not_pinned
+seal_key_mismatch
+listing_not_found
+listing_withdrawn
+would_not_run
+lease_refused
+lease_not_held
+lease_body_shape

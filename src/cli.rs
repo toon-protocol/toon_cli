@@ -168,6 +168,15 @@ pub enum Command {
         #[command(subcommand)]
         command: DeploymentCommand,
     },
+    /// Rent TOON Compute: spawn a workload on a provider's Listing, read its status and end it.
+    /// A lease is paid per Lease Interval and nothing is refunded, not even for the time left
+    /// when you terminate it. Everything that controls a lease is its root secret, kept in a
+    /// lease file (`leases/` in the home, or beside the agent key file): lose the file and you
+    /// lose control of the lease
+    Compute {
+        #[command(subcommand)]
+        command: ComputeCommand,
+    },
     /// Manage the channels the connector pays and is paid on
     Channel {
         #[command(subcommand)]
@@ -803,6 +812,85 @@ pub enum NipCommand {
         #[arg(long, default_value_t = 0)]
         amount: u64,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ComputeCommand {
+    /// Rent one Lease Interval of a Listing: resolve it and its provider's Profile, ask the
+    /// provider whether the spawn would run (free), write the lease file, pay the spawn and
+    /// print the access details and `expires_at`. The Lease Interval is paid up front and
+    /// not refunded
+    Spawn(Box<ComputeSpawnArgs>),
+    /// Ask a provider about a lease this node holds, free: its state, `expires_at` and
+    /// access details. It settles a lease whose spawn nobody answered
+    Status {
+        /// The lease's workload id, as `list` shows it
+        workload: String,
+    },
+    /// End a lease this node holds, free. The time paid until `expires_at` is lost: nothing
+    /// is refunded
+    Terminate {
+        /// The lease's workload id
+        workload: String,
+        /// Go ahead and lose the paid time that is left
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List the leases this node holds, from their files: provider, Listing, version, role,
+    /// `expires_at`, what was paid, the lease limit and whether the spawn failed or went
+    /// unanswered
+    List {
+        /// Also ask each provider for the lease's status, free
+        #[arg(long)]
+        check: bool,
+    },
+    /// Remove a lease's file. That is not ending the lease: if it is still live, its root
+    /// secret goes with the file, and nobody can read, extend or end it any more
+    Forget {
+        /// The lease's workload id
+        workload: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct ComputeSpawnArgs {
+    /// The Listing: an `naddr` or `30432:<provider pubkey>:<listing name>`
+    pub listing: String,
+    /// The image, pinned by digest: `<repository>@sha256:<64 hex>`, or `sha256:<64 hex>` alone
+    /// or with `--registry-entry`. A tag is refused
+    #[arg(long)]
+    pub image: String,
+    /// Where an image given by digest alone is listed: `30434:<pubkey>:<name>:<tag>`, an Image
+    /// Registry entry
+    #[arg(long, value_name = "ADDRESS")]
+    pub registry_entry: Option<String>,
+    /// A relay to find the Image Registry entry at: a hint for the provider
+    #[arg(long, value_name = "URL", requires = "registry_entry")]
+    pub registry_relay: Option<String>,
+    /// A port to publish, `<n>`, `<n>/tcp` or `<n>/udp`; repeatable
+    #[arg(long = "port", value_name = "PORT")]
+    pub ports: Vec<String>,
+    /// An environment variable, `NAME=value`; repeatable
+    #[arg(long = "env", value_name = "NAME=VALUE")]
+    pub env: Vec<String>,
+    /// The SSH public key that may log in: the key itself or a file that holds it
+    #[arg(long, value_name = "FILE_OR_KEY")]
+    pub ssh_key: String,
+    /// A persistent volume, in GB, no more than the Listing's storage
+    #[arg(long, value_name = "GB")]
+    pub volume_gb: Option<u64>,
+    /// The lease limit: the most this lease may pay in total, in base units. None if omitted
+    #[arg(long, value_name = "BASE_UNITS")]
+    pub max: Option<u64>,
+    /// Read the Listing and Profile from this relay as well; repeatable
+    #[arg(long = "relay", value_name = "URL")]
+    pub relays: Vec<String>,
+    /// Do not ask the free availability route before paying
+    #[arg(long)]
+    pub no_check: bool,
+    /// Go ahead and pay
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Subcommand)]
