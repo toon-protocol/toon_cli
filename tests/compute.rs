@@ -316,6 +316,16 @@ fn help_states_what_a_lease_costs_and_what_losing_its_file_loses() {
         flat.contains("lose the file and you lose control of the lease"),
         "{flat}"
     );
+    for args in [
+        &["compute", "extend", "--help"],
+        &["compute", "spawn", "--help"],
+    ] {
+        let help = machine.toon(args);
+        assert_eq!(help.exit_code, 0);
+        let flat = help.stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("no `--until-done`"), "{flat}");
+        assert!(flat.contains("extends by calling `extend`"), "{flat}");
+    }
 }
 
 #[test]
@@ -439,6 +449,12 @@ fn world(chain: &AnvilChain) -> World {
         ("status", "status", "/status", 0),
         ("terminate", "terminate", "/terminate", 0),
         ("spawn", "basic.v1.spawn", "/listings/basic/v1/spawn", PRICE),
+        (
+            "extend",
+            "basic.v1.extend",
+            "/listings/basic/v1/extend",
+            PRICE,
+        ),
     ] {
         let added = far.toon(&[
             "add",
@@ -802,4 +818,277 @@ fn a_spawn_whose_file_cannot_be_written_is_not_sent() {
         .as_str()
         .unwrap()
         .contains("nothing was sent"));
+}
+
+fn extend_fixture() -> Value {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/toon-network-fixtures/extend.ok.json");
+    serde_json::from_str(&fs::read_to_string(path).expect("the extend fixture")).unwrap()
+}
+
+#[test]
+fn intervals_are_prepaid_in_one_command_and_the_file_follows_the_last_answer() {
+    let chain = AnvilChain::start();
+    let world = world(&chain);
+
+    // `--for` rounds up and says the count and the total before it pays.
+    let rounded = world.spawn(&["--for", "150m", "--yes"]);
+    assert_eq!(rounded.exit_code, 0, "{}{}", rounded.stdout, rounded.stderr);
+    assert!(
+        rounded.stderr.contains("3 Lease Intervals") && rounded.stderr.contains("3000"),
+        "{}",
+        rounded.stderr
+    );
+    assert_eq!(rounded.json()["intervals"], 3);
+    assert_eq!(rounded.json()["paid"], 3 * PRICE);
+    let unconfirmed = world.spawn(&["--for", "61m"]);
+    assert_eq!(error_code(&unconfirmed), "not_confirmed");
+    assert!(unconfirmed.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("2 Lease Intervals"));
+    assert_eq!(world.provider.count("spawn"), 1);
+
+    // One spawn and two extends; the extend body is the fixture's request body.
+    assert_eq!(world.provider.count("extend"), 2);
+    let workload = rounded.json()["workload_id"].as_str().unwrap().to_owned();
+    let fixture = extend_fixture();
+    let mut expected = fixture["request_body"].clone();
+    expected["workload_id"] = json!(workload);
+    assert_eq!(world.provider.last("extend"), Some(expected));
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["paid"], 3 * PRICE);
+    assert_eq!(lease["expires_at"], rounded.json()["expires_at"]);
+    assert_eq!(lease["expires_at"], world.provider.expires_at());
+
+    // `extend` prepays more, and `--max` changes the lease limit.
+    let unconfirmed = world.near.toon(&["compute", "extend", &workload, "--json"]);
+    assert_eq!(error_code(&unconfirmed), "not_confirmed");
+    assert_eq!(world.provider.count("extend"), 2);
+    let remaining_before = remaining_today(&world.near);
+    let extended = world.near.toon(&[
+        "compute",
+        "extend",
+        &workload,
+        "--intervals",
+        "2",
+        "--max",
+        "9000",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(
+        extended.exit_code, 0,
+        "{}{}",
+        extended.stdout, extended.stderr
+    );
+    assert_eq!(world.provider.count("extend"), 4);
+    assert_eq!(extended.json()["paid"], 5 * PRICE);
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["paid"], 5 * PRICE);
+    assert_eq!(lease["lease_limit"], 9000);
+    assert_eq!(lease["expires_at"], extended.json()["expires_at"]);
+    assert_eq!(lease["expires_at"], world.provider.expires_at());
+    assert_eq!(
+        remaining_today(&world.near) + u128::from(2 * PRICE),
+        remaining_before
+    );
+
+    // A lease this node does not hold is refused.
+    let strange = world
+        .near
+        .toon(&["compute", "extend", &"ab".repeat(32), "--yes", "--json"]);
+    assert_eq!(error_code(&strange), "lease_not_held");
+}
+
+#[test]
+fn an_extend_over_a_limit_is_refused_with_the_total_and_the_limit_and_sends_nothing() {
+    let chain = AnvilChain::start();
+    let world = world(&chain);
+    let spawned = world.spawn(&["--max", "2500", "--yes"]);
+    assert_eq!(spawned.exit_code, 0, "{}{}", spawned.stdout, spawned.stderr);
+    let workload = spawned.json()["workload_id"].as_str().unwrap().to_owned();
+
+    // The lease limit counts what the lease has paid already: 1000 + 2000 > 2500.
+    let over_max = world.near.toon(&[
+        "compute",
+        "extend",
+        &workload,
+        "--intervals",
+        "2",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(error_code(&over_max), "lease_limit", "{}", over_max.stdout);
+    let message = over_max.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        message.contains("2000") && message.contains("2500"),
+        "{message}"
+    );
+
+    // `toon limit`, per command: the whole extend is one command.
+    let set = world
+        .near
+        .toon(&["limit", "set", "--max-per-command", "1500", "--json"]);
+    assert_eq!(set.exit_code, 0, "{}{}", set.stdout, set.stderr);
+    let over_limit = world.near.toon(&[
+        "compute",
+        "extend",
+        &workload,
+        "--intervals",
+        "2",
+        "--max",
+        "9000",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(
+        error_code(&over_limit),
+        "spending_limit",
+        "{}",
+        over_limit.stdout
+    );
+    let message = over_limit.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        message.contains("2000") && message.contains("1500"),
+        "{message}"
+    );
+    assert_eq!(world.provider.count("extend"), 0);
+    // The refused `--max` was not kept.
+    assert_eq!(read_lease(&world.leases())["lease_limit"], 2500);
+
+    // The agent key's limits, read from the connector: per packet and per day.
+    let keys = tempfile::tempdir().unwrap();
+    let key_file = keys.path().join("agent.json");
+    let created = world.near.toon(&[
+        "agent-key",
+        "create",
+        "--max-per-command",
+        "5000",
+        "--out",
+        key_file.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(created.exit_code, 0, "{}{}", created.stdout, created.stderr);
+    let public = created.json()["agent_key"]["public_key"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let nowhere = tempfile::tempdir().unwrap();
+    let as_agent = |args: &[&str]| -> Run {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let run = world.near.machine.toon_with(args, |command| {
+                command
+                    .env("HOME", nowhere.path())
+                    .env("TOON_AGENT_KEY", &key_file);
+            });
+            if run.exit_code != 1
+                || !run.stdout.contains("did not answer")
+                || Instant::now() > deadline
+            {
+                return run;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let relay = world.directory.url();
+    let image = image();
+    let agent_spawn = spawn_args(&world.coordinate, &relay, &["--image", &image, "--yes"]);
+    let rented = as_agent(&agent_spawn);
+    assert_eq!(rented.exit_code, 0, "{}{}", rented.stdout, rented.stderr);
+    let agent_workload = rented.json()["workload_id"].as_str().unwrap().to_owned();
+    let per_packet = world.near.toon(&[
+        "agent-key",
+        "set",
+        &public,
+        "--max-per-command",
+        "999",
+        "--json",
+    ]);
+    assert_eq!(
+        per_packet.exit_code, 0,
+        "{}{}",
+        per_packet.stdout, per_packet.stderr
+    );
+    let refused = as_agent(&["compute", "extend", &agent_workload, "--yes", "--json"]);
+    assert_eq!(error_code(&refused), "spending_limit", "{}", refused.stdout);
+    let message = refused.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        message.contains("1000") && message.contains("999"),
+        "{message}"
+    );
+    assert_eq!(world.provider.count("extend"), 0);
+    let per_day = world.near.toon(&[
+        "agent-key",
+        "set",
+        &public,
+        "--max-per-command",
+        "2500",
+        "--max-per-day",
+        "2500",
+        "--json",
+    ]);
+    assert_eq!(per_day.exit_code, 0, "{}{}", per_day.stdout, per_day.stderr);
+    let refused = as_agent(&[
+        "compute",
+        "extend",
+        &agent_workload,
+        "--intervals",
+        "3",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(error_code(&refused), "spending_limit", "{}", refused.stdout);
+    let message = refused.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        message.contains("3000") && message.contains("1500"),
+        "{message}"
+    );
+    assert_eq!(world.provider.count("extend"), 0);
+    // Within them, the agent extends.
+    let extended = as_agent(&["compute", "extend", &agent_workload, "--yes", "--json"]);
+    assert_eq!(
+        extended.exit_code, 0,
+        "{}{}",
+        extended.stdout, extended.stderr
+    );
+    assert_eq!(world.provider.count("extend"), 1);
+}
+
+#[test]
+fn a_provider_that_fails_the_second_extend_leaves_the_first_in_the_file() {
+    let chain = AnvilChain::start();
+    let world = world(&chain);
+    world.provider.with(|state| state.fail_extend_at = Some(2));
+    let run = world.spawn(&["--intervals", "4", "--yes"]);
+    assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
+    assert_eq!(error_code(&run), "lease_partly_paid", "{}", run.stdout);
+    // The spawn and the first extend, then the failed one: nothing after it, no retry.
+    assert_eq!(world.provider.count("spawn"), 1);
+    assert_eq!(world.provider.count("extend"), 2);
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["state"], "live");
+    // The first extend's answer, not the one of a later packet.
+    let expires_at = lease["expires_at"].as_u64().unwrap();
+    assert_eq!(expires_at, world.provider.expires_at());
+    // The failed extend was billed all the same, as a refused spawn is.
+    assert_eq!(lease["paid"], 3 * PRICE);
+    let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
+    assert!(
+        message.contains("2 of 4") && message.contains(&expires_at.to_string()),
+        "{message}"
+    );
 }

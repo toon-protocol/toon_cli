@@ -60,6 +60,8 @@ pub struct Lease {
     pub listing: String,
     pub listing_name: String,
     pub listing_version: u64,
+    /// What one Lease Interval costs at this version, in base units: what an extend pays.
+    pub price: u64,
     pub role: String,
     pub expires_at: Option<u64>,
     /// What has been paid for the lease, in base units.
@@ -98,6 +100,7 @@ impl Lease {
         file["connector_url"] = json!(self.connector_url);
         file["connector_seal_key"] = json!(self.connector_seal_key);
         file["listing_name"] = json!(self.listing_name);
+        file["price"] = json!(self.price);
         file
     }
 
@@ -113,6 +116,8 @@ impl Lease {
             listing: text("listing")?,
             listing_name: text("listing_name")?,
             listing_version: file["listing_version"].as_u64()?,
+            // A file written before extends existed paid one interval: that was the price.
+            price: file["price"].as_u64().or_else(|| file["paid"].as_u64())?,
             role: text("role")?,
             expires_at: file["expires_at"].as_u64(),
             paid: file["paid"].as_u64()?,

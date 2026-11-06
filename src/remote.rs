@@ -777,7 +777,9 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
         Command::Compute { command } => {
             let key = KeyFile::load(path)?;
             let limit = match &command {
-                ComputeCommand::Spawn(_) => Some(agent_limit(&key, app)?),
+                ComputeCommand::Spawn(_) | ComputeCommand::Extend(_) => {
+                    Some(agent_limit(&key, app)?)
+                }
                 _ => None,
             };
             crate::compute::run(
