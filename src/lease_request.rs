@@ -70,6 +70,17 @@ pub fn continuation(root: &[u8; 32], provider: &str) -> String {
     hex::encode(token)
 }
 
+/// The `content` of a rotate (§6.8): `next` is the token `member` holds from the new root
+/// secret once it has confirmed.
+pub fn rotate_content(workload_id: &str, next: &[u8; 32], member: &str) -> Value {
+    json!({ "workload_id": workload_id, "next": continuation(next, member) })
+}
+
+/// Whether the body a rotate was answered with confirms it (`rotate.ok`).
+pub fn rotated(body: &Value) -> bool {
+    body["rotated"] == json!(true)
+}
+
 /// A Lease Request, the object that is the value of `request` in a body.
 pub struct Request<'a> {
     pub op: &'a str,
@@ -353,6 +364,26 @@ mod tests {
             destination("g.fixture", Route::Status, "basic", 1),
             "g.fixture.status"
         );
+    }
+
+    #[test]
+    fn a_rotate_derives_its_next_from_the_new_secret_and_its_answer_is_read_as_success() {
+        let constants = fixture("constants");
+        let next: [u8; 32] = hex::decode(text(&constants["rotated_tenant"]["root_secret"]))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let recorded = fixture("lease_request.rotate");
+        assert_eq!(
+            rotate_content(
+                text(&recorded["request"]["content"]["workload_id"]),
+                &next,
+                text(&constants["provider"]["public_key"]),
+            ),
+            recorded["request"]["content"]
+        );
+        assert!(rotated(&fixture("rotate.ok")["response_body"]));
+        assert!(!rotated(&json!({ "workload_id": "aa".repeat(32) })));
     }
 
     #[test]

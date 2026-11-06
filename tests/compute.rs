@@ -822,7 +822,10 @@ fn a_lease_is_rotated_and_an_interrupted_rotation_is_finished() {
         .to_owned();
 
     // A provider that cannot save: both secrets stay, and the command names the member.
-    world.provider.with(|state| state.rotate_unavailable = true);
+    world.provider.with(|state| {
+        state.rotate_unavailable = true;
+        state.lease_dir = Some(world.leases());
+    });
     let stuck = world.near.toon(&["compute", "rotate", &workload, "--json"]);
     assert_eq!(stuck.exit_code, 1, "{}{}", stuck.stdout, stuck.stderr);
     assert_eq!(error_code(&stuck), "rotation_incomplete");
@@ -836,6 +839,13 @@ fn a_lease_is_rotated_and_an_interrupted_rotation_is_finished() {
     assert_eq!(new_secret.len(), 64);
     assert_ne!(new_secret, old_secret);
     assert!(!stuck.stdout.contains(&new_secret));
+    // The new secret was in the file before the first rotate packet arrived.
+    assert_eq!(
+        world
+            .provider
+            .with(|state| state.next_secret_at_rotate.clone()),
+        Some(Some(new_secret.clone()))
+    );
 
     // The rotate body carried the old token and a `next` the new secret derives.
     let first = world.provider.last("rotate").unwrap();

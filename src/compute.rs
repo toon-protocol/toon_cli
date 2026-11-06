@@ -945,12 +945,9 @@ pub fn rotate(renter: &Renter, workload: &str) -> Result<Report, Error> {
         if lease.rotated.contains(member) {
             continue;
         }
-        let content = json!({
-            "workload_id": lease.workload_id,
-            "next": lease_request::continuation(&next, member),
-        });
+        let content = lease_request::rotate_content(&lease.workload_id, &next, member);
         let reason = match ask_with(renter, &lease, Route::Rotate, "rotate", content)? {
-            Reply::Body(body) if body["rotated"] == json!(true) => None,
+            Reply::Body(body) if lease_request::rotated(&body) => None,
             Reply::Error { error, message } if error == "not_tenant" => {
                 // An earlier run may have been confirmed without our hearing it: the member
                 // then knows only the new token, and reads the lease with it.
@@ -985,7 +982,9 @@ pub fn rotate(renter: &Renter, workload: &str) -> Result<Report, Error> {
         return Err(failure(
             ErrorCode::RotationIncomplete,
             format!(
-                "The rotation of lease {workload} is not complete: {}. The lease file keeps                  both secrets, and each member is presented the token it holds; run                  `toon compute rotate {workload}` again to finish.",
+                "The rotation of lease {workload} is not complete: {}. The lease file keeps \
+                 both secrets, and each member is presented the token it holds; run \
+                 `toon compute rotate {workload}` again to finish.",
                 stuck.join("; ")
             ),
         ));
