@@ -1,7 +1,7 @@
 //! A TOON Compute provider's app, written from §5 and §6 of the spec and the wire fixtures,
 //! for the tests of `toon compute`. Each route of the provider is served by its own connector
-//! route, whose handler URL is `<provider>/<path>`: `availability`, `status`, `terminate` and
-//! `listings/<name>/v<n>/spawn`. It keeps what it was sent, so a test can say what reached it.
+//! route, whose handler URL is `<provider>/<path>`: `availability`, `status`, `terminate`,
+//! `rotate` and `listings/<name>/v<n>/spawn`. It keeps what it was sent, so a test can say what reached it.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -25,6 +25,13 @@ pub struct State {
     /// found: whether the file was there, and its mode.
     pub lease_dir: Option<PathBuf>,
     pub file_at_spawn: Option<(bool, u32)>,
+    /// The `next_secret` the lease file in `lease_dir` held when the first rotate arrived.
+    pub next_secret_at_rotate: Option<Option<String>>,
+    /// A rotate that is answered `unavailable`, changing nothing.
+    pub rotate_unavailable: bool,
+    /// A rotate that takes effect but whose answer is an `unavailable` all the same, as if
+    /// the confirmation were lost.
+    pub rotate_answer_lost: bool,
     /// The nth `extend` (counting from 1) is answered with an error instead of an extension.
     pub fail_extend_at: Option<usize>,
     extends: usize,
@@ -213,6 +220,8 @@ impl FakeProvider {
             "status"
         } else if route.ends_with("/terminate") {
             "terminate"
+        } else if route.ends_with("/rotate") {
+            "rotate"
         } else {
             return error("invalid_request", "unknown route");
         };
@@ -269,6 +278,24 @@ impl FakeProvider {
         }
         if state.ended {
             return error("expired", "the lease has ended");
+        }
+        if op == "rotate" {
+            if let (Some(dir), None) = (state.lease_dir.clone(), &state.next_secret_at_rotate) {
+                let file = std::fs::read_to_string(dir.join(format!("{workload}.json")))
+                    .ok()
+                    .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+                state.next_secret_at_rotate =
+                    Some(file.and_then(|file| file["next_secret"].as_str().map(str::to_owned)));
+            }
+            if state.rotate_unavailable {
+                return error("unavailable", "could not save that right now; try again");
+            }
+            let next = request["content"]["next"].as_str().unwrap_or_default();
+            state.token = Some(next.to_owned());
+            if state.rotate_answer_lost {
+                return error("unavailable", "could not save that right now; try again");
+            }
+            return json!({ "workload_id": workload, "rotated": true });
         }
         if op == "terminate" {
             state.ended = true;

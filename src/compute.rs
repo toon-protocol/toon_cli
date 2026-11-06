@@ -334,7 +334,7 @@ fn fresh_hex() -> Result<String, Error> {
 
 /// A free request of `op` for `lease`, authorised by its token.
 fn lease_request(lease: &Lease, op: &str, content: Value) -> Result<Value, Error> {
-    let token = lease_request::continuation(&lease.root()?, &lease.provider);
+    let token = lease.token(&lease.provider)?;
     Ok(Request {
         op,
         request_id: &fresh_hex()?,
@@ -909,6 +909,8 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
                     state: State::Unknown,
                     error: None,
                     created_at: now(),
+                    next_secret: None,
+                    rotated: Vec::new(),
                 });
                 let request = Request {
                     op: if index == 0 { "spawn" } else { "standby" },
@@ -1362,8 +1364,24 @@ struct Asked {
 }
 
 fn ask(renter: &Renter, lease: &Lease, route: Route, op: &str) -> Result<Reply, Error> {
+    ask_with(
+        renter,
+        lease,
+        route,
+        op,
+        json!({ "workload_id": lease.workload_id }),
+    )
+}
+
+fn ask_with(
+    renter: &Renter,
+    lease: &Lease,
+    route: Route,
+    op: &str,
+    content: Value,
+) -> Result<Reply, Error> {
     renter.reaches(&lease.ilp_address, &lease.connector_url)?;
-    let request = lease_request(lease, op, json!({ "workload_id": lease.workload_id }))?;
+    let request = lease_request(lease, op, content)?;
     let destination = lease_request::destination(
         &lease.ilp_address,
         route,
@@ -1634,6 +1652,91 @@ pub fn terminate(renter: &Renter, workload: &str, yes: bool) -> Result<Report, E
     })
 }
 
+/// Replace the lease's token (§6.8). The new secret is written beside the old before the first
+/// packet; each member that confirms is recorded at once; the old secret goes only when every
+/// member has confirmed. A member of a set that was never bought, or has ended, is passed over.
+pub fn rotate(renter: &Renter, workload: &str) -> Result<Report, Error> {
+    let leases = renter.leases();
+    let mut members = leases.read(workload)?;
+    if members[0].next_secret.is_none() {
+        let next = Zeroizing::new(hex::encode(keystore::random::<32>()?));
+        for lease in &mut members {
+            lease.next_secret = Some(next.clone());
+            lease.rotated.clear();
+        }
+    }
+    // The new secret is in the file before anything is sent.
+    leases.write(&members)?;
+    let next = members[0].next_root()?.expect("a rotation is under way");
+    let set = members.len() > 1;
+    let mut stuck = Vec::new();
+    for index in 0..members.len() {
+        let lease = &mut members[index];
+        let member = lease.provider.clone();
+        if lease.rotated.contains(&member)
+            || (set && matches!(lease.state, State::Failed | State::Ended))
+        {
+            continue;
+        }
+        let content = lease_request::rotate_content(&lease.workload_id, &next, &member);
+        let reason = match ask_with(renter, lease, Route::Rotate, "rotate", content)? {
+            Reply::Body(body) if lease_request::rotated(&body) => None,
+            Reply::Error { error, message } if error == "not_tenant" => {
+                // An earlier run may have been confirmed without our hearing it: the member
+                // then knows only the new token, and reads the lease with it.
+                lease.rotated.push(member.clone());
+                match ask(renter, lease, Route::Status, "status")? {
+                    Reply::Body(_) => None,
+                    _ => {
+                        lease.rotated.retain(|done| *done != member);
+                        Some(format!("answered {error}: {message}"))
+                    }
+                }
+            }
+            Reply::Error { error, message } => Some(format!("answered {error}: {message}")),
+            Reply::Body(_) => Some("did not confirm the rotation".to_owned()),
+            Reply::Rejected { code, message } => {
+                Some(format!("the packet was rejected with {code}: {message}"))
+            }
+            Reply::Unanswered => Some("did not answer".to_owned()),
+            Reply::Strange(what) => Some(what),
+        };
+        match reason {
+            None => {
+                // Every member's copy of the lease says who holds the new token.
+                for lease in &mut members {
+                    if !lease.rotated.contains(&member) {
+                        lease.rotated.push(member.clone());
+                    }
+                }
+                leases.write(&members)?;
+            }
+            Some(reason) => stuck.push(format!("{member} {reason}")),
+        }
+    }
+    if !stuck.is_empty() {
+        return Err(failure(
+            ErrorCode::RotationIncomplete,
+            format!(
+                "The rotation of lease {workload} is not complete: {}. The lease file keeps \
+                 both secrets, and each member is presented the token it holds; run \
+                 `toon compute rotate {workload}` again to finish.",
+                stuck.join("; ")
+            ),
+        ));
+    }
+    for lease in &mut members {
+        lease.root_secret = lease.next_secret.take().expect("a rotation is under way");
+        lease.rotated.clear();
+    }
+    leases.write(&members)?;
+    Ok(Report {
+        exit: Exit::Success,
+        json: json!({ "workload_id": workload, "rotated": true }),
+        text: format!("Lease {workload} holds a new token; the old secret is gone from its file."),
+    })
+}
+
 fn row(lease: &Lease) -> String {
     let none = || "none".to_owned();
     format!(
@@ -1757,6 +1860,7 @@ pub fn run(renter: &Renter, command: &ComputeCommand) -> Result<Report, Error> {
         ComputeCommand::Extend(args) => extend(renter, args),
         ComputeCommand::Status { workload } => status(renter, workload),
         ComputeCommand::Terminate { workload, yes } => terminate(renter, workload, *yes),
+        ComputeCommand::Rotate { workload } => rotate(renter, workload),
         ComputeCommand::List { check } => list(renter, *check),
         ComputeCommand::Forget { workload } => forget(renter, workload),
     }

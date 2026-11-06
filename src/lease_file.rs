@@ -73,6 +73,11 @@ pub struct Lease {
     /// The error that left the lease `failed`, as the provider or the connector gave it.
     pub error: Option<(String, String)>,
     pub created_at: u64,
+    /// A fresh root secret a rotation (§6.8) is moving the lease to. The file keeps it beside
+    /// `root_secret` until every member has confirmed, then it replaces `root_secret`.
+    pub next_secret: Option<Zeroizing<String>>,
+    /// The members (provider public keys) that already hold the token of `next_secret`.
+    pub rotated: Vec<String>,
 }
 
 impl Lease {
@@ -91,6 +96,7 @@ impl Lease {
             "state": self.state.name(),
             "error": self.error.as_ref().map(|(code, message)| json!({ "code": code, "message": message })),
             "created_at": self.created_at,
+            "rotating": self.next_secret.is_some(),
         })
     }
 
@@ -111,6 +117,10 @@ impl Lease {
         let mut file = lease.member_json();
         file["version"] = json!(1);
         file["root_secret"] = json!(&*lease.root_secret);
+        if let Some(next) = &lease.next_secret {
+            file["next_secret"] = json!(&**next);
+            file["rotated"] = json!(lease.rotated);
+        }
         if members.len() > 1 {
             file["standbys"] = Value::Array(
                 members[1..]
@@ -118,7 +128,7 @@ impl Lease {
                     .map(|member| {
                         let mut json = member.member_json();
                         let shared = json.as_object_mut().expect("an object");
-                        for field in ["workload_id", "lease_limit", "created_at"] {
+                        for field in ["workload_id", "lease_limit", "created_at", "rotating"] {
                             shared.remove(field);
                         }
                         json
@@ -130,7 +140,8 @@ impl Lease {
     }
 
     /// A member of the lease `shared` (its first member) names: the workload id, the root
-    /// secret, the lease limit and the creation time are the lease's, not the member's.
+    /// secret, a rotation under way, the lease limit and the creation time are the lease's,
+    /// not the member's.
     fn from_json(file: &Value, shared: Option<&Lease>) -> Option<Self> {
         let text = |field: &str| file[field].as_str().map(str::to_owned);
         Some(Self {
@@ -173,12 +184,38 @@ impl Lease {
                 Some(lease) => lease.created_at,
                 None => file["created_at"].as_u64()?,
             },
+            next_secret: match shared {
+                Some(lease) => lease.next_secret.clone(),
+                None => file["next_secret"]
+                    .as_str()
+                    .map(|secret| Zeroizing::new(secret.to_owned())),
+            },
+            rotated: match (shared, file["rotated"].as_array()) {
+                (Some(lease), _) => lease.rotated.clone(),
+                (None, Some(members)) => members
+                    .iter()
+                    .map(|member| member.as_str().map(str::to_owned))
+                    .collect::<Option<_>>()?,
+                (None, None) => Vec::new(),
+            },
         })
     }
 
     /// The root secret as bytes.
     pub fn root(&self) -> Result<[u8; 32], Error> {
-        hex::decode(self.root_secret.as_str())
+        self.secret(self.root_secret.as_str())
+    }
+
+    /// The secret a rotation is moving to, as bytes, if one is under way.
+    pub fn next_root(&self) -> Result<Option<[u8; 32]>, Error> {
+        self.next_secret
+            .as_ref()
+            .map(|secret| self.secret(secret.as_str()))
+            .transpose()
+    }
+
+    fn secret(&self, text: &str) -> Result<[u8; 32], Error> {
+        hex::decode(text)
             .ok()
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| {
@@ -187,6 +224,17 @@ impl Lease {
                     self.workload_id
                 ))
             })
+    }
+
+    /// The Continuation Token `provider` holds for this lease: the one derived from the new
+    /// secret once it has confirmed a rotation, else the one from the root secret.
+    pub fn token(&self, provider: &str) -> Result<String, Error> {
+        match self.next_root()? {
+            Some(next) if self.rotated.iter().any(|member| member == provider) => {
+                Ok(crate::lease_request::continuation(&next, provider))
+            }
+            _ => Ok(crate::lease_request::continuation(&self.root()?, provider)),
+        }
     }
 
     /// The connector's sealing key, which every packet of the lease is sealed to.
