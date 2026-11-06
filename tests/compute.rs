@@ -463,6 +463,7 @@ fn world(chain: &AnvilChain) -> World {
         ("availability", "availability", "/availability", 0),
         ("status", "status", "/status", 0),
         ("terminate", "terminate", "/terminate", 0),
+        ("rotate", "rotate", "/rotate", 0),
         ("spawn", "basic.v1.spawn", "/listings/basic/v1/spawn", PRICE),
         (
             "extend",
@@ -833,6 +834,109 @@ fn a_spawn_whose_file_cannot_be_written_is_not_sent() {
         .as_str()
         .unwrap()
         .contains("nothing was sent"));
+}
+
+#[test]
+fn a_lease_is_rotated_and_an_interrupted_rotation_is_finished() {
+    let chain = AnvilChain::start();
+    let world = world(&chain);
+    let spawned = world.spawn(&["--no-check", "--yes"]);
+    assert_eq!(spawned.exit_code, 0, "{}{}", spawned.stdout, spawned.stderr);
+    let workload = spawned.json()["workload_id"].as_str().unwrap().to_owned();
+    let old_secret = read_lease(&world.leases())["root_secret"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let old_token = world.provider.last("spawn").unwrap()["request"]["continuation"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // A provider that cannot save: both secrets stay, and the command names the member.
+    world.provider.with(|state| {
+        state.rotate_unavailable = true;
+        state.lease_dir = Some(world.leases());
+    });
+    let stuck = world.near.toon(&["compute", "rotate", &workload, "--json"]);
+    assert_eq!(stuck.exit_code, 1, "{}{}", stuck.stdout, stuck.stderr);
+    assert_eq!(error_code(&stuck), "rotation_incomplete");
+    assert!(stuck.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains(&public_key(PROVIDER)));
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["root_secret"], old_secret.as_str());
+    let new_secret = lease["next_secret"].as_str().unwrap().to_owned();
+    assert_eq!(new_secret.len(), 64);
+    assert_ne!(new_secret, old_secret);
+    assert!(!stuck.stdout.contains(&new_secret));
+    // The new secret was in the file before the first rotate packet arrived.
+    assert_eq!(
+        world
+            .provider
+            .with(|state| state.next_secret_at_rotate.clone()),
+        Some(Some(new_secret.clone()))
+    );
+
+    // The rotate body carried the old token and a `next` the new secret derives.
+    let first = world.provider.last("rotate").unwrap();
+    assert_eq!(first["request"]["continuation"], old_token.as_str());
+    assert_eq!(first["request"]["op"], "rotate");
+    assert_eq!(
+        first["request"]["content"]["workload_id"],
+        workload.as_str()
+    );
+    let next = first["request"]["content"]["next"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(next, old_token);
+
+    // A part-rotated lease is still read with the token its member holds.
+    let status = world.near.toon(&["compute", "status", &workload, "--json"]);
+    assert_eq!(status.exit_code, 0, "{}{}", status.stdout, status.stderr);
+    assert_eq!(
+        world.provider.last("status").unwrap()["request"]["continuation"],
+        old_token.as_str()
+    );
+
+    // Run again: the same new secret, the old token still presented, and it completes.
+    world
+        .provider
+        .with(|state| state.rotate_unavailable = false);
+    let done = world.near.toon(&["compute", "rotate", &workload, "--json"]);
+    assert_eq!(done.exit_code, 0, "{}{}", done.stdout, done.stderr);
+    let second = world.provider.last("rotate").unwrap();
+    assert_eq!(second["request"]["continuation"], old_token.as_str());
+    assert_eq!(second["request"]["content"]["next"], next.as_str());
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["root_secret"], new_secret.as_str());
+    assert!(lease.get("next_secret").is_none());
+    assert!(
+        !fs::read_to_string(world.leases().join(format!("{workload}.json")))
+            .unwrap()
+            .contains(&old_secret)
+    );
+    let status = world.near.toon(&["compute", "status", &workload, "--json"]);
+    assert_eq!(status.exit_code, 0, "{}{}", status.stdout, status.stderr);
+    assert_eq!(
+        world.provider.last("status").unwrap()["request"]["continuation"],
+        next.as_str()
+    );
+
+    // A confirmation that never arrived: the member already holds the new token, so the old
+    // one is `not_tenant` there, and the rerun finds that out and finishes.
+    world.provider.with(|state| state.rotate_answer_lost = true);
+    let lost = world.near.toon(&["compute", "rotate", &workload, "--json"]);
+    assert_eq!(error_code(&lost), "rotation_incomplete", "{}", lost.stdout);
+    world
+        .provider
+        .with(|state| state.rotate_answer_lost = false);
+    let healed = world.near.toon(&["compute", "rotate", &workload, "--json"]);
+    assert_eq!(healed.exit_code, 0, "{}{}", healed.stdout, healed.stderr);
+    assert!(read_lease(&world.leases()).get("next_secret").is_none());
+    let status = world.near.toon(&["compute", "status", &workload, "--json"]);
+    assert_eq!(status.exit_code, 0, "{}{}", status.stdout, status.stderr);
 }
 
 fn extend_fixture() -> Value {

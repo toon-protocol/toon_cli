@@ -20,6 +20,7 @@ pub enum Route {
     Extend,
     Status,
     Terminate,
+    Rotate,
 }
 
 impl Route {
@@ -29,6 +30,7 @@ impl Route {
             Route::Spawn => Some("spawn"),
             Route::Status => Some("status"),
             Route::Terminate => Some("terminate"),
+            Route::Rotate => Some("rotate"),
             Route::Availability | Route::Extend => None,
         }
     }
@@ -40,6 +42,7 @@ impl Route {
             Route::Extend => "extend",
             Route::Status => "status",
             Route::Terminate => "terminate",
+            Route::Rotate => "rotate",
         }
     }
 }
@@ -51,7 +54,7 @@ pub fn destination(ilp_address: &str, route: Route, listing: &str, version: u64)
         Route::Spawn | Route::Extend => {
             format!("{ilp_address}.{listing}.v{version}.{}", route.name())
         }
-        Route::Availability | Route::Status | Route::Terminate => {
+        Route::Availability | Route::Status | Route::Terminate | Route::Rotate => {
             format!("{ilp_address}.{}", route.name())
         }
     }
@@ -69,6 +72,17 @@ pub fn continuation(root: &[u8; 32], provider: &str) -> String {
         )
         .expect("32 bytes is a valid HKDF-SHA256 output length");
     hex::encode(token)
+}
+
+/// The `content` of a rotate (§6.8): `next` is the token `member` holds from the new root
+/// secret once it has confirmed.
+pub fn rotate_content(workload_id: &str, next: &[u8; 32], member: &str) -> Value {
+    json!({ "workload_id": workload_id, "next": continuation(next, member) })
+}
+
+/// Whether the body a rotate was answered with confirms it (`rotate.ok`).
+pub fn rotated(body: &Value) -> bool {
+    body["rotated"] == json!(true)
 }
 
 /// A Lease Request, the object that is the value of `request` in a body.
@@ -212,6 +226,23 @@ fn check_request(route: Route, body: &Map<String, Value>) -> Result<(), String> 
     if !request["content"].is_object() {
         return Err("`content` is not an object".into());
     }
+    if route == Route::Rotate {
+        only_keys(
+            request["content"].as_object().expect("an object"),
+            &["workload_id", "next"],
+            &["workload_id", "next"],
+        )?;
+        for field in ["workload_id", "next"] {
+            if !is_hex(&request["content"][field], 64) {
+                return Err(format!(
+                    "`content.{field}` is not 64 lowercase hex characters"
+                ));
+            }
+        }
+        if request["content"]["next"] == request["continuation"] {
+            return Err("`next` is the token the request presents".into());
+        }
+    }
     Ok(())
 }
 
@@ -254,6 +285,7 @@ mod tests {
             "lease_request.spawn",
             "lease_request.status",
             "lease_request.terminate",
+            "lease_request.rotate",
         ] {
             let (built, recorded) = rebuilt(name);
             assert_eq!(built, recorded, "{name}");
@@ -300,6 +332,7 @@ mod tests {
             ("lease_request.spawn", Route::Spawn),
             ("lease_request.status", Route::Status),
             ("lease_request.terminate", Route::Terminate),
+            ("lease_request.rotate", Route::Rotate),
         ] {
             let body = &fixture(name)["packet_body"];
             check_shape(route, body).unwrap_or_else(|error| panic!("{name}: {}", error.message));
@@ -314,6 +347,7 @@ mod tests {
             ("lease_request.spawn", Route::Spawn),
             ("lease_request.status", Route::Status),
             ("lease_request.terminate", Route::Terminate),
+            ("lease_request.rotate", Route::Rotate),
         ] {
             let bare = fixture(name)["request"]["content"].clone();
             let error = check_shape(route, &bare).expect_err(name);
@@ -358,6 +392,44 @@ mod tests {
         assert_eq!(
             destination("g.fixture", Route::Status, "basic", 1),
             "g.fixture.status"
+        );
+    }
+
+    #[test]
+    fn a_rotate_derives_its_next_from_the_new_secret_and_its_answer_is_read_as_success() {
+        let constants = fixture("constants");
+        let next: [u8; 32] = hex::decode(text(&constants["rotated_tenant"]["root_secret"]))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let recorded = fixture("lease_request.rotate");
+        assert_eq!(
+            rotate_content(
+                text(&recorded["request"]["content"]["workload_id"]),
+                &next,
+                text(&constants["provider"]["public_key"]),
+            ),
+            recorded["request"]["content"]
+        );
+        assert!(rotated(&fixture("rotate.ok")["response_body"]));
+        assert!(!rotated(&json!({ "workload_id": "aa".repeat(32) })));
+    }
+
+    #[test]
+    fn a_rotate_is_read_as_the_fixture_and_checked_for_its_next() {
+        let body = fixture("lease_request.rotate")["packet_body"].clone();
+        let mut same = body.clone();
+        same["request"]["content"]["next"] = same["request"]["continuation"].clone();
+        assert!(check_shape(Route::Rotate, &same).is_err());
+        let mut short = body.clone();
+        short["request"]["content"]["next"] = json!("abc");
+        assert!(check_shape(Route::Rotate, &short).is_err());
+        let mut missing = body;
+        missing["request"]["content"] = json!({ "workload_id": "aa".repeat(32) });
+        assert!(check_shape(Route::Rotate, &missing).is_err());
+        assert_eq!(
+            destination("g.fixture", Route::Rotate, "basic", 1),
+            "g.fixture.rotate"
         );
     }
 }
