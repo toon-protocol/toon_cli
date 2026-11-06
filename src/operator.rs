@@ -1320,7 +1320,7 @@ pub fn channel_open(
     deposit: u128,
     url: Option<&str>,
 ) -> Result<Report, Error> {
-    ensure_gas(home)?;
+    ensure_deposit(home, None, deposit)?;
     let contents = std::fs::read_to_string(terms).map_err(|source| {
         failed(
             ErrorCode::ChannelFailed,
@@ -1349,7 +1349,7 @@ pub fn channel_open(
 
 /// `toon channel fund`: add `amount` to an outbound channel.
 pub fn channel_fund(home: &Path, id: &str, amount: u128) -> Result<Report, Error> {
-    ensure_gas(home)?;
+    ensure_deposit(home, None, amount)?;
     let channel = channel_write(
         home,
         &channel_path(id, "fund")?,
@@ -1430,6 +1430,19 @@ fn ensure_gas(home: &Path) -> Result<(), Error> {
     };
     let app = crate::apps::toon_app(&state, TARGET.get().map(String::as_str))?;
     crate::funding::ensure_gas(home, state.network, app)
+}
+
+/// Like [`ensure_gas`], and also refuse unless the key holds `amount` of the token to move.
+fn ensure_deposit(
+    home: &Path,
+    chain: Option<crate::cli::Chain>,
+    amount: u128,
+) -> Result<(), Error> {
+    let Some(state) = State::load(home)? else {
+        return Err(node::no_agent_node(home));
+    };
+    let app = crate::apps::toon_app(&state, TARGET.get().map(String::as_str))?;
+    crate::funding::ensure_deposit(home, state.network, app, chain, amount)
 }
 
 /// What a packet came to.
@@ -2296,7 +2309,7 @@ pub fn peer(home: &Path, command: &PeerCommand) -> Result<Report, Error> {
     match command {
         PeerCommand::Add(args) => {
             // Refused before the spending limit is charged: nothing is sent.
-            ensure_gas(home)?;
+            ensure_deposit(home, args.chain, args.deposit)?;
             spending::spend(home, args.deposit, args.yes, || {
                 let peered = peer_add(
                     home,
@@ -2425,7 +2438,9 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
         ));
     };
     let app = crate::apps::toon_app(&state, TARGET.get().map(String::as_str))?;
-    crate::funding::ensure_gas(home, state.network, app)?;
+    // A deposit over the limit is refused as such, whatever the wallet holds.
+    spending::check(home, args.deposit)?;
+    crate::funding::ensure_deposit(home, state.network, app, args.chain, args.deposit)?;
     spending::spend(home, args.deposit, args.yes, || {
         let peered = peer_add(
             home,

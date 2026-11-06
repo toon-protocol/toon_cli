@@ -4,6 +4,7 @@ use std::fs;
 
 use support::fake_chain::FakeChain;
 use support::fake_faucet::FakeFaucet;
+use support::fake_solana::FakeSolana;
 use support::Machine;
 
 fn config(machine: &Machine) -> String {
@@ -217,13 +218,14 @@ fn init_says_which_address_needs_how_much_and_how_to_fund_it() {
     assert_eq!(needs[0]["amount"], "1000000000000000");
     assert_eq!(needs[1]["amount"], "1000000");
     assert_eq!(needs[0]["for"], "deposit");
-    assert_eq!(needs[1]["for"], "start");
+    assert_eq!(needs[1]["for"], "deposit");
     let text = fresh_text_init();
     let (start, deposit) = text
         .split_once("A deposit")
         .expect("the text says separately what a deposit needs");
     assert!(!start.contains("ETH"), "{text}");
-    assert!(start.contains("toon wallet fund"), "{text}");
+    assert!(!start.contains("Before `toon up`"), "{text}");
+    assert!(deposit.contains("toon wallet fund"), "{text}");
     assert!(deposit.contains("0.001 ETH"), "{text}");
     assert!(deposit.contains("sends no ETH"), "{text}");
     assert!(deposit.contains("Base Sepolia"), "{text}");
@@ -254,34 +256,31 @@ fn mainnet_init_tells_the_operator_to_fund_the_addresses_themselves() {
 }
 
 #[test]
-fn up_does_not_start_a_connector_whose_settlement_key_is_unfunded() {
+fn up_starts_a_connector_whose_evm_settlement_key_is_unfunded() {
     let chain = FakeChain::start_unfunded();
     let machine = Machine::new();
-    let init = machine.init_on(&chain);
-    let address = init.json()["wallet"]["chains"]["evm"][0]["address"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    machine.init_on(&chain);
 
-    let up = machine.toon(&["up", "--foreground", "--json"]);
+    let up = machine.start(&["up", "--foreground", "--json"]);
 
-    assert_eq!(up.exit_code, 1, "{}", up.stdout);
-    let error = &up.json()["error"];
-    assert_eq!(error["code"], "unfunded");
-    let message = error["message"].as_str().unwrap();
-    assert!(message.contains(&address), "{message}");
-    assert!(!message.contains("ETH"), "{message}");
-    assert!(message.contains("1000000 base units"), "{message}");
-    assert!(message.contains("toon wallet fund"), "{message}");
-    assert!(!machine.agent_node_home().join("control.sock").exists());
-    assert_eq!(machine.toon(&["status", "--json"]).exit_code, 1);
+    up.report();
+    assert_eq!(machine.toon(&["status", "--json"]).exit_code, 0);
 }
 
 #[test]
 fn the_unfunded_refusal_on_mainnet_offers_no_funding_command() {
-    let chain = FakeChain::start_unfunded();
+    let chain = FakeChain::start();
+    let solana = FakeSolana::start_with(0, 0);
     let machine = Machine::new();
-    let init = machine.init_with(&["--network", "mainnet", "--evm-rpc-url", &chain.rpc_url()]);
+    let init = machine.init_with(&[
+        "--network",
+        "mainnet",
+        "--evm-rpc-url",
+        &chain.rpc_url(),
+        "--solana",
+        "--solana-rpc-url",
+        &solana.rpc_url(),
+    ]);
     assert_eq!(init.exit_code, 0, "{}", init.stdout);
 
     let up = machine.toon(&["up", "--foreground", "--json"]);
@@ -372,7 +371,7 @@ fn wallet_fund_says_what_the_faucet_left_unfunded() {
     let lacking = fund.json()["lacking"].as_array().unwrap().clone();
     assert_eq!(lacking.len(), 2);
     assert_eq!(lacking[0]["for"], "deposit");
-    assert_eq!(lacking[1]["for"], "start");
+    assert_eq!(lacking[1]["for"], "deposit");
 }
 
 const EVM_PATH: &str = "/api/base-sepolia/request";

@@ -445,7 +445,17 @@ fn land_is_refused_on_a_channel_this_node_pays() {
 
 #[test]
 fn an_amount_above_u64_reaches_the_connector() {
-    let node = running();
+    // The wallet holds the amount, or the refusal would be `toon`'s own.
+    let chain = FakeChain::start_with_token(u128::MAX);
+    let machine = Machine::new();
+    assert_eq!(machine.init_on(&chain).exit_code, 0);
+    let up = machine.start(&["up", "--foreground", "--json"]);
+    up.report();
+    let node = Running {
+        machine,
+        _up: up,
+        _chain: chain,
+    };
     let unknown = format!("0x{}", "ab".repeat(32));
     let amount = (u128::from(u64::MAX) + 1).to_string();
 

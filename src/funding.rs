@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::cli::Chain;
 use crate::derive;
 use crate::egress::Egress;
 use crate::node::{self, ConnectorFiles, State, ToonApp};
@@ -63,6 +64,11 @@ pub struct Need {
 }
 
 impl Need {
+    /// Whether it is gas, not the token.
+    pub fn is_gas(&self) -> bool {
+        self.gas
+    }
+
     pub fn text(&self) -> String {
         format!("{} ({}): {}", self.address, self.chain, self.shown)
     }
@@ -117,7 +123,7 @@ pub fn needs(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
             ),
             (
                 false,
-                Purpose::Start,
+                Purpose::Deposit,
                 evm.token.clone(),
                 token,
                 format!("1 token ({token} base units of {})", evm.token),
@@ -149,7 +155,7 @@ pub fn needs(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
             ),
             (
                 false,
-                Purpose::Start,
+                Purpose::Deposit,
                 solana.token.clone(),
                 token,
                 format!("1 token ({token} base units of {})", solana.token),
@@ -171,17 +177,17 @@ pub fn needs(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
     Ok(needs)
 }
 
-/// What a connector needs to start.
+/// What a connector needs to start: gas only, since it reads no token balance when it boots.
 pub fn start_needs(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
     let mut needs = needs(home, app)?;
     needs.retain(|need| need.purpose == Purpose::Start);
     Ok(needs)
 }
 
-/// What a transaction from the settlement key of `app` needs.
+/// The gas a transaction from the settlement key of `app` needs.
 fn deposit_needs(home: &Path, app: &ToonApp) -> Result<Vec<Need>, Error> {
     let mut needs = needs(home, app)?;
-    needs.retain(|need| need.purpose == Purpose::Deposit);
+    needs.retain(|need| need.purpose == Purpose::Deposit && need.gas);
     Ok(needs)
 }
 
@@ -196,6 +202,46 @@ pub fn ensure_gas(home: &Path, network: Profile, app: &ToonApp) -> Result<(), Er
         network,
         &format!(
             "The settlement key of {} has no gas for a transaction, so nothing was sent.",
+            app.name
+        ),
+        &lacking,
+    ))
+}
+
+/// Refuse with `unfunded` unless the settlement key of `app` holds the gas a deposit spends
+/// and `amount` of the token to move. The token is checked on `chain`, or on the only chain
+/// `app` settles on; where the chain is the connector's to choose, only gas is checked. A
+/// chain that cannot be asked is not a verdict: the connector answers for itself.
+pub fn ensure_deposit(
+    home: &Path,
+    network: Profile,
+    app: &ToonApp,
+    chain: Option<Chain>,
+    amount: u128,
+) -> Result<(), Error> {
+    let mut wanted = deposit_needs(home, app)?;
+    let chain = chain.map(Chain::name).or(match (&app.evm, &app.solana) {
+        (Some(_), None) => Some("evm"),
+        (None, Some(_)) => Some("solana"),
+        _ => None,
+    });
+    if let (Some(chain), true) = (chain, amount > 0) {
+        let mut tokens = needs(home, app)?;
+        tokens.retain(|need| need.chain == chain && !need.gas);
+        for need in &mut tokens {
+            need.amount = amount;
+            need.shown = format!("{amount} base units of {} to deposit", need.token);
+        }
+        wanted.extend(tokens);
+    }
+    let lacking = shortfalls(&Egress::of(home)?, wanted).unwrap_or_default();
+    if lacking.is_empty() {
+        return Ok(());
+    }
+    Err(unfunded(
+        network,
+        &format!(
+            "The settlement key of {} does not hold what a deposit spends, so nothing was sent.",
             app.name
         ),
         &lacking,
@@ -409,19 +455,22 @@ pub fn requirements(home: &Path, state: &State) -> Result<(Vec<Need>, String), E
                 .join("\n")
         };
         let (start, deposit) = (part(Purpose::Start), part(Purpose::Deposit));
-        let mut text = format!(
-            "Before `toon up` can start the connector, fund:\n{}\n{}",
-            lines(&start),
-            how_to_fund(state.network, &start)
-        );
+        let mut parts = Vec::new();
+        if !start.is_empty() {
+            parts.push(format!(
+                "Before `toon up` can start the connector, fund:\n{}\n{}",
+                lines(&start),
+                how_to_fund(state.network, &start)
+            ));
+        }
         if !deposit.is_empty() {
-            text.push_str(&format!(
-                "\nA deposit (`toon join`, `toon peer add`, `toon create`, `toon channel`) spends gas, which `toon up` does not need:\n{}\n{}",
+            parts.push(format!(
+                "A deposit (`toon join`, `toon peer add`, `toon create`, `toon channel`) spends gas and moves the token, which `toon up` does not need:\n{}\n{}",
                 lines(&deposit),
                 how_to_fund(state.network, &deposit)
             ));
         }
-        text
+        parts.join("\n")
     };
     Ok((all, text))
 }

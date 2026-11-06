@@ -20,15 +20,20 @@ pub struct FakeSolana {
 impl FakeSolana {
     /// A chain on which every address holds SOL and one token account.
     pub fn start() -> Self {
-        Self::spawn(true)
+        Self::spawn(true, NATIVE_BALANCE, TOKEN_BALANCE)
     }
 
     /// A chain on which no address has a token account.
     pub fn start_without_token_accounts() -> Self {
-        Self::spawn(false)
+        Self::spawn(false, NATIVE_BALANCE, TOKEN_BALANCE)
     }
 
-    fn spawn(token_account: bool) -> Self {
+    /// A chain on which every address holds `lamports` and `token` base units of the token.
+    pub fn start_with(lamports: u64, token: u64) -> Self {
+        Self::spawn(true, lamports, token)
+    }
+
+    fn spawn(token_account: bool, lamports: u64, token: u64) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
@@ -36,16 +41,31 @@ impl FakeSolana {
             .expect("a runtime for the fake Solana chain");
         let rpc = runtime.block_on(FakeRpc::spawn(move |call: &RpcCall| {
             match call.method.as_str() {
-                "getBalance" => RpcReply::Result(json!({ "value": NATIVE_BALANCE })),
+                "getBalance" => RpcReply::Result(json!({ "context": { "slot": 1 }, "value": lamports })),
                 "getTokenAccountsByOwner" => {
                     let accounts = if token_account {
                         vec![json!({ "account": { "data": { "parsed": { "info": {
-                            "tokenAmount": { "amount": TOKEN_BALANCE.to_string() }
+                            "tokenAmount": { "amount": token.to_string() }
                         } } } } })]
                     } else {
                         vec![]
                     };
-                    RpcReply::Result(json!({ "value": accounts }))
+                    RpcReply::Result(json!({ "context": { "slot": 1 }, "value": accounts }))
+                }
+                // The program and the mint a Solana connector checks at boot: one account that is
+                // executable and an initialised SPL mint of 6 decimals, owned by the token program.
+                "getAccountInfo" => RpcReply::Result(json!({
+                    "context": { "slot": 1 },
+                    "value": {
+                        "lamports": 1,
+                        "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+                        "data": ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==", "base64"],
+                        "executable": true,
+                        "rentEpoch": 0,
+                    },
+                })),
+                "getGenesisHash" => {
+                    RpcReply::Result(json!("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"))
                 }
                 other => RpcReply::Result(json!(format!("{other} is not served"))),
             }
