@@ -626,6 +626,13 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
     renter.reaches(&profile.ilp_address, &profile.connector_url)?;
     // Every limit before any packet, the free `availability` question included.
     limits_refuse(renter, "spawn", args.max, 0, price, total)?;
+    if let Some(duration) = &args.for_duration {
+        eprintln!(
+            "--for {duration} rounds up to {}: {} in all.",
+            intervals_text(intervals),
+            amount_text(total)
+        );
+    }
     if !args.no_check {
         check_availability(renter, &resolved, &content["image"])?;
     }
@@ -644,14 +651,6 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
             )
         });
     }
-    if args.for_duration.is_some() {
-        eprintln!(
-            "--for {} rounds up to {}: {} in all.",
-            args.for_duration.as_deref().unwrap_or_default(),
-            intervals_text(intervals),
-            amount_text(total)
-        );
-    }
 
     let root = Zeroizing::new(keystore::random::<32>()?);
     let workload_id = fresh_hex()?;
@@ -667,7 +666,7 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
         listing: coordinate.text(),
         listing_name: resolved.listing.name.clone(),
         listing_version: resolved.listing.version,
-        price,
+        price: Some(price),
         role: "standalone".into(),
         expires_at: None,
         paid: 0,
@@ -712,11 +711,12 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
                     let _ = leases.write(&failed);
                 }
             })?;
-        let report = settle_spawn(&leases, lease.clone(), answer, price, moved)?;
+        let (report, mut lease) = settle_spawn(&leases, lease.clone(), answer, price, moved)?;
         if intervals == 1 {
             return Ok(report);
         }
-        let mut lease = leases.read(&lease.workload_id)?;
+        // The lease is live and paid for: what reaches it is printed whatever the extends do.
+        let access = access_text(&report.json["access"]);
         extend_lease(
             renter,
             &leases,
@@ -728,7 +728,11 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
                 billed: price,
             },
             moved,
-        )?;
+        )
+        .map_err(|error| Error {
+            message: format!("{}{access}", error.message),
+            ..error
+        })?;
         Ok(spawn_report(report, &lease, intervals, total))
     })
 }
@@ -757,14 +761,15 @@ fn spawn_report(mut report: Report, lease: &Lease, intervals: u64, total: u64) -
     report
 }
 
-/// Record what the spawn's answer says in the lease file and report it.
+/// Record what the spawn's answer says in the lease file and report it, with the lease as
+/// settled.
 fn settle_spawn(
     leases: &Leases,
     mut lease: Lease,
     answer: Answer,
     total: u64,
     moved: &dyn Fn(u128) -> u128,
-) -> Result<Report, Error> {
+) -> Result<(Report, Lease), Error> {
     let id = lease.workload_id.clone();
     let kept = |lease: &Lease| {
         leases.write(lease).err().map(|error| {
@@ -797,7 +802,7 @@ fn settle_spawn(
             }
             let warning = kept(&lease).unwrap_or_default();
             let access = body["access"].clone();
-            Ok(Report {
+            let report = Report {
                 exit: Exit::Success,
                 json: json!({
                     "workload_id": id,
@@ -815,7 +820,8 @@ fn settle_spawn(
                     amount_text(total),
                     access_text(&access)
                 ),
-            })
+            };
+            Ok((report, lease))
         }
         Reply::Error { error, message } => {
             lease.paid = total;
@@ -900,7 +906,7 @@ fn extend_lease(
     moved: &dyn Fn(u128) -> u128,
 ) -> Result<Report, Error> {
     let id = lease.workload_id.clone();
-    let price = lease.price;
+    let price = lease_price(lease)?;
     let paid_start = lease.paid.saturating_sub(pay.billed);
     let destination = lease_request::destination(
         &lease.ilp_address,
@@ -1012,17 +1018,31 @@ fn extend_lease(
     if bought == 0 {
         return Err(cause);
     }
-    Err(failure(
-        ErrorCode::LeasePartlyPaid,
-        format!(
-            "Bought {bought} of {wanted} Lease Intervals and stopped at the first packet that \
+    Err(Error {
+        unanswered: cause.unanswered,
+        ..failure(
+            ErrorCode::LeasePartlyPaid,
+            format!(
+                "Bought {bought} of {wanted} Lease Intervals and stopped at the first packet that \
              failed: {} Lease {id} runs until {} (unix time) and has paid {} in all, as its \
              file says. Nothing was retried: the routes already paid are not paid again.",
-            cause.message,
-            lease.expires_at.unwrap_or_default(),
-            amount_text(lease.paid)
-        ),
-    ))
+                cause.message,
+                lease.expires_at.unwrap_or_default(),
+                amount_text(lease.paid)
+            ),
+        )
+    })
+}
+
+/// What one `.extend` packet of `lease` pays, as its file states.
+fn lease_price(lease: &Lease) -> Result<u64, Error> {
+    lease.price.ok_or_else(|| {
+        usage(format!(
+            "The lease file {} states no price for a Lease Interval, so what an extend pays is \
+             not known. Nothing was sent.",
+            lease.workload_id
+        ))
+    })
 }
 
 pub fn extend(renter: &Renter, args: &ComputeExtendArgs) -> Result<Report, Error> {
@@ -1041,7 +1061,7 @@ pub fn extend(renter: &Renter, args: &ComputeExtendArgs) -> Result<Report, Error
         )));
     }
     lease.lease_limit = args.max.or(lease.lease_limit);
-    let price = lease.price;
+    let price = lease_price(&lease)?;
     let total = total_of(price, args.intervals)?;
     renter.reaches(&lease.ilp_address, &lease.connector_url)?;
     limits_refuse(

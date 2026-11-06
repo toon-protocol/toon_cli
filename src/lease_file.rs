@@ -61,7 +61,8 @@ pub struct Lease {
     pub listing_name: String,
     pub listing_version: u64,
     /// What one Lease Interval costs at this version, in base units: what an extend pays.
-    pub price: u64,
+    /// `None` for a file that states no price and paid nothing to show one.
+    pub price: Option<u64>,
     pub role: String,
     pub expires_at: Option<u64>,
     /// What has been paid for the lease, in base units.
@@ -116,8 +117,11 @@ impl Lease {
             listing: text("listing")?,
             listing_name: text("listing_name")?,
             listing_version: file["listing_version"].as_u64()?,
-            // A file written before extends existed paid one interval: that was the price.
-            price: file["price"].as_u64().or_else(|| file["paid"].as_u64())?,
+            // A file written before extends existed paid one interval, if it paid at all: that
+            // was the price.
+            price: file["price"]
+                .as_u64()
+                .or_else(|| file["paid"].as_u64().filter(|paid| *paid > 0)),
             role: text("role")?,
             expires_at: file["expires_at"].as_u64(),
             paid: file["paid"].as_u64()?,

@@ -329,6 +329,21 @@ fn help_states_what_a_lease_costs_and_what_losing_its_file_loses() {
 }
 
 #[test]
+fn a_lease_file_that_states_no_price_is_not_extended() {
+    let machine = Machine::new();
+    let dir = machine.home().join(".toon/agent-node/leases");
+    let workload = "cc".repeat(32);
+    // A file from before extends that paid nothing shows no price to pay again.
+    let mut lease = lease_file_json(&workload, "live", Some(4_000_000_000));
+    lease["paid"] = json!(0);
+    write_lease(&dir, &lease);
+    let run = machine.toon(&["compute", "extend", &workload, "--yes", "--json"]);
+    assert_eq!(error_code(&run), "usage", "{}", run.stdout);
+    let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
+    assert!(message.contains("states no price"), "{message}");
+}
+
+#[test]
 fn a_backup_and_a_restore_carry_the_lease_files() {
     let chain = FakeChain::start();
     let before = Machine::new();
@@ -1091,4 +1106,6 @@ fn a_provider_that_fails_the_second_extend_leaves_the_first_in_the_file() {
         message.contains("2 of 4") && message.contains(&expires_at.to_string()),
         "{message}"
     );
+    // The lease is live and paid for, so what reaches it is printed all the same.
+    assert!(message.contains("ssh -p 40000 203.0.113.7"), "{message}");
 }
