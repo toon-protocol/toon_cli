@@ -525,10 +525,17 @@ fn relays_for(
         new
     });
     if relays.is_empty() {
-        return Err(usage(
-            "There is no relay to read the Listing from: the naddr names none and the network \
-             profile follows none. Name one with --relay.",
-        ));
+        return Err(usage(match renter {
+            Renter::Home(_) => {
+                "There is no relay to read the Listing from: the naddr names none and the \
+                 network profile follows none. Name one with --relay."
+            }
+            Renter::Agent(_) => {
+                "There is no relay to read the Listing from: an agent key has no home to read a \
+                 relay from, and the naddr names none. Name one with --relay or give an naddr \
+                 with relay hints."
+            }
+        }));
     }
     Ok(relays)
 }
