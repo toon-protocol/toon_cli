@@ -173,6 +173,66 @@ fn a_tag_only_image_is_refused_locally() {
 }
 
 #[test]
+fn a_spawn_with_no_relay_says_where_a_relay_would_have_come_from() {
+    let coordinate = format!("30432:{}:basic", public_key(PROVIDER));
+    let image = image();
+    let args = [
+        "compute",
+        "spawn",
+        coordinate.as_str(),
+        "--ssh-key",
+        SSH_KEY,
+        "--image",
+        image.as_str(),
+        "--yes",
+        "--json",
+    ];
+
+    let machine = Machine::new();
+    let run = machine.toon(&args);
+    assert_eq!(run.exit_code, 2, "{}{}", run.stdout, run.stderr);
+    assert_eq!(
+        run.json()["error"]["message"].as_str().unwrap(),
+        "There is no relay to read the Listing from: the naddr names none and the network \
+         profile follows none. Name one with --relay."
+    );
+
+    let chain = FakeChain::start();
+    let node = Machine::new();
+    let init = node.init_on(&chain);
+    assert_eq!(init.exit_code, 0, "{}", init.stdout);
+    let keys = tempfile::tempdir().unwrap();
+    let key_file = keys.path().join("agent.json");
+    let up = node.start(&["up", "--foreground", "--json"]);
+    up.report();
+    let created = node.toon_with(
+        &[
+            "agent-key",
+            "create",
+            "--out",
+            key_file.to_str().unwrap(),
+            "--json",
+        ],
+        |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        },
+    );
+    assert_eq!(created.exit_code, 0, "{}{}", created.stdout, created.stderr);
+    let nowhere = tempfile::tempdir().unwrap();
+    let run = node.toon_with(&args, |command| {
+        command
+            .env("HOME", nowhere.path())
+            .env("TOON_AGENT_KEY", &key_file);
+    });
+    assert_eq!(run.exit_code, 2, "{}{}", run.stdout, run.stderr);
+    let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
+    assert!(message.contains("--relay"), "{message}");
+    assert!(message.contains("relay hints"), "{message}");
+    assert!(message.contains("no home"), "{message}");
+    assert!(!message.contains("network profile"), "{message}");
+}
+
+#[test]
 fn a_listing_that_is_missing_or_withdrawn_is_not_for_sale() {
     let machine = Machine::new();
     let directory = FakeDirectory::start();
