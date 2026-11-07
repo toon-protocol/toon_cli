@@ -46,7 +46,8 @@ fn quoted(word: &str) -> String {
 }
 
 /// The `Environment=` line that gives the supervisor its home. The assignment is bare
-/// when no character needs quoting, and quoted as a whole otherwise.
+/// when no character needs quoting, and quoted as a whole otherwise. Unlike `ExecStart=`,
+/// systemd expands no `$` in `Environment=`, only `%` specifiers.
 fn home_line(home: &Path) -> String {
     let assignment = format!("HOME={}", home.to_string_lossy());
     let plain = assignment
@@ -55,11 +56,15 @@ fn home_line(home: &Path) -> String {
     if plain {
         format!("Environment={assignment}")
     } else {
-        format!("Environment={}", quoted(&assignment))
+        let escaped = assignment
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('%', "%%");
+        format!("Environment=\"{escaped}\"")
     }
 }
 
-/// The inverse of `quoted`, for the value of an `Environment=` line.
+/// The inverse of `home_line`, for the value of an `Environment=` line.
 fn unquoted(value: &str) -> String {
     let Some(inner) = value
         .strip_prefix('"')
@@ -72,7 +77,7 @@ fn unquoted(value: &str) -> String {
     while let Some(c) = chars.next() {
         let escaped = matches!(
             (c, chars.peek()),
-            ('\\', Some('\\')) | ('\\', Some('"')) | ('%', Some('%')) | ('$', Some('$'))
+            ('\\', Some('\\')) | ('\\', Some('"')) | ('%', Some('%'))
         );
         if escaped {
             out.push(chars.next().unwrap_or(c));
@@ -84,7 +89,7 @@ fn unquoted(value: &str) -> String {
 }
 
 /// The home a unit's text records, or `None` for a unit that records none.
-pub fn recorded_home(unit: &str) -> Option<PathBuf> {
+fn recorded_home(unit: &str) -> Option<PathBuf> {
     unit.lines()
         .filter_map(|line| line.strip_prefix("Environment="))
         .find_map(|value| {
@@ -95,15 +100,27 @@ pub fn recorded_home(unit: &str) -> Option<PathBuf> {
 }
 
 /// The login home of the user running this process, from the passwd entry and not from
-/// `$HOME`. `None` when `/etc/passwd` does not have the user.
+/// `$HOME`: `/etc/passwd`, else `getent`, which also asks NSS (LDAP, sssd). `None` when
+/// neither has the user.
 fn login_home() -> Option<PathBuf> {
     let uid = fs::metadata("/proc/self").ok()?.uid().to_string();
-    let passwd = fs::read_to_string("/etc/passwd").ok()?;
-    passwd.lines().find_map(|line| {
-        let fields: Vec<&str> = line.split(':').collect();
-        (fields.len() >= 6 && fields[2] == uid && !fields[5].is_empty())
-            .then(|| PathBuf::from(fields[5]))
-    })
+    let home = |passwd: &str| {
+        passwd.lines().find_map(|line| {
+            let fields: Vec<&str> = line.split(':').collect();
+            (fields.len() >= 6 && fields[2] == uid && !fields[5].is_empty())
+                .then(|| PathBuf::from(fields[5]))
+        })
+    };
+    fs::read_to_string("/etc/passwd")
+        .ok()
+        .and_then(|passwd| home(&passwd))
+        .or_else(|| {
+            let output = Command::new("getent")
+                .args(["passwd", &uid])
+                .output()
+                .ok()?;
+            home(&String::from_utf8_lossy(&output.stdout))
+        })
 }
 
 fn same_home(a: &Path, b: &Path) -> bool {
@@ -279,7 +296,8 @@ pub fn install() -> Result<Installed, Error> {
 
 /// Stop the unit and keep it from starting again at boot, if `up` ever installed it.
 /// A node that never had a unit has nothing to stop here; a unit that `systemctl` would
-/// not stop is an error, and so is a unit that another home installed, because it would bring the agent node back.
+/// not stop is an error, because it would bring the agent node back, and so is a unit
+/// that another home installed, which is left running.
 pub fn remove() -> Result<(), Error> {
     let user_home = home::user()?;
     let path = unit_path(&user_home);
@@ -302,6 +320,8 @@ mod tests {
         }
         assert!(unit(Path::new("/bin/toon"), Path::new("/home/a"))
             .contains("Environment=HOME=/home/a\n"));
+        assert!(unit(Path::new("/bin/toon"), Path::new("/home/$a %b"))
+            .contains("Environment=\"HOME=/home/$a %%b\"\n"));
     }
 
     #[test]
