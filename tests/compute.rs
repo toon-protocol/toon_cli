@@ -615,7 +615,7 @@ fn a_lease_is_rented_listed_read_and_terminated() {
     assert_eq!(request["content"]["workload_id"], workload.as_str());
     let mut content = request["content"].clone();
     content.as_object_mut().unwrap().remove("workload_id");
-    let mut expected = spawn_fixture()["request"]["content"].clone();
+    let mut expected = fixture("lease_request.spawn.json")["request"]["content"].clone();
     expected.as_object_mut().unwrap().remove("workload_id");
     assert_eq!(content, expected);
     assert_eq!(
@@ -940,16 +940,12 @@ fn a_lease_is_rotated_and_an_interrupted_rotation_is_finished() {
     assert_eq!(status.exit_code, 0, "{}{}", status.stdout, status.stderr);
 }
 
-fn spawn_fixture() -> Value {
+/// A vendored wire fixture of the TOON Compute spec, by file name.
+fn fixture(name: &str) -> Value {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("vendor/toon-network-fixtures/lease_request.spawn.json");
-    serde_json::from_str(&fs::read_to_string(path).expect("the spawn fixture")).unwrap()
-}
-
-fn extend_fixture() -> Value {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/toon-network-fixtures/extend.ok.json");
-    serde_json::from_str(&fs::read_to_string(path).expect("the extend fixture")).unwrap()
+        .join("vendor/toon-network-fixtures")
+        .join(name);
+    serde_json::from_str(&fs::read_to_string(path).expect(name)).unwrap()
 }
 
 #[test]
@@ -978,7 +974,7 @@ fn intervals_are_prepaid_in_one_command_and_the_file_follows_the_last_answer() {
     // One spawn and two extends; the extend body is the fixture's request body.
     assert_eq!(world.provider.count("extend"), 2);
     let workload = rounded.json()["workload_id"].as_str().unwrap().to_owned();
-    let fixture = extend_fixture();
+    let fixture = fixture("extend.ok.json");
     let mut expected = fixture["request_body"].clone();
     expected["workload_id"] = json!(workload);
     assert_eq!(world.provider.last("extend"), Some(expected));
