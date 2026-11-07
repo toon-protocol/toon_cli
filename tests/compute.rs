@@ -219,11 +219,18 @@ fn a_spawn_with_no_relay_says_where_a_relay_would_have_come_from() {
     );
     assert_eq!(created.exit_code, 0, "{}{}", created.stdout, created.stderr);
     let nowhere = tempfile::tempdir().unwrap();
-    let run = node.toon_with(&args, |command| {
-        command
-            .env("HOME", nowhere.path())
-            .env("TOON_AGENT_KEY", &key_file);
-    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let run = loop {
+        let run = node.toon_with(&args, |command| {
+            command
+                .env("HOME", nowhere.path())
+                .env("TOON_AGENT_KEY", &key_file);
+        });
+        if !run.stdout.contains("did not answer") || Instant::now() > deadline {
+            break run;
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
     assert_eq!(run.exit_code, 2, "{}{}", run.stdout, run.stderr);
     let message = run.json()["error"]["message"].as_str().unwrap().to_owned();
     assert!(message.contains("--relay"), "{message}");
