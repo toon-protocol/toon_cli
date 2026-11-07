@@ -4,8 +4,15 @@
 //! `toon up` writes the unit under `~/.config/systemd/user`, and then asks `systemctl`
 //! to load and start it. The unit runs `toon up --foreground`, so the supervisor is the
 //! same process whoever starts it. `toon down` disables and stops the unit.
+//!
+//! The one unit belongs to one home: it carries `Environment=HOME=`, so the supervisor
+//! systemd starts runs against the home that installed it. `toon up` and `toon down`
+//! refuse to take over or stop a unit that records another home. A unit that records
+//! none, written by an older `toon`, belongs to the login home.
 
+use std::fs;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{SocketAddr, UnixDatagram};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -14,7 +21,8 @@ use crate::home;
 use crate::node;
 use crate::outcome::{Error, ErrorCode};
 
-/// The unit's name. One supervisor runs per machine, so there is one unit.
+/// The unit's name. One supervisor runs per machine, so there is one unit, and it
+/// belongs to one home: the one that installed it.
 pub const UNIT: &str = "toon-agent-node.service";
 
 /// Where the unit is written: where `systemd --user` looks for the user's own units,
@@ -35,6 +43,103 @@ fn quoted(word: &str) -> String {
         .replace('%', "%%")
         .replace('$', "$$");
     format!("\"{escaped}\"")
+}
+
+/// The `Environment=` line that gives the supervisor its home. The assignment is bare
+/// when no character needs quoting, and quoted as a whole otherwise.
+fn home_line(home: &Path) -> String {
+    let assignment = format!("HOME={}", home.to_string_lossy());
+    let plain = assignment
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/._-+@:,=".contains(c));
+    if plain {
+        format!("Environment={assignment}")
+    } else {
+        format!("Environment={}", quoted(&assignment))
+    }
+}
+
+/// The inverse of `quoted`, for the value of an `Environment=` line.
+fn unquoted(value: &str) -> String {
+    let Some(inner) = value
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    else {
+        return value.to_string();
+    };
+    let mut out = String::new();
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        let escaped = matches!(
+            (c, chars.peek()),
+            ('\\', Some('\\')) | ('\\', Some('"')) | ('%', Some('%')) | ('$', Some('$'))
+        );
+        if escaped {
+            out.push(chars.next().unwrap_or(c));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The home a unit's text records, or `None` for a unit that records none.
+pub fn recorded_home(unit: &str) -> Option<PathBuf> {
+    unit.lines()
+        .filter_map(|line| line.strip_prefix("Environment="))
+        .find_map(|value| {
+            unquoted(value.trim())
+                .strip_prefix("HOME=")
+                .map(PathBuf::from)
+        })
+}
+
+/// The login home of the user running this process, from the passwd entry and not from
+/// `$HOME`. `None` when `/etc/passwd` does not have the user.
+fn login_home() -> Option<PathBuf> {
+    let uid = fs::metadata("/proc/self").ok()?.uid().to_string();
+    let passwd = fs::read_to_string("/etc/passwd").ok()?;
+    passwd.lines().find_map(|line| {
+        let fields: Vec<&str> = line.split(':').collect();
+        (fields.len() >= 6 && fields[2] == uid && !fields[5].is_empty())
+            .then(|| PathBuf::from(fields[5]))
+    })
+}
+
+fn same_home(a: &Path, b: &Path) -> bool {
+    a == b || matches!((fs::canonicalize(a), fs::canonicalize(b)), (Ok(a), Ok(b)) if a == b)
+}
+
+/// The home that owns a unit when it is not `home`, or `None` when `home` owns it. A
+/// unit that records no home belongs to the login home, which `login` finds; when it
+/// cannot be found the unit is not held against `home`.
+fn other_owner(
+    unit: &str,
+    home: &Path,
+    login: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let owner = recorded_home(unit).or_else(login)?;
+    (!same_home(&owner, home)).then_some(owner)
+}
+
+/// Refuse when the unit already at `path` belongs to a home other than `home`.
+fn check_owner(path: &Path, home: &Path) -> Result<(), Error> {
+    let Ok(existing) = fs::read_to_string(path) else {
+        return Ok(());
+    };
+    match other_owner(&existing, home, login_home) {
+        None => Ok(()),
+        Some(owner) => Err(Error {
+            nothing_sent: false,
+            unanswered: None,
+            code: ErrorCode::UnitOwnedByAnotherHome,
+            message: format!(
+                "The systemd unit at {} belongs to another home, {}, and there is one unit per machine, so `toon` leaves it alone. Run `toon up --foreground` to run this home without systemd.",
+                path.display(),
+                owner.display()
+            ),
+        }),
+    }
 }
 
 /// Tell systemd that the supervisor answers on its control socket, when systemd is
@@ -63,9 +168,11 @@ pub fn notify_ready() {
 
 /// The unit that runs the supervisor of the agent node, started from the binary `toon`.
 ///
+/// `home` is the user's home that installs it, recorded as `Environment=HOME=`.
+///
 /// `TimeoutStartSec` is 600 seconds: a first start may download the `anon` overlay and
 /// pull app images, which can outlast systemd's 90 second default on a slow link.
-pub fn unit(toon: &Path) -> String {
+pub fn unit(toon: &Path, home: &Path) -> String {
     format!(
         "# Written by `toon up`. `toon up` overwrites it and `toon down` stops it.\n\
          [Unit]\n\
@@ -78,12 +185,14 @@ pub fn unit(toon: &Path) -> String {
          [Service]\n\
          Type=notify\n\
          TimeoutStartSec=600\n\
+         {}\n\
          ExecStart={} up --foreground\n\
          Restart=on-failure\n\
          RestartSec=5\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",
+        home_line(home),
         quoted(&toon.to_string_lossy()),
     )
 }
@@ -155,7 +264,8 @@ pub fn install() -> Result<Installed, Error> {
         message: format!("This binary could not find itself: {error}."),
     })?;
     let path = unit_path(&user_home);
-    node::write(&path, unit(&toon).as_bytes(), 0o644)?;
+    check_owner(&path, &user_home)?;
+    node::write(&path, unit(&toon, &user_home).as_bytes(), 0o644)?;
     systemctl(&["daemon-reload"])?;
     systemctl(&["enable", "--now", UNIT]).map_err(|mut error| {
         error.message.push_str(&journal_tail());
@@ -169,10 +279,54 @@ pub fn install() -> Result<Installed, Error> {
 
 /// Stop the unit and keep it from starting again at boot, if `up` ever installed it.
 /// A node that never had a unit has nothing to stop here; a unit that `systemctl` would
-/// not stop is an error, because it would bring the agent node back.
+/// not stop is an error, and so is a unit that another home installed, because it would bring the agent node back.
 pub fn remove() -> Result<(), Error> {
-    if unit_path(&home::user()?).exists() {
+    let user_home = home::user()?;
+    let path = unit_path(&user_home);
+    if path.exists() {
+        check_owner(&path, &user_home)?;
         systemctl(&["disable", "--now", UNIT])?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_unit_records_its_home_and_reads_it_back() {
+        for home in ["/home/a", "/home/with space", "/h/\"q\"%$\\"] {
+            let text = unit(Path::new("/bin/toon"), Path::new(home));
+            assert_eq!(recorded_home(&text), Some(PathBuf::from(home)), "{text}");
+        }
+        assert!(unit(Path::new("/bin/toon"), Path::new("/home/a"))
+            .contains("Environment=HOME=/home/a\n"));
+    }
+
+    #[test]
+    fn a_legacy_unit_belongs_to_the_login_home() {
+        let legacy = "[Service]\nExecStart=\"/bin/toon\" up --foreground\n";
+        assert_eq!(recorded_home(legacy), None);
+        let login = || Some(PathBuf::from("/home/login"));
+        assert_eq!(other_owner(legacy, Path::new("/home/login"), login), None);
+        assert_eq!(
+            other_owner(legacy, Path::new("/tmp/scratch"), login),
+            Some(PathBuf::from("/home/login"))
+        );
+        assert_eq!(
+            other_owner(legacy, Path::new("/tmp/scratch"), || None),
+            None
+        );
+    }
+
+    #[test]
+    fn a_unit_for_another_home_is_refused() {
+        let text = unit(Path::new("/bin/toon"), Path::new("/home/a"));
+        assert_eq!(other_owner(&text, Path::new("/home/a"), || None), None);
+        assert_eq!(
+            other_owner(&text, Path::new("/home/b"), || None),
+            Some(PathBuf::from("/home/a"))
+        );
+    }
 }
