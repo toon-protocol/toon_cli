@@ -886,6 +886,14 @@ pub struct ComputeSpawnArgs {
     /// An environment variable, `NAME=value`; repeatable
     #[arg(long = "env", value_name = "NAME=VALUE")]
     pub env: Vec<String>,
+    /// Replace the image's own entrypoint: one word per flag, in order, repeatable. Word 0 is
+    /// the executable. Words are not split by a shell
+    #[arg(long = "entrypoint", value_name = "WORD", allow_hyphen_values = true)]
+    pub entrypoint: Vec<String>,
+    /// Replace the image's own command (its arguments): one word per flag, in order,
+    /// repeatable. Words are not split by a shell
+    #[arg(long = "arg", value_name = "WORD", allow_hyphen_values = true)]
+    pub args: Vec<String>,
     /// The SSH public key that may log in: the key itself or a file that holds it
     #[arg(long, value_name = "FILE_OR_KEY")]
     pub ssh_key: String,

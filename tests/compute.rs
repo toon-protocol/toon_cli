@@ -24,7 +24,7 @@ const PRICE: u64 = 1000;
 const DIGEST: &str = "sha256:c02a7c7b9cac8e709f8cc42dc9e7aa8fdc36e35acfa19da7cd7dff2b8bd94fdd";
 
 const SSH_KEY: &str =
-    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxvbmdlbm91Z2hmb3JhdGVzdGtleQ tenant@test";
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGxvbmdlbm91Z2hmb3JhdGVzdGtleQ tenant@fixture";
 
 /// The provider's key: 32 bytes of this.
 const PROVIDER: u8 = 0x22;
@@ -635,6 +635,12 @@ fn a_lease_is_rented_listed_read_and_terminated() {
         "GREETING=hello",
         "--volume-gb",
         "2",
+        "--entrypoint",
+        "/bin/sh",
+        "--arg",
+        "-c",
+        "--arg",
+        "sleep 300",
         "--max",
         "5000",
         "--yes",
@@ -672,18 +678,13 @@ fn a_lease_is_rented_listed_read_and_terminated() {
     assert_eq!(body.as_object().unwrap().len(), 1);
     assert_eq!(request["op"], "spawn");
     assert_eq!(request["provider"], public_key(PROVIDER));
+    // The whole content is the fixture's, but for the workload id the run picked.
     assert_eq!(request["content"]["workload_id"], workload.as_str());
-    assert_eq!(
-        request["content"]["image"],
-        json!({ "reference": "docker.io/library/alpine", "digest": DIGEST })
-    );
-    assert_eq!(request["content"]["env"], json!({ "GREETING": "hello" }));
-    assert_eq!(
-        request["content"]["ports"],
-        json!([{ "container_port": 443, "protocol": "tcp" }])
-    );
-    assert_eq!(request["content"]["ssh_public_key"], SSH_KEY);
-    assert_eq!(request["content"]["volume_gb"], 2);
+    let mut content = request["content"].clone();
+    content.as_object_mut().unwrap().remove("workload_id");
+    let mut expected = fixture("lease_request.spawn.json")["request"]["content"].clone();
+    expected.as_object_mut().unwrap().remove("workload_id");
+    assert_eq!(content, expected);
     assert_eq!(
         world.provider.last("availability").unwrap()["image"],
         request["content"]["image"]
@@ -1006,10 +1007,12 @@ fn a_lease_is_rotated_and_an_interrupted_rotation_is_finished() {
     assert_eq!(status.exit_code, 0, "{}{}", status.stdout, status.stderr);
 }
 
-fn extend_fixture() -> Value {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/toon-network-fixtures/extend.ok.json");
-    serde_json::from_str(&fs::read_to_string(path).expect("the extend fixture")).unwrap()
+/// A vendored wire fixture of the TOON Compute spec, by file name.
+fn fixture(name: &str) -> Value {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("vendor/toon-network-fixtures")
+        .join(name);
+    serde_json::from_str(&fs::read_to_string(path).expect(name)).unwrap()
 }
 
 #[test]
@@ -1038,7 +1041,7 @@ fn intervals_are_prepaid_in_one_command_and_the_file_follows_the_last_answer() {
     // One spawn and two extends; the extend body is the fixture's request body.
     assert_eq!(world.provider.count("extend"), 2);
     let workload = rounded.json()["workload_id"].as_str().unwrap().to_owned();
-    let fixture = extend_fixture();
+    let fixture = fixture("extend.ok.json");
     let mut expected = fixture["request_body"].clone();
     expected["workload_id"] = json!(workload);
     assert_eq!(world.provider.last("extend"), Some(expected));
@@ -1624,12 +1627,52 @@ impl SetWorld {
 }
 
 #[test]
+fn entrypoint_and_args_are_sent_only_when_given_and_an_empty_entrypoint_is_refused() {
+    let chain = AnvilChain::start();
+    let world = world(&chain);
+    let content_of = |extra: &[&str]| {
+        let run = world.spawn(extra);
+        assert_eq!(run.exit_code, 0, "{}{}", run.stdout, run.stderr);
+        world.provider.last("spawn").unwrap()["request"]["content"].clone()
+    };
+
+    let neither = content_of(&["--yes"]);
+    assert!(neither.get("entrypoint").is_none() && neither.get("args").is_none());
+    let arg_only = content_of(&["--arg=-c", "--arg", "--verbose", "--yes"]);
+    assert_eq!(arg_only["args"], json!(["-c", "--verbose"]));
+    assert!(arg_only.get("entrypoint").is_none());
+    let entrypoint_only = content_of(&["--entrypoint", "/init", "--yes"]);
+    assert_eq!(entrypoint_only["entrypoint"], json!(["/init"]));
+    assert!(entrypoint_only.get("args").is_none());
+
+    let spawns = world.provider.count("spawn");
+    let empty = world.spawn(&["--entrypoint", "", "--yes"]);
+    assert_eq!(empty.exit_code, 2, "{}{}", empty.stdout, empty.stderr);
+    assert_eq!(error_code(&empty), "usage", "{}", empty.stdout);
+    assert!(empty.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("--entrypoint"));
+    assert_eq!(world.provider.count("spawn"), spawns);
+}
+
+#[test]
 fn a_standby_set_is_bought_in_order_extended_on_each_route_and_read_and_ended_as_one() {
     let chain = AnvilChain::start();
     let world = set_world(&chain, true);
 
     let remaining_before = remaining_today(&world.near);
-    let spawned = world.spawn(&["--intervals", "2", "--port", "443", "--yes"]);
+    let spawned = world.spawn(&[
+        "--intervals",
+        "2",
+        "--port",
+        "443",
+        "--entrypoint",
+        "/bin/sh",
+        "--arg",
+        "-c",
+        "--yes",
+    ]);
     assert_eq!(spawned.exit_code, 0, "{}{}", spawned.stdout, spawned.stderr);
     let report = spawned.json();
     let workload = report["workload_id"].as_str().unwrap().to_owned();
@@ -1668,6 +1711,8 @@ fn a_standby_set_is_bought_in_order_extended_on_each_route_and_read_and_ended_as
     for request in [&primary_request, &standby_request] {
         assert_eq!(request["content"]["workload_id"], workload.as_str());
         assert_eq!(request["content"]["standby_set"], set);
+        assert_eq!(request["content"]["entrypoint"], json!(["/bin/sh"]));
+        assert_eq!(request["content"]["args"], json!(["-c"]));
     }
     assert_ne!(
         primary_request["continuation"],

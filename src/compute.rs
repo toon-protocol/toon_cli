@@ -632,6 +632,17 @@ fn plan(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Plan, Error> {
         "ports": ports(&args.ports)?,
         "ssh_public_key": ssh_key(&args.ssh_key)?,
     });
+    if args.entrypoint.first().is_some_and(String::is_empty) {
+        return Err(usage(
+            "--entrypoint needs an executable as its first word, and the first one is empty.",
+        ));
+    }
+    if !args.entrypoint.is_empty() {
+        content["entrypoint"] = json!(args.entrypoint);
+    }
+    if !args.args.is_empty() {
+        content["args"] = json!(args.args);
+    }
     if let Some(gb) = args.volume_gb {
         content["volume_gb"] = json!(gb);
     }
