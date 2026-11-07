@@ -1214,6 +1214,154 @@ fn a_provider_that_fails_the_second_extend_leaves_the_first_in_the_file() {
     assert!(message.contains("ssh -p 40000 203.0.113.7"), "{message}");
 }
 
+const REPO: &str = "30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:toon";
+const COMMIT: &str = "6666666666666666666666666666666666666666";
+
+fn deployment_flags(environment: &str) -> [&str; 7] {
+    [
+        "--deployment",
+        environment,
+        "--repo",
+        REPO,
+        "--commit",
+        COMMIT,
+        "--yes",
+    ]
+}
+
+/// The Deployments on the near node's own relay.
+fn deployments(world: &World) -> Vec<Value> {
+    let list = world.near.toon(&["deployment", "list", "--json"]);
+    assert_eq!(list.exit_code, 0, "{}{}", list.stdout, list.stderr);
+    list.json()["deployments"].as_array().unwrap().clone()
+}
+
+#[test]
+fn a_deployment_the_relay_refuses_never_fails_the_lease_command() {
+    let chain = AnvilChain::start();
+    let world = world(&chain);
+    // The profile follows a relay that takes no write: the Deployment reaches the agent node's
+    // own relay, and the publish fails after the lease is bought.
+    let path = world.near.machine.agent_node_home().join("state.json");
+    let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    state["relay_url"] = json!("ws://127.0.0.1:9");
+    world
+        .near
+        .machine
+        .write_agent_node_file("state.json", state.to_string());
+
+    let flags = deployment_flags("production").to_vec();
+    let spawned = world.spawn(&flags);
+    assert_eq!(spawned.exit_code, 0, "{}{}", spawned.stdout, spawned.stderr);
+    assert_eq!(world.provider.count("spawn"), 1);
+    let deployment = &spawned.json()["deployment"];
+    assert_eq!(deployment["published"], false, "{deployment}");
+    let retry = deployment["retry"].as_str().unwrap().to_owned();
+    let workload = spawned.json()["workload_id"].as_str().unwrap().to_owned();
+    let expires_at = spawned.json()["expires_at"].as_u64().unwrap();
+    let held = deployments(&world);
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0]["environment"], "production");
+    assert_eq!(held[0]["repository"], REPO);
+    assert_eq!(held[0]["primary"], public_key(PROVIDER));
+    assert_eq!(held[0]["expiration"], expires_at);
+    for part in [
+        "toon deployment publish production",
+        &format!("--workload {workload}"),
+        &format!("--expires-at {expires_at}"),
+        &format!("--repo {REPO}"),
+    ] {
+        assert!(retry.contains(part), "{retry}");
+    }
+    assert!(
+        spawned.stderr.contains("warning") && spawned.stderr.contains(&retry),
+        "{}",
+        spawned.stderr
+    );
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["state"], "live");
+    assert_eq!(lease["deployment"]["environment"], "production");
+
+    // An extend of a lease that records an environment tries again with the new expiry.
+    let extended = world
+        .near
+        .toon(&["compute", "extend", &workload, "--yes", "--json"]);
+    assert_eq!(
+        extended.exit_code, 0,
+        "{}{}",
+        extended.stdout, extended.stderr
+    );
+    let new_expiry = extended.json()["expires_at"].as_u64().unwrap();
+    assert!(new_expiry > expires_at);
+    let deployment = &extended.json()["deployment"];
+    assert_eq!(deployment["published"], false, "{deployment}");
+    assert!(deployment["retry"]
+        .as_str()
+        .unwrap()
+        .contains(&format!("--expires-at {new_expiry}")));
+    let held = deployments(&world);
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0]["expiration"], new_expiry);
+
+    // A lease without the flag carries no environment and touches no Deployment.
+    let plain = world.spawn(&["--yes"]);
+    assert_eq!(plain.exit_code, 0, "{}{}", plain.stdout, plain.stderr);
+    assert!(plain.json().get("deployment").is_none());
+
+    // Malformed inputs are refused before anything is paid.
+    let before = world.provider.count("spawn");
+    let mut bad = deployment_flags("production").to_vec();
+    bad[5] = "abc";
+    let refused = world.spawn(&bad);
+    assert_eq!(
+        error_code(&refused),
+        "deployment_refused",
+        "{}",
+        refused.stdout
+    );
+    assert_eq!(world.provider.count("spawn"), before);
+}
+
+#[test]
+fn an_agent_key_without_the_signing_scope_is_refused_before_any_packet_is_sent() {
+    let chain = AnvilChain::start();
+    let world = world(&chain);
+    let keys = tempfile::tempdir().unwrap();
+    let key_file = keys.path().join("agent.json");
+    let created = world.near.toon(&[
+        "agent-key",
+        "create",
+        "--scope",
+        "send",
+        "--out",
+        key_file.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(created.exit_code, 0, "{}{}", created.stdout, created.stderr);
+    let nowhere = tempfile::tempdir().unwrap();
+    let relay = world.directory.url();
+    let image = image();
+    let mut args = spawn_args(&world.coordinate, &relay, &["--image", &image]);
+    args.extend_from_slice(&deployment_flags("production"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let run = loop {
+        let run = world.near.machine.toon_with(&args, |command| {
+            command
+                .env("HOME", nowhere.path())
+                .env("TOON_AGENT_KEY", &key_file);
+        });
+        if !run.stdout.contains("did not answer") || Instant::now() > deadline {
+            break run;
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
+    assert!(run.stdout.contains("sign"), "{}", run.stdout);
+    assert_eq!(world.provider.count("spawn"), 0);
+    assert_eq!(world.provider.count("availability"), 0);
+    assert!(!keys.path().join("leases").exists());
+}
+
 // ---- Standby Sets ----
 
 /// The second provider's key.

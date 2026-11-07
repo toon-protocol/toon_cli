@@ -16,13 +16,14 @@ use crate::cli::DeploymentCommand;
 use crate::egress::Egress;
 use crate::event;
 use crate::home;
+use crate::lease_file::{self, Claim, Lease};
 use crate::node::State;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::subscribe;
 use crate::tip;
 
 /// The kind of a Deployment: addressable by `(kind, pubkey, d)`.
-const KIND: u64 = 30_437;
+pub const KIND: u64 = 30_437;
 
 /// The kind of a repository announcement (NIP-34), and of a Listing.
 const REPOSITORY: &str = "30617";
@@ -34,7 +35,7 @@ const DELETION: u64 = 5;
 /// A Deployment that ends within this many seconds is marked expiring.
 const EXPIRING: u64 = 24 * 60 * 60;
 
-type Tags = Vec<Vec<String>>;
+pub type Tags = Vec<Vec<String>>;
 
 fn refused(message: impl Into<String>) -> Error {
     Error {
@@ -232,6 +233,80 @@ fn build(now: u64, inputs: &Inputs) -> Result<(Tags, String), Error> {
     tags.push(tag("expiration", &[&expiration.to_string()]));
     tags.push(tag("L", &["toon.network"]));
     Ok((tags, inputs.note.to_owned()))
+}
+
+/// The tags and content of the Deployment of `lease`, as `toon compute` publishes it: the
+/// lease names the Listing, the provider and the workload, and the claim the rest.
+pub fn for_lease(
+    now: u64,
+    claim: &Claim,
+    members: &[Lease],
+    expires_at: u64,
+) -> Result<(Tags, String), Error> {
+    let lease = &members[0];
+    build(
+        now,
+        &Inputs {
+            environment: &claim.environment,
+            repo: &claim.repo,
+            commit: &claim.commit,
+            listing: &lease.listing,
+            primary: &lease.provider,
+            standby: &standby_providers(members),
+            workload: &lease.workload_id,
+            image: None,
+            url: claim.url.as_deref(),
+            expires_at,
+            expiration: None,
+            note: "",
+        },
+    )
+}
+
+/// The standbys of a lease that a Deployment names: each one bought and not ended.
+fn standby_providers(members: &[Lease]) -> Vec<String> {
+    members[1..]
+        .iter()
+        .filter(|member| {
+            !matches!(
+                member.state,
+                lease_file::State::Failed | lease_file::State::Ended
+            )
+        })
+        .map(|member| member.provider.clone())
+        .collect()
+}
+
+/// The `toon deployment publish` command that makes the Deployment of the lease `members`
+/// make up by hand.
+pub fn retry_command(claim: &Claim, members: &[Lease], expires_at: u64) -> String {
+    let lease = &members[0];
+    let mut command = format!(
+        "toon deployment publish {} --repo {} --commit {} --listing {} --primary {} --workload {} \
+         --expires-at {expires_at}",
+        shell_word(&claim.environment),
+        claim.repo,
+        claim.commit,
+        lease.listing,
+        lease.provider,
+        lease.workload_id
+    );
+    for standby in standby_providers(members) {
+        command.push_str(&format!(" --standby {standby}"));
+    }
+    if let Some(url) = &claim.url {
+        command.push_str(&format!(" --url {}", shell_word(url)));
+    }
+    command
+}
+
+/// `word` as a POSIX shell reads it back: as it is if nothing in it is special, else quoted.
+fn shell_word(word: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "-_./:@=+,".contains(c);
+    if !word.is_empty() && word.chars().all(plain) {
+        return word.to_owned();
+    }
+    format!("'{}'", word.replace('\'', "'\\''"))
 }
 
 /// What `update` was told to change. A group that is `None` or empty is left as it is.
@@ -579,7 +654,7 @@ fn current(home: &Path, state: &State, author: &str, environment: &str) -> Resul
         })
 }
 
-fn publish_deployment(
+pub fn publish_deployment(
     home: &Path,
     environment: &str,
     tags: Tags,
@@ -792,6 +867,18 @@ mod tests {
     const W: &str = "4444444444444444444444444444444444444444444444444444444444444444";
     const IMG: &str = "5555555555555555555555555555555555555555555555555555555555555555";
     const COMMIT: &str = "6666666666666666666666666666666666666666";
+
+    #[test]
+    fn a_retry_command_quotes_what_a_shell_would_split() {
+        assert_eq!(shell_word("production"), "production");
+        assert_eq!(
+            shell_word("https://example.com/a?b=1"),
+            "'https://example.com/a?b=1'"
+        );
+        assert_eq!(shell_word("blue green"), "'blue green'");
+        assert_eq!(shell_word("it's"), "'it'\\''s'");
+        assert_eq!(shell_word(""), "''");
+    }
 
     fn inputs<'a>(standby: &'a [String]) -> Inputs<'a> {
         Inputs {

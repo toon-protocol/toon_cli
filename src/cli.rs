@@ -910,6 +910,22 @@ pub struct ComputeSpawnArgs {
     /// whole Lease Intervals; the rounded count and the total are printed before paying
     #[arg(long = "for", value_name = "DURATION")]
     pub for_duration: Option<String>,
+    /// Publish this lease's Deployment (kind 30437) for the environment once the spawn has
+    /// succeeded, and again on every `extend` with the new expiry. The environment is kept in
+    /// the lease file. A publish that fails only warns, naming the `toon deployment` command
+    /// that retries it: the lease is bought either way. With an agent key it needs the `sign`
+    /// scope
+    #[arg(long, value_name = "ENVIRONMENT", requires_all = ["repo", "commit"])]
+    pub deployment: Option<String>,
+    /// The repository the Deployment names: `30617:<owner pubkey>:<repository>`
+    #[arg(long, value_name = "ADDRESS", requires = "deployment")]
+    pub repo: Option<String>,
+    /// The commit the image was built from, which the Deployment names: 40 or 64 hex characters
+    #[arg(long, value_name = "COMMIT", requires = "deployment")]
+    pub commit: Option<String>,
+    /// Where people reach the workload, for the Deployment: an `https` URL
+    #[arg(long, value_name = "URL", requires = "deployment")]
+    pub url: Option<String>,
     /// Read the Listing and Profile from this relay as well; repeatable
     #[arg(long = "relay", value_name = "URL")]
     pub relays: Vec<String>,

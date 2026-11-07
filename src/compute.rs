@@ -14,9 +14,10 @@ use serde_json::{json, Map, Value};
 use zeroize::Zeroizing;
 
 use crate::cli::{ComputeCommand, ComputeExtendArgs, ComputeSpawnArgs};
+use crate::deployment::{self, Tags};
 use crate::egress::Egress;
 use crate::keystore;
-use crate::lease_file::{Lease, Leases, State};
+use crate::lease_file::{Claim, Lease, Leases, State};
 use crate::lease_request::{self, Request, Route};
 use crate::listing::{self, Resolved};
 use crate::node;
@@ -33,12 +34,19 @@ pub struct AgentLimit {
     pub remaining_today: Option<u64>,
 }
 
+/// Signs and, if told to, publishes a Deployment's tags and content.
+pub type SignDeployment = Box<dyn Fn(&Tags, &str, bool) -> Result<(), Error>>;
+
 /// An agent key with no home.
 pub struct AgentRenter {
     pub surface: Surface,
     pub leases: Leases,
     /// Read from the connector, for a command that pays.
     pub limit: Option<AgentLimit>,
+    /// Signs a Deployment's tags with the agent identity (the `sign` order) and, when the last
+    /// argument is true, writes it to the agent node's own relay. False signs and discards: a
+    /// probe of the key's scope, free.
+    pub sign_deployment: SignDeployment,
 }
 
 /// Who rents: the operator, or an agent key with no home.
@@ -841,6 +849,50 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
         (true, 0) => "primary",
         (true, _) => "standby",
     };
+    let root = Zeroizing::new(keystore::random::<32>()?);
+    let workload_id = fresh_hex()?;
+    let standby_set: Vec<String> = if in_set {
+        targets
+            .iter()
+            .map(|target| target.coordinate.author.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let planned: Vec<Lease> = targets
+        .iter()
+        .enumerate()
+        .map(|(index, target)| {
+            let profile = &target.resolved.profile;
+            Lease {
+                workload_id: workload_id.clone(),
+                root_secret: Zeroizing::new(hex::encode(*root)),
+                provider: target.coordinate.author.clone(),
+                ilp_address: profile.ilp_address.clone(),
+                connector_url: profile.connector_url.clone(),
+                connector_seal_key: format!("0x{}", hex::encode(profile.connector_seal_key)),
+                listing: target.coordinate.text(),
+                listing_name: target.resolved.listing.name.clone(),
+                listing_version: target.resolved.listing.version,
+                price: Some(target.price),
+                role: role_of(index).into(),
+                expires_at: None,
+                paid: 0,
+                lease_limit: args.max,
+                state: State::Unknown,
+                error: None,
+                created_at: now(),
+                next_secret: None,
+                rotated: Vec::new(),
+                deployment: claim(args),
+            }
+        })
+        .collect();
+    // A Deployment that cannot be made, or a key that cannot sign it, is refused before any
+    // packet is sent.
+    if let Some(claim) = &planned[0].deployment {
+        deploy(renter, &planned, claim, now() + REQUEST_TTL_S, true)?;
+    }
     if !args.no_check {
         for (index, target) in targets.iter().enumerate() {
             let role = in_set.then(|| role_of(index));
@@ -872,16 +924,6 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
         });
     }
 
-    let root = Zeroizing::new(keystore::random::<32>()?);
-    let workload_id = fresh_hex()?;
-    let standby_set: Vec<String> = if in_set {
-        targets
-            .iter()
-            .map(|target| target.coordinate.author.clone())
-            .collect()
-    } else {
-        Vec::new()
-    };
     let leases = renter.leases();
     paying(renter, total, |moved| -> Result<Report, Error> {
         let ledger = Ledger::new(total, moved, intervals * targets.len() as u64);
@@ -891,27 +933,7 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
             for (index, target) in targets.iter().enumerate() {
                 let profile = &target.resolved.profile;
                 let provider = target.coordinate.author.clone();
-                members.push(Lease {
-                    workload_id: workload_id.clone(),
-                    root_secret: Zeroizing::new(hex::encode(*root)),
-                    provider: provider.clone(),
-                    ilp_address: profile.ilp_address.clone(),
-                    connector_url: profile.connector_url.clone(),
-                    connector_seal_key: format!("0x{}", hex::encode(profile.connector_seal_key)),
-                    listing: target.coordinate.text(),
-                    listing_name: target.resolved.listing.name.clone(),
-                    listing_version: target.resolved.listing.version,
-                    price: Some(target.price),
-                    role: role_of(index).into(),
-                    expires_at: None,
-                    paid: 0,
-                    lease_limit: args.max,
-                    state: State::Unknown,
-                    error: None,
-                    created_at: now(),
-                    next_secret: None,
-                    rotated: Vec::new(),
-                });
+                members.push(planned[index].clone());
                 let request = Request {
                     op: if index == 0 { "spawn" } else { "standby" },
                     request_id: &fresh_hex()?,
@@ -971,7 +993,11 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
             extend_rounds(renter, &leases, &mut members, intervals - 1, &ledger)
         })();
         match bought {
-            Ok(()) => Ok(spawn_report(&members, &access, intervals)),
+            Ok(()) => Ok(announce(
+                renter,
+                &members,
+                spawn_report(&members, &access, intervals),
+            )),
             Err(error) => {
                 let mut error = partly_paid(error, &members, &ledger);
                 if ledger.bought.get() > 0 {
@@ -981,6 +1007,68 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
             }
         }
     })
+}
+
+/// The Deployment `--deployment` names, if it does.
+fn claim(args: &ComputeSpawnArgs) -> Option<Claim> {
+    Some(Claim {
+        environment: args.deployment.clone()?,
+        repo: args.repo.clone()?,
+        commit: args.commit.clone()?,
+        url: args.url.clone(),
+    })
+}
+
+/// Make the Deployment of the lease `members` make up, through the code `toon deployment` uses. With `probe` it
+/// builds it and, with an agent key, has it signed and thrown away, and sends nothing.
+fn deploy(
+    renter: &Renter,
+    members: &[Lease],
+    claim: &Claim,
+    expires_at: u64,
+    probe: bool,
+) -> Result<(), Error> {
+    let (tags, content) = deployment::for_lease(now(), claim, members, expires_at)?;
+    match renter {
+        Renter::Home(_) if probe => Ok(()),
+        Renter::Home(home) => {
+            deployment::publish_deployment(home, &claim.environment, tags, content, None)
+                .map(|_| ())
+        }
+        Renter::Agent(agent) => (agent.sign_deployment)(&tags, &content, !probe),
+    }
+}
+
+/// Publish the Deployment a bought lease carries, with its `expires_at`. A publish that fails
+/// never fails the command: the lease is bought either way, so it warns and says how to retry.
+fn announce(renter: &Renter, members: &[Lease], mut report: Report) -> Report {
+    let (Some(claim), Some(expires_at)) = (&members[0].deployment, members[0].expires_at) else {
+        return report;
+    };
+    let environment = &claim.environment;
+    match deploy(renter, members, claim, expires_at, false) {
+        Ok(()) => {
+            report.json["deployment"] = json!({ "environment": environment, "published": true });
+            report
+                .text
+                .push_str(&format!(" Deployment {environment} is published."));
+        }
+        Err(error) => {
+            let retry = deployment::retry_command(claim, members, expires_at);
+            eprintln!(
+                "warning: the lease is bought, but its Deployment {environment} was not \
+                 published: {} Run `{retry}` to retry.",
+                error.message
+            );
+            report.json["deployment"] = json!({
+                "environment": environment,
+                "published": false,
+                "error": error.message,
+                "retry": retry,
+            });
+        }
+    }
+    report
 }
 
 fn intervals_text(intervals: u64) -> String {
@@ -1320,7 +1408,11 @@ pub fn extend(renter: &Renter, args: &ComputeExtendArgs) -> Result<Report, Error
     paying(renter, total, |moved| {
         let ledger = Ledger::new(total, moved, args.intervals * live.len() as u64);
         match extend_rounds(renter, &leases, &mut members, args.intervals, &ledger) {
-            Ok(()) => Ok(extend_report(&members, args.intervals, ledger.paid())),
+            Ok(()) => Ok(announce(
+                renter,
+                &members,
+                extend_report(&members, args.intervals, ledger.paid()),
+            )),
             Err(error) => Err(partly_paid(error, &members, &ledger)),
         }
     })

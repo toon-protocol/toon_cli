@@ -44,6 +44,16 @@ impl State {
     }
 }
 
+/// The Deployment (kind 30437) a lease publishes and refreshes: what `toon deployment publish`
+/// needs besides what the lease itself holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Claim {
+    pub environment: String,
+    pub repo: String,
+    pub commit: String,
+    pub url: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Lease {
     pub workload_id: String,
@@ -73,6 +83,8 @@ pub struct Lease {
     /// The error that left the lease `failed`, as the provider or the connector gave it.
     pub error: Option<(String, String)>,
     pub created_at: u64,
+    /// The Deployment to publish with this lease, if `--deployment` named an environment.
+    pub deployment: Option<Claim>,
     /// A fresh root secret a rotation (§6.8) is moving the lease to. The file keeps it beside
     /// `root_secret` until every member has confirmed, then it replaces `root_secret`.
     pub next_secret: Option<Zeroizing<String>>,
@@ -96,6 +108,7 @@ impl Lease {
             "state": self.state.name(),
             "error": self.error.as_ref().map(|(code, message)| json!({ "code": code, "message": message })),
             "created_at": self.created_at,
+            "deployment": self.deployment.as_ref().map(|claim| &claim.environment),
             "rotating": self.next_secret.is_some(),
         })
     }
@@ -117,6 +130,15 @@ impl Lease {
         let mut file = lease.member_json();
         file["version"] = json!(1);
         file["root_secret"] = json!(&*lease.root_secret);
+        file["deployment"] = match &lease.deployment {
+            Some(claim) => json!({
+                "environment": claim.environment,
+                "repo": claim.repo,
+                "commit": claim.commit,
+                "url": claim.url,
+            }),
+            None => Value::Null,
+        };
         if let Some(next) = &lease.next_secret {
             file["next_secret"] = json!(&**next);
             file["rotated"] = json!(lease.rotated);
@@ -128,7 +150,13 @@ impl Lease {
                     .map(|member| {
                         let mut json = member.member_json();
                         let shared = json.as_object_mut().expect("an object");
-                        for field in ["workload_id", "lease_limit", "created_at", "rotating"] {
+                        for field in [
+                            "workload_id",
+                            "lease_limit",
+                            "created_at",
+                            "rotating",
+                            "deployment",
+                        ] {
                             shared.remove(field);
                         }
                         json
@@ -140,8 +168,8 @@ impl Lease {
     }
 
     /// A member of the lease `shared` (its first member) names: the workload id, the root
-    /// secret, a rotation under way, the lease limit and the creation time are the lease's,
-    /// not the member's.
+    /// secret, a rotation under way, the Deployment, the lease limit and the creation time are
+    /// the lease's, not the member's.
     fn from_json(file: &Value, shared: Option<&Lease>) -> Option<Self> {
         let text = |field: &str| file[field].as_str().map(str::to_owned);
         Some(Self {
@@ -183,6 +211,16 @@ impl Lease {
             created_at: match shared {
                 Some(lease) => lease.created_at,
                 None => file["created_at"].as_u64()?,
+            },
+            deployment: match (shared, &file["deployment"]) {
+                (Some(lease), _) => lease.deployment.clone(),
+                (None, Value::Null) => None,
+                (None, claim) => Some(Claim {
+                    environment: claim["environment"].as_str()?.to_owned(),
+                    repo: claim["repo"].as_str()?.to_owned(),
+                    commit: claim["commit"].as_str()?.to_owned(),
+                    url: claim["url"].as_str().map(str::to_owned),
+                }),
             },
             next_secret: match shared {
                 Some(lease) => lease.next_secret.clone(),
