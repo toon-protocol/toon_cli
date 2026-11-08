@@ -2,11 +2,12 @@
 
 The gate substitutes four things: the chain, the overlay, the app runner and the remote
 relay. This run uses the real ones: the `anon` daemon on the Anyone network, the relay
-image in a container, the `infra` sandbox's local chain and hub, and the relay image that
-sells its live feed. "Hub" and "relay node" below are the sandbox's own names for its
-connector and for a connector with a relay behind it. It is run by hand, before a release
-and after moving the connector pin, the relay image or the `anon` release. It is not part
-of the gate, because it needs Docker and a network nobody here controls.
+image in a container, the `infra` sandbox's local chain and hub, the relay image that sells
+its live feed, and a TOON Compute provider on the devnet. "Hub" and "relay node" below are
+the sandbox's own names for its connector and for a connector with a relay behind it. It
+is run by hand, before a release and after moving the connector pin, the relay image or the
+`anon` release. It is not part of the gate, because it needs Docker and a network nobody
+here controls.
 
 Record every run as a comment on the spec (#2): the date, `toon --version`, and for each
 step below whether it did what the step says. Open a ticket for every step that did not.
@@ -23,9 +24,10 @@ No step is known to fail.
 
 ## What it needs
 
-- Docker, `jq`, `curl`, and Foundry's `cast`.
+- Docker, `jq`, `curl`, `ssh` and `ssh-keygen`, and Foundry's `cast`.
 - The `infra` checkout beside this one, set up once with `make setup` in `infra/sandbox`.
-- For the last step of part 3, at least 0.001 Base Sepolia ETH from a public faucet.
+- For the last step of part 3 and for part 4, at least 0.002 Base Sepolia ETH from a public
+  faucet: each of their deposits pays its own gas.
 
 The run never touches your own agent node: every command below runs with `HOME` set to a
 directory made for the run.
@@ -543,7 +545,8 @@ over `wss://` through the overlay. The `join` is refused with `unfunded`, naming
 settlement address and the ETH it needs for gas, and the day's spending is unchanged.
 
 The devnet faucet sends no ETH, and a connector pays the gas of its own deposit. Send
-at least 0.001 Base Sepolia ETH to that address from a public faucet, and join:
+at least 0.002 Base Sepolia ETH to that address from a public faucet (part 4 makes a second
+deposit), and join:
 
 ```sh
 $E/toon join devnet --deposit 1000000 --yes --json
@@ -576,6 +579,133 @@ $E/toon down --json
 
 **Expect** `published` with `paid: 1` and the event read back from the devnet's relay: a
 hidden agent node paid a network on clearnet.
+
+## 4. Rent TOON Compute on the devnet
+
+This part settles whether the agent node of part 3 rents a workload from a live devnet
+provider with `toon compute`, first with its home and then with an agent key and no home:
+a spawn, two extends, a status and a terminate each time. Nothing here is refunded, so
+each lease below costs three Lease Intervals of its Listing.
+
+Pick a provider that is on clearnet and lists a Listing with no `docker` capability. The
+run in #313 used `g.town.provider`'s `basic` Listing, 1000 base units for a Lease Interval
+of an hour; read the devnet's directory again and take another if it is gone:
+
+```sh
+$E/toon event query "$DEVNET_RELAY" \
+  --filter '{"kinds":[30432,10432],"#L":["toon.network"]}' --json > $E/directory.json
+jq -c '.events[] | select(.kind == 10432) | {pubkey, p: (.content | fromjson
+  | {ilp_address, connector_url, hidden})}' $E/directory.json
+jq -c '.events[] | select(.kind == 30432) | {pubkey, d: (.tags[] | select(.[0] == "d")
+  | .[1]), l: (.content | fromjson | {price, lease_interval_s, capabilities})}' $E/directory.json
+```
+
+```sh
+export PROVIDER=65d9b0fd3abe69358864268ca323de6a9fb0d49f91dc9b149d1d298751f488bf
+export LISTING=30432:$PROVIDER:basic
+export PROVIDER_ILP=g.town.provider
+export PROVIDER_CONNECTOR=https://proxy.provider.thetownprotocol.xyz/ilp
+```
+
+The image is the one the provider's own smoke uses, an sshd pinned by digest. It reads the
+key from `PUBLIC_KEY` while the provider hands it over as `SSH_PUBLIC_KEY`, so the spawn
+replaces its entrypoint to bridge the two, as the provider's README says:
+
+```sh
+export IMAGE=lscr.io/linuxserver/openssh-server@sha256:39ba37d50fdd6be1bf70644c871e5dcb9234ee79ac56424ea03ca08cadf1e7b0
+ssh-keygen -q -t ed25519 -N '' -C end-to-end -f $E/id_compute
+spawn() {
+  $E/toon compute spawn "$LISTING" --image "$IMAGE" --ssh-key $E/id_compute.pub \
+    --env LISTEN_PORT=22 --env USER_NAME=tenant \
+    --entrypoint /bin/sh --arg -c --arg 'PUBLIC_KEY="$SSH_PUBLIC_KEY" exec /init' "$@"
+}
+in_lease() {
+  for i in $(seq 12); do
+    ssh -i $E/id_compute -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
+      -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o ConnectTimeout=10 \
+      -p "$(jq -r .access.ssh_port $1)" "tenant@$(jq -r .access.host $1)" \
+      'echo in-the-lease; id -un' && return; sleep 10
+  done
+}
+```
+
+Start the agent node of part 3 again in the second terminal, `$E/toon up --foreground
+--json`, and ask for a spawn:
+
+```sh
+spawn --max 5000 --json
+```
+
+**Expect** `peering_needed`, naming `toon peer add $PROVIDER_CONNECTOR` and `toon route
+add $PROVIDER_ILP`: the devnet's hub does not forward to the provider, and nothing was
+paid. Peer with the provider's connector:
+
+```sh
+$E/toon peer add "$PROVIDER_CONNECTOR" --deposit 100000 --yes --json > $E/compute-peer.json
+$E/toon route add "$PROVIDER_ILP" --peer "$(jq -r .peering.id $E/compute-peer.json)" --json
+spawn --max 5000 --json
+```
+
+**Expect** an open channel of 100000 with `deposited: true`, and the spawn refused with
+`not_confirmed`, naming the price of one Lease Interval: the free availability route said
+the provider would run it.
+
+### With the home
+
+```sh
+spawn --max 5000 --yes --json > $E/lease.json
+W=$(jq -r .workload_id $E/lease.json)
+in_lease $E/lease.json
+$E/toon compute extend $W --yes --json > $E/extend-1.json
+$E/toon compute extend $W --yes --json > $E/extend-2.json
+jq .expires_at $E/lease.json $E/extend-1.json $E/extend-2.json
+$E/toon compute extend $W --intervals 3 --yes --json
+$E/toon compute status $W --json
+$E/toon compute terminate $W --json
+$E/toon compute terminate $W --yes --json
+$E/toon compute status $W --json
+$E/toon compute list --json
+ls -l $HOME/.toon/agent-node/leases
+```
+
+**Expect** the spawn to print `access` and `expires_at`, and `in-the-lease` and `tenant`
+from inside the workload. Each extend moves `expires_at` on by the Listing's
+`lease_interval_s` and `paid` by its price. The third extend is refused with `lease_limit`
+and nothing sent: three more intervals would take the lease past `--max`. `status` reports
+`running`. `terminate` without `--yes` names the time it would lose; with it, and in the
+`status` after it, the lease is `{ "ended": "termination" }` with no `access`. `list`
+reports the lease `ended`, from a file of mode 0600 in `leases/`.
+
+### With an agent key and no home
+
+```sh
+$E/toon agent-key create --max-per-command 2000 --max-per-day 10000 \
+  --out $E/agent-key.json --json
+mkdir -p $E/no-home && (
+  export HOME=$E/no-home TOON_AGENT_KEY=$E/agent-key.json
+  unset TOON_PASSPHRASE_FILE
+  spawn --max 5000 --yes --json
+  spawn --relay "$DEVNET_RELAY" --intervals 11 --yes --json
+  spawn --relay "$DEVNET_RELAY" --max 5000 --yes --json > $E/agent-lease.json
+  W=$(jq -r .workload_id $E/agent-lease.json)
+  in_lease $E/agent-lease.json
+  $E/toon compute extend $W --yes --json > $E/agent-extend-1.json
+  $E/toon compute extend $W --yes --json > $E/agent-extend-2.json
+  jq .expires_at $E/agent-lease.json $E/agent-extend-1.json $E/agent-extend-2.json
+  $E/toon compute status $W --json
+  $E/toon compute terminate $W --yes --json
+  $E/toon compute status $W --json
+  $E/toon limit show --json
+)
+ls -A $E/no-home; ls -l $E/leases
+$E/toon down --json
+```
+
+**Expect** the first spawn refused with `usage`: an agent key has no home to read a relay
+from, so a Listing given as `30432:` needs `--relay`. The second is refused with
+`spending_limit`, naming the key's per-day limit, and nothing sent. The rest as with the
+home, and then the key's `remaining_today` down by the three intervals, `$E/no-home`
+still empty, and the lease's file in `leases/` beside the key file.
 
 ## Afterwards
 
