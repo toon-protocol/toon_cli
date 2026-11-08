@@ -60,3 +60,4 @@ lease_not_held
 lease_body_shape
 rotation_incomplete
 lease_partly_paid
+unit_owned_by_another_home

@@ -77,12 +77,14 @@ fn up_writes_a_unit_that_runs_the_supervisor_in_the_foreground() {
              [Service]\n\
              Type=notify\n\
              TimeoutStartSec=600\n\
+             Environment=HOME={}\n\
              ExecStart=\"{}\" up --foreground\n\
              Restart=on-failure\n\
              RestartSec=5\n\
              \n\
              [Install]\n\
              WantedBy=default.target\n",
+            machine.home().display(),
             toon.display()
         )
     );
@@ -93,6 +95,150 @@ fn up_writes_a_unit_that_runs_the_supervisor_in_the_foreground() {
          loginctl enable-linger\n"
     );
     assert_eq!(up.json()["unit"]["name"], "toon-agent-node.service");
+}
+
+const OTHER_HOME_UNIT: &str = "[Unit]\nDescription=TOON agent node\n\n[Service]\nEnvironment=HOME=/home/someone-else\nExecStart=\"/bin/toon\" up --foreground\n";
+const LEGACY_UNIT: &str =
+    "[Unit]\nDescription=TOON agent node\n\n[Service]\nExecStart=\"/bin/toon\" up --foreground\n";
+
+fn install_unit(machine: &Machine, text: &str) {
+    let path = unit_path(machine);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, text).unwrap();
+}
+
+fn assert_refused(run: &support::Run, calls: &Path) {
+    assert_eq!(run.exit_code, 1, "{}", run.stdout);
+    assert_eq!(run.json()["error"]["code"], "unit_owned_by_another_home");
+    assert!(!calls.exists(), "systemctl was called");
+}
+
+#[test]
+fn up_refuses_a_unit_that_belongs_to_another_home() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let (bin, calls) = fake_systemd(&machine);
+    install_unit(&machine, OTHER_HOME_UNIT);
+    let with_path = |command: &mut Command| {
+        command.env("PATH", &bin);
+    };
+
+    let up = machine.toon_with(&["up", "--json"], with_path);
+
+    assert_refused(&up, &calls);
+    let message = up.json()["error"]["message"].as_str().unwrap().to_string();
+    assert!(message.contains("/home/someone-else"), "{message}");
+    assert!(message.contains("--foreground"), "{message}");
+    assert_eq!(
+        fs::read_to_string(unit_path(&machine)).unwrap(),
+        OTHER_HOME_UNIT
+    );
+    let text = machine.toon_with(&["up"], with_path);
+    assert_eq!(text.exit_code, 1);
+    assert!(
+        text.stderr.contains("/home/someone-else"),
+        "{}",
+        text.stderr
+    );
+    assert!(text.stderr.contains("--foreground"), "{}", text.stderr);
+}
+
+#[test]
+fn up_in_the_foreground_never_checks_the_unit() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    install_unit(&machine, OTHER_HOME_UNIT);
+
+    let up = machine.start(&["up", "--foreground", "--json"]);
+
+    assert!(up.report()["connector"]["pid"].as_u64().is_some());
+    assert_eq!(
+        fs::read_to_string(unit_path(&machine)).unwrap(),
+        OTHER_HOME_UNIT
+    );
+}
+
+#[test]
+fn down_refuses_a_unit_that_belongs_to_another_home() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let (bin, calls) = fake_systemd(&machine);
+    install_unit(&machine, OTHER_HOME_UNIT);
+
+    let down = machine.toon_with(&["down", "--json"], |command| {
+        command.env("PATH", &bin);
+    });
+
+    assert_refused(&down, &calls);
+    assert_eq!(
+        fs::read_to_string(unit_path(&machine)).unwrap(),
+        OTHER_HOME_UNIT
+    );
+}
+
+#[test]
+fn a_legacy_unit_is_refused_from_a_home_that_is_not_the_login_home() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let (bin, calls) = fake_systemd(&machine);
+    install_unit(&machine, LEGACY_UNIT);
+
+    let up = machine.toon_with(&["up", "--json"], |command| {
+        command.env("PATH", &bin);
+    });
+
+    assert_refused(&up, &calls);
+    assert_eq!(
+        fs::read_to_string(unit_path(&machine)).unwrap(),
+        LEGACY_UNIT
+    );
+}
+
+#[test]
+fn up_replaces_a_unit_of_the_same_home() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let (bin, _) = fake_systemd(&machine);
+    install_unit(
+        &machine,
+        &format!("[Service]\nEnvironment=HOME={}\n", machine.home().display()),
+    );
+
+    let up = machine.toon_with(&["up", "--json"], |command| {
+        command.env("PATH", &bin);
+    });
+
+    assert_eq!(up.exit_code, 0, "{}", up.stdout);
+    assert!(fs::read_to_string(unit_path(&machine))
+        .unwrap()
+        .contains("up --foreground"));
+}
+
+#[test]
+fn down_stops_a_unit_of_the_same_home() {
+    let chain = FakeChain::start();
+    let machine = Machine::new();
+    machine.init_on(&chain);
+    let (bin, calls) = fake_systemd(&machine);
+    install_unit(
+        &machine,
+        &format!("[Service]\nEnvironment=HOME={}\n", machine.home().display()),
+    );
+
+    let down = machine.toon_with(&["down", "--json"], |command| {
+        command.env("PATH", &bin);
+    });
+
+    assert_eq!(down.exit_code, 0, "{}", down.stdout);
+    assert_eq!(
+        fs::read_to_string(calls).unwrap(),
+        "systemctl --user disable --now toon-agent-node.service\n"
+    );
 }
 
 #[test]

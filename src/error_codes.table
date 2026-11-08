@@ -63,4 +63,5 @@ error_codes! {
     LeaseBodyShape => "lease_body_shape" => Failure,
     RotationIncomplete => "rotation_incomplete" => Failure,
     LeasePartlyPaid => "lease_partly_paid" => Failure,
+    UnitOwnedByAnotherHome => "unit_owned_by_another_home" => Failure,
 }
