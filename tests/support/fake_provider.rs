@@ -34,6 +34,8 @@ pub struct State {
     pub rotate_answer_lost: bool,
     /// The nth `extend` (counting from 1) is answered with an error instead of an extension.
     pub fail_extend_at: Option<usize>,
+    /// A spawn whose connection is closed with no answer, as by a provider that crashed.
+    pub drop_spawn: bool,
     extends: usize,
     token: Option<String>,
     workload: Option<String>,
@@ -155,7 +157,12 @@ impl FakeProvider {
             body.extend_from_slice(&chunk[..read]);
         }
         let parsed: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        let dropped =
+            self.with(|state| state.drop_spawn && path.trim_end_matches('/').ends_with("/spawn"));
         let answer = self.answer(&path, &parsed);
+        if dropped {
+            return;
+        }
         let text = answer.to_string();
         let _ = write!(
             stream,
