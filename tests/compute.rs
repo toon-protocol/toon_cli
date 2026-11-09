@@ -719,10 +719,14 @@ fn a_lease_is_rented_listed_read_and_terminated() {
         .near
         .toon(&["compute", "terminate", &workload, "--json"]);
     assert_eq!(error_code(&careful), "not_confirmed", "{}", careful.stdout);
-    assert!(careful.json()["error"]["message"]
+    let warning = careful.json()["error"]["message"]
         .as_str()
         .unwrap()
-        .contains("nothing is refunded"));
+        .to_owned();
+    assert!(warning.contains("nothing is refunded"), "{warning}");
+    // It names the paid time that would be lost.
+    let paid_until = format!("minute(s) paid until {}", report["expires_at"]);
+    assert!(warning.contains(&paid_until), "{warning}");
     assert_eq!(world.provider.count("terminate"), 0);
     let terminated = world
         .near
@@ -1285,7 +1289,7 @@ fn a_provider_that_fails_the_second_extend_leaves_the_first_in_the_file() {
 }
 
 #[test]
-fn an_agent_spawn_nobody_answers_records_what_the_connector_counted() {
+fn an_agent_spawn_nobody_answers_records_what_the_connector_counted_and_status_settles_it() {
     let chain = AnvilChain::start();
     let world = world(&chain);
     world.provider.with(|state| state.drop_spawn = true);
@@ -1344,8 +1348,52 @@ fn an_agent_spawn_nobody_answers_records_what_the_connector_counted() {
     // The connector counted the packet that left; the file says it was paid, not nothing.
     let counted = before - remaining();
     assert_eq!(counted, PRICE, "{}", run.stdout);
-    let lease = read_lease(&keys.path().join("leases"));
+    let leases = keys.path().join("leases");
+    let lease = read_lease(&leases);
     assert_eq!(lease["paid"], counted, "{}", run.stdout);
+
+    // With no answer, nobody knows whether the lease runs: the file says so, and `list`
+    // shows it.
+    assert_eq!(lease["state"], "unknown", "{}", run.stdout);
+    let workload = lease["workload_id"].as_str().unwrap().to_owned();
+    let list = as_agent(&["compute", "list"]);
+    assert!(
+        list.stdout.contains(&workload) && list.stdout.contains("unknown"),
+        "{}",
+        list.stdout
+    );
+
+    // `status` settles it: a provider that never ran it makes the lease failed...
+    world.provider.with(|state| state.workload = None);
+    let status = as_agent(&["compute", "status", &workload, "--json"]);
+    assert_eq!(error_code(&status), "lease_refused", "{}", status.stdout);
+    let lease = read_lease(&leases);
+    assert_eq!(lease["state"], "failed", "{}", status.stdout);
+    assert_eq!(
+        lease["error"]["code"], "unknown_workload",
+        "{}",
+        status.stdout
+    );
+    let forgotten = as_agent(&["compute", "forget", &workload, "--json"]);
+    assert_eq!(forgotten.exit_code, 0, "{}", forgotten.stdout);
+
+    // ...and one that did run it makes the lease live, with the expiry it answers.
+    let run = as_agent(&spawn);
+    assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
+    let workload = read_lease(&leases)["workload_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let status = as_agent(&["compute", "status", &workload, "--json"]);
+    assert_eq!(status.exit_code, 0, "{}{}", status.stdout, status.stderr);
+    let lease = read_lease(&leases);
+    assert_eq!(lease["state"], "live", "{}", status.stdout);
+    assert_eq!(
+        lease["expires_at"],
+        world.provider.expires_at(),
+        "{}",
+        status.stdout
+    );
 }
 
 const REPO: &str = "30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:toon";
@@ -1617,6 +1665,7 @@ fn serve_provider(
         ("availability", "/availability", 0),
         ("status", "/status", 0),
         ("terminate", "/terminate", 0),
+        ("rotate", "/rotate", 0),
         ("warm.v1.spawn", "/listings/warm/v1/spawn", PRICE),
         ("warm.v1.extend", "/listings/warm/v1/extend", PRICE),
     ];
@@ -2064,4 +2113,51 @@ fn a_standby_that_fails_leaves_the_members_bought_in_the_file() {
     let lease = read_lease(&world.leases());
     assert_eq!(lease["state"], "ended");
     assert_eq!(lease["standbys"][0]["state"], "failed");
+}
+
+#[test]
+fn a_standby_that_never_ran_is_settled_failed_and_does_not_hold_up_the_set() {
+    let chain = AnvilChain::start();
+    let world = set_world(&chain, true);
+    world.standby.with(|state| state.drop_spawn = true);
+    let run = world.spawn(&["--yes"]);
+    assert_eq!(error_code(&run), "lease_partly_paid", "{}", run.stdout);
+    // The connection was dropped, so nobody knows whether the standby took: the file says
+    // so, with the reject that said it.
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["state"], "live");
+    assert_eq!(lease["standbys"][0]["state"], "unknown", "{lease}");
+    assert!(
+        lease["standbys"][0]["error"]["code"]
+            .as_str()
+            .unwrap()
+            .starts_with("rejected"),
+        "{lease}"
+    );
+
+    // It never ran: rotating and terminating the set settle it failed and carry on.
+    world.standby.with(|state| state.workload = None);
+    let workload = lease["workload_id"].as_str().unwrap().to_owned();
+    let rotated = world.near.toon(&["compute", "rotate", &workload, "--json"]);
+    assert_eq!(rotated.exit_code, 0, "{}{}", rotated.stdout, rotated.stderr);
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["standbys"][0]["state"], "failed", "{lease}");
+    assert_eq!(lease["standbys"][0]["error"]["code"], "unknown_workload");
+
+    // Terminating asks an unknown standby too, and one that never ran holds nothing up.
+    let mut unsettled = lease.clone();
+    unsettled["standbys"][0]["state"] = json!("unknown");
+    write_lease(&world.leases(), &unsettled);
+    let terminated = world
+        .near
+        .toon(&["compute", "terminate", &workload, "--yes", "--json"]);
+    assert_eq!(
+        terminated.exit_code, 0,
+        "{}{}",
+        terminated.stdout, terminated.stderr
+    );
+    assert_eq!(world.standby.count("terminate"), 1);
+    let lease = read_lease(&world.leases());
+    assert_eq!(lease["state"], "ended");
+    assert_eq!(lease["standbys"][0]["state"], "failed", "{lease}");
 }
