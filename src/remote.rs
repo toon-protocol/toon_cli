@@ -459,6 +459,7 @@ fn agent_limit(key: &KeyFile, app: Option<&str>) -> Result<crate::compute::Agent
         per_write: limit["per_write"].as_u64(),
         remaining_today: per_day
             .map(|per_day| per_day.saturating_sub(limit["counted_today"].as_u64().unwrap_or(0))),
+        counted_today: limit["counted_today"].as_u64(),
     })
 }
 
@@ -787,6 +788,15 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
                     surface: key.surface(app)?,
                     leases: crate::lease_file::Leases::beside(path),
                     limit,
+                    counted_today: {
+                        let counter = KeyFile::load(path)?;
+                        let app = app.map(str::to_owned);
+                        Box::new(move || {
+                            agent_limit(&counter, app.as_deref())
+                                .ok()
+                                .and_then(|limit| limit.counted_today)
+                        })
+                    },
                     sign_deployment: {
                         let signer = KeyFile::load(path)?;
                         let app = app.map(str::to_owned);

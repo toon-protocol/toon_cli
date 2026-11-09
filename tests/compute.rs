@@ -1284,6 +1284,70 @@ fn a_provider_that_fails_the_second_extend_leaves_the_first_in_the_file() {
     assert!(message.contains("ssh -p 40000 203.0.113.7"), "{message}");
 }
 
+#[test]
+fn an_agent_spawn_nobody_answers_records_what_the_connector_counted() {
+    let chain = AnvilChain::start();
+    let world = world(&chain);
+    world.provider.with(|state| state.drop_spawn = true);
+    let keys = tempfile::tempdir().unwrap();
+    let key_file = keys.path().join("agent.json");
+    let created = world.near.toon(&[
+        "agent-key",
+        "create",
+        "--max-per-command",
+        "5000",
+        "--max-per-day",
+        "10000",
+        "--out",
+        key_file.to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(created.exit_code, 0, "{}{}", created.stdout, created.stderr);
+    let nowhere = tempfile::tempdir().unwrap();
+    let as_agent = |args: &[&str]| -> Run {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let run = world.near.machine.toon_with(args, |command| {
+                command
+                    .env("HOME", nowhere.path())
+                    .env("TOON_AGENT_KEY", &key_file);
+            });
+            if run.exit_code != 1
+                || !run.stdout.contains("did not answer")
+                || Instant::now() > deadline
+            {
+                return run;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    };
+    // What the connector says is left of the key's day, as `toon limit show` reads it.
+    let remaining = || -> u64 {
+        let shown = as_agent(&["limit", "show", "--json"]);
+        let limits = shown.json()["limits"].clone();
+        let (_, limit) = limits.as_object().unwrap().iter().next().unwrap();
+        limit["remaining_today"].as_str().unwrap().parse().unwrap()
+    };
+    let before = remaining();
+
+    let relay = world.directory.url();
+    let image = image();
+    let spawn = spawn_args(
+        &world.coordinate,
+        &relay,
+        &["--image", &image, "--no-check", "--yes"],
+    );
+    let run = as_agent(&spawn);
+    assert_eq!(run.exit_code, 1, "{}{}", run.stdout, run.stderr);
+    assert_eq!(world.provider.count("spawn"), 1);
+
+    // The connector counted the packet that left; the file says it was paid, not nothing.
+    let counted = before - remaining();
+    assert_eq!(counted, PRICE, "{}", run.stdout);
+    let lease = read_lease(&keys.path().join("leases"));
+    assert_eq!(lease["paid"], counted, "{}", run.stdout);
+}
+
 const REPO: &str = "30617:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:toon";
 const COMMIT: &str = "6666666666666666666666666666666666666666";
 
