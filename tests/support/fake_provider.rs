@@ -37,6 +37,9 @@ pub struct State {
     /// A spawn (or standby) whose connection is closed with no answer, as by a provider that
     /// crashed.
     pub drop_spawn: bool,
+    /// The nth `extend` (counting from 1) and every one after it is applied, but its
+    /// connection is closed with no answer.
+    pub drop_extend_from: Option<usize>,
     extends: usize,
     token: Option<String>,
     /// The lease it holds; `None` answers every route `unknown_workload`, as a provider
@@ -165,6 +168,13 @@ impl FakeProvider {
             state.drop_spawn && (route.ends_with("/spawn") || route.ends_with("/standby"))
         });
         let answer = self.answer(&path, &parsed);
+        let dropped = dropped
+            || self.with(|state| {
+                route.ends_with("/extend")
+                    && state
+                        .drop_extend_from
+                        .is_some_and(|from| state.extends >= from)
+            });
         if dropped {
             return;
         }
