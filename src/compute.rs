@@ -1020,6 +1020,7 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
                 let mut error = partly_paid(error, &members, &ledger);
                 if ledger.bought.get() > 0 {
                     error.message.push_str(&access_text(&access));
+                    announce_partly(renter, &members, &mut error);
                 }
                 Err(error)
             }
@@ -1060,17 +1061,40 @@ fn deploy(
 /// Publish the Deployment a bought lease carries, with its `expires_at`. A publish that fails
 /// never fails the command: the lease is bought either way, so it warns and says how to retry.
 fn announce(renter: &Renter, members: &[Lease], mut report: Report) -> Report {
+    if let Some(published) = publish(renter, members) {
+        if published["published"] == true {
+            report.text.push_str(&format!(
+                " Deployment {} is published.",
+                published["environment"].as_str().unwrap_or_default()
+            ));
+        }
+        report.json["deployment"] = published;
+    }
+    report
+}
+
+/// A command that stopped part-way after buying time: the lease is live until its new
+/// `expires_at`, so its Deployment says so, and the command still fails as `lease_partly_paid`.
+fn announce_partly(renter: &Renter, members: &[Lease], error: &mut Error) {
+    if let Some(published) = publish(renter, members) {
+        if published["published"] == true {
+            error.message.push_str(&format!(
+                " Deployment {} is published with what was bought.",
+                published["environment"].as_str().unwrap_or_default()
+            ));
+        }
+    }
+}
+
+/// Publish the Deployment the lease records, if it records one, warning when it fails. What
+/// happened, for a report.
+fn publish(renter: &Renter, members: &[Lease]) -> Option<Value> {
     let (Some(claim), Some(expires_at)) = (&members[0].deployment, members[0].expires_at) else {
-        return report;
+        return None;
     };
     let environment = &claim.environment;
-    match deploy(renter, members, claim, expires_at, false) {
-        Ok(()) => {
-            report.json["deployment"] = json!({ "environment": environment, "published": true });
-            report
-                .text
-                .push_str(&format!(" Deployment {environment} is published."));
-        }
+    Some(match deploy(renter, members, claim, expires_at, false) {
+        Ok(()) => json!({ "environment": environment, "published": true }),
         Err(error) => {
             let retry = deployment::retry_command(claim, members, expires_at);
             eprintln!(
@@ -1078,15 +1102,14 @@ fn announce(renter: &Renter, members: &[Lease], mut report: Report) -> Report {
                  published: {} Run `{retry}` to retry.",
                 error.message
             );
-            report.json["deployment"] = json!({
+            json!({
                 "environment": environment,
                 "published": false,
                 "error": error.message,
                 "retry": retry,
-            });
+            })
         }
-    }
-    report
+    })
 }
 
 fn intervals_text(intervals: u64) -> String {
@@ -1431,7 +1454,14 @@ pub fn extend(renter: &Renter, args: &ComputeExtendArgs) -> Result<Report, Error
                 &members,
                 extend_report(&members, args.intervals, ledger.paid()),
             )),
-            Err(error) => Err(partly_paid(error, &members, &ledger)),
+            Err(error) => {
+                let mut error = partly_paid(error, &members, &ledger);
+                // An extend that bought something moved the expiry.
+                if ledger.bought.get() > 0 {
+                    announce_partly(renter, &members, &mut error);
+                }
+                Err(error)
+            }
         }
     })
 }
