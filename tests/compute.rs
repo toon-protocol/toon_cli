@@ -1607,7 +1607,11 @@ fn an_extend_nobody_answers_says_it_may_have_been_bought_and_status_settles_it()
     // The provider applied it, though the file did not hear.
     assert!(world.provider.expires_at() > bought);
     let after = read_lease(&world.leases());
-    assert!(after["paid"].as_u64() >= before["paid"].as_u64());
+    assert_eq!(
+        after["paid"].as_u64().unwrap(),
+        before["paid"].as_u64().unwrap() + PRICE,
+        "{after}"
+    );
     assert_eq!(after["expires_at"], before["expires_at"]);
 
     let status = world.near.toon(&["compute", "status", &workload, "--json"]);

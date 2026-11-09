@@ -814,13 +814,11 @@ fn partly_paid(cause: Error, members: &[Lease], ledger: &Ledger) -> Error {
     if bought == 0 {
         return cause;
     }
+    // The cause already names `toon compute status`.
     let ending = if ledger.unknown.get() {
-        format!(
-            "Nothing was retried. One more Lease Interval may have been bought: run `toon \
-             compute status {}` before `toon compute extend` again, which would pay for \
-             another.",
-            members[0].workload_id
-        )
+        "Nothing was retried. One more Lease Interval may have been bought, by the packet \
+         that failed."
+            .to_owned()
     } else {
         "Nothing was retried: the routes already paid are not paid again.".to_owned()
     };
@@ -1382,9 +1380,17 @@ fn extend_once(
         }
         Reply::Unanswered | Reply::Strange(_) => {
             ledger.unknown_one();
-            let mut cause = operator::unanswered_cost(u128::from(ledger.paid()), None);
-            cause.message.push_str(&extend_unknown(&id));
-            Some(cause)
+            // Not the operator's "the command can be run again": running extend again pays
+            // for another Lease Interval.
+            let paid = ledger.paid();
+            Some(Error {
+                message: format!(
+                    "The extend got no answer that says what came of it. It cost {paid} base \
+                     units.{}",
+                    extend_unknown(&id)
+                ),
+                ..operator::unanswered_cost(u128::from(paid), None)
+            })
         }
     };
     // What was bought is in the file before anything else happens.
