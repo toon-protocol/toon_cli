@@ -1457,6 +1457,96 @@ fn a_deployment_the_relay_refuses_never_fails_the_lease_command() {
 }
 
 #[test]
+fn a_spawn_with_a_deployment_hands_it_to_the_relay_with_the_expiry_bought() {
+    let chain = AnvilChain::start();
+    let world = world(&chain);
+    let spawned = world.spawn(&deployment_flags("production"));
+    assert_eq!(spawned.exit_code, 0, "{}{}", spawned.stdout, spawned.stderr);
+    // The test world peers with no paid relay, so only the agent node's own relay takes it.
+    assert_eq!(spawned.json()["deployment"]["environment"], "production");
+    let expires_at = spawned.json()["expires_at"].as_u64().unwrap();
+    let held = deployments(&world);
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0]["environment"], "production");
+    assert_eq!(held[0]["expiration"], expires_at);
+}
+
+#[test]
+fn a_lease_command_that_stops_part_way_still_publishes_what_it_bought() {
+    let chain = AnvilChain::start();
+    let world = world(&chain);
+    // A spawn whose second extend fails: the spawn and one extend are bought.
+    world.provider.with(|state| state.fail_extend_at = Some(2));
+    let mut flags = deployment_flags("production").to_vec();
+    flags.extend_from_slice(&["--intervals", "4"]);
+    let spawned = world.spawn(&flags);
+    assert_eq!(spawned.exit_code, 1, "{}{}", spawned.stdout, spawned.stderr);
+    assert_eq!(
+        error_code(&spawned),
+        "lease_partly_paid",
+        "{}",
+        spawned.stdout
+    );
+    let workload = read_lease(&world.leases())["workload_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bought = world.provider.expires_at();
+    let held = deployments(&world);
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0]["environment"], "production");
+    assert_eq!(held[0]["expiration"], bought);
+
+    // An extend whose second packet fails refreshes it with the one extension it bought.
+    world.provider.with(|state| state.fail_extend_at = Some(4));
+    let extended = world.near.toon(&[
+        "compute",
+        "extend",
+        &workload,
+        "--intervals",
+        "3",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(
+        extended.exit_code, 1,
+        "{}{}",
+        extended.stdout, extended.stderr
+    );
+    assert_eq!(
+        error_code(&extended),
+        "lease_partly_paid",
+        "{}",
+        extended.stdout
+    );
+    let refreshed = world.provider.expires_at();
+    assert!(refreshed > bought);
+    let held = deployments(&world);
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0]["expiration"], refreshed);
+}
+
+#[test]
+fn a_spawn_the_provider_refuses_publishes_no_deployment() {
+    let chain = AnvilChain::start();
+    let world = world(&chain);
+    world
+        .provider
+        .with(|state| state.spawn_error = Some("no_capacity".to_owned()));
+    let mut flags = deployment_flags("production").to_vec();
+    flags.extend_from_slice(&["--intervals", "2"]);
+    let refused = world.spawn(&flags);
+    assert_eq!(refused.exit_code, 1, "{}{}", refused.stdout, refused.stderr);
+    assert_ne!(
+        error_code(&refused),
+        "lease_partly_paid",
+        "{}",
+        refused.stdout
+    );
+    assert!(deployments(&world).is_empty());
+}
+
+#[test]
 fn an_agent_key_without_the_signing_scope_is_refused_before_any_packet_is_sent() {
     let chain = AnvilChain::start();
     let world = world(&chain);
