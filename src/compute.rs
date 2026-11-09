@@ -32,6 +32,8 @@ const REQUEST_TTL_S: u64 = 60;
 pub struct AgentLimit {
     pub per_write: Option<u64>,
     pub remaining_today: Option<u64>,
+    /// What the connector has counted against the key today, rejected packets in full.
+    pub counted_today: Option<u64>,
 }
 
 /// Signs and, if told to, publishes a Deployment's tags and content.
@@ -41,8 +43,10 @@ pub type SignDeployment = Box<dyn Fn(&Tags, &str, bool) -> Result<(), Error>>;
 pub struct AgentRenter {
     pub surface: Surface,
     pub leases: Leases,
-    /// Read from the connector, for a command that pays.
+    /// Read from the connector, for a command that pays, before its first packet.
     pub limit: Option<AgentLimit>,
+    /// Reads the connector's `counted_today` again: `None` when it cannot be read.
+    pub counted_today: Box<dyn Fn() -> Option<u64>>,
     /// Signs a Deployment's tags with the agent identity (the `sign` order) and, when the last
     /// argument is true, writes it to the agent node's own relay. False signs and discards: a
     /// probe of the key's scope, free.
@@ -486,7 +490,9 @@ fn limits_refuse(
 }
 
 /// Pay `total` for a command that sends packets: through `toon limit` as one `spend_packets`
-/// call with a home, directly with an agent key. `act` is given what moved so far, capped.
+/// call with a home, directly with an agent key. `act` is given what moved so far, capped:
+/// with an agent key, what the connector counted since the limit was read. A count that cannot
+/// be read says the whole cap moved, as `Packets::moved` does with a home.
 fn paying(
     renter: &Renter,
     total: u64,
@@ -504,7 +510,15 @@ fn paying(
             };
             result.map(|report| (report, paid))
         }),
-        Renter::Agent(_) => act(&|_| 0),
+        Renter::Agent(agent) => {
+            let before = agent.limit.as_ref().and_then(|limit| limit.counted_today);
+            act(&|cap| match (before, (agent.counted_today)()) {
+                (Some(before), Some(after)) => after
+                    .checked_sub(before)
+                    .map_or(cap, |moved| u128::from(moved).min(cap)),
+                _ => cap,
+            })
+        }
     }
 }
 
