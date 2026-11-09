@@ -240,7 +240,8 @@ enum Reply {
         error: String,
         message: String,
     },
-    /// The connector refused the packet before the provider saw it.
+    /// A connector refused the packet: before the provider saw it, or after it was handed
+    /// the request and gave no answer.
     Rejected {
         code: String,
         message: String,
@@ -1237,31 +1238,30 @@ fn settle_spawn(
                 ),
             ))
         }
-        Reply::Rejected { code, message } => {
-            let lease = &mut members[index];
-            lease.paid = ledger.unanswered(price);
-            lease.state = State::Failed;
-            lease.error = Some((format!("rejected {code}"), message.clone()));
-            let paid = lease.paid;
-            let warning = keep(leases, members);
-            Err(failure(
-                ErrorCode::SendFailed,
-                format!(
-                    "The packet was rejected with {code}: {message} {} paid. The lease file {id} \
-                     is marked failed.{warning}",
-                    amount_text(paid)
-                ),
-            ))
-        }
-        Reply::Unanswered | Reply::Strange(_) => {
+        // A reject can come after the provider was handed the request (a T01 for a dropped
+        // connection), so whether it took is not known, as with no answer at all.
+        reply @ (Reply::Rejected { .. } | Reply::Unanswered | Reply::Strange(_)) => {
             let lease = &mut members[index];
             lease.paid = ledger.unanswered(price);
             lease.state = State::Unknown;
-            let _ = keep(leases, members);
-            let mut error = operator::unanswered_cost(u128::from(ledger.paid()), None);
+            if let Reply::Rejected { code, message } = &reply {
+                lease.error = Some((format!("rejected {code}"), message.clone()));
+            }
+            let paid = lease.paid;
+            let warning = keep(leases, members);
+            let mut error = match reply {
+                Reply::Rejected { code, message } => failure(
+                    ErrorCode::SendFailed,
+                    format!(
+                        "The packet was rejected with {code}: {message} {} paid.",
+                        amount_text(paid)
+                    ),
+                ),
+                _ => operator::unanswered_cost(u128::from(ledger.paid()), None),
+            };
             error.message = format!(
                 "{} The lease file {id} is marked unknown: `toon compute status {id}` asks the \
-                 provider whether {what} took.",
+                 provider whether {what} took.{warning}",
                 error.message
             );
             Err(error)
@@ -1583,20 +1583,15 @@ fn status_member(renter: &Renter, lease: &mut Lease) -> Result<Value, Error> {
             if let Some(role) = body["role"].as_str() {
                 lease.role = role.to_owned();
             }
-            if was == State::Failed {
-                // A refused spawn that now answers is a lease the file did not know of.
+            if matches!(was, State::Failed | State::Unknown) {
+                // A refused or unsettled spawn that now answers is a lease after all.
                 lease.error = None;
             }
             Ok(body)
         }
         Reply::Error { error, message } => {
-            match (error.as_str(), was) {
-                ("unknown_workload", State::Unknown) => {
-                    lease.state = State::Failed;
-                    lease.error = Some((error.clone(), message.clone()));
-                }
-                ("expired", _) => lease.state = State::Ended,
-                _ => {}
+            if !never_ran(lease, &error, &message) && error == "expired" {
+                lease.state = State::Ended;
             }
             Err(failure(
                 ErrorCode::LeaseRefused,
@@ -1605,6 +1600,17 @@ fn status_member(renter: &Renter, lease: &mut Lease) -> Result<Value, Error> {
         }
         other => Err(unreached(other)),
     }
+}
+
+/// Settle an unknown member whose provider answers `unknown_workload`: its spawn never ran,
+/// so it is failed. Whether it was settled so.
+fn never_ran(lease: &mut Lease, error: &str, message: &str) -> bool {
+    let settled = lease.state == State::Unknown && error == "unknown_workload";
+    if settled {
+        lease.state = State::Failed;
+        lease.error = Some((error.to_owned(), message.to_owned()));
+    }
+    settled
 }
 
 fn status_of(renter: &Renter, leases: &Leases, workload: &str) -> Result<Asked, Error> {
@@ -1746,6 +1752,10 @@ pub fn terminate(renter: &Renter, workload: &str, yes: bool) -> Result<Report, E
                 Ok(body)
             }
             Ok(Reply::Error { error, message }) => {
+                if never_ran(member, &error, &message) && set {
+                    entries.push(member_json(member));
+                    continue;
+                }
                 if error == "expired" {
                     member.state = State::Ended;
                 }
@@ -1847,7 +1857,12 @@ pub fn rotate(renter: &Renter, workload: &str) -> Result<Report, Error> {
                     }
                 }
             }
-            Reply::Error { error, message } => Some(format!("answered {error}: {message}")),
+            Reply::Error { error, message } => {
+                if never_ran(lease, &error, &message) && set {
+                    continue;
+                }
+                Some(format!("answered {error}: {message}"))
+            }
             Reply::Body(_) => Some("did not confirm the rotation".to_owned()),
             Reply::Rejected { code, message } => {
                 Some(format!("the packet was rejected with {code}: {message}"))
@@ -1868,6 +1883,8 @@ pub fn rotate(renter: &Renter, workload: &str) -> Result<Report, Error> {
             Some(reason) => stuck.push(format!("{member} {reason}")),
         }
     }
+    // Members settled as never run on the way are kept, finished or not.
+    leases.write(&members)?;
     if !stuck.is_empty() {
         return Err(failure(
             ErrorCode::RotationIncomplete,
