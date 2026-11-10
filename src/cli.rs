@@ -84,6 +84,12 @@ pub enum Command {
         #[command(subcommand)]
         command: TipCommand,
     },
+    /// Make a TOON app's connector a zk edge, or stop: it takes packets paid from zk
+    /// allowances, priced in MINA (ADR 0014)
+    Zk {
+        #[command(subcommand)]
+        command: ZkCommand,
+    },
     /// Show or change the spending limit
     Limit {
         #[command(subcommand)]
@@ -1097,6 +1103,60 @@ pub enum RouteCommand {
         /// The ILP address prefix
         prefix: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ZkCommand {
+    /// Make the connector of a TOON app a zk edge, or change its settings: write the zk-note
+    /// table, check it with the connector's own validation, and restart the connector. The TOON
+    /// app is the first unless `--app` names another. Run again to change the settings: name
+    /// every one again. A collector and a challenger have to run beside it, and `toon` runs
+    /// neither
+    Enable(ZkEnableArgs),
+    /// Stop the connector of a TOON app being a zk edge: remove the zk-note table and restart
+    /// the connector
+    Disable {
+        /// Go ahead although the connector restarts and drops packets in flight
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct ZkEnableArgs {
+    /// The vault's zkApp address, `B62…`: what payers deposit into
+    #[arg(long)]
+    pub vault: String,
+    /// The vault's Mina network: `mina:devnet` or `mina:mainnet`
+    #[arg(long)]
+    pub network: String,
+    /// A Mina daemon's GraphQL endpoint, where the vault's account is read
+    #[arg(long)]
+    pub graphql_url: String,
+    /// A Mina archive node's GraphQL endpoint, where the vault's actions are read
+    #[arg(long)]
+    pub archive_url: String,
+    /// A zk allowance budget offered, in nanomina: one zk_toon publishes. Repeat it for more
+    #[arg(long = "tier", value_name = "NANOMINA", required = true)]
+    pub tiers: Vec<u64>,
+    /// The most the budgets of all open zk allowances may add up to, in nanomina
+    #[arg(long, value_name = "NANOMINA")]
+    pub open_budget_cap: u64,
+    /// The longest a zk allowance lives, in seconds; at most a quarter of zk_toon's challenge
+    /// window
+    #[arg(long, value_name = "SECONDS", default_value_t = 3600)]
+    pub zk_allowance_lifetime: u64,
+    /// Nanomina per subsidy period for subsidised zk allowances; 0 offers none
+    #[arg(long, value_name = "NANOMINA", default_value_t = 0)]
+    pub subsidy_budget: u64,
+    /// Whole settlement tokens per MINA, as a decimal (`0.40`) or a fraction (`2/5`): the
+    /// static rate forwards cross at. Build your spread into it. Required when the TOON app
+    /// settles on a chain
+    #[arg(long, value_name = "TOKENS_PER_MINA", value_parser = crate::node::Rate::parse)]
+    pub rate: Option<crate::node::Rate>,
+    /// Go ahead although the connector restarts and drops packets in flight
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Debug, Subcommand)]

@@ -242,6 +242,17 @@ pub fn onion_secret(seed: &[u8], connector: u32) -> Result<Zeroizing<[u8; 32]>, 
     Ok(ed25519_path(seed, &[TOON_PURPOSE, 4, connector]))
 }
 
+/// The secret of the state key the connector numbered `connector` signs successor states with
+/// as a zk edge: `m/10473'/7'/<connector>'`, read as a Pallas scalar by `zk::state_key`
+/// (ADR 0014).
+pub fn zk_state_secret(seed: &[u8], connector: u32) -> Result<Zeroizing<[u8; 32]>, DeriveError> {
+    check_connector(connector)?;
+    secp256k1_path(
+        seed,
+        &[TOON_PURPOSE | HARDENED, 7 | HARDENED, connector | HARDENED],
+    )
+}
+
 pub fn operator_write_secret(seed: &[u8]) -> Result<Zeroizing<[u8; 32]>, DeriveError> {
     secp256k1_path(seed, &[TOON_PURPOSE | HARDENED, 1 | HARDENED, HARDENED])
 }

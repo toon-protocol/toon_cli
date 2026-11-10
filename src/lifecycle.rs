@@ -232,6 +232,7 @@ pub fn create(home: &Path, create: &Create) -> Result<Report, Error> {
         }],
         relay: node::RelaySettings::default(),
         tip: None,
+        zk_edge: None,
     };
     let from = source.name.clone();
     let make = || {

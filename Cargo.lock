@@ -7033,6 +7033,8 @@ dependencies = [
  "connector-operator",
  "connector-settlement-evm",
  "connector-signer",
+ "connector-zk-note",
+ "connector-zk-note-mina",
  "ed25519-dalek 1.0.1",
  "ed25519-dalek 2.2.0",
  "ethers",

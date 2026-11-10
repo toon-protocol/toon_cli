@@ -31,7 +31,7 @@ _Avoid_: Sandbox (a network profile), hardening, isolation
 
 **Allowance**:
 One thing an operator lets one app do beyond its confinement, such as opening connections out.
-_Avoid_: Grant (what an agent key is given), permission, exception
+_Avoid_: Grant (what an agent key is given), permission, exception, zk allowance (a payer's budget at a zk edge)
 
 **Runtime**:
 The program docker hands one app's container to, which stands between the app and the machine's kernel. The operator names one for an app, or one for every image outside the list of trusted images; an app with none has docker's own. Not an allowance: it lets the app do nothing more. The relay has none.
@@ -213,6 +213,24 @@ _Avoid_: Zap request, proof of payment
 **Tip acknowledgement**:
 The recipient's public statement that a tip arrived and how much of it did, signed with the agent identity. It is the only record of a tip anyone counts.
 _Avoid_: Zap receipt, tip receipt (the payer's), confirmation
+
+### Being paid from a zk note
+
+**Zk edge**:
+A TOON app's connector that takes packets paid from zk allowances as well as from channels (connector ADR 0080). The operator turns it on; it prices in MINA and pays its next hops in a settlement token, at a rate the operator declares. It is paid only while a collector runs beside it, and kept honest only while a challenger does.
+_Avoid_: zk node, private connector, Mina connector
+
+**Zk allowance**:
+A budget a payer opens at a zk edge against a note in the vault, with a proof that does not say which note, and spends packet by packet until it expires. Always two words: a bare "allowance" is what an operator lets an app do.
+_Avoid_: Allowance, grant, channel, session
+
+**Collector**:
+The program that takes what a zk edge has earned out of the vault. It runs beside the agent node, not in it.
+_Avoid_: Settler, sweeper
+
+**Challenger**:
+The program that watches the vault and defeats a payer's dishonest escape before its deadline. It runs beside the agent node, not in it.
+_Avoid_: Watchtower, monitor
 
 ### What runs elsewhere
 

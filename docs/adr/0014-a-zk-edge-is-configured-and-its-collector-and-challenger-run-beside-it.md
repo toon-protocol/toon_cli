@@ -1,0 +1,23 @@
+# A zk edge is configured by `toon`, and its collector and challenger run beside it
+
+**Status:** Accepted (owner decision, 2026-11-10, #287).
+
+A connector becomes a **zk edge** when its config has a `[zk_note]` table (connector ADR 0080): a payer deposits native MINA into a vault, opens a **zk allowance** against a note with a proof that does not say which note, and pays packets from it. `toon` writes every connector config itself, so it is `toon` that turns a TOON app's connector into a zk edge, with `toon zk enable` and `toon zk disable`. These are operator commands only. The payer's side, which includes depositing, holding notes, opening zk allowances and leaving, is the wallet in `toon-client` (toon-client#768). Proving needs o1js, the connector keeps proving out of itself, and that wallet is where ADR 0080 has the payer open each zk allowance on a new overlay circuit.
+
+Three things had to be decided first.
+
+**The collector and the challenger are run by the operator, beside the agent node, and `toon` only says so.** ADR 0080 keeps both out of the connector. Without a collector the zk edge is never paid out of the vault. Without a challenger, a payer who escapes dishonestly keeps money the zk edge has already forwarded for it. zk_toon ships the challenger as a service (`zk-toon-challenger`), and no collector exists yet. So `toon zk enable` renders the table and nothing else, and both its answer and the guide name what has to run beside the zk edge. We chose this over running the challenger as a TOON app: there is no image of it to add, and a TOON app that half-guards a vault (a challenger and no collector) looks safer than it is. Running them can become its own issue once both exist.
+
+**The rate out of MINA is declared on `toon zk enable`, as `--rate`, in whole settlement tokens per MINA.** A zk edge prices in MINA and pays its next hop in a settlement token. No pool quotes MINA, so the connector converts at a static `[[rates]]` row the operator declares (ADR 0080 decision 7), which holds for the life of the process. `toon` renders one row from the vault's asset to the token of each settlement table the TOON app has, scaling the one rate by each token's decimals. It also renders a `[[tokens]]` row for each of those tokens and a `[rate_guards]` table, because the connector reads no rate without them; the guards keep no spread of their own. A static rate does not move with the market, so the operator has to build the spread into it, and `toon zk enable` says that in its answer. A TOON app that settles on no chain forwards nothing and needs no rate. One that does is refused without `--rate`.
+
+**The zk meaning of "allowance" is a "zk allowance", and `toon` never shortens it.** "Allowance" already means something an operator lets one app do beyond its confinement. The zk meaning, ADR 0080's allowance, is a budget a payer opens against a note at a zk edge. `CONTEXT.md` gives it its own entry. The commands live under `toon zk`, and the one flag that names it is `--zk-allowance-lifetime`.
+
+## Consequences
+
+- The table's fields are the connector's `ZkNoteConfig` at the pinned revision. `toon` writes them as given and leaves their validation to the connector: `toon zk enable` renders the changed config and checks it with the connector's own validation **before** it restarts anything, and a refusal answers `zk_edge_invalid` with the connector's reason and changes nothing.
+- `verification_key_hash` is not asked for. A connector build verifies request proofs under the one key it carries, and refuses to start under any other, so `toon` writes the hash of that key. Moving the connector pin can change it.
+- `rpc_via_socks_proxy` follows the rule a settlement table already follows: on a hidden service, the vault is read through the overlay, unless the endpoint is plain HTTP on this machine.
+- The **state key**, which the zk edge signs successor states with, is derived from the wallet at `m/10473'/7'/<connector>'` (secp256k1, read as a Pallas scalar), like the connector's other keys, and `toon zk enable` writes it every time it runs. The same wallet derives the same key, so a zk edge enabled again on the same connector after a restore signs as it did before, and payers holding zk allowances still recognise its signatures.
+- A TOON app without the table renders exactly the config it rendered before.
+- Payers can leave a zk edge only by escape until the zk edge signs mutual-close clearances (connector#1556). Turning a zk edge off does not change that: the vault, its notes and any open zk allowances are the payers' and the vault's, not the connector's.
+- Mina peer legs are not covered. They depend on connector#1548.

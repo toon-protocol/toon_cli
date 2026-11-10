@@ -64,4 +64,6 @@ error_codes! {
     RotationIncomplete => "rotation_incomplete" => Failure,
     LeasePartlyPaid => "lease_partly_paid" => Failure,
     UnitOwnedByAnotherHome => "unit_owned_by_another_home" => Failure,
+    ZkEdgeInvalid => "zk_edge_invalid" => Failure,
+    ZkEdgeNotEnabled => "zk_edge_not_enabled" => Failure,
 }

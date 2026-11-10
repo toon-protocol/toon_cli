@@ -269,6 +269,276 @@ pub struct ToonApp {
     pub relay: RelaySettings,
     /// The tip route of this TOON app's connector, if the operator turned tips on here.
     pub tip: Option<Tip>,
+    /// The zk edge settings of this TOON app's connector, if the operator made it one.
+    pub zk_edge: Option<ZkEdge>,
+}
+
+/// The asset code a vault's native MINA has under SLIP-44, in the connector's spelling of it.
+const MINA_SLIP44: u32 = 12_586;
+
+/// Native MINA's decimals: what a zk edge prices in is nanomina.
+const MINA_DECIMALS: u32 = 9;
+
+/// The genesis prefix of the Solana clusters whose token a profile names, which the connector
+/// reads a Solana token's network from. The sandbox's cluster has none that is fixed.
+const SOLANA_CLUSTERS: [(&str, &str); 2] = [
+    // Devnet's test USDC.
+    (
+        "34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU",
+        "EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+    ),
+    // USDC on mainnet-beta.
+    (
+        "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+    ),
+];
+
+/// A TOON app's connector as a zk edge (ADR 0014): the `[zk_note]` table as the operator set it,
+/// and the rate out of MINA its forwards cross at. The connector validates every field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZkEdge {
+    /// The vault's zkApp address, `B62…`.
+    pub vault: String,
+    /// `mina:devnet` or `mina:mainnet`.
+    pub network: String,
+    pub graphql_url: String,
+    pub archive_url: String,
+    /// The zk allowance budgets offered, in nanomina.
+    pub tiers: Vec<u64>,
+    /// The longest a zk allowance lives, in seconds.
+    pub allowance_lifetime_secs: u64,
+    /// The most the budgets of all open zk allowances may add up to, in nanomina.
+    pub open_budget_cap: u64,
+    /// Nanomina per subsidy period for subsidised zk allowances; 0 offers none.
+    pub subsidy_budget: u64,
+    /// Whole settlement tokens per MINA; none for a TOON app that settles on no chain.
+    pub rate: Option<Rate>,
+}
+
+/// A rate as the operator writes it: whole settlement tokens per MINA, in lowest terms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rate {
+    pub numerator: u64,
+    pub denominator: u64,
+}
+
+fn gcd(mut a: u128, mut b: u128) -> u128 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+impl Rate {
+    /// A decimal such as `0.40` or a fraction such as `2/5`, above zero.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let bad = || {
+            format!(
+                "{text:?} is not a rate: write whole settlement tokens per MINA, above zero, as \
+                 a decimal such as 0.40 or a fraction such as 2/5"
+            )
+        };
+        let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        let (numerator, denominator) = match text.split_once('/') {
+            Some((n, d)) if digits(n) && digits(d) => (n.parse().ok(), d.parse().ok()),
+            Some(_) => (None, None),
+            None => {
+                let (whole, fraction) = text.split_once('.').unwrap_or((text, ""));
+                let whole = if whole.is_empty() && !fraction.is_empty() {
+                    "0"
+                } else {
+                    whole
+                };
+                if !digits(whole) || !(fraction.is_empty() || digits(fraction)) {
+                    (None, None)
+                } else {
+                    let scale = u32::try_from(fraction.len()).ok();
+                    (
+                        format!("{whole}{fraction}").parse::<u64>().ok(),
+                        scale.and_then(|scale| 10u64.checked_pow(scale)),
+                    )
+                }
+            }
+        };
+        match (numerator, denominator) {
+            (Some(n), Some(d)) if n > 0 && d > 0 => {
+                let common = gcd(u128::from(n), u128::from(d)) as u64;
+                Ok(Self {
+                    numerator: n / common,
+                    denominator: d / common,
+                })
+            }
+            _ => Err(bad()),
+        }
+    }
+
+    /// The rate in base units of a token with `decimals` per nanomina, in lowest terms: what a
+    /// `[[rates]]` row says. None if it does not fit the connector's numbers.
+    fn per_base_unit(self, decimals: u8) -> Option<(u64, u64)> {
+        let numerator = u128::from(self.numerator) * 10u128.checked_pow(decimals.into())?;
+        let denominator = u128::from(self.denominator) * 10u128.pow(MINA_DECIMALS);
+        let common = gcd(numerator, denominator);
+        Some((
+            u64::try_from(numerator / common).ok()?,
+            u64::try_from(denominator / common).ok()?,
+        ))
+    }
+}
+
+impl std::fmt::Display for Rate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.numerator, self.denominator)
+    }
+}
+
+impl ZkEdge {
+    fn json(&self) -> Value {
+        json!({
+            "vault": self.vault,
+            "network": self.network,
+            "graphql_url": self.graphql_url,
+            "archive_url": self.archive_url,
+            "tiers": self.tiers,
+            "allowance_lifetime_secs": self.allowance_lifetime_secs,
+            "open_budget_cap": self.open_budget_cap,
+            "subsidy_budget": self.subsidy_budget,
+            "rate": self.rate.map(|rate| rate.to_string()),
+        })
+    }
+
+    fn from_json(value: &Value) -> Option<Self> {
+        let text = |key: &str| value[key].as_str().map(str::to_owned);
+        Some(Self {
+            vault: text("vault")?,
+            network: text("network")?,
+            graphql_url: text("graphql_url")?,
+            archive_url: text("archive_url")?,
+            tiers: value["tiers"]
+                .as_array()?
+                .iter()
+                .map(Value::as_u64)
+                .collect::<Option<_>>()?,
+            allowance_lifetime_secs: value["allowance_lifetime_secs"].as_u64()?,
+            open_budget_cap: value["open_budget_cap"].as_u64()?,
+            subsidy_budget: value["subsidy_budget"].as_u64()?,
+            rate: match &value["rate"] {
+                Value::Null => None,
+                rate => Some(Rate::parse(rate.as_str()?).ok()?),
+            },
+        })
+    }
+
+    /// The vault's asset, as the connector spells it.
+    fn asset(&self) -> String {
+        format!("{}/slip44:{MINA_SLIP44}", self.network)
+    }
+}
+
+/// What a zk edge setting the connector cannot be given says.
+fn zk_invalid(message: String) -> Error {
+    Error {
+        nothing_sent: false,
+        unanswered: None,
+        code: ErrorCode::ZkEdgeInvalid,
+        message,
+    }
+}
+
+/// The tables that make the connector of `app` a zk edge: `[zk_note]`, and the rate out of
+/// MINA into each settlement table's token with the `[[tokens]]` and `[rate_guards]` the
+/// connector reads a rate with. Nothing for a TOON app that is not one.
+fn zk_tables(
+    zk: &ZkEdge,
+    app: &ToonApp,
+    files: &ConnectorFiles,
+    overlay: Option<&Overlay>,
+) -> Result<String, Error> {
+    let key_hash = connector_zk_note_mina::carried_key_hash().map_err(|error| Error {
+        nothing_sent: false,
+        unanswered: None,
+        code: ErrorCode::ConnectorFailed,
+        message: format!("This build has no request key for a zk edge: {error}."),
+    })?;
+    // One transport for both endpoints: through the overlay unless both are plain HTTP on
+    // this machine, as a settlement table's RPC is.
+    let via = overlay.is_some()
+        && !(overlay::is_local_plain(&zk.graphql_url) && overlay::is_local_plain(&zk.archive_url));
+    let tiers: Vec<String> = zk.tiers.iter().map(u64::to_string).collect();
+    let mut out = format!(
+        "\n[zk_note]\nvault = {}\nnetwork = {}\ngraphql_url = {}\narchive_url = {}\n{}\
+         state_key_file = {}\nverification_key_hash = {}\ntiers = [{}]\n\
+         allowance_lifetime_secs = {}\nopen_budget_cap = {}\nsubsidy_budget = {}\n",
+        string(&zk.vault),
+        string(&zk.network),
+        string(&zk.graphql_url),
+        string(&zk.archive_url),
+        if via {
+            "rpc_via_socks_proxy = true\n"
+        } else {
+            ""
+        },
+        string(&files.zk_state_key.to_string_lossy()),
+        string(&key_hash),
+        tiers.join(", "),
+        zk.allowance_lifetime_secs,
+        zk.open_budget_cap,
+        zk.subsidy_budget,
+    );
+    let Some(rate) = zk.rate else {
+        // A TOON app that settles somewhere is refused by the connector, naming the pair.
+        return Ok(out);
+    };
+    let mut tokens = Vec::new();
+    if let Some(evm) = &app.evm {
+        tokens.push((
+            format!("eip155:{}/erc20:{}", evm.chain_id, evm.token),
+            evm.decimals,
+        ));
+    }
+    if let Some(solana) = &app.solana {
+        let Some((_, genesis)) = SOLANA_CLUSTERS
+            .iter()
+            .find(|(mint, _)| *mint == solana.token)
+        else {
+            return Err(zk_invalid(format!(
+                "{} settles in the Solana token {}, on a cluster with no genesis hash `toon` \
+                 knows to name it by, so no rate out of MINA can be declared into it. A zk edge \
+                 settles on Solana only in a profile's own token.",
+                app.name, solana.token
+            )));
+        };
+        tokens.push((
+            format!("solana:{genesis}/token:{}", solana.token),
+            solana.decimals,
+        ));
+    }
+    if tokens.is_empty() {
+        return Ok(out);
+    }
+    for (asset, _) in &tokens {
+        out.push_str(&format!("\n[[tokens]]\nasset = {}\n", string(asset)));
+    }
+    for (asset, decimals) in &tokens {
+        let (numerator, denominator) = rate.per_base_unit(*decimals).ok_or_else(|| {
+            zk_invalid(format!(
+                "The rate {rate} tokens per MINA is too fine to write in base units of {asset}."
+            ))
+        })?;
+        out.push_str(&format!(
+            "\n[[rates]]\nfrom = {}\nto = {}\nrate = {{ numerator = {numerator}, denominator = \
+             {denominator} }}\n",
+            string(&zk.asset()),
+            string(asset),
+        ));
+    }
+    // The rate is static, so the guards keep no spread of their own: the operator builds it
+    // into the rate (ADR 0014). They bound only what nothing here produces, a quoted rate.
+    out.push_str(
+        "\n[rate_guards]\nspread = { numerator = 0, denominator = 1 }\nttl_secs = 60\n\
+         max_move = { numerator = 1, denominator = 10 }\n",
+    );
+    Ok(out)
 }
 
 /// The tip route of a TOON app (ADR 0013): a route the supervisor itself is the app behind.
@@ -607,6 +877,8 @@ pub struct ConnectorFiles {
     pub solana_settlement_key: PathBuf,
     /// The key a hidden service's onion endpoint is made of.
     pub onion_key: PathBuf,
+    /// The Mina secret key a zk edge signs successor states with, in base58.
+    pub zk_state_key: PathBuf,
     pub config: PathBuf,
     pub state_dir: PathBuf,
     pub log: PathBuf,
@@ -623,6 +895,7 @@ impl ConnectorFiles {
             settlement_key: dir.join("settlement.key"),
             solana_settlement_key: dir.join("settlement-solana.key"),
             onion_key: dir.join("onion.key"),
+            zk_state_key: dir.join("zk-state.key"),
             config: dir.join("connector.toml"),
             state_dir: dir.join("state"),
             log: dir.join("connector.log"),
@@ -768,6 +1041,7 @@ impl State {
                 apps: vec![App::relay(segment)],
                 relay: RelaySettings::default(),
                 tip: None,
+                zk_edge: None,
             }],
         }
     }
@@ -789,6 +1063,7 @@ impl State {
                     "apps": app.apps.iter().map(App::json).collect::<Vec<_>>(),
                     "relay": app.relay.json(),
                     "tip": app.tip.map(Tip::json),
+                    "zk_edge": app.zk_edge.as_ref().map(ZkEdge::json),
                 })
             })
             .collect();
@@ -855,6 +1130,11 @@ impl State {
                     tip: match &app["tip"] {
                         Value::Null => None,
                         tip => Some(Tip::from_json(tip)?),
+                    },
+                    // A state written before zk edges has none.
+                    zk_edge: match &app["zk_edge"] {
+                        Value::Null => None,
+                        zk_edge => Some(ZkEdge::from_json(zk_edge)?),
                     },
                 })
             })
@@ -1220,6 +1500,9 @@ pub fn render(
             via_proxy(overlay, &solana.rpc_url),
             string(&files.solana_settlement_key.to_string_lossy()),
         ));
+    }
+    if let Some(zk) = &app.zk_edge {
+        config.push_str(&zk_tables(zk, app, &files, overlay)?);
     }
     write(&files.config, config.as_bytes(), 0o600)?;
     fs::create_dir_all(&files.state_dir).map_err(|source| io(&files.state_dir, source))?;

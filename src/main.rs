@@ -58,6 +58,7 @@ mod tls;
 mod trusted;
 mod up;
 mod wallet;
+mod zk;
 
 use std::env;
 use std::ffi::OsString;
@@ -82,9 +83,9 @@ fn run() -> ExitCode {
     let json = wants_json(env::args_os().skip(1));
     let command = match Cli::from_command_line() {
         Ok(cli) => {
-            // `toon tip` names the TOON app it puts the route on itself; the packets it
-            // sends go through the first, as the supervisor's do.
-            if !matches!(cli.command, Command::Tip { .. }) {
+            // `toon tip` and `toon zk` name the TOON app they change themselves; the packets
+            // `toon tip` sends go through the first, as the supervisor's do.
+            if !matches!(cli.command, Command::Tip { .. } | Command::Zk { .. }) {
                 operator::target(cli.app.as_deref());
             }
             let agent_key = cli.agent_key.or_else(|| {
@@ -213,6 +214,11 @@ fn run() -> ExitCode {
                     Ok((report, paid))
                 })
             }),
+            json,
+        )
+        .into(),
+        Command::Zk { command } => render(
+            home::resolve().and_then(|home| zk::run(&home, app.as_deref(), &command)),
             json,
         )
         .into(),
