@@ -432,6 +432,10 @@ pub struct InitArgs {
     /// The token the connector is paid in on that chain, instead of the profile's
     #[arg(long)]
     pub evm_token: Option<String>,
+    /// The EVM chain's EIP-155 id, instead of the profile's. The connector checks it against
+    /// `eth_chainId` when it starts
+    #[arg(long)]
+    pub evm_chain_id: Option<u64>,
     /// The Solana chain's JSON-RPC endpoint, instead of the profile's; with `--solana`
     #[arg(long, requires = "solana")]
     pub solana_rpc_url: Option<String>,
@@ -481,6 +485,9 @@ impl InitArgs {
         }
         if let Some(token) = &self.evm_token {
             evm.token = token.clone();
+        }
+        if let Some(chain_id) = self.evm_chain_id {
+            evm.chain_id = chain_id;
         }
         if let Some(decimals) = self.evm_decimals {
             evm.decimals = decimals;

@@ -59,6 +59,9 @@ pub const UNSEALABLE_KEY: &str =
 /// packet arrived.
 pub const NOT_A_WRITE: &str = r#"{"error":"Invalid request body"}"#;
 
+/// The EIP-155 chain id of every chain the tests run: `FakeChain`'s and `anvil`'s.
+pub const TEST_CHAIN_ID: u64 = 31_337;
+
 /// The wallet passphrase the tests use.
 pub const PASSPHRASE: &str = "correct horse battery staple";
 
@@ -257,12 +260,18 @@ impl Machine {
     }
 
     /// Run `toon init --json` with `args` after it, and the passphrase every test uses.
-    /// The connector listens on this machine's own port unless `args` say where.
+    /// The connector listens on this machine's own port unless `args` say where, and a chain
+    /// a test names with `--evm-rpc-url` is one of the tests' own, whose chain id is
+    /// `TEST_CHAIN_ID`, unless `args` say otherwise.
     pub fn init_with(&self, args: &[&str]) -> Run {
         let listen = self.listen();
+        let chain_id = TEST_CHAIN_ID.to_string();
         let mut all = vec!["init", "--json", "--accept-anyone-terms"];
         if !args.contains(&"--listen") {
             all.extend_from_slice(&["--listen", &listen]);
+        }
+        if args.contains(&"--evm-rpc-url") && !args.contains(&"--evm-chain-id") {
+            all.extend_from_slice(&["--evm-chain-id", &chain_id]);
         }
         all.extend_from_slice(args);
         self.toon_with(&all, |command| {

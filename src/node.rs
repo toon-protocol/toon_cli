@@ -110,6 +110,9 @@ pub struct Options {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Evm {
+    /// The EIP-155 chain id, which names the connector's settlement table and which the
+    /// connector checks against `eth_chainId` when it starts (connector ADR 0086).
+    pub chain_id: u64,
     pub rpc_url: String,
     pub token: String,
     pub decimals: u8,
@@ -684,6 +687,7 @@ impl Evm {
 
     fn json(&self) -> Value {
         json!({
+            "chain_id": self.chain_id,
             "rpc_url": self.rpc_url,
             "token": self.token,
             "decimals": self.decimals,
@@ -700,6 +704,11 @@ impl Evm {
         let text = |key: &str| value[key].as_str().map(str::to_owned);
         let token = text("token")?;
         Some(Self {
+            // A state written before the chain id was kept settles on its profile's chain.
+            chain_id: match &value["chain_id"] {
+                Value::Null => network.evm().chain_id,
+                id => id.as_u64()?,
+            },
             rpc_url: text("rpc_url")?,
             decimals: u8::try_from(value["decimals"].as_u64()?).ok()?,
             asset_code: match &value["asset_code"] {
@@ -1186,9 +1195,9 @@ pub fn render(
     }
     if let Some(evm) = &app.evm {
         config.push_str(&format!(
-            "\n[settlement.evm]\nrpc_url = {}\ntoken_address = {}\ndecimals = {}\n\
+            "\n[settlement.eip155.{chain}]\nrpc_url = {}\ntoken_address = {}\ndecimals = {}\n\
              asset_eip712_name = {}\nasset_eip712_version = {}\nasset_transfer_method = {}\n{}\n\
-             [settlement.evm.key]\nkey_file = {}\n",
+             [settlement.eip155.{chain}.key]\nkey_file = {}\n",
             string(&evm.rpc_url),
             string(&evm.token),
             evm.decimals,
@@ -1197,6 +1206,7 @@ pub fn render(
             string(&evm.transfer_method),
             via_proxy(overlay, &evm.rpc_url),
             string(&files.settlement_key.to_string_lossy()),
+            chain = evm.chain_id,
         ));
     }
     if let Some(solana) = &app.solana {
@@ -1355,6 +1365,34 @@ mod tests {
         assert_eq!(state.connector_url, None);
         assert!(state.json()["connector_url"].is_null());
         assert_eq!(State::from_json(&state.json()).unwrap(), state);
+    }
+
+    #[test]
+    fn a_state_from_before_chain_ids_settles_on_its_profiles_chain_and_saves_it() {
+        let evm = |chain_id: Option<u64>| {
+            let mut evm = json!({
+                "rpc_url": "https://rpc.example", "token": "0xabc", "decimals": 6,
+                "asset_name": "USDC", "asset_version": "2", "transfer_method": "eip3009",
+            });
+            if let Some(id) = chain_id {
+                evm["chain_id"] = json!(id);
+            }
+            evm
+        };
+        let with = |network: &str, chain_id: Option<u64>| {
+            let mut value = state_of(network, json!({}));
+            value["toon_apps"][0]["evm"] = evm(chain_id);
+            State::from_json(&value).unwrap()
+        };
+        let chain = |state: &State| state.toon_apps[0].evm.as_ref().unwrap().chain_id;
+
+        assert_eq!(chain(&with("devnet", None)), 84_532);
+        assert_eq!(chain(&with("mainnet", None)), 8_453);
+        assert_eq!(chain(&with("sandbox", None)), 31_337);
+        let kept = with("devnet", Some(31_337));
+        assert_eq!(chain(&kept), 31_337);
+        assert_eq!(kept.json()["toon_apps"][0]["evm"]["chain_id"], 31_337);
+        assert_eq!(State::from_json(&kept.json()).unwrap(), kept);
     }
 
     #[test]

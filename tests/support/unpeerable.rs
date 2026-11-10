@@ -28,10 +28,10 @@ pub fn start(chain: &AnvilChain) -> Unpeerable {
         format!(
             "client_edge_addr = \"127.0.0.1:0\"\nstate_dir = {state:?}\n\n\
              [signer]\nkey_file = {:?}\n\n\
-             [settlement.evm]\nrpc_url = {:?}\ntoken_address = {:?}\ndecimals = 6\n\
+             [settlement.eip155.31337]\nrpc_url = {:?}\ntoken_address = {:?}\ndecimals = 6\n\
              asset_eip712_name = \"USDC\"\nasset_eip712_version = \"2\"\n\
              asset_transfer_method = \"eip3009\"\n\n\
-             [settlement.evm.key]\nkey_file = {:?}\n",
+             [settlement.eip155.31337.key]\nkey_file = {:?}\n",
             dir.path().join("identity.key"),
             chain.rpc_url(),
             chain.token(),

@@ -1,7 +1,7 @@
 //! The fake chain: the connector's own `FakeRpc`, answering as an EVM chain that x402
 //! is deployed on and nobody has used yet.
 //!
-//! A connector with a `[settlement.evm]` table binds to its chain before it serves
+//! A connector with a `[settlement.eip155.<chain id>]` table binds to its chain before it serves
 //! anything: it reads the chain id, checks that `x402BatchSettlement` is deployed,
 //! checks the token's decimals, and asks the contract for the id of a probe channel.
 //! Once it is serving, it watches the chain's head and asks what it is owed. This
