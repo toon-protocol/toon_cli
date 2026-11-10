@@ -738,6 +738,8 @@ struct Ledger<'a> {
     wanted: u64,
     counted: Cell<u64>,
     bought: Cell<u64>,
+    /// Whether a packet failed that the provider may have received and acted on.
+    unknown: Cell<bool>,
 }
 
 impl<'a> Ledger<'a> {
@@ -748,6 +750,7 @@ impl<'a> Ledger<'a> {
             wanted,
             counted: Cell::new(0),
             bought: Cell::new(0),
+            unknown: Cell::new(false),
         }
     }
 
@@ -773,6 +776,11 @@ impl<'a> Ledger<'a> {
     /// A packet that bought a Lease Interval.
     fn bought_one(&self) {
         self.bought.set(self.bought.get() + 1);
+    }
+
+    /// A packet the provider may have received and acted on, though nothing says it did.
+    fn unknown_one(&self) {
+        self.unknown.set(true);
     }
 }
 
@@ -806,14 +814,21 @@ fn partly_paid(cause: Error, members: &[Lease], ledger: &Ledger) -> Error {
     if bought == 0 {
         return cause;
     }
+    // The cause already names `toon compute status`.
+    let ending = if ledger.unknown.get() {
+        "Nothing was retried. One more Lease Interval may have been bought, by the packet \
+         that failed."
+            .to_owned()
+    } else {
+        "Nothing was retried: the routes already paid are not paid again.".to_owned()
+    };
     Error {
         unanswered: cause.unanswered,
         ..failure(
             ErrorCode::LeasePartlyPaid,
             format!(
                 "Bought {bought} of {} Lease Intervals and stopped at the first packet that \
-                 failed: {} Lease {} has paid {} in all, as its file says: {}. Nothing was \
-                 retried: the routes already paid are not paid again.",
+                 failed: {} Lease {} has paid {} in all, as its file says: {}. {ending}",
                 ledger.wanted,
                 cause.message,
                 members[0].workload_id,
@@ -1353,12 +1368,29 @@ fn extend_once(
                 ),
             ))
         }
-        Reply::Rejected { code, message } => Some(failure(
-            ErrorCode::SendFailed,
-            format!("The extend was rejected with {code}: {message}"),
-        )),
+        Reply::Rejected { code, message } => {
+            ledger.unknown_one();
+            Some(failure(
+                ErrorCode::SendFailed,
+                format!(
+                    "The extend was rejected with {code}: {message}{}",
+                    extend_unknown(&id)
+                ),
+            ))
+        }
         Reply::Unanswered | Reply::Strange(_) => {
-            Some(operator::unanswered_cost(u128::from(ledger.paid()), None))
+            ledger.unknown_one();
+            // Not the operator's "the command can be run again": running extend again pays
+            // for another Lease Interval.
+            let paid = ledger.paid();
+            Some(Error {
+                message: format!(
+                    "The extend got no answer that says what came of it. It cost {paid} base \
+                     units.{}",
+                    extend_unknown(&id)
+                ),
+                ..operator::unanswered_cost(u128::from(paid), None)
+            })
         }
     };
     // What was bought is in the file before anything else happens.
@@ -1367,6 +1399,15 @@ fn extend_once(
         (Err(error), None) => Err(error),
         (Ok(()), None) => Ok(()),
     }
+}
+
+/// What a message says of an extend packet that was rejected or unanswered: the provider may
+/// have received it, and `status` is what settles it.
+fn extend_unknown(id: &str) -> String {
+    format!(
+        " Whether the provider extended the lease is not known: run `toon compute status {id}` \
+         before `toon compute extend` again, which would pay for another Lease Interval."
+    )
 }
 
 /// `rounds` rounds of `.extend` packets, one to each member that is live, in order. It stops

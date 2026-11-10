@@ -1575,6 +1575,101 @@ fn a_lease_command_that_stops_part_way_still_publishes_what_it_bought() {
 }
 
 #[test]
+fn an_extend_nobody_answers_says_it_may_have_been_bought_and_status_settles_it() {
+    let chain = AnvilChain::start();
+    let world = world(&chain);
+    let spawned = world.spawn(&["--yes"]);
+    assert_eq!(spawned.exit_code, 0, "{}{}", spawned.stdout, spawned.stderr);
+    let before = read_lease(&world.leases());
+    let workload = before["workload_id"].as_str().unwrap().to_owned();
+    let bought = world.provider.expires_at();
+    world
+        .provider
+        .with(|state| state.drop_extend_from = Some(1));
+    let extended = world
+        .near
+        .toon(&["compute", "extend", &workload, "--yes", "--json"]);
+    assert_eq!(
+        extended.exit_code, 1,
+        "{}{}",
+        extended.stdout, extended.stderr
+    );
+    assert_eq!(error_code(&extended), "send_failed", "{}", extended.stdout);
+    let message = extended.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(message.contains("is not known"), "{message}");
+    assert!(
+        message.contains(&format!("toon compute status {workload}")),
+        "{message}"
+    );
+    // The provider applied it, though the file did not hear.
+    assert!(world.provider.expires_at() > bought);
+    let after = read_lease(&world.leases());
+    assert_eq!(
+        after["paid"].as_u64().unwrap(),
+        before["paid"].as_u64().unwrap() + PRICE,
+        "{after}"
+    );
+    assert_eq!(after["expires_at"], before["expires_at"]);
+
+    let status = world.near.toon(&["compute", "status", &workload, "--json"]);
+    assert_eq!(status.exit_code, 0, "{}{}", status.stdout, status.stderr);
+    let settled = read_lease(&world.leases());
+    assert_eq!(settled["expires_at"], world.provider.expires_at());
+}
+
+#[test]
+fn a_multi_interval_extend_dropped_part_way_does_not_say_to_run_it_again() {
+    let chain = AnvilChain::start();
+    let world = world(&chain);
+    let spawned = world.spawn(&["--yes"]);
+    assert_eq!(spawned.exit_code, 0, "{}{}", spawned.stdout, spawned.stderr);
+    let workload = read_lease(&world.leases())["workload_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    world
+        .provider
+        .with(|state| state.drop_extend_from = Some(2));
+    let extended = world.near.toon(&[
+        "compute",
+        "extend",
+        &workload,
+        "--intervals",
+        "3",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(
+        extended.exit_code, 1,
+        "{}{}",
+        extended.stdout, extended.stderr
+    );
+    assert_eq!(
+        error_code(&extended),
+        "lease_partly_paid",
+        "{}",
+        extended.stdout
+    );
+    let message = extended.json()["error"]["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(message.contains("Bought 1 of 3"), "{message}");
+    assert!(
+        message.contains("One more Lease Interval may have been bought"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!("toon compute status {workload}")),
+        "{message}"
+    );
+    assert!(!message.contains("are not paid again"), "{message}");
+}
+
+#[test]
 fn a_spawn_the_provider_refuses_publishes_no_deployment() {
     let chain = AnvilChain::start();
     let world = world(&chain);
