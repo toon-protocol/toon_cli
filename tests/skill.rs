@@ -300,6 +300,7 @@ fn skill_install_ships_both_plugins_and_never_the_client_plugin() {
             "compute",
             "git",
             "operating-an-agent-node",
+            "renting-compute-with-toon-cli",
             "sending-with-toon-cli",
             "social"
         ]
