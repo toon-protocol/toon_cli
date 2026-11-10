@@ -295,6 +295,8 @@ fn init_from_a_mnemonic_keeps_the_same_secret() {
             "--from-mnemonic",
             "--evm-rpc-url",
             &chain.rpc_url(),
+            "--evm-chain-id",
+            "31337",
         ],
         |command| {
             command.env("TOON_PASSPHRASE", PASSPHRASE);

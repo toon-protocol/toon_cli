@@ -89,6 +89,8 @@ fn an_agent_node_restored_from_its_mnemonic_has_the_same_addresses() {
             "--from-mnemonic",
             "--evm-rpc-url",
             &chain.rpc_url(),
+            "--evm-chain-id",
+            "31337",
         ],
         |command| {
             command.env("TOON_PASSPHRASE", support::PASSPHRASE);

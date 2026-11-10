@@ -36,25 +36,29 @@ impl Profile {
     }
 
     pub fn evm(self) -> Evm {
-        let (rpc_url, token, asset_name) = match self {
+        let (chain_id, rpc_url, token, asset_name) = match self {
             Profile::Devnet => (
+                84_532,
                 "https://base-sepolia-rpc.publicnode.com",
                 "0x0C996d7c934c79a6255254875607Fe69df25C0E1",
                 "USDC",
             ),
             Profile::Sandbox => (
+                31_337,
                 "http://localhost:8545",
                 "0x0A867CA0442383c2A89951244B955AA19b615b58",
                 "USDC",
             ),
             // Base's native USDC names itself "USD Coin", not "USDC".
             Profile::Mainnet => (
+                8_453,
                 "https://mainnet.base.org",
                 "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
                 "USD Coin",
             ),
         };
         Evm {
+            chain_id,
             rpc_url: rpc_url.into(),
             token: token.into(),
             decimals: 6,

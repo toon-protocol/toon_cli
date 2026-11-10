@@ -161,6 +161,8 @@ fn the_output_says_what_a_hidden_service_hides_and_what_it_does_not() {
             "--accept-anyone-terms",
             "--evm-rpc-url",
             &chain.rpc_url(),
+            "--evm-chain-id",
+            "31337",
         ],
         |command| {
             command.env("TOON_PASSPHRASE", PASSPHRASE);

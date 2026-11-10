@@ -168,6 +168,8 @@ fn init_restores_from_a_mnemonic_alone_with_new_onion_endpoints() {
             "--from-mnemonic",
             "--evm-rpc-url",
             &chain.rpc_url(),
+            "--evm-chain-id",
+            "31337",
         ],
         |command| {
             command.env("TOON_PASSPHRASE", PASSPHRASE);
@@ -200,6 +202,8 @@ fn init_restores_from_a_mnemonic_alone_with_new_onion_endpoints() {
             "--from-mnemonic",
             "--evm-rpc-url",
             &chain.rpc_url(),
+            "--evm-chain-id",
+            "31337",
         ],
         |command| {
             command.env("TOON_PASSPHRASE", PASSPHRASE);

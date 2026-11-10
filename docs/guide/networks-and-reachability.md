@@ -38,6 +38,9 @@ toon init --network sandbox --accept-anyone-terms \
 
 **Overrides.** `--evm-rpc-url`, `--solana-rpc-url`, `--evm-token`, `--faucet-url`, `--connector-url` and
 `--relay-url` replace one setting of the profile; `toon init --help` lists the rest.
+`--evm-chain-id` replaces the chain id (84532 on the devnet, 31337 in the sandbox, 8453 on
+mainnet). Name it whenever `--evm-rpc-url` reaches another chain: the connector checks it
+against the endpoint's `eth_chainId` when it starts, and won't start if they differ.
 `--solana` settles on Solana too, and `--solana-rpc-url` replaces its JSON-RPC endpoint.
 
 ## Hidden service
