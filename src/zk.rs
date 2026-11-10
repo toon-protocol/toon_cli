@@ -1,4 +1,4 @@
-//! `toon zk enable` and `toon zk disable`: whether a TOON app's connector is a zk edge (ADR 0014).
+//! `toon zk enable` and `toon zk disable`: whether a TOON app's connector is a zk edge (ADR 0016).
 //!
 //! A zk edge takes packets paid from zk allowances, priced in MINA, as well as from channels
 //! (connector ADR 0080). Enabling records the settings in the state, writes the state key the
@@ -119,7 +119,7 @@ fn enable(home: &Path, app: Option<&str>, args: &ZkEnableArgs) -> Result<Report,
         graphql_url: args.graphql_url.clone(),
         archive_url: args.archive_url.clone(),
         tiers: args.tiers.clone(),
-        allowance_lifetime_secs: args.zk_allowance_lifetime,
+        zk_allowance_lifetime_secs: args.zk_allowance_lifetime,
         open_budget_cap: args.open_budget_cap,
         subsidy_budget: args.subsidy_budget,
         rate: args.rate,
@@ -130,10 +130,20 @@ fn enable(home: &Path, app: Option<&str>, args: &ZkEnableArgs) -> Result<Report,
             toon_app.zk_edge = Some(settings.clone());
         }
     }
+    // The connector checks that the state key file is there, so it is written first, and
+    // removed again if this run wrote it and the change does not go ahead.
+    let key_file = node::ConnectorFiles::of(home, target.connector).zk_state_key;
+    let new_key = !key_file.exists();
+    let undo = || {
+        if new_key {
+            let _ = std::fs::remove_file(&key_file);
+        }
+    };
     let state_key = write_state_key(home, &target)?;
-    check(home, &changed, &target)?;
-    apps::confirm(args.yes, &target.name)?;
-    let restarted = apps::apply(home, &state, &changed, &target.name, || {})?;
+    check(home, &changed, &target)
+        .and_then(|()| apps::confirm(args.yes, &target.name))
+        .inspect_err(|_| undo())?;
+    let restarted = apps::apply(home, &state, &changed, &target.name, undo)?;
     let rate = settings.rate.map(|rate| rate.to_string());
     let settles = target.evm.is_some() || target.solana.is_some();
     Ok(Report {
@@ -145,7 +155,7 @@ fn enable(home: &Path, app: Option<&str>, args: &ZkEnableArgs) -> Result<Report,
             "network": settings.network,
             "tiers": settings.tiers,
             "open_budget_cap": settings.open_budget_cap,
-            "zk_allowance_lifetime": settings.allowance_lifetime_secs,
+            "zk_allowance_lifetime": settings.zk_allowance_lifetime_secs,
             "subsidy_budget": settings.subsidy_budget,
             "rate": rate,
             "state_key": state_key,
@@ -158,7 +168,7 @@ fn enable(home: &Path, app: Option<&str>, args: &ZkEnableArgs) -> Result<Report,
             target.name,
             settings.vault,
             settings.network,
-            restarted_text(restarted, &target.name),
+            restarted_text(restarted, &target.name, "starts as a zk edge"),
             match (&rate, settles) {
                 (Some(rate), true) =>
                     format!(" Forwards cross out of MINA at {rate} tokens per MINA. {SPREAD}"),
@@ -168,11 +178,12 @@ fn enable(home: &Path, app: Option<&str>, args: &ZkEnableArgs) -> Result<Report,
     })
 }
 
-fn restarted_text(now: bool, toon_app: &str) -> String {
+/// That the connector restarted, or how it starts next if the agent node is not running.
+fn restarted_text(now: bool, toon_app: &str, next: &str) -> String {
     if now {
         format!("The connector of {toon_app} restarted.")
     } else {
-        format!("The agent node is not running: the connector of {toon_app} starts as a zk edge.")
+        format!("The agent node is not running: the connector of {toon_app} {next}.")
     }
 }
 
@@ -210,14 +221,7 @@ fn disable(home: &Path, app: Option<&str>, yes: bool) -> Result<Report, Error> {
         }
     }
     let restarted = apps::apply(home, &state, &changed, &target.name, || {})?;
-    let now = if restarted {
-        format!("The connector of {} restarted.", target.name)
-    } else {
-        format!(
-            "The agent node is not running: the connector of {} starts without it.",
-            target.name
-        )
-    };
+    let now = restarted_text(restarted, &target.name, "starts without it");
     Ok(Report {
         exit: Exit::Success,
         json: json!({

@@ -37,7 +37,7 @@ connector-operator = { git = "https://github.com/toon-protocol/connector", rev =
 # `send` cannot carry a header, which a subscribe request needs (NIP-98).
 connector-domain = { git = "https://github.com/toon-protocol/connector", rev = "e15a937779c518c594beb2a80d2b0f7577aaf5e3" }
 connector-signer = { git = "https://github.com/toon-protocol/connector", rev = "e15a937779c518c594beb2a80d2b0f7577aaf5e3" }
-# A zk edge (ADR 0014): its state key is a Mina secret key, and its `verification_key_hash`
+# A zk edge (ADR 0016): its state key is a Mina secret key, and its `verification_key_hash`
 # is the one request key the connector build carries.
 connector-zk-note = { git = "https://github.com/toon-protocol/connector", rev = "e15a937779c518c594beb2a80d2b0f7577aaf5e3" }
 connector-zk-note-mina = { git = "https://github.com/toon-protocol/connector", rev = "e15a937779c518c594beb2a80d2b0f7577aaf5e3" }

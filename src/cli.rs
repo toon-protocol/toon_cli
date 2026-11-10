@@ -85,7 +85,7 @@ pub enum Command {
         command: TipCommand,
     },
     /// Make a TOON app's connector a zk edge, or stop: it takes packets paid from zk
-    /// allowances, priced in MINA (ADR 0014)
+    /// allowances, priced in MINA (ADR 0016)
     Zk {
         #[command(subcommand)]
         command: ZkCommand,

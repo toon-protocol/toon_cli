@@ -1,4 +1,4 @@
-//! `toon zk enable` and `toon zk disable`: a TOON app's connector as a zk edge (ADR 0014).
+//! `toon zk enable` and `toon zk disable`: a TOON app's connector as a zk edge (ADR 0016).
 
 mod support;
 
@@ -285,6 +285,8 @@ fn a_tier_the_connector_does_not_accept_is_refused_before_any_restart() {
         assert!(message.contains("12345"), "{message}");
         assert_eq!(state(&machine), state_before);
         assert_eq!(config(&machine), config_before);
+        let key = machine.agent_node_home().join("connectors/0/zk-state.key");
+        assert!(!key.exists(), "a refused change leaves no state key");
     }
     // The connector was never restarted: it answers where it did, as a connector with no zk
     // edge.

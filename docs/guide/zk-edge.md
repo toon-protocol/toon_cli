@@ -6,7 +6,7 @@ against one of its notes. The proof shows the note is in the vault and unspent w
 which note it is, so you can't link a zk allowance to a deposit. The payer then pays packets from
 it as from a channel. `toon` turns a TOON app's connector into a zk edge and back. The payer's
 side, which covers depositing, notes, opening zk allowances and leaving, is the wallet in
-`toon-client`. ADR 0014 records why.
+`toon-client`. ADR 0016 records why.
 
 ## Before you turn it on: what runs beside it
 
@@ -38,8 +38,8 @@ toon zk enable \
 
 This
 
-- writes a `[zk_note]` table into the connector config of the relay's TOON app (`--app <name>`
-  picks another TOON app), and **restarts that connector**, which drops the packets it holds in
+- writes a `[zk_note]` table into the connector config of the first TOON app, the relay's (`--app
+  <name>` picks another TOON app), and **restarts that connector**, which drops the packets it holds in
   flight, so it needs `--yes`;
 - keeps the settings in the agent node's state, so every `toon up` writes the table again;
 - checks the changed config with the connector's own validation **before** anything restarts. A

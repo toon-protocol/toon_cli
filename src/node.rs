@@ -294,7 +294,7 @@ const SOLANA_CLUSTERS: [(&str, &str); 2] = [
     ),
 ];
 
-/// A TOON app's connector as a zk edge (ADR 0014): the `[zk_note]` table as the operator set it,
+/// A TOON app's connector as a zk edge (ADR 0016): the `[zk_note]` table as the operator set it,
 /// and the rate out of MINA its forwards cross at. The connector validates every field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ZkEdge {
@@ -307,7 +307,7 @@ pub struct ZkEdge {
     /// The zk allowance budgets offered, in nanomina.
     pub tiers: Vec<u64>,
     /// The longest a zk allowance lives, in seconds.
-    pub allowance_lifetime_secs: u64,
+    pub zk_allowance_lifetime_secs: u64,
     /// The most the budgets of all open zk allowances may add up to, in nanomina.
     pub open_budget_cap: u64,
     /// Nanomina per subsidy period for subsidised zk allowances; 0 offers none.
@@ -400,7 +400,7 @@ impl ZkEdge {
             "graphql_url": self.graphql_url,
             "archive_url": self.archive_url,
             "tiers": self.tiers,
-            "allowance_lifetime_secs": self.allowance_lifetime_secs,
+            "zk_allowance_lifetime_secs": self.zk_allowance_lifetime_secs,
             "open_budget_cap": self.open_budget_cap,
             "subsidy_budget": self.subsidy_budget,
             "rate": self.rate.map(|rate| rate.to_string()),
@@ -419,7 +419,7 @@ impl ZkEdge {
                 .iter()
                 .map(Value::as_u64)
                 .collect::<Option<_>>()?,
-            allowance_lifetime_secs: value["allowance_lifetime_secs"].as_u64()?,
+            zk_allowance_lifetime_secs: value["zk_allowance_lifetime_secs"].as_u64()?,
             open_budget_cap: value["open_budget_cap"].as_u64()?,
             subsidy_budget: value["subsidy_budget"].as_u64()?,
             rate: match &value["rate"] {
@@ -481,7 +481,7 @@ fn zk_tables(
         string(&files.zk_state_key.to_string_lossy()),
         string(&key_hash),
         tiers.join(", "),
-        zk.allowance_lifetime_secs,
+        zk.zk_allowance_lifetime_secs,
         zk.open_budget_cap,
         zk.subsidy_budget,
     );
@@ -533,7 +533,7 @@ fn zk_tables(
         ));
     }
     // The rate is static, so the guards keep no spread of their own: the operator builds it
-    // into the rate (ADR 0014). They bound only what nothing here produces, a quoted rate.
+    // into the rate (ADR 0016). They bound only what nothing here produces, a quoted rate.
     out.push_str(
         "\n[rate_guards]\nspread = { numerator = 0, denominator = 1 }\nttl_secs = 60\n\
          max_move = { numerator = 1, denominator = 10 }\n",
