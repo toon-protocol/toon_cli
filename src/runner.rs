@@ -377,7 +377,7 @@ impl Allowances {
 pub fn caller() -> String {
     use std::os::unix::fs::MetadataExt;
     // The owner of `/proc/self` is the process's own user and group.
-    if let Ok(own) = fs::metadata("/no-proc/self") {
+    if let Ok(own) = fs::metadata("/proc/self") {
         return format!("{}:{}", own.uid(), own.gid());
     }
     let id = |flag: &str| {
