@@ -217,6 +217,10 @@ fn up_fails_with_app_failed_when_the_relay_does_not_start() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "reads /proc/net/tcp, which macOS does not have"
+)]
 fn up_fails_when_the_relay_stops() {
     let chain = FakeChain::start();
     let machine = Machine::new();
@@ -239,7 +243,7 @@ fn up_fails_when_the_relay_stops() {
 
     assert_eq!(up.exit_code(), 1);
     wait_until("the connector outlived the failed supervisor", || {
-        !std::path::Path::new("/proc").join(pid.to_string()).exists()
+        !support::process_exists(pid)
     });
 }
 

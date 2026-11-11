@@ -85,6 +85,10 @@ fn the_connector_settles_on_the_fake_chain() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "reads /proc/<pid>/stat, which macOS does not have"
+)]
 fn the_connector_is_a_child_process_of_the_same_binary() {
     let chain = FakeChain::start();
     let machine = Machine::new();

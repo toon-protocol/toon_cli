@@ -15,6 +15,12 @@
 # The `aarch64` job is not part of the gate. `toon` ships for Linux on x86_64 and
 # aarch64, and the connector it embeds brings both chains' SDKs with it, so the tests
 # also run on an arm64 runner.
+#
+# The `macos` job is not part of the gate either. `toon` is to run natively on Apple
+# Silicon (#337), so it is built, linted and tested there. GitHub's macOS runners have
+# no docker, so a test that needs it skips. A
+# test that cannot pass on macOS yet is `#[ignore]`d there with its reason, which
+# `cargo test` prints.
 
 name: CI
 
@@ -95,3 +101,36 @@ jobs:
 
       - name: Run tests
         run: cargo test --locked
+
+  macos:
+    name: Build, lint and test on macOS
+    runs-on: macos-14
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+          components: clippy
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Cache Cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            macos-${{ runner.os }}-
+
+      - name: Clippy, warnings as errors
+        run: cargo clippy --all-targets --locked --target aarch64-apple-darwin -- -D warnings
+
+      - name: Run tests
+        run: cargo test --locked --target aarch64-apple-darwin

@@ -18,6 +18,15 @@ pub mod local_chain;
 pub mod spy;
 pub mod unpeerable;
 
+/// Whether a process `pid` exists. Portable, where `/proc` is Linux's alone.
+pub fn process_exists(pid: u64) -> bool {
+    Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 use std::collections::hash_map::RandomState;
 use std::fs::{self, File};
 use std::hash::{BuildHasher, Hasher};

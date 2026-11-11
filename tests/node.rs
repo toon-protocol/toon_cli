@@ -106,6 +106,10 @@ fn init_that_the_connector_would_refuse_leaves_no_wallet() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "reads /proc/sys/net/ipv4/ip_local_port_range, which macOS does not have"
+)]
 fn init_picks_a_port_the_system_does_not_hand_out_by_itself() {
     let machine = Machine::new();
     // Without `--listen`, which the other tests give: `init` picks the port.
@@ -196,7 +200,7 @@ fn status_reports_the_running_connector_and_down_stops_everything() {
     assert_eq!(up.exit_code(), 0);
     let pid = started["connector"]["pid"].as_u64().unwrap();
     wait_until("the connector is still running", || {
-        !std::path::Path::new("/proc").join(pid.to_string()).exists()
+        !support::process_exists(pid)
     });
     let after = machine.toon(&["status", "--json"]);
     assert_eq!(after.exit_code, 1);

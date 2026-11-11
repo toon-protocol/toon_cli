@@ -46,7 +46,7 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 }
 
 fn pid_alive(pid: u64) -> bool {
-    Path::new("/proc").join(pid.to_string()).exists()
+    support::process_exists(pid)
 }
 
 #[test]

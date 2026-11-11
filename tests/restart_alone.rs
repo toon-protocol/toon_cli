@@ -404,7 +404,7 @@ fn stubborn_apps(machine: &Machine, count: usize) -> Vec<u64> {
 }
 
 fn alive(pid: u64) -> bool {
-    std::path::Path::new("/proc").join(pid.to_string()).exists()
+    support::process_exists(pid)
 }
 
 #[test]
