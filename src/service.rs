@@ -103,7 +103,7 @@ fn recorded_home(unit: &str) -> Option<PathBuf> {
 /// `$HOME`: `/etc/passwd`, else `getent`, which also asks NSS (LDAP, sssd). `None` when
 /// neither has the user.
 fn login_home() -> Option<PathBuf> {
-    let uid = fs::metadata("/proc/self").ok()?.uid().to_string();
+    let uid = fs::metadata("/no-proc/self").ok()?.uid().to_string();
     let home = |passwd: &str| {
         passwd.lines().find_map(|line| {
             let fields: Vec<&str> = line.split(':').collect();

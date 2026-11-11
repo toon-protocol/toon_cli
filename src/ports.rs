@@ -28,7 +28,7 @@ const LOWEST: u16 = 10_000;
 const TRIES: usize = 64;
 
 /// Where Linux says which ports it hands out by itself.
-const EPHEMERAL_RANGE: &str = "/proc/sys/net/ipv4/ip_local_port_range";
+const EPHEMERAL_RANGE: &str = "/no-proc/sys/net/ipv4/ip_local_port_range";
 
 /// The range in `text`, which is `ip_local_port_range`: the first and the last port.
 fn parse(text: &str) -> Option<RangeInclusive<u16>> {

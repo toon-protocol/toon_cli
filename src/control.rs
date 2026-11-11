@@ -33,7 +33,8 @@ fn through_short_path<T>(
     use_address: impl FnOnce(&Path) -> std::io::Result<T>,
 ) -> std::io::Result<T> {
     let directory = std::fs::File::open(home)?;
-    let address = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd())).join(FILE_NAME);
+    let address =
+        PathBuf::from(format!("/no-proc/self/fd/{}", directory.as_raw_fd())).join(FILE_NAME);
     use_address(&address)
 }
 
