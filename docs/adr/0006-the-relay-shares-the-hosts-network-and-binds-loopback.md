@@ -9,7 +9,7 @@ Only the relay is started this way. An app from `toon add --image` or `toon crea
 ## Consequences
 
 - A container on the host's network can reach everything on host loopback, the connector's control surface and the overlay's SOCKS proxy among it. That is accepted for the project's own pinned relay image and for no other image.
-- Linux only, as the release binaries are. Docker Desktop's host networking is not the same thing and is not supported.
+- Linux only. On macOS the relay is on a bridge with its ports published on loopback and reaches its connector at `host.docker.internal` (ADR 0017). Docker Desktop's host networking is not relied on.
 - A relay restarted alone, for a change to its settings or its limits, is given the two ports it had, so its connector restarts only if one of them was taken meanwhile (ADR 0011).
 - `docker ps` shows no port for the relay. `toon status --json` reports where it is read on this machine as `read_address`, beside the app's `address`.
 - The relay starts before its connector and asks again every few seconds until it answers, so the information document carries the `toon` object within a few seconds of `toon up` reporting. `toon up` does not wait for it.
