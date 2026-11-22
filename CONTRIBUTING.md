@@ -14,6 +14,9 @@ https://github.com/search?q=org%3Atoon-protocol+label%3Aslop-wanted+is%3Aopen&ty
   it best (for example, the one with docs, or the one built on the library we prefer) and
   closes the others. That choice is the maintainer's, not a race. A pull request closed
   this way gets its submission fee back (see the fee rules linked below).
+- Keep your pull request free of merge conflicts with the default branch. If a maintainer
+  asks you to resolve them and you have not done so within 7 days, the pull request is
+  closed.
 - Want to work on something that is not listed? Open an issue and ask first. Start the
   pull request only after a maintainer adds the `slop-wanted` label.
 - Pull requests opened before 22 November 2026 are not affected.
