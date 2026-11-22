@@ -10,8 +10,10 @@ https://github.com/search?q=org%3Atoon-protocol+label%3Aslop-wanted+is%3Aopen&ty
 - Name the issue in the pull request body with `Closes #<number>`.
 - A pull request that closes no `slop-wanted` issue is closed without review. If you paid
   the submission fee on it, the fee is kept, so check before you open one.
-- If several pull requests close the same issue, we merge the first one that does what
-  the issue asks and close the others.
+- If several pull requests close the same issue, the maintainer merges the one that answers
+  it best (for example, the one with docs, or the one built on the library we prefer) and
+  closes the others. That choice is the maintainer's, not a race. A pull request closed
+  this way gets its submission fee back (see the fee rules linked below).
 - Want to work on something that is not listed? Open an issue and ask first. Start the
   pull request only after a maintainer adds the `slop-wanted` label.
 - Pull requests opened before 22 November 2026 are not affected.
