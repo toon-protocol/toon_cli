@@ -66,12 +66,13 @@ pub const TEST_CHAIN_ID: u64 = 31_337;
 pub const PASSPHRASE: &str = "correct horse battery staple";
 
 /// The fake relay of `examples/fake_relay.rs`, which cargo builds for the tests.
+///
+/// Cargo copies it to `<target>/<profile>/examples/`, beside the `toon` it builds for the
+/// tests. Not beside the test binary: since Cargo 1.100 that is under `build/`.
 pub fn fake_relay() -> PathBuf {
-    let tests = std::env::current_exe().expect("the test binary's path");
-    let program = tests
+    let program = Path::new(env!("CARGO_BIN_EXE_toon"))
         .parent()
-        .and_then(Path::parent)
-        .expect("target/<profile>/deps/<test>")
+        .expect("target/<profile>/toon")
         .join("examples")
         .join("fake_relay");
     assert!(program.exists(), "{} is not built", program.display());
