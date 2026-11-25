@@ -1446,6 +1446,12 @@ pub enum Answer {
     Unanswered,
 }
 
+/// How long a packet [`dispatch`] hands to the connector's `send` lives: what the
+/// connector's `send` verb gives a packet when it is not told, which is what such a packet
+/// lived when `dispatch` ran that verb. Such a packet is waited on as long as the connection
+/// lasts.
+const DISPATCH_EXPIRY_SECONDS: i64 = 300;
+
 /// How long a packet sent with [`dispatch_with_headers`] lives before a connector must
 /// reject it.
 const PACKET_EXPIRY: Duration = Duration::from_secs(30);
@@ -1513,41 +1519,33 @@ pub fn unanswered_cost(paid: u128, event: Option<Value>) -> Error {
     }
 }
 
-/// Read the connector's summary of a send. The connector's own `send` verb is
-/// what forms, seals, signs and checks the packet, and it reports in text.
-fn answer(summary: &str) -> Option<Answer> {
-    if summary.starts_with("FULFILL WITH THE WRONG FULFILMENT") {
-        return Some(Answer::WrongFulfilment);
-    }
-    if summary.starts_with("FULFILL -- ") {
-        let (_, answered) = summary.split_once("the terminating app answered ")?;
-        let (status, body) = answered.split_once(":\n")?;
-        return Some(Answer::Fulfilled {
-            status: status.parse().ok()?,
-            body: body.to_owned(),
-        });
-    }
-    let rejected = summary.strip_prefix("REJECT ")?;
-    let (code, rest) = rejected.split_once(" -- ")?;
-    let message = rest.split_once('\n').map_or("", |(_, message)| message);
-    // The summary ends with `accumulated cost: N base units`, which is not the reject's message.
-    let (message, cost) = match message.rsplit_once('\n') {
-        Some((head, last)) => accumulated_cost(last).map_or((message, 0), |cost| (head, cost)),
-        None => accumulated_cost(message).map_or((message, 0), |cost| ("", cost)),
-    };
-    Some(Answer::Rejected {
-        code: code.to_owned(),
-        message: message.to_owned(),
-        cost,
+/// What the connector's `send` says a packet came to, as its [`Answer`]. A packet the
+/// connector did not send, which only a dry run answers, is an error that sent nothing.
+fn answer_of(outcome: connector_cli::Outcome) -> Result<Answer, Error> {
+    use connector_cli::Outcome;
+    Ok(match outcome {
+        Outcome::Fulfilled { status, body } => Answer::Fulfilled {
+            status: status.into(),
+            body: String::from_utf8_lossy(&body).into_owned(),
+        },
+        Outcome::FulfilledWithWrongFulfillment => Answer::WrongFulfilment,
+        Outcome::Rejected {
+            code,
+            message,
+            accumulated_cost,
+        } => Answer::Rejected {
+            code,
+            message,
+            cost: accumulated_cost.into(),
+        },
+        Outcome::Unanswered => Answer::Unanswered,
+        Outcome::NotSent => {
+            return Err(Error {
+                nothing_sent: true,
+                ..failed(ErrorCode::SendFailed, "The connector did not send.".into())
+            })
+        }
     })
-}
-
-/// The cost in `line`, if it is the summary's last line of a reject, the cost of its path.
-fn accumulated_cost(line: &str) -> Option<u128> {
-    line.strip_prefix("accumulated cost: ")?
-        .strip_suffix(" base units")?
-        .parse()
-        .ok()
 }
 
 /// The accumulated cost a connector states on the answer of `POST /packets`, in base units;
@@ -1634,51 +1632,51 @@ fn stated_cost_sentence(code: &str, cost: u128, flag: &str, probe: bool) -> Stri
 /// only when the packet did not decode, before it originates anything.
 const NOTHING_SENT_400: &str = " Nothing was sent or paid.";
 
-/// Whether the `Debug` of the connector's `SendError` is its `Transport` variant for a
-/// packet write answered `status`, which is worded `401 Unauthorized -- ...`.
-fn refused_with(variant: &str, status: &str) -> bool {
-    variant.starts_with("Transport") && variant.contains(&format!("reason: \"{status} "))
-}
-
-/// Whether the `Debug` of the connector's `SendError` is its `Transport` variant for a
-/// packet write answered 400.
-fn refused_with_400(variant: &str) -> bool {
-    refused_with(variant, "400")
-}
-
-/// Whether the `Debug` of the connector's `SendError` is its `Transport` variant for a
-/// packet write answered 401 or 400. The connector authenticates the write, and decodes
-/// the packet, before it originates anything, so a 401 or a 400 means none was sent.
-fn refused_before_origin(variant: &str) -> bool {
-    refused_with(variant, "401") || refused_with_400(variant)
-}
-
-/// Whether the connector's `send` failed before it wrote to the operator surface: its
-/// arguments were refused, the operator key could not be read, the identity to seal to
-/// could not be fetched, the packet could not be sealed, or the write was refused with 401
-/// or 400. Any other `Transport` failure may come after the packet left, and an answer not
-/// understood does, so neither is here.
-///
-/// The connector keeps `SendError` private, so its variant is read from its `Debug`.
-fn before_sending(error: &connector_cli::CliError) -> bool {
+/// Whether the connector's `send` failed before any packet was originated: the operator
+/// key could not be read, the identity to seal to could not be fetched, the packet could not
+/// be sealed, or the write was refused with 401 (its signature), 400 (a packet that did not
+/// decode) or a 403 naming the key's scope, expiry or limit (ADR 0078 decision 9). A failed
+/// dial, any other refusal and anything after the write may follow a packet that left, so
+/// none of them is here.
+fn refused_before_origin(error: &connector_cli::SendError) -> bool {
+    use connector_cli::SendError;
     match error {
-        connector_cli::CliError::Usage(_) => true,
-        connector_cli::CliError::Send(send) => {
-            let variant = format!("{send:?}");
-            ["KeyFile", "Identity", "Seal"]
-                .iter()
-                .any(|name| variant.starts_with(name))
-                || refused_before_origin(&variant)
+        SendError::KeyFile { .. } | SendError::Identity { .. } | SendError::Seal(_) => true,
+        SendError::Transport { .. } => error
+            .refusal()
+            .is_some_and(|refusal| matches!(refusal.status, 400 | 401) || refusal.reason.is_some()),
+        SendError::AnswerLost { .. } | SendError::Undecodable(_) | SendError::NotFulfilled(_) => {
+            false
         }
-        _ => false,
+    }
+}
+
+/// The connector's `send` failing with `error`, as the command's error: `spending_limit` for
+/// a 403 naming the key's spending or deposit limit, `send_failed` otherwise, and
+/// `nothing_sent` for a failure before any packet was originated.
+fn send_failure(error: connector_cli::SendError) -> Error {
+    use connector_cli::RefusalReason;
+    let refusal = error.refusal();
+    let code = match refusal.and_then(|refusal| refusal.reason) {
+        Some(RefusalReason::SpendingLimit | RefusalReason::DepositLimit) => {
+            ErrorCode::SpendingLimit
+        }
+        _ => ErrorCode::SendFailed,
+    };
+    let note = match refusal {
+        Some(refusal) if refusal.status == 400 => NOTHING_SENT_400,
+        _ => "",
+    };
+    Error {
+        nothing_sent: refused_before_origin(&error),
+        ..failed(code, format!("{error}{note}"))
     }
 }
 
 /// Send one packet from the operator surface to `destination`, for `amount`, sealed to the
 /// connector at `seal_to`, or to this one, and return what the connector says it came to.
-/// `method`, `target` and `headers` are the request the app receives; `body` is a file
-/// whose bytes the request carries, as `application/json` unless `headers` has a
-/// `content-type`.
+/// `method`, `target` and `headers` are the request the app receives; `body` is the bytes
+/// the request carries, as `application/json` unless `headers` has a `content-type`.
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch(
     home: &Path,
@@ -1688,46 +1686,21 @@ pub fn dispatch(
     method: &str,
     target: &str,
     headers: &[(String, String)],
-    body: Option<&Path>,
+    body: Vec<u8>,
 ) -> Result<Answer, Error> {
     let surface = surface(home)?;
     let send_failed = |message: String| failed(ErrorCode::SendFailed, message);
-    // A body that cannot be read is found out before anything is sent.
-    if let Some(path) = body {
-        std::fs::read(path).map_err(|error| Error {
-            nothing_sent: true,
-            ..send_failed(format!("{} could not be read: {error}.", path.display()))
-        })?;
-    }
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| send_failed(format!("The async runtime did not start: {error}.")))?;
-    let amount_text = amount.to_string();
     let seal_to = seal_to.map_or_else(|| format!("{}/ilp", surface.url), str::to_owned);
-    let write_key = surface.write_key.to_string_lossy();
-    let body = body.map(|path| path.to_string_lossy().into_owned());
     let egress = Egress::of(home)?;
     // An overlay that cannot be had is found out before anything is sent.
-    let socks_proxy = egress
-        .proxy_for(&seal_to)
-        .map_err(|error| Error {
-            nothing_sent: true,
-            ..error
-        })?
-        .map(|proxy| format!("socks5h://{proxy}"));
-    // The connector's `send` takes its proxy only to an onion endpoint and dials any other
-    // host directly, so a request that must go through the overlay to another host is
-    // formed here, with the same envelope the connector's `send` makes.
-    // The same goes for a request with headers, which the connector's `send` cannot set.
+    let socks_proxy = egress.proxy_for(&seal_to).map_err(|error| Error {
+        nothing_sent: true,
+        ..error
+    })?;
+    // The connector's `send` is asked to take its proxy only to an onion endpoint here, so a
+    // request that must go through the overlay to another host is formed by
+    // `dispatch_with_headers`, and so is a request with headers.
     if !headers.is_empty() || (socks_proxy.is_some() && !is_onion_endpoint(&seal_to)) {
-        let body = match &body {
-            Some(path) => std::fs::read(path).map_err(|error| Error {
-                nothing_sent: true,
-                ..send_failed(format!("{path} could not be read: {error}."))
-            })?,
-            None => Vec::new(),
-        };
         let public = identity(&egress, &seal_to)?;
         return dispatch_with_headers(
             home,
@@ -1739,53 +1712,44 @@ pub fn dispatch(
             body,
         );
     }
-    let mut arguments = vec![
-        "toon send",
-        "send",
-        "--operator",
-        &surface.url,
-        "--operator-key",
-        &write_key,
-        "--to",
-        destination,
-        "--seal-to",
-        &seal_to,
-        "--amount",
-        &amount_text,
-        "--method",
-        method,
-        "--target",
-        target,
-    ];
-    if let Some(body) = &body {
-        arguments.extend(["--body", body]);
-    }
-    if let Some(proxy) = &socks_proxy {
-        arguments.extend(["--socks-proxy", proxy]);
-    }
-    let summary = runtime
-        .block_on(connector_cli::run(&arguments))
-        .map_err(|error| {
-            let mut failure = send_failed(error.to_string());
-            failure.nothing_sent = before_sending(&error);
-            if matches!(&error, connector_cli::CliError::Send(send)
-                if refused_with_400(&format!("{send:?}")))
-            {
-                failure.message.push_str(NOTHING_SENT_400);
-            }
-            failure
+    let socks_proxy = socks_proxy
+        .map(|proxy| {
+            reqwest::Url::parse(&format!("socks5h://{proxy}")).map_err(|error| Error {
+                nothing_sent: true,
+                ..send_failed(format!(
+                    "The overlay's proxy {proxy} is not a URL: {error}."
+                ))
+            })
         })
-        .and_then(|command| match command {
-            connector_cli::Command::Finished { summary } => Ok(summary),
-            connector_cli::Command::Serve(_) => {
-                Err(send_failed("The connector did not send.".into()))
-            }
-        })?;
-    answer(&summary).ok_or_else(|| {
-        send_failed(format!(
-            "The connector's answer was not understood: {summary}"
-        ))
-    })
+        .transpose()?;
+    let options = connector_cli::SendOptions {
+        operator_url: surface.url.clone(),
+        operator_key: connector_cli::OperatorKey::File(
+            surface.write_key.to_string_lossy().into_owned(),
+        ),
+        destination: destination.to_owned(),
+        amount,
+        seal_to,
+        seal_key: None,
+        target: target.to_owned(),
+        method: method.to_owned(),
+        body,
+        headers: Vec::new(),
+        expires_in_seconds: DISPATCH_EXPIRY_SECONDS,
+        wait: None,
+        socks_proxy,
+        proxy_scope: connector_cli::ProxyScope::OnionOnly,
+        dry_run: false,
+        expect_fulfill: false,
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| send_failed(format!("The async runtime did not start: {error}.")))?;
+    let sent = runtime
+        .block_on(connector_cli::send(&options))
+        .map_err(send_failure)?;
+    answer_of(sent.outcome)
 }
 
 /// One `--header 'Name: value'` as a pair, or a usage error naming it. Nothing is sent or
@@ -2105,6 +2069,17 @@ fn send_packet(
     body: Option<&Path>,
     probing: bool,
 ) -> Result<Report, Error> {
+    // A body that cannot be read is found out before anything is sent.
+    let body = match body {
+        Some(path) => std::fs::read(path).map_err(|error| Error {
+            nothing_sent: true,
+            ..failed(
+                ErrorCode::SendFailed,
+                format!("{} could not be read: {error}.", path.display()),
+            )
+        })?,
+        None => Vec::new(),
+    };
     send_packet_with(destination, amount, target, probing, |target| {
         dispatch(
             home,
@@ -2507,8 +2482,8 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 #[cfg(test)]
 mod tests {
     use super::{
-        add_cost, add_probe_cost, answer, before_sending, cost_sentence, header_cost, packet_wait,
-        peer_add_on, peer_and_route_on, probe_cost_sentence, Answer, PeerAdd, Surface,
+        add_cost, add_probe_cost, answer_of, cost_sentence, header_cost, packet_wait, peer_add_on,
+        peer_and_route_on, probe_cost_sentence, send_failure, Answer, PeerAdd, Surface,
         AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD,
         UNREAD_TIMEOUT,
     };
@@ -2648,28 +2623,6 @@ mod tests {
             seen.try_iter().count(),
             1 + super::STALE_READ_REPEATS as usize
         );
-    }
-
-    #[test]
-    fn a_rejects_message_leaves_out_the_accumulated_cost_line() {
-        let summary =
-            "REJECT F02 -- no route\nNo route to g.nobody.here.\naccumulated cost: 101 base units";
-        match answer(summary) {
-            Some(Answer::Rejected {
-                code,
-                message,
-                cost,
-            }) => {
-                assert_eq!(code, "F02");
-                assert_eq!(message, "No route to g.nobody.here.");
-                assert_eq!(cost, 101);
-            }
-            _ => panic!("not a reject"),
-        }
-        match answer("REJECT F02 -- no route\naccumulated cost: 0 base units") {
-            Some(Answer::Rejected { message, .. }) => assert_eq!(message, ""),
-            _ => panic!("not a reject"),
-        }
     }
 
     #[test]
@@ -2815,6 +2768,14 @@ mod tests {
         assert_eq!(seen.try_iter().count(), 1);
     }
 
+    /// This test binary's bytes, with the connector `toon connector` serves linked in as it
+    /// is in `toon`. The test harness never calls `main`, so nothing else here keeps the
+    /// connector's node, and its wording, from being left out of the link.
+    fn embedded_connector() -> Vec<u8> {
+        std::hint::black_box(crate::connector::serve as fn(&std::path::Path) -> _);
+        std::fs::read(std::env::current_exe().expect("this binary")).expect("read")
+    }
+
     /// The repeat of a peering is keyed on the connector's wording, which the connector
     /// keeps in a string literal after the channel's quoted name. The connector's crates
     /// are linked into this binary, so a pin move that rewords the refusal fails here
@@ -2822,7 +2783,7 @@ mod tests {
     /// connector says, so the search is for it as the connector's literal goes on.
     #[test]
     fn the_connectors_stale_read_wording_is_pinned() {
-        let binary = std::fs::read(std::env::current_exe().expect("this binary")).expect("read");
+        let binary = embedded_connector();
         let wording = [b"' ".as_slice(), STALE_READ.as_bytes()].concat();
         let found = binary
             .windows(wording.len())
@@ -2838,7 +2799,7 @@ mod tests {
     /// `tests/peer_unread.rs` pins the pair through the running connector.
     #[test]
     fn the_connectors_unread_wording_is_pinned() {
-        let binary = std::fs::read(std::env::current_exe().expect("this binary")).expect("read");
+        let binary = embedded_connector();
         // A format string is kept in pieces, so the literal ends where `{url}` begins.
         let wording = [UNREAD.as_bytes(), b" "].concat();
         assert!(
@@ -2853,7 +2814,7 @@ mod tests {
     /// recognised by are searched for in the embedded connector.
     #[test]
     fn the_connectors_ambiguous_chain_wording_is_pinned() {
-        let binary = std::fs::read(std::env::current_exe().expect("this binary")).expect("read");
+        let binary = embedded_connector();
         for wording in [AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST] {
             assert!(
                 binary
@@ -3009,52 +2970,6 @@ mod tests {
         );
     }
 
-    /// The connector's `send`, run as `dispatch` runs it, with `operator_key` and `seal_to`.
-    fn sent(operator_key: &str, seal_to: &str) -> connector_cli::CliError {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("a runtime");
-        let arguments = [
-            "toon send",
-            "send",
-            "--operator",
-            "http://127.0.0.1:1",
-            "--operator-key",
-            operator_key,
-            "--to",
-            "g.toon.relay",
-            "--seal-to",
-            seal_to,
-            "--amount",
-            "1",
-        ];
-        match runtime.block_on(connector_cli::run(&arguments)) {
-            Err(error) => error,
-            Ok(_) => panic!("the send did not fail"),
-        }
-    }
-
-    /// `before_sending` reads the connector's private `SendError` from its `Debug`, so a
-    /// pin move that renames a variant fails here instead of counting these failures again.
-    #[test]
-    fn a_failure_before_the_write_is_told_from_the_connectors_error() {
-        let home = tempfile::tempdir().expect("a directory");
-        let missing = home.path().join("missing").to_string_lossy().into_owned();
-        assert!(before_sending(&sent(&missing, "http://127.0.0.1:1/ilp")));
-
-        let key = home.path().join("operator.key");
-        std::fs::write(&key, [7u8; 32]).expect("the key");
-        assert!(before_sending(&sent(
-            &key.to_string_lossy(),
-            "http://127.0.0.1:1/ilp"
-        )));
-
-        assert!(before_sending(&connector_cli::CliError::Usage(
-            String::new()
-        )));
-    }
-
     #[test]
     fn a_packet_write_answered_400_or_401_sent_nothing_and_any_other_failure_may_have() {
         use reqwest::StatusCode;
@@ -3080,18 +2995,133 @@ mod tests {
     }
 
     #[test]
-    fn the_connectors_400_and_401_on_a_packet_write_are_told_from_its_debug() {
-        use super::{refused_before_origin, refused_with_400};
-        let transport = |status: &str| {
-            format!("Transport {{ url: \"http://x\", reason: \"{status} -- nope\" }}")
+    fn each_outcome_of_the_connectors_send_is_its_answer() {
+        use connector_cli::Outcome;
+        match answer_of(Outcome::Fulfilled {
+            status: 201,
+            body: b"{\"ok\":true}".to_vec(),
+        }) {
+            Ok(Answer::Fulfilled { status, body }) => {
+                assert_eq!(status, 201);
+                assert_eq!(body, "{\"ok\":true}");
+            }
+            _ => panic!("not fulfilled"),
+        }
+        assert!(matches!(
+            answer_of(Outcome::FulfilledWithWrongFulfillment),
+            Ok(Answer::WrongFulfilment)
+        ));
+        match answer_of(Outcome::Rejected {
+            code: "F02".into(),
+            message: "No route to g.nobody.here.".into(),
+            accumulated_cost: u64::MAX,
+        }) {
+            Ok(Answer::Rejected {
+                code,
+                message,
+                cost,
+            }) => {
+                assert_eq!(code, "F02");
+                assert_eq!(message, "No route to g.nobody.here.");
+                assert_eq!(cost, 18_446_744_073_709_551_615);
+            }
+            _ => panic!("not a reject"),
+        }
+        assert!(matches!(
+            answer_of(Outcome::Unanswered),
+            Ok(Answer::Unanswered)
+        ));
+        let Err(error) = answer_of(Outcome::NotSent) else {
+            panic!("a packet not sent is an answer");
         };
-        assert!(refused_before_origin(&transport("400 Bad Request")));
-        assert!(refused_before_origin(&transport("401 Unauthorized")));
-        assert!(!refused_before_origin(&transport(
-            "500 Internal Server Error"
-        )));
-        assert!(refused_with_400(&transport("400 Bad Request")));
-        assert!(!refused_with_400(&transport("401 Unauthorized")));
+        assert_eq!(error.code, ErrorCode::SendFailed);
+        assert!(error.nothing_sent);
+    }
+
+    fn refused(
+        status: u16,
+        reason: Option<connector_cli::RefusalReason>,
+    ) -> connector_cli::SendError {
+        connector_cli::SendError::Transport {
+            url: "http://x/packets".into(),
+            reason: format!("{status} -- nope"),
+            refusal: Some(connector_cli::Refusal {
+                status,
+                reason,
+                body: "nope".into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn each_refusal_before_the_packet_is_originated_sent_nothing() {
+        use connector_cli::{RefusalReason, SendError};
+        let before = [
+            SendError::KeyFile {
+                path: "/missing".into(),
+                reason: "not found".into(),
+            },
+            SendError::Identity {
+                url: "http://x/ilp".into(),
+                reason: "refused".into(),
+            },
+            SendError::Seal("not on the curve".into()),
+            refused(401, None),
+            refused(400, None),
+            refused(403, Some(RefusalReason::Scope)),
+            refused(403, Some(RefusalReason::Expiry)),
+            refused(403, Some(RefusalReason::SpendingLimit)),
+            refused(403, Some(RefusalReason::DepositLimit)),
+        ];
+        for error in before {
+            let shown = error.to_string();
+            let failure = send_failure(error);
+            assert!(failure.nothing_sent, "{shown}");
+            assert!(failure.message.starts_with(&shown), "{}", failure.message);
+        }
+        let failure = send_failure(refused(400, None));
+        assert!(
+            failure.message.ends_with("Nothing was sent or paid."),
+            "{}",
+            failure.message
+        );
+        assert_eq!(failure.code, ErrorCode::SendFailed);
+        assert_eq!(
+            send_failure(refused(403, Some(RefusalReason::SpendingLimit))).code,
+            ErrorCode::SpendingLimit
+        );
+        assert_eq!(
+            send_failure(refused(403, Some(RefusalReason::Scope))).code,
+            ErrorCode::SendFailed
+        );
+    }
+
+    #[test]
+    fn a_failure_after_the_write_or_a_refusal_that_names_no_reason_may_have_sent() {
+        use connector_cli::SendError;
+        let after = [
+            SendError::AnswerLost {
+                url: "http://x/packets".into(),
+                reason: "connection closed".into(),
+            },
+            SendError::Undecodable("neither".into()),
+            refused(403, None),
+            refused(500, None),
+            refused(502, None),
+            // A failed dial stays counted, as it was when the argv path read the reason.
+            SendError::Transport {
+                url: "http://x/packets".into(),
+                reason: "connection refused".into(),
+                refusal: None,
+            },
+        ];
+        for error in after {
+            let shown = error.to_string();
+            let failure = send_failure(error);
+            assert!(!failure.nothing_sent, "{shown}");
+            assert_eq!(failure.code, ErrorCode::SendFailed);
+            assert_eq!(failure.message, shown);
+        }
     }
 
     #[test]

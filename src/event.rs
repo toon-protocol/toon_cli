@@ -228,11 +228,6 @@ pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
     // The relay of the TOON app that fronts the agent node's connector. With none, the
     // write is addressed as it would be and the connector rejects it.
     let state = node::State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
-    let body = home.join(format!(
-        "event.{}.json",
-        hex::encode(keystore::random::<8>()?)
-    ));
-    node::write(&body, write_body(&event).as_bytes(), 0o600)?;
     let answer = operator::dispatch(
         home,
         &state.toon_apps[0].relay_prefix(),
@@ -241,9 +236,8 @@ pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
         "POST",
         "/",
         &[],
-        Some(&body),
+        write_body(&event).into_bytes(),
     );
-    let _ = std::fs::remove_file(&body);
     written(event, answer?, amount)
 }
 
