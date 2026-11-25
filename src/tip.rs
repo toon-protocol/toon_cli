@@ -24,8 +24,8 @@ use crate::node::{self, Reach, State, Tip, ToonApp};
 use crate::operator::{self, Answer};
 use crate::order;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::payer;
 use crate::ports;
-use crate::spending;
 use crate::subscribe;
 
 /// The kind of the event that names a tip route: replaceable, one per agent identity.
@@ -941,7 +941,6 @@ fn send(home: &Path, tip: &TipSend) -> Result<Report, Error> {
     let (route, minimum) = check_route(home, &state, &recipient, tip.relays, None)?;
     let (cost, whole) = read_cost(&route.ilp_address, probe_answer(home, &route)?)?;
     check_amount(tip.amount, cost, minimum)?;
-    let sent = u128::from(tip.amount);
 
     // Write the receipt. It is never published to a relay: it travels in the packet.
     let secret = event::agent_secret(home)?;
@@ -960,8 +959,16 @@ fn send(home: &Path, tip: &TipSend) -> Result<Report, Error> {
     let receipt_id = receipt["id"].as_str().unwrap_or_default().to_owned();
 
     // Send it, sealed to the pinned key, which is not fetched again.
-    spending::spend_packets(home, sent, tip.yes, |packets| {
-        let answer = operator::dispatch_with_headers(
+    let sent = Sent {
+        amount: tip.amount,
+        cost,
+        whole,
+        receipt_id: &receipt_id,
+        recipient: &recipient,
+        ilp_address: &route.ilp_address,
+    };
+    paid_tip(&payer::Wallet::new(home), tip.yes, &sent, || {
+        operator::dispatch_with_headers(
             home,
             &route.ilp_address,
             tip.amount,
@@ -970,33 +977,74 @@ fn send(home: &Path, tip: &TipSend) -> Result<Report, Error> {
             json_headers(),
             receipt.to_string().into_bytes(),
         )
-        .map_err(|error| operator::repriced(error, packets.moved(sent)))?;
-        if matches!(answer, Answer::Unanswered) {
-            return Err(operator::unanswered_cost(packets.moved(sent), None));
-        }
-        let report = sent_report(
-            answer,
-            &Sent {
-                amount: tip.amount,
-                cost,
-                whole,
-                receipt_id: &receipt_id,
-                recipient: &recipient,
-                ilp_address: &route.ilp_address,
-            },
-            Some(packets.moved(sent)),
-        );
-        let paid = report.json["paid"].as_u64().map_or(sent, u128::from);
-        Ok((report, paid))
+    })
+}
+
+/// The one packet of `tip`, which `send` sends, paid through `purse`.
+pub(crate) fn paid_tip<P: payer::Purse>(
+    purse: &P,
+    yes: bool,
+    tip: &Sent,
+    send: impl FnOnce() -> Result<Answer, Error>,
+) -> Result<Report, Error> {
+    let amount = u128::from(tip.amount);
+    payer::pay(purse, amount, yes, |packets| {
+        let (answer, paid) = packets.answer(amount, send)?;
+        Ok(sent_report(answer, tip, Some(paid)))
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::payer::fake::Fake;
 
     const HEX: &str = "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e";
     const NPUB: &str = "npub10elfcs4fr0l0r8af98jlmgdh9c8tcxjvz9qkw038js35mp4dma8qzvjptg";
+
+    const SENT: Sent = Sent {
+        amount: 50,
+        cost: 5,
+        whole: true,
+        receipt_id: "receipt",
+        recipient: HEX,
+        ilp_address: "g.tip",
+    };
+
+    #[test]
+    fn a_fulfilled_tip_exits_0_and_pays_its_amount() {
+        let purse = Fake::new();
+        let answer = || {
+            Ok(Answer::Fulfilled {
+                status: 200,
+                body: String::new(),
+            })
+        };
+        let report = paid_tip(&purse, true, &SENT, answer).unwrap();
+        assert_eq!(report.exit, Exit::Success);
+        assert_eq!(report.json["paid"], 50);
+        assert_eq!(purse.remaining.get(), 200);
+    }
+
+    #[test]
+    fn an_unanswered_tip_fails_with_send_failed_and_the_cost_that_moved() {
+        let purse = Fake::new();
+        let error = paid_tip(&purse, true, &SENT, || {
+            purse.moved.set(12);
+            Ok(Answer::Unanswered)
+        })
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::SendFailed);
+        assert_eq!(error.json()["paid"], 12);
+        assert_eq!(purse.remaining.get(), 238);
+    }
+
+    #[test]
+    fn a_tip_without_yes_sends_nothing() {
+        let purse = Fake::new();
+        let error = paid_tip(&purse, false, &SENT, || panic!("sent")).unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotConfirmed);
+    }
 
     #[test]
     fn an_npub_and_its_hex_name_the_same_recipient() {

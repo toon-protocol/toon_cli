@@ -19,7 +19,7 @@ use crate::inbox;
 use crate::node;
 use crate::operator;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
-use crate::spending;
+use crate::payer;
 
 /// The kind of a private message, the rumor inside the wraps.
 const MESSAGE: u64 = 14;
@@ -300,26 +300,72 @@ fn send_to(home: &Path, message: &Message, relay: &str, yes: bool) -> Result<Rep
     let sender = event::public_key(&secret)?;
     let sealed = seal(&secret, &sender, message)?;
     let own = own_relay(home)?;
-
-    spending::spend_packets(home, total, yes, |packets| {
-        // Free, and first, but only once the limit has let the payment through: a copy the
-        // sender cannot find again is not worth a payment, and a refused send leaves none.
-        write_copy(home, &sealed.to_sender)?;
-        let mut wraps = vec![wrap_entry(&sealed.to_sender, &sender, &own, &published())];
-        let mut paid: u128 = 0;
-        for (recipient, wrap) in message.recipients.iter().zip(&sealed.to_recipients) {
-            let written = match event::write_to(
+    let paying = Paying {
+        sealed: &sealed,
+        message,
+        sender: &sender,
+        own: &own,
+        relay,
+        price,
+    };
+    paid_wraps(
+        &payer::Wallet::new(home),
+        yes,
+        &paying,
+        || write_copy(home, &sealed.to_sender),
+        |wrap| {
+            event::write_to(
                 home,
                 wrap.clone(),
                 &destination.ilp_address,
                 price,
                 Some(&destination.seal_key),
-            ) {
-                Ok(written) => written,
+            )
+        },
+    )
+}
+
+/// What a send to another relay pays for: the wraps, where they go and the price of each.
+struct Paying<'a> {
+    sealed: &'a Sealed,
+    message: &'a Message,
+    sender: &'a str,
+    /// Where the sender's copy is written.
+    own: &'a str,
+    relay: &'a str,
+    price: u64,
+}
+
+/// Write the sender's copy with `copy`, then each recipient's wrap with `write`, paid through
+/// `purse`, until a wrap is not published.
+fn paid_wraps<P: payer::Purse>(
+    purse: &P,
+    yes: bool,
+    paying: &Paying,
+    copy: impl FnOnce() -> Result<(), Error>,
+    mut write: impl FnMut(&Value) -> Result<Report, Error>,
+) -> Result<Report, Error> {
+    let Paying {
+        sealed,
+        message,
+        sender,
+        own,
+        relay,
+        price,
+    } = *paying;
+    let total = u128::from(price) * message.recipients.len() as u128;
+    payer::pay(purse, total, yes, |packets| {
+        // Free, and first, but only once the limit has let the payment through: a copy the
+        // sender cannot find again is not worth a payment, and a refused send leaves none.
+        copy()?;
+        let mut wraps = vec![wrap_entry(&sealed.to_sender, sender, own, &published())];
+        for (recipient, wrap) in message.recipients.iter().zip(&sealed.to_recipients) {
+            let paid_before = packets.paid();
+            let written = match packets.send(price.into(), || write(wrap)) {
+                Ok((written, _)) => written,
                 // Once a wrap has been paid for, a failure is not one before paying: it
-                // ends the send and the report counts what the wraps before it cost.
-                Err(error) if paid > 0 => {
-                    paid = packets.moved(total).max(paid);
+                // ends the send and the report counts what the wraps cost.
+                Err(error) if paid_before > 0 => {
                     wraps.push(json!({
                         "id": wrap["id"],
                         "to": recipient,
@@ -328,22 +374,19 @@ fn send_to(home: &Path, message: &Message, relay: &str, yes: bool) -> Result<Rep
                     }));
                     break;
                 }
-                Err(error) => return Err(operator::repriced(error, packets.moved(total))),
-            };
-            let rejected = written.json["outcome"] == "rejected";
-            paid = if rejected {
-                packets.moved(total).max(paid)
-            } else {
-                paid + u128::from(price)
+                Err(error) => return Err(error),
             };
             wraps.push(wrap_entry(wrap, recipient, relay, &written));
             if written.json["outcome"] != "published" {
                 break;
             }
         }
-        Ok((
-            report(&sealed, message, wraps, Some(paid), Some(relay)),
-            paid,
+        Ok(report(
+            sealed,
+            message,
+            wraps,
+            Some(packets.paid()),
+            Some(relay),
         ))
     })
 }
@@ -585,6 +628,7 @@ fn list(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::payer::fake::Fake;
 
     #[test]
     fn the_rumor_inside_every_wrap_names_every_recipient() {
@@ -609,5 +653,69 @@ mod tests {
                 json!([["p", keys[1]], ["p", keys[2]], ["subject", "plans"]])
             );
         }
+    }
+
+    /// Send a message to two recipients at 40 a wrap through `purse`: each wrap is written as
+    /// `writes` says, moving the fake's watermarks by what it moved.
+    fn two_wraps(purse: &Fake, writes: Vec<(u128, &str)>) -> Result<Report, Error> {
+        let secrets = [[1u8; 32], [2u8; 32], [3u8; 32]];
+        let keys: Vec<String> = secrets
+            .iter()
+            .map(|secret| event::public_key(secret).unwrap())
+            .collect();
+        let message = Message::of(&keys[1..], "hello", None, None).unwrap();
+        let sealed = seal(&secrets[0], &keys[0], &message).unwrap();
+        let paying = Paying {
+            sealed: &sealed,
+            message: &message,
+            sender: &keys[0],
+            own: "g.own",
+            relay: "wss://elsewhere",
+            price: 40,
+        };
+        let mut writes = writes.into_iter();
+        paid_wraps(
+            purse,
+            true,
+            &paying,
+            || Ok(()),
+            |_| {
+                let (moves, outcome) = writes.next().expect("a write for every wrap");
+                purse.moved.set(purse.moved.get() + moves);
+                Ok(Report {
+                    exit: Exit::Success,
+                    json: json!({ "outcome": outcome }),
+                    text: String::new(),
+                })
+            },
+        )
+    }
+
+    #[test]
+    fn a_message_whose_wraps_are_published_pays_their_price() {
+        let purse = Fake::new();
+        let report = two_wraps(&purse, vec![(40, "published"), (40, "published")]).unwrap();
+        assert_eq!(report.exit, Exit::Success);
+        assert_eq!(report.json["paid"], 80);
+        assert_eq!(purse.remaining.get(), 170);
+    }
+
+    #[test]
+    fn a_second_wrap_rejected_after_a_first_published_pays_the_price_and_what_moved() {
+        let purse = Fake::new();
+        let report = two_wraps(&purse, vec![(40, "published"), (7, "rejected")]).unwrap();
+        assert_eq!(report.exit, Exit::Failure);
+        assert_eq!(report.json["paid"], 47);
+        assert_eq!(report.json["wraps"][2]["outcome"], "rejected");
+        assert_eq!(purse.remaining.get(), 203);
+    }
+
+    #[test]
+    fn a_wrongly_fulfilled_wrap_pays_what_moved() {
+        let purse = Fake::new();
+        let report = two_wraps(&purse, vec![(40, "published"), (10, "wrong_fulfilment")]).unwrap();
+        assert_eq!(report.exit, Exit::Failure);
+        assert_eq!(report.json["paid"], 50);
+        assert_eq!(purse.remaining.get(), 200);
     }
 }

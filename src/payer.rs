@@ -1,25 +1,29 @@
 //! The payer: what pays for a command's packets, and decides what each one cost.
 //!
 //! A command gives [`pay`] the total it will pay and a closure that sends its packets. Each
-//! packet goes through [`Packets::send`], which prices it by one rule:
+//! packet goes through [`Packets::send`] (a send that reports) or [`Packets::answer`] (a send
+//! that answers), which price it by one rule:
 //!
 //! - fulfilled with the right fulfilment: its amount;
 //! - rejected, fulfilled with the wrong fulfilment, or unanswered: what the outbound
 //!   watermarks moved by across it, at most its amount;
 //! - failed certainly before paying: nothing;
-//! - any other failure: stays counted in full against the limit.
+//! - any other failure: what moved, and it stays counted in full against the limit.
 //!
-//! The payer settles the limit once, giving back what did not move. The command decides what
+//! What moved across a packet is what the watermarks moved by beyond what the command's
+//! packets before it cost. The command's cost is the sum over its packets ([`Packets::paid`]),
+//! and the payer settles the limit once, giving back what did not move. The command decides what
 //! to send and when to stop, and writes its own report text.
 //!
 //! The only payer today is the wallet, whose spending limit `toon` checks ([`Wallet`]). A
 //! [`Purse`] is the seam behind it: the limit, the day's ledger and the watermarks.
 
+use std::cell::Cell;
 use std::path::Path;
 
 use serde_json::json;
 
-use crate::operator;
+use crate::operator::{self, Answer};
 use crate::outcome::{Error, Report};
 use crate::spending;
 
@@ -60,44 +64,118 @@ impl Purse for Wallet<'_> {
     }
 }
 
-/// The packets of one command, as they are priced.
+/// The packets of one command, as they are priced, and what they cost so far.
 pub struct Packets<'a> {
     moved: &'a dyn Fn(u128) -> u128,
+    /// What the packets sent so far cost, for the report.
+    paid: Cell<u128>,
+    /// What stays counted against the limit for them, which is more than `paid` when a
+    /// packet failed after it may have left.
+    counted: Cell<u128>,
 }
 
 impl Packets<'_> {
+    /// What the packets sent so far cost.
+    pub fn paid(&self) -> u128 {
+        self.paid.get()
+    }
+
     /// Send a packet of `amount` with `send` and price it. The report comes back with its
-    /// `paid`; an unanswered packet's error is priced by what moved.
+    /// `paid`, and the packet's cost beside it. An unanswered packet's error states what the
+    /// command's packets cost, this one with them.
     pub fn send(
         &self,
         amount: u128,
         send: impl FnOnce() -> Result<Report, Error>,
     ) -> Result<(Report, u128), Error> {
-        let mut report = send().map_err(|error| operator::repriced(error, (self.moved)(amount)))?;
+        let mut report = send().map_err(|error| self.failed(amount, error))?;
         let paid = match report.json["outcome"].as_str() {
-            Some("rejected" | "wrong_fulfilment") => (self.moved)(amount),
+            Some("rejected" | "wrong_fulfilment") => self.moved_by(amount),
             _ => amount,
         };
+        self.count(paid, paid);
         report.json["paid"] = json!(paid);
         Ok((report, paid))
     }
+
+    /// Send a packet of `amount` with `send` and price it: the answer, and what the packet
+    /// cost. An unanswered packet is an error that states what the command's packets cost,
+    /// this one with them.
+    pub fn answer(
+        &self,
+        amount: u128,
+        send: impl FnOnce() -> Result<Answer, Error>,
+    ) -> Result<(Answer, u128), Error> {
+        let answer = send().map_err(|error| self.failed(amount, error))?;
+        let paid = match answer {
+            Answer::Fulfilled { .. } => amount,
+            Answer::Rejected { .. } | Answer::WrongFulfilment | Answer::Unanswered => {
+                self.moved_by(amount)
+            }
+        };
+        self.count(paid, paid);
+        if matches!(answer, Answer::Unanswered) {
+            return Err(operator::unanswered_cost(self.paid(), None));
+        }
+        Ok((answer, paid))
+    }
+
+    /// What the watermarks moved by across a packet of `amount`, beyond what the packets
+    /// before it cost, at most `amount`.
+    fn moved_by(&self, amount: u128) -> u128 {
+        let before = self.paid();
+        (self.moved)(before + amount)
+            .saturating_sub(before)
+            .min(amount)
+    }
+
+    fn count(&self, paid: u128, counted: u128) {
+        self.paid.set(self.paid() + paid);
+        self.counted.set(self.counted.get() + counted);
+    }
+
+    /// Price a packet of `amount` whose send failed with `error`.
+    fn failed(&self, amount: u128, error: Error) -> Error {
+        if error.unanswered.is_some() {
+            let moved = self.moved_by(amount);
+            self.count(moved, moved);
+            return operator::repriced(error, self.paid());
+        }
+        if !spending::failed_before_paying(&error) {
+            // The money may have moved: it stays counted in full.
+            self.count(self.moved_by(amount), amount);
+        }
+        error
+    }
 }
 
-/// Pay for a command that sends packets: `total` is counted before `act` runs and what did
-/// not move is given back after. `act` hands back its report and what its packets cost.
+/// Pay for a command that sends packets: `total` is counted before `act` runs, and what its
+/// packets did not cost is given back after, whatever `act` returns.
 pub fn pay<P: Purse, T>(
     purse: &P,
     total: u128,
     yes: bool,
-    act: impl FnOnce(&Packets) -> Result<(T, u128), Error>,
+    act: impl FnOnce(&Packets) -> Result<T, Error>,
 ) -> Result<T, Error> {
     let token = purse.charge(total, yes)?;
-    let outcome = purse.locked(|moved| act(&Packets { moved }))?;
-    let kept = spending::kept(&outcome, total);
+    let locked = purse.locked(|moved| {
+        let packets = Packets {
+            moved,
+            paid: Cell::new(0),
+            counted: Cell::new(0),
+        };
+        let outcome = act(&packets);
+        (outcome, packets.counted.get())
+    });
+    let (outcome, counted) = match locked {
+        Ok(locked) => locked,
+        Err(error) => (Err(error), 0),
+    };
+    let kept = counted.min(total);
     if kept < total {
         purse.refund(token, total - kept);
     }
-    outcome.map(|(report, _)| report)
+    outcome
 }
 
 /// A purse for tests of a command's exit and `paid`: limits of its own, and watermarks that
@@ -184,9 +262,7 @@ mod tests {
     fn one(purse: &Fake, send: Result<Report, Error>) -> Result<serde_json::Value, Error> {
         pay(purse, 60, true, |packets| {
             purse.sent.borrow_mut().push(60);
-            packets
-                .send(60, || send)
-                .map(|(report, paid)| (report.json, paid))
+            packets.send(60, || send).map(|(report, _)| report.json)
         })
     }
 
@@ -253,12 +329,92 @@ mod tests {
         assert_eq!(purse.remaining.get(), 190);
     }
 
+    /// Pay 90 for packets of 30, each sent as `send` says, moving the fake's watermarks by
+    /// what each one moved: the command's `paid`, or the error.
+    fn three(purse: &Fake, sends: Vec<(u128, Result<Answer, Error>)>) -> Result<u128, Error> {
+        pay(purse, 90, true, |packets| {
+            for (moves, answer) in sends {
+                packets.answer(30, || {
+                    purse.moved.set(purse.moved.get() + moves);
+                    answer
+                })?;
+            }
+            Ok(packets.paid())
+        })
+    }
+
+    fn fulfilled() -> Result<Answer, Error> {
+        Ok(Answer::Fulfilled {
+            status: 200,
+            body: String::new(),
+        })
+    }
+
+    #[test]
+    fn packets_after_fulfilled_ones_cost_what_moved_beyond_them() {
+        let purse = Fake::new();
+        let rejected = Ok(Answer::Rejected {
+            code: "F99".into(),
+            message: String::new(),
+            cost: 0,
+        });
+        let paid = three(
+            &purse,
+            vec![(30, fulfilled()), (30, fulfilled()), (4, rejected)],
+        );
+        assert_eq!(paid.unwrap(), 64);
+        assert_eq!(purse.remaining.get(), 186);
+    }
+
+    #[test]
+    fn an_unanswered_packet_after_fulfilled_ones_reports_what_all_of_them_cost() {
+        let purse = Fake::new();
+        let error = three(
+            &purse,
+            vec![
+                (30, fulfilled()),
+                (30, fulfilled()),
+                (5, Ok(Answer::Unanswered)),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::SendFailed);
+        assert_eq!(error.json()["paid"], 65);
+        assert_eq!(purse.remaining.get(), 185);
+    }
+
+    #[test]
+    fn a_failure_before_paying_keeps_what_earlier_packets_cost() {
+        let purse = Fake::new();
+        let error = three(
+            &purse,
+            vec![
+                (30, fulfilled()),
+                (0, Err(failure(ErrorCode::SendFailed, true))),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::SendFailed);
+        assert_eq!(purse.remaining.get(), 220);
+    }
+
+    #[test]
+    fn a_command_that_fails_before_its_first_packet_is_given_everything_back() {
+        let purse = Fake::new();
+        let error = pay(&purse, 60, true, |_| -> Result<(), Error> {
+            Err(failure(ErrorCode::Io, false))
+        })
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Io);
+        assert_eq!(purse.remaining.get(), 250);
+    }
+
     #[test]
     fn nothing_is_sent_without_yes() {
         let purse = Fake::new();
-        let error = pay(&purse, 60, false, |_| -> Result<((), u128), Error> {
+        let error = pay(&purse, 60, false, |_| -> Result<(), Error> {
             purse.sent.borrow_mut().push(60);
-            Ok(((), 0))
+            Ok(())
         })
         .unwrap_err();
         assert_eq!(error.code, ErrorCode::NotConfirmed);
@@ -270,9 +426,9 @@ mod tests {
     fn nothing_is_sent_over_either_limit() {
         let purse = Fake::new();
         let refused = |purse: &Fake, total| {
-            let error = pay(purse, total, true, |_| -> Result<((), u128), Error> {
+            let error = pay(purse, total, true, |_| -> Result<(), Error> {
                 purse.sent.borrow_mut().push(total);
-                Ok(((), 0))
+                Ok(())
             })
             .unwrap_err();
             assert_eq!(error.code, ErrorCode::SpendingLimit);

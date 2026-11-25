@@ -22,7 +22,7 @@ use crate::event;
 use crate::node;
 use crate::operator::{self, Answer};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
-use crate::spending;
+use crate::payer;
 
 /// How long a relay gets to answer a read of a balance.
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -338,25 +338,29 @@ pub fn subscribe(
     let subscriber_key = derive::nostr_public_key(&secret);
     let body = json!({ "filter": filter }).to_string().into_bytes();
 
-    spending::spend_packets(home, paid, yes, |meter| {
-        let mut paid_so_far: u64 = 0;
-        // Whether the last packet sent was rejected or wrongly fulfilled, which the
-        // watermarks tell the cost of, or failed in a way that may have paid.
-        let mut metered = false;
-        let mut unanswered = false;
-        let mut may_have_paid = false;
-        let mut credited = 0;
-        let mut now: Option<Kept> = None;
-        let mut stopped: Option<(&str, Value, String)> = None;
-        for _ in 0..packets {
+    let paying = Paying {
+        relay,
+        packets,
+        packet_amount,
+        price: sale.price,
+        followed,
+        subscriber_key: &subscriber_key,
+    };
+    paid_packets(
+        &payer::Wallet::new(home),
+        yes,
+        &paying,
+        || {
+            let authorization =
+                authorization(&secret, "POST", &url, Some(&body)).map_err(|error| Error {
+                    nothing_sent: true,
+                    ..error
+                })?;
             let headers = vec![
                 ("content-type".to_owned(), "application/json".to_owned()),
-                (
-                    "authorization".to_owned(),
-                    authorization(&secret, "POST", &url, Some(&body))?,
-                ),
+                ("authorization".to_owned(), authorization),
             ];
-            let answer = match operator::dispatch_with_headers(
+            operator::dispatch_with_headers(
                 home,
                 &sale.address,
                 packet_amount,
@@ -364,24 +368,58 @@ pub fn subscribe(
                 ("POST", "/"),
                 headers,
                 body.clone(),
-            ) {
-                Ok(Answer::Unanswered) if paid_so_far == 0 => {
-                    return Err(operator::unanswered_cost(
-                        meter.moved(u128::from(packet_amount)),
-                        None,
-                    ));
-                }
-                Ok(Answer::Unanswered) => {
-                    // The packets that were answered were paid for; this one cost what
-                    // the channels moved by beyond them.
-                    unanswered = true;
+            )
+        },
+        |kept| keep(home, kept.clone()),
+    )
+}
+
+/// What a subscribe pays for: its packets, and what its report says of them.
+struct Paying<'a> {
+    relay: &'a str,
+    packets: u64,
+    packet_amount: u64,
+    /// The relay's subscribe price.
+    price: u64,
+    /// How many followed keys the filter holds, when it holds them.
+    followed: Option<usize>,
+    subscriber_key: &'a str,
+}
+
+/// Send `paying`'s packets with `send`, paid through `purse`, until one is not credited, and
+/// `keep` what the relay last said it holds.
+fn paid_packets<P: payer::Purse>(
+    purse: &P,
+    yes: bool,
+    paying: &Paying,
+    mut send: impl FnMut() -> Result<Answer, Error>,
+    keep: impl FnOnce(&Kept) -> Result<(), Error>,
+) -> Result<Report, Error> {
+    let Paying {
+        relay,
+        packets,
+        packet_amount,
+        price,
+        followed,
+        subscriber_key,
+    } = *paying;
+    let total = u128::from(packets) * u128::from(packet_amount);
+    payer::pay(purse, total, yes, |meter| {
+        let mut credited = 0;
+        let mut now: Option<Kept> = None;
+        let mut stopped: Option<(&str, Value, String)> = None;
+        for _ in 0..packets {
+            let paid_before = meter.paid();
+            let answer = match meter.answer(packet_amount.into(), &mut send) {
+                Ok((answer, _)) => answer,
+                Err(error) if paid_before == 0 => return Err(error),
+                // The packets that were answered were paid for; this one cost what the
+                // channels moved by beyond them.
+                Err(error) if error.unanswered.is_some() => {
                     stopped = Some(("unanswered", Value::Null, operator::unanswered_message()));
                     break;
                 }
-                Ok(answer) => answer,
-                Err(error) if paid_so_far == 0 => return Err(error),
                 Err(error) => {
-                    may_have_paid = !spending::failed_before_paying(&error);
                     stopped = Some(("failed", json!({ "message": error.message }), error.message));
                     break;
                 }
@@ -389,7 +427,6 @@ pub fn subscribe(
             match answer {
                 Answer::Fulfilled { status, body } => {
                     // A fulfilled packet is paid for, whatever the relay answered.
-                    paid_so_far += packet_amount;
                     let credit = (200..300).contains(&status).then(|| {
                         let answer: Value = serde_json::from_str(&body).unwrap_or_default();
                         (
@@ -417,7 +454,6 @@ pub fn subscribe(
                     message,
                     cost,
                 } => {
-                    metered = true;
                     let text = format!(
                         "A subscribe packet was rejected with {code}. {message}{}",
                         operator::cost_sentence(&code, cost, "--packet-amount")
@@ -427,9 +463,8 @@ pub fn subscribe(
                     stopped = Some(("rejected", detail, text));
                     break;
                 }
-                Answer::Unanswered => unreachable!("handled above"),
+                Answer::Unanswered => unreachable!("the payer makes it an error"),
                 Answer::WrongFulfilment => {
-                    metered = true;
                     stopped = Some((
                         "wrong_fulfilment",
                         Value::Null,
@@ -440,27 +475,16 @@ pub fn subscribe(
                 }
             }
         }
-        if metered || unanswered {
-            // The last packet moved what the channels moved by beyond the fulfilled
-            // packets' amount, which is nothing when the agent node's own connector
-            // refused it.
-            let sent = u128::from(packet_amount);
-            let fulfilled = u128::from(paid_so_far);
-            let cost = meter
-                .moved(fulfilled + sent)
-                .saturating_sub(fulfilled)
-                .min(sent);
-            paid_so_far += u64::try_from(cost).unwrap_or(packet_amount);
-        }
         if let Some(kept) = &now {
-            keep(home, kept.clone())?;
+            keep(kept)?;
         }
+        let paid = meter.paid();
         let mut json = json!({
             "relay": relay,
             "packets": packets,
-            "paid": paid_so_far,
+            "paid": paid,
             "credited": credited,
-            "price": sale.price,
+            "price": price,
             "packet_amount": packet_amount,
         });
         if let Some(count) = followed {
@@ -474,7 +498,7 @@ pub fn subscribe(
                 (
                     Exit::Success,
                     format!(
-                        "Subscribed to {relay}: paid {paid_so_far} base units in {packets} \
+                        "Subscribed to {relay}: paid {paid} base units in {packets} \
                          packets and credited {credited}. The balance is {}, which buys {events} \
                          events at {} each.",
                         kept.balance, kept.broadcast_price
@@ -502,7 +526,7 @@ pub fn subscribe(
                 json["response"] = detail;
                 (
                     Exit::Failure,
-                    format!("{text} Paid {paid_so_far} base units, credited {credited}.{hint}"),
+                    format!("{text} Paid {paid} base units, credited {credited}.{hint}"),
                 )
             }
         };
@@ -512,14 +536,7 @@ pub fn subscribe(
             json["broadcast_price"] = json!(kept.broadcast_price);
             json["filter"] = kept.filter.clone();
         }
-        // A packet that failed after it may have left stays counted at its amount.
-        let counted = u128::from(paid_so_far)
-            + if may_have_paid {
-                u128::from(packet_amount)
-            } else {
-                0
-            };
-        Ok((Report { exit, json, text }, counted))
+        Ok(Report { exit, json, text })
     })
 }
 
@@ -824,4 +841,113 @@ fn own_subscribers(home: &Path, app: &node::ToonApp) -> Result<Value, Error> {
         .and_then(reqwest::blocking::Response::error_for_status)
         .and_then(|response| response.json::<Value>())
         .map_err(|error| unreadable_list(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::payer::fake::Fake;
+
+    const KEY: &str = "7e7e9c42a91bfef19fa929e5fda1b72e0ebc1a4c1141673e2794234d86addf4e";
+
+    const PAYING: Paying = Paying {
+        relay: "wss://feed",
+        packets: 3,
+        packet_amount: 20,
+        price: 20,
+        followed: None,
+        subscriber_key: KEY,
+    };
+
+    fn credited(balance: u64) -> Result<Answer, Error> {
+        Ok(Answer::Fulfilled {
+            status: 200,
+            body: json!({
+                "pubkey": KEY,
+                "credited": 20,
+                "balance": balance,
+                "broadcast_price": 2,
+                "filter": {},
+            })
+            .to_string(),
+        })
+    }
+
+    /// Subscribe through `purse`, each packet answered as `answers` says, moving the fake's
+    /// watermarks by what it moved.
+    fn subscribe(
+        purse: &Fake,
+        answers: Vec<(u128, Result<Answer, Error>)>,
+    ) -> Result<Report, Error> {
+        let mut answers = answers.into_iter();
+        paid_packets(
+            purse,
+            true,
+            &PAYING,
+            || {
+                let (moves, answer) = answers.next().expect("an answer for every packet");
+                purse.moved.set(purse.moved.get() + moves);
+                answer
+            },
+            |_| Ok(()),
+        )
+    }
+
+    #[test]
+    fn three_credited_packets_subscribe_and_pay_their_amounts() {
+        let purse = Fake::new();
+        let report = subscribe(
+            &purse,
+            vec![(20, credited(20)), (20, credited(40)), (20, credited(60))],
+        )
+        .unwrap();
+        assert_eq!(report.exit, Exit::Success);
+        assert_eq!(report.json["outcome"], "subscribed");
+        assert_eq!(report.json["paid"], 60);
+        assert_eq!(report.json["credited"], 60);
+        assert_eq!(purse.remaining.get(), 190);
+    }
+
+    #[test]
+    fn a_packet_unanswered_after_two_fulfilled_pays_two_amounts_and_what_it_moved() {
+        let purse = Fake::new();
+        let report = subscribe(
+            &purse,
+            vec![
+                (20, credited(20)),
+                (20, credited(40)),
+                (6, Ok(Answer::Unanswered)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(report.exit, Exit::Failure);
+        assert_eq!(report.json["outcome"], "unanswered");
+        assert_eq!(report.json["paid"], 46);
+        assert_eq!(report.json["credited"], 40);
+        assert_eq!(purse.remaining.get(), 204);
+    }
+
+    #[test]
+    fn a_first_packet_unanswered_fails_with_what_it_moved() {
+        let purse = Fake::new();
+        let error = subscribe(&purse, vec![(9, Ok(Answer::Unanswered))]).unwrap_err();
+        assert_eq!(error.code, ErrorCode::SendFailed);
+        assert_eq!(error.json()["paid"], 9);
+        assert_eq!(purse.remaining.get(), 241);
+    }
+
+    #[test]
+    fn a_failure_after_a_credited_packet_stays_counted_in_full() {
+        let failed = Error {
+            nothing_sent: false,
+            unanswered: None,
+            code: ErrorCode::SendFailed,
+            message: "lost".into(),
+        };
+        let purse = Fake::new();
+        let report = subscribe(&purse, vec![(20, credited(20)), (0, Err(failed))]).unwrap();
+        assert_eq!(report.json["outcome"], "failed");
+        assert_eq!(report.json["paid"], 20);
+        assert_eq!(purse.remaining.get(), 210);
+    }
 }

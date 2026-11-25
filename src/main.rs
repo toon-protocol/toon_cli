@@ -513,7 +513,7 @@ fn paid_send<P: payer::Purse>(
         if report.exit != Exit::Success && paid > 0 {
             report.text = format!("{} It cost {paid} base units.", report.text);
         }
-        Ok((report, paid))
+        Ok(report)
     })
 }
 
@@ -541,7 +541,7 @@ fn paid_probe<P: payer::Purse>(
                 format!("{} It cost {paid} base units.", report.text)
             };
         }
-        Ok((report, paid))
+        Ok(report)
     })
 }
 

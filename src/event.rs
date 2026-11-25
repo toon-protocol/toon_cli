@@ -724,7 +724,7 @@ pub fn pay_write(
                 report.text
             );
         }
-        Ok((report, paid))
+        Ok(report)
     })
 }
 

@@ -401,10 +401,14 @@ together, both in the token's base units, set at `toon init` (defaults 10000000 
 100000000). A packet that was rejected is counted by what the watermarks of the agent node's
 outbound channels moved by across it, read before the packet is sent and after it is
 answered, under a lock shared by the packet-sending commands. `paid` in the JSON report of
-`toon send`, `toon event publish --relay` and `toon relay subscribe` carries that amount: `0`,
+`toon send`, `toon event publish --relay`, `toon message send --relay` and `toon relay subscribe` carries that amount: `0`,
 and not counted, when the agent node's own connector rejected the packet before signing
 anything, and possibly the packet's whole amount when a connector farther on rejected it (the
-outbound watermark in `toon channel list` shows the same). If the watermarks cannot be read,
+outbound watermark in `toon channel list` shows the same). A packet fulfilled with the wrong
+fulfilment is counted and reported the same way, by what the watermarks moved by across it, at
+most its amount, by every command that pays for packets. For `toon message send --relay`, `paid`
+is the relay's price for each wrap that was published, plus, when a wrap was rejected, fulfilled
+with the wrong fulfilment or not answered, what the watermarks moved by across it. If the watermarks cannot be read,
 the packet's full amount stays counted. Nor is a payment counted that failed before it reached
 the connector or that the other side refused. A peering the connector refused because both
 connectors settle on more than one chain and no `--chain` named one (`peer_failed`, before any
