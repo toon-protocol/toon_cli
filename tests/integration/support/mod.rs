@@ -4,7 +4,8 @@
 //! directory of its own, and asserts on what the operator could observe: the output,
 //! the exit code, and the files left under that home.
 
-// Each test file compiles this module separately and uses a different part of it.
+// `Machine::root` is held only to keep the temporary home alive, and
+// `FakeRemoteRelay::refused_feeds` is a helper no test reads yet.
 #![allow(dead_code)]
 
 pub mod anvil_chain;

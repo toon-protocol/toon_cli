@@ -1,4 +1,4 @@
-//! The crate's one integration-test binary: `support` is declared once, and each former test file is a module.
+//! The crate's one integration-test binary: `support` is declared once, and each test file is a module of it.
 
 mod support;
 
