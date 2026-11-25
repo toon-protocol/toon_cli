@@ -346,14 +346,17 @@ pub fn subscribe(
                 ("content-type".to_owned(), "application/json".to_owned()),
                 ("authorization".to_owned(), authorization),
             ];
-            operator::dispatch_with_headers(
+            operator::dispatch(
                 home,
                 &sale.destination.ilp_address,
                 packet_amount,
-                &sale.destination.seal_key,
-                ("POST", "/"),
-                headers,
-                body.clone(),
+                operator::Seal::Key(&sale.destination.seal_key),
+                operator::Request {
+                    method: "POST",
+                    target: "/",
+                    headers: &headers,
+                    body: body.clone(),
+                },
             )
         },
         |kept| keep(home, kept.clone()),

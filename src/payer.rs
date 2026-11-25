@@ -30,7 +30,7 @@ use std::path::Path;
 
 use serde_json::json;
 
-use crate::operator::{self, Answer, Surface};
+use crate::operator::{self, Answer, Request, Seal, Surface};
 use crate::outcome::{Error, ErrorCode, Report};
 use crate::spending;
 
@@ -41,6 +41,12 @@ pub struct Packet<'a> {
     /// The key it is sealed to: `None` seals it to the connector the purse sends through.
     pub seal_key: Option<&'a [u8; 65]>,
     pub body: Vec<u8>,
+}
+
+impl<'a> Packet<'a> {
+    fn seal(&self) -> Seal<'a> {
+        self.seal_key.map_or(Seal::Own, Seal::Key)
+    }
 }
 
 /// The limit, the ledger, the watermarks and the send a payer pays from.
@@ -58,10 +64,6 @@ pub trait Purse {
     fn locked<T>(&self, act: impl FnOnce(&dyn Fn(u128) -> u128) -> T) -> Result<T, Error>;
     /// Send one packet and answer what came of it.
     fn send(&self, packet: Packet) -> Result<Answer, Error>;
-}
-
-fn json_headers() -> Vec<(String, String)> {
-    vec![("content-type".to_owned(), "application/json".to_owned())]
 }
 
 /// The wallet: the home's spending limit, its day's ledger, its packets lock and watermarks.
@@ -93,22 +95,12 @@ impl Purse for Wallet<'_> {
     }
 
     fn send(&self, packet: Packet) -> Result<Answer, Error> {
-        let own;
-        let key = match packet.seal_key {
-            Some(key) => key,
-            None => {
-                own = operator::own_identity(self.home)?;
-                &own
-            }
-        };
-        operator::dispatch_with_headers(
+        operator::dispatch(
             self.home,
             packet.destination,
             packet.amount,
-            key,
-            ("POST", "/"),
-            json_headers(),
-            packet.body,
+            packet.seal(),
+            Request::json(packet.body),
         )
     }
 }
@@ -167,21 +159,13 @@ impl KeyConnector for Connector {
     }
 
     fn send(&self, packet: Packet) -> Result<Answer, Error> {
-        match packet.seal_key {
-            Some(key) => operator::write_sealed_as_agent(
-                &self.surface,
-                packet.destination,
-                packet.amount,
-                key,
-                packet.body,
-            ),
-            None => operator::write_as_agent(
-                &self.surface,
-                packet.destination,
-                packet.amount,
-                String::from_utf8_lossy(&packet.body).into_owned(),
-            ),
-        }
+        operator::write_as_agent(
+            &self.surface,
+            packet.destination,
+            packet.amount,
+            packet.seal(),
+            packet.body,
+        )
     }
 }
 

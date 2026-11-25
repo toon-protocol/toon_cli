@@ -1446,14 +1446,8 @@ pub enum Answer {
     Unanswered,
 }
 
-/// How long a packet [`dispatch`] hands to the connector's `send` lives: what the
-/// connector's `send` verb gives a packet when it is not told, which is what such a packet
-/// lived when `dispatch` ran that verb. Such a packet is waited on as long as the connection
-/// lasts.
-const DISPATCH_EXPIRY_SECONDS: i64 = 300;
-
-/// How long a packet sent with [`dispatch_with_headers`] lives before a connector must
-/// reject it.
+/// How long a packet lives before a connector must reject it. Every packet the command line
+/// sends has this expiry, and is waited on for [`packet_wait`].
 const PACKET_EXPIRY: Duration = Duration::from_secs(30);
 
 /// How long the command line waits for its connector's answer to a packet: the packet's
@@ -1548,16 +1542,6 @@ fn answer_of(outcome: connector_cli::Outcome) -> Result<Answer, Error> {
     })
 }
 
-/// The accumulated cost a connector states on the answer of `POST /packets`, in base units;
-/// an absent or unreadable header is a cost of 0.
-fn header_cost(headers: &reqwest::header::HeaderMap) -> u128 {
-    headers
-        .get("TOON-Accumulated-Cost")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse().ok())
-        .unwrap_or(0)
-}
-
 /// Add the cost of a rejected packet to its report's `json`, beside `outcome`: `cost` as a
 /// decimal string and `complete`, which is `false` for a partial cost, the amount to carry
 /// past the connector that stopped the packet. The connector's rule, `reject_cost_reading`,
@@ -1634,17 +1618,20 @@ const NOTHING_SENT_400: &str = " Nothing was sent or paid.";
 
 /// Whether the connector's `send` failed before any packet was originated: the operator
 /// key could not be read, the identity to seal to could not be fetched, the packet could not
-/// be sealed, or the write was refused with 401 (its signature), 400 (a packet that did not
-/// decode) or a 403 naming the key's scope, expiry or limit (ADR 0078 decision 9). A failed
-/// dial, any other refusal and anything after the write may follow a packet that left, so
-/// none of them is here.
+/// be sealed, the operator surface could not be dialed, or the write was refused with 401 (its
+/// signature), 400 (a packet that did not decode) or a 403 naming the key's scope, expiry or
+/// limit (ADR 0078 decision 9). The connector counts a wait that ran out while dialing as
+/// unanswered, so a failed dial wrote nothing. Any other refusal and anything after the write
+/// may follow a packet that left, so none of them is here.
 fn refused_before_origin(error: &connector_cli::SendError) -> bool {
     use connector_cli::SendError;
     match error {
         SendError::KeyFile { .. } | SendError::Identity { .. } | SendError::Seal(_) => true,
-        SendError::Transport { .. } => error
-            .refusal()
-            .is_some_and(|refusal| matches!(refusal.status, 400 | 401) || refusal.reason.is_some()),
+        SendError::Transport { refusal: None, .. } => true,
+        SendError::Transport {
+            refusal: Some(refusal),
+            ..
+        } => matches!(refusal.status, 400 | 401) || refusal.reason.is_some(),
         SendError::AnswerLost { .. } | SendError::Undecodable(_) | SendError::NotFulfilled(_) => {
             false
         }
@@ -1663,93 +1650,208 @@ fn send_failure(error: connector_cli::SendError) -> Error {
         }
         _ => ErrorCode::SendFailed,
     };
-    let note = match refusal {
-        Some(refusal) if refusal.status == 400 => NOTHING_SENT_400,
-        _ => "",
+    let message = match refusal {
+        Some(refusal) => {
+            let status = reqwest::StatusCode::from_u16(refusal.status)
+                .map_or_else(|_| refusal.status.to_string(), |status| status.to_string());
+            let note = if refusal.status == 400 {
+                NOTHING_SENT_400
+            } else {
+                ""
+            };
+            format!(
+                "The connector refused the write with {status}: {}{note}",
+                refusal.body
+            )
+        }
+        None => error.to_string(),
     };
     Error {
         nothing_sent: refused_before_origin(&error),
-        ..failed(code, format!("{error}{note}"))
+        ..failed(code, message)
     }
 }
 
-/// Send one packet from the operator surface to `destination`, for `amount`, sealed to the
-/// connector at `seal_to`, or to this one, and return what the connector says it came to.
-/// `method`, `target` and `headers` are the request the app receives; `body` is the bytes
-/// the request carries, as `application/json` unless `headers` has a `content-type`.
-#[allow(clippy::too_many_arguments)]
-pub fn dispatch(
-    home: &Path,
+/// What a packet is sealed to.
+#[derive(Clone, Copy)]
+pub enum Seal<'a> {
+    /// The connector the packet is sent through.
+    Own,
+    /// The connector at this self-description URL, which is asked for its identity.
+    Url(&'a str),
+    /// A key the caller holds, which is not fetched from anywhere.
+    Key(&'a [u8; 65]),
+}
+
+impl<'a> Seal<'a> {
+    /// Sealed to the connector at `seal_to`, or to the one the packet is sent through.
+    pub fn to(seal_to: Option<&'a str>) -> Self {
+        seal_to.map_or(Seal::Own, Seal::Url)
+    }
+}
+
+/// The request a packet carries to the app. `body` is sent as `application/json` unless
+/// `headers` has a `content-type`.
+pub struct Request<'a> {
+    pub method: &'a str,
+    pub target: &'a str,
+    pub headers: &'a [(String, String)],
+    pub body: Vec<u8>,
+}
+
+impl Request<'_> {
+    /// A JSON `POST /` carrying `body`.
+    pub fn json(body: Vec<u8>) -> Request<'static> {
+        Request {
+            method: "POST",
+            target: "/",
+            headers: &[],
+            body,
+        }
+    }
+}
+
+/// How the identity a packet is sealed to is had.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    /// The connector's `send` fetches it, through this proxy for an onion host.
+    Fetch(Option<std::net::SocketAddr>),
+    /// It is fetched here, the way the egress says, and handed to the connector's `send`.
+    Pin,
+}
+
+/// How the identity at `seal_to` is had, when the egress sends a request to it through
+/// `proxy`. The connector's `send` takes one proxy, for onion hosts or for every host. For
+/// every host it would carry the write to the operator surface too, which is on this machine
+/// and which the overlay refuses, so a clearnet identity the overlay must carry is fetched here.
+fn identity_route(seal_to: &str, proxy: Option<std::net::SocketAddr>) -> Route {
+    match proxy {
+        Some(_) if !is_onion_endpoint(seal_to) => Route::Pin,
+        proxy => Route::Fetch(proxy),
+    }
+}
+
+/// What the connector's `send` is handed for one packet of `amount` to `destination`, signed
+/// with the key that signs `surface`'s writes and sealed to `(seal_to, seal_key)`, the key when
+/// it is held and else the identity at the URL, with `proxy` for an onion host.
+fn send_options(
+    surface: &Surface,
     destination: &str,
     amount: u64,
-    seal_to: Option<&str>,
-    method: &str,
-    target: &str,
-    headers: &[(String, String)],
-    body: Vec<u8>,
-) -> Result<Answer, Error> {
-    let surface = surface(home)?;
-    let send_failed = |message: String| failed(ErrorCode::SendFailed, message);
-    let seal_to = seal_to.map_or_else(|| format!("{}/ilp", surface.url), str::to_owned);
-    let egress = Egress::of(home)?;
-    // An overlay that cannot be had is found out before anything is sent.
-    let socks_proxy = egress.proxy_for(&seal_to).map_err(|error| Error {
+    (seal_to, seal_key): (String, Option<[u8; 65]>),
+    request: Request,
+    proxy: Option<std::net::SocketAddr>,
+) -> Result<connector_cli::SendOptions, Error> {
+    let not_sent = |message: String| Error {
         nothing_sent: true,
-        ..error
-    })?;
-    // The connector's `send` is asked to take its proxy only to an onion endpoint here, so a
-    // request that must go through the overlay to another host is formed by
-    // `dispatch_with_headers`, and so is a request with headers.
-    if !headers.is_empty() || (socks_proxy.is_some() && !is_onion_endpoint(&seal_to)) {
-        let public = identity(&egress, &seal_to)?;
-        return dispatch_with_headers(
-            home,
-            destination,
-            amount,
-            &public,
-            (method, target),
-            request_headers(headers),
-            body,
-        );
-    }
-    let socks_proxy = socks_proxy
+        ..failed(ErrorCode::SendFailed, message)
+    };
+    let socks_proxy = proxy
         .map(|proxy| {
-            reqwest::Url::parse(&format!("socks5h://{proxy}")).map_err(|error| Error {
-                nothing_sent: true,
-                ..send_failed(format!(
+            reqwest::Url::parse(&format!("socks5h://{proxy}")).map_err(|error| {
+                not_sent(format!(
                     "The overlay's proxy {proxy} is not a URL: {error}."
                 ))
             })
         })
         .transpose()?;
-    let options = connector_cli::SendOptions {
+    Ok(connector_cli::SendOptions {
         operator_url: surface.url.clone(),
-        operator_key: connector_cli::OperatorKey::File(
-            surface.write_key.to_string_lossy().into_owned(),
-        ),
+        operator_key: match &surface.held {
+            Some(secret) => connector_cli::OperatorKey::InMemory(**secret),
+            None => {
+                connector_cli::OperatorKey::File(surface.write_key.to_string_lossy().into_owned())
+            }
+        },
         destination: destination.to_owned(),
         amount,
         seal_to,
-        seal_key: None,
-        target: target.to_owned(),
-        method: method.to_owned(),
-        body,
-        headers: Vec::new(),
-        expires_in_seconds: DISPATCH_EXPIRY_SECONDS,
-        wait: None,
+        seal_key,
+        target: request.target.to_owned(),
+        method: request.method.to_owned(),
+        body: request.body,
+        headers: request.headers.to_vec(),
+        expires_in_seconds: PACKET_EXPIRY.as_secs() as i64,
+        wait: Some(packet_wait()),
         socks_proxy,
         proxy_scope: connector_cli::ProxyScope::OnionOnly,
         dry_run: false,
         expect_fulfill: false,
+    })
+}
+
+/// Send one packet of `amount` to `destination` through the connector at `surface`, sealed to
+/// `seal`, carrying `request`, with the connector's own `send`, and return what the connector
+/// says it came to. A request this machine makes for an identity leaves the way `egress` says.
+fn send_on(
+    surface: &Surface,
+    egress: &Egress,
+    destination: &str,
+    amount: u64,
+    seal: Seal,
+    request: Request,
+) -> Result<Answer, Error> {
+    let fetched = |seal_to: String| -> Result<_, Error> {
+        // An overlay that cannot be had is found out before anything is sent.
+        let wanted = egress.proxy_for(&seal_to).map_err(|error| Error {
+            nothing_sent: true,
+            ..error
+        })?;
+        Ok(match identity_route(&seal_to, wanted) {
+            Route::Fetch(proxy) => (seal_to, None, proxy),
+            Route::Pin => {
+                let key = identity(egress, &seal_to)?;
+                (seal_to, Some(key), None)
+            }
+        })
     };
+    let own = format!("{}/ilp", surface.url);
+    let (seal_to, seal_key, proxy) = match seal {
+        Seal::Key(key) => (own, Some(*key), None),
+        Seal::Own => fetched(own)?,
+        Seal::Url(url) => fetched(url.to_owned())?,
+    };
+    let options = send_options(
+        surface,
+        destination,
+        amount,
+        (seal_to, seal_key),
+        request,
+        proxy,
+    )?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .map_err(|error| send_failed(format!("The async runtime did not start: {error}.")))?;
+        .map_err(|error| {
+            failed(
+                ErrorCode::SendFailed,
+                format!("The async runtime did not start: {error}."),
+            )
+        })?;
     let sent = runtime
         .block_on(connector_cli::send(&options))
         .map_err(send_failure)?;
     answer_of(sent.outcome)
+}
+
+/// Send one packet from the operator surface of the agent node at `home` to `destination`, for
+/// `amount`, sealed to `seal`, carrying `request`, and return what the connector says it came
+/// to.
+pub fn dispatch(
+    home: &Path,
+    destination: &str,
+    amount: u64,
+    seal: Seal,
+    request: Request,
+) -> Result<Answer, Error> {
+    send_on(
+        &surface(home)?,
+        &Egress::of(home)?,
+        destination,
+        amount,
+        seal,
+        request,
+    )
 }
 
 /// One `--header 'Name: value'` as a pair, or a usage error naming it. Nothing is sent or
@@ -1778,22 +1880,8 @@ pub fn parse_headers(texts: &[String]) -> Result<Vec<(String, String)>, Error> {
     texts.iter().map(|text| parse_header(text)).collect()
 }
 
-/// The headers of a request: those given, in order, and `content-type: application/json`
-/// first unless one of them is a `content-type`.
-fn request_headers(given: &[(String, String)]) -> Vec<(String, String)> {
-    let mut headers = Vec::with_capacity(given.len() + 1);
-    if !given
-        .iter()
-        .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-    {
-        headers.push(("content-type".to_owned(), "application/json".to_owned()));
-    }
-    headers.extend(given.iter().cloned());
-    headers
-}
-
 /// Whether `url` names an onion endpoint, which the connector's `send` dials through its
-/// `--socks-proxy`.
+/// proxy.
 fn is_onion_endpoint(url: &str) -> bool {
     reqwest::Url::parse(url).is_ok_and(|url| {
         url.host_str().is_some_and(|host| {
@@ -1801,12 +1889,6 @@ fn is_onion_endpoint(url: &str) -> bool {
             host.ends_with(&format!(".{}", crate::overlay::TLD)) || host.ends_with(".onion")
         })
     })
-}
-
-/// The sealing key of this agent node's own connector, the one `--app` names, as a packet to
-/// it is sealed when no other key is given. Nothing has been sent when it fails.
-pub fn own_identity(home: &Path) -> Result<[u8; 65], Error> {
-    identity(&Egress::of(home)?, &format!("{}/ilp", surface(home)?.url))
 }
 
 /// The sealing key the connector at `seal_to` gives as its identity, asked for the way
@@ -1836,172 +1918,6 @@ pub(crate) fn identity(egress: &Egress, seal_to: &str) -> Result<[u8; 65], Error
         .and_then(|key| hex::decode(key.trim_start_matches("0x")).ok())
         .and_then(|key| key.try_into().ok())
         .ok_or_else(|| not_sent(format!("{identity_url} has no 65-byte `publicKey`.")))
-}
-
-/// A packet write the connector answered with a failing `status`, as an error. The write is
-/// refused before any packet is originated with 401 (its signature) and 400 (a packet that
-/// did not decode), so nothing was sent; any other failing status stays counted.
-fn packet_write_refused(status: reqwest::StatusCode, body: &[u8]) -> Error {
-    let text = String::from_utf8_lossy(body);
-    // A key past its spending limit, outside its scope or expired is refused `403` before
-    // anything is originated (ADR 0078 decision 9).
-    let nothing_sent = matches!(
-        status,
-        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::BAD_REQUEST
-    ) || limit_or_scope(status.as_u16(), &text);
-    let note = if status == reqwest::StatusCode::BAD_REQUEST {
-        NOTHING_SENT_400
-    } else {
-        ""
-    };
-    Error {
-        nothing_sent,
-        ..failed(
-            if limit_refused(status.as_u16(), &text) {
-                ErrorCode::SpendingLimit
-            } else {
-                ErrorCode::SendFailed
-            },
-            format!(
-                "The connector refused the write with {status}: {}{note}",
-                text.trim()
-            ),
-        )
-    }
-}
-
-/// Send one packet like [`dispatch`] does, but sealed to the key `public` itself, which
-/// is not fetched from anywhere, with the request's `(method, target)`, `headers` on the
-/// request and `body` in memory. The connector's `send` fixes the request's headers, so this
-/// forms, seals and signs the packet itself, with the connector's own crates, and reads the
-/// answer the same way.
-pub fn dispatch_with_headers(
-    home: &Path,
-    destination: &str,
-    amount: u64,
-    public: &[u8; 65],
-    (method, target): (&str, &str),
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-) -> Result<Answer, Error> {
-    dispatch_with_headers_on(
-        &surface(home)?,
-        destination,
-        amount,
-        public,
-        (method, target),
-        headers,
-        body,
-    )
-}
-
-/// [`dispatch_with_headers`] through the connector whose operator surface is `surface`.
-pub fn dispatch_with_headers_on(
-    surface: &Surface,
-    destination: &str,
-    amount: u64,
-    public: &[u8; 65],
-    (method, target): (&str, &str),
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-) -> Result<Answer, Error> {
-    use connector_domain::{EnvelopeRequest, EnvelopeResponse, Fulfill, Prepare, Reject};
-    use connector_signer::giftwrap::{derive_fulfillment, open_response, seal_request};
-
-    let send_failed = |message: String| failed(ErrorCode::SendFailed, message);
-    let not_sent = |message: String| Error {
-        nothing_sent: true,
-        ..send_failed(message)
-    };
-    let keypair = surface.keypair().map_err(|error| Error {
-        nothing_sent: true,
-        ..error
-    })?;
-    let client = reqwest::blocking::Client::builder()
-        .timeout(packet_wait())
-        .build()
-        .map_err(|error| not_sent(error.to_string()))?;
-
-    let plaintext = EnvelopeRequest {
-        method: method.into(),
-        target: target.into(),
-        headers,
-        body,
-    }
-    .encode();
-    let (data, secret) = seal_request(&plaintext, public)
-        .map_err(|error| not_sent(format!("The packet could not be sealed: {error}.")))?;
-    let prepare = Prepare {
-        amount,
-        expires_at: chrono::Utc::now()
-            + chrono::Duration::from_std(PACKET_EXPIRY).unwrap_or_default(),
-        greeting: false,
-        destination: destination.to_owned(),
-        data,
-    }
-    .encode();
-    let created = chrono::Utc::now().timestamp().max(0) as u64;
-    let (signature_input, signature, content_digest) = connector_operator::signing::sign_request(
-        &keypair,
-        "POST",
-        "/packets",
-        &prepare,
-        created,
-        Some(created + 60),
-    );
-    // A wait that ran out is an answer of its own, not a failure: the packet may have been
-    // paid for.
-    let response = match client
-        .post(format!("{}/packets", surface.url))
-        .header("content-type", "application/octet-stream")
-        .header("content-digest", content_digest)
-        .header("signature-input", signature_input)
-        .header("signature", signature)
-        .body(prepare)
-        .send()
-    {
-        Ok(response) => response,
-        Err(error) if error.is_timeout() => return Ok(Answer::Unanswered),
-        Err(error) => return Err(send_failed(error.to_string())),
-    };
-    let status = response.status();
-    let headers = response.headers().clone();
-    let bytes = match response.bytes() {
-        Ok(bytes) => bytes,
-        Err(error) if error.is_timeout() => return Ok(Answer::Unanswered),
-        Err(error) => return Err(send_failed(error.to_string())),
-    };
-    if !status.is_success() {
-        return Err(packet_write_refused(status, &bytes));
-    }
-    let undecodable = |reason: String| {
-        send_failed(format!(
-            "The connector's answer was not understood: {reason}"
-        ))
-    };
-    match Fulfill::decode(&bytes) {
-        Ok(fulfill) if fulfill.fulfillment != derive_fulfillment(&secret) => {
-            Ok(Answer::WrongFulfilment)
-        }
-        Ok(fulfill) => {
-            let opened = open_response(&secret, &fulfill.data)
-                .map_err(|error| undecodable(error.to_string()))?;
-            let envelope = EnvelopeResponse::decode(&opened)
-                .map_err(|error| undecodable(error.to_string()))?;
-            Ok(Answer::Fulfilled {
-                status: envelope.status.into(),
-                body: String::from_utf8_lossy(&envelope.body).into_owned(),
-            })
-        }
-        Err(_) => {
-            let reject = Reject::decode(&bytes).map_err(|error| undecodable(error.to_string()))?;
-            Ok(Answer::Rejected {
-                code: reject.code.as_str().to_owned(),
-                message: reject.message,
-                cost: header_cost(&headers),
-            })
-        }
-    }
 }
 
 /// `toon send`: one packet from the operator surface to `destination`, for `amount`,
@@ -2085,19 +2001,20 @@ fn send_packet(
             home,
             destination,
             amount,
-            seal_to,
-            method,
-            target,
-            headers,
-            body,
+            Seal::to(seal_to),
+            Request {
+                method,
+                target,
+                headers,
+                body,
+            },
         )
     })
 }
 
-/// `toon send` through an agent key (ADR 0010): the packet is formed here and originated by
-/// a signed write of the connector at `surface`, sealed to `seal_to` or to that connector.
-/// The agent node's home is never read, and the request leaves directly. `headers` are put
-/// on the request as [`dispatch`] puts them.
+/// `toon send` through an agent key (ADR 0010): the packet is originated by a signed write of
+/// the connector at `surface`, sealed to `seal_to` or to that connector. The agent node's home
+/// is never read, and the request leaves directly.
 #[allow(clippy::too_many_arguments)]
 pub fn send_as_agent(
     surface: &Surface,
@@ -2108,70 +2025,50 @@ pub fn send_as_agent(
     headers: &[(String, String)],
     body: Option<&Path>,
 ) -> Result<Report, Error> {
-    let not_sent = |message: String| Error {
-        nothing_sent: true,
-        ..failed(ErrorCode::SendFailed, message)
-    };
     let body = match body {
-        Some(path) => std::fs::read(path)
-            .map_err(|error| not_sent(format!("{} could not be read: {error}.", path.display())))?,
+        Some(path) => std::fs::read(path).map_err(|error| Error {
+            nothing_sent: true,
+            ..failed(
+                ErrorCode::SendFailed,
+                format!("{} could not be read: {error}.", path.display()),
+            )
+        })?,
         None => Vec::new(),
     };
-    let seal_to = seal_to.map_or_else(|| format!("{}/ilp", surface.url), str::to_owned);
-    let public = identity(&Egress::direct(), &seal_to)?;
     send_packet_with(destination, amount, target, false, |target| {
-        dispatch_with_headers_on(
+        send_on(
             surface,
+            &Egress::direct(),
             destination,
             amount,
-            &public,
-            (method, target),
-            request_headers(headers),
-            body,
+            Seal::to(seal_to),
+            Request {
+                method,
+                target,
+                headers,
+                body,
+            },
         )
     })
 }
 
-/// One packet of `amount` carrying the event write `body` (a relay's write route) to
-/// `destination`, originated by a signed write of the connector at `surface` and sealed to
-/// that connector. The agent node's home is never read (ADR 0010).
+/// One packet of `amount` to `destination`, carrying `body` as a JSON `POST /` request,
+/// originated by a signed write of the connector at `surface` and sealed to `seal`. The agent
+/// node's home is never read, and the request leaves directly (ADR 0010).
 pub fn write_as_agent(
     surface: &Surface,
     destination: &str,
     amount: u64,
-    body: String,
-) -> Result<Answer, Error> {
-    let public = identity(&Egress::direct(), &format!("{}/ilp", surface.url))?;
-    dispatch_with_headers_on(
-        surface,
-        destination,
-        amount,
-        &public,
-        ("POST", "/"),
-        vec![("content-type".to_owned(), "application/json".to_owned())],
-        body.into_bytes(),
-    )
-}
-
-/// One packet of `amount` to `destination`, carrying `body` as a JSON `POST /` request,
-/// originated by a signed write of the connector at `surface` and sealed to the key `public`
-/// the caller holds, which is not fetched from anywhere. The agent node's home is never read
-/// (ADR 0010).
-pub fn write_sealed_as_agent(
-    surface: &Surface,
-    destination: &str,
-    amount: u64,
-    public: &[u8; 65],
+    seal: Seal,
     body: Vec<u8>,
 ) -> Result<Answer, Error> {
-    dispatch_with_headers_on(
+    send_on(
         surface,
+        &Egress::direct(),
         destination,
         amount,
-        public,
-        ("POST", "/"),
-        vec![("content-type".to_owned(), "application/json".to_owned())],
-        body,
+        seal,
+        Request::json(body),
     )
 }
 
@@ -2481,14 +2378,14 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 
 #[cfg(test)]
 mod tests {
+    use super::parse_header;
     use super::{
-        add_cost, add_probe_cost, answer_of, cost_sentence, header_cost, packet_wait, peer_add_on,
-        peer_and_route_on, probe_cost_sentence, send_failure, Answer, PeerAdd, Surface,
-        AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED, STALE_READ, UNREAD,
-        UNREAD_TIMEOUT,
+        add_cost, add_probe_cost, answer_of, cost_sentence, identity_route, packet_wait,
+        peer_add_on, peer_and_route_on, probe_cost_sentence, send_failure, send_options, Answer,
+        PeerAdd, Request, Route, Surface, AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY,
+        REPLAYED, STALE_READ, UNREAD, UNREAD_TIMEOUT,
     };
     use super::{history_report, land_report, parse_packet_counts, PacketCounts};
-    use super::{parse_header, request_headers};
     use crate::cli::Chain;
     use crate::outcome::ErrorCode;
     use crate::profile::Profile;
@@ -2675,17 +2572,6 @@ mod tests {
         let partial = probe_cost_sentence("R01", 1100);
         assert!(partial.contains("`--amount 1100 --yes`"), "{partial}");
         assert!(partial.contains("not the whole cost"), "{partial}");
-    }
-
-    #[test]
-    fn an_absent_or_unreadable_cost_header_is_a_cost_of_0() {
-        use reqwest::header::{HeaderMap, HeaderValue};
-        let mut headers = HeaderMap::new();
-        assert_eq!(header_cost(&headers), 0);
-        headers.insert("TOON-Accumulated-Cost", HeaderValue::from_static("many"));
-        assert_eq!(header_cost(&headers), 0);
-        headers.insert("TOON-Accumulated-Cost", HeaderValue::from_static("101"));
-        assert_eq!(header_cost(&headers), 101);
     }
 
     #[test]
@@ -2971,30 +2857,6 @@ mod tests {
     }
 
     #[test]
-    fn a_packet_write_answered_400_or_401_sent_nothing_and_any_other_failure_may_have() {
-        use reqwest::StatusCode;
-        for status in [StatusCode::BAD_REQUEST, StatusCode::UNAUTHORIZED] {
-            let error = super::packet_write_refused(status, b"bad address");
-            assert_eq!(error.code, ErrorCode::SendFailed);
-            assert!(crate::spending::failed_before_paying(&error), "{status}");
-        }
-        let error = super::packet_write_refused(StatusCode::BAD_REQUEST, b"bad address");
-        assert!(
-            error.message.contains("Nothing was sent or paid."),
-            "{}",
-            error.message
-        );
-        for status in [
-            StatusCode::FORBIDDEN,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            StatusCode::BAD_GATEWAY,
-        ] {
-            let error = super::packet_write_refused(status, b"");
-            assert!(!crate::spending::failed_before_paying(&error), "{status}");
-        }
-    }
-
-    #[test]
     fn each_outcome_of_the_connectors_send_is_its_answer() {
         use connector_cli::Outcome;
         match answer_of(Outcome::Fulfilled {
@@ -3066,6 +2928,13 @@ mod tests {
                 reason: "refused".into(),
             },
             SendError::Seal("not on the curve".into()),
+            // A failed dial wrote nothing: the connector counts a wait that ran out while
+            // dialing as unanswered, so only a dial that certainly failed is here.
+            SendError::Transport {
+                url: "http://x/packets".into(),
+                reason: "connection refused".into(),
+                refusal: None,
+            },
             refused(401, None),
             refused(400, None),
             refused(403, Some(RefusalReason::Scope)),
@@ -3077,13 +2946,11 @@ mod tests {
             let shown = error.to_string();
             let failure = send_failure(error);
             assert!(failure.nothing_sent, "{shown}");
-            assert!(failure.message.starts_with(&shown), "{}", failure.message);
         }
         let failure = send_failure(refused(400, None));
-        assert!(
-            failure.message.ends_with("Nothing was sent or paid."),
-            "{}",
-            failure.message
+        assert_eq!(
+            failure.message,
+            "The connector refused the write with 400 Bad Request: nope Nothing was sent or paid."
         );
         assert_eq!(failure.code, ErrorCode::SendFailed);
         assert_eq!(
@@ -3108,20 +2975,116 @@ mod tests {
             refused(403, None),
             refused(500, None),
             refused(502, None),
-            // A failed dial stays counted, as it was when the argv path read the reason.
-            SendError::Transport {
-                url: "http://x/packets".into(),
-                reason: "connection refused".into(),
-                refusal: None,
-            },
         ];
         for error in after {
             let shown = error.to_string();
             let failure = send_failure(error);
             assert!(!failure.nothing_sent, "{shown}");
             assert_eq!(failure.code, ErrorCode::SendFailed);
-            assert_eq!(failure.message, shown);
         }
+        assert_eq!(
+            send_failure(refused(403, None)).message,
+            "The connector refused the write with 403 Forbidden: nope"
+        );
+        let lost = SendError::AnswerLost {
+            url: "http://x/packets".into(),
+            reason: "connection closed".into(),
+        };
+        let shown = lost.to_string();
+        assert_eq!(send_failure(lost).message, shown);
+    }
+
+    #[test]
+    fn the_identity_is_fetched_by_the_connector_unless_the_overlay_must_carry_a_clearnet_fetch() {
+        let proxy: std::net::SocketAddr = "127.0.0.1:9050".parse().unwrap();
+        assert_eq!(
+            identity_route("http://127.0.0.1:7100/ilp", None),
+            Route::Fetch(None)
+        );
+        assert_eq!(
+            identity_route("http://abc.anyone:7100/ilp", Some(proxy)),
+            Route::Fetch(Some(proxy))
+        );
+        assert_eq!(
+            identity_route("http://abc.onion:7100/ilp", Some(proxy)),
+            Route::Fetch(Some(proxy))
+        );
+        // The connector's proxy for every host would carry the write to the operator surface on
+        // this machine too, which the overlay refuses: the identity is fetched here and pinned.
+        assert_eq!(
+            identity_route("http://relay.example:7100/ilp", Some(proxy)),
+            Route::Pin
+        );
+    }
+
+    #[test]
+    fn a_packet_is_handed_to_the_connectors_send_with_its_signer_seal_request_and_wait() {
+        let home = tempfile::tempdir().expect("a directory");
+        let wallet = surface(home.path(), "http://127.0.0.1:1".into());
+        let headers = [("authorization".to_owned(), "Nostr x".to_owned())];
+        let proxy: std::net::SocketAddr = "127.0.0.1:9050".parse().unwrap();
+        let options = send_options(
+            &wallet,
+            "g.toon.relay",
+            42,
+            ("http://far:7100/ilp".into(), None),
+            Request {
+                method: "PUT",
+                target: "inbox",
+                headers: &headers,
+                body: b"{}".to_vec(),
+            },
+            Some(proxy),
+        )
+        .expect("options");
+        assert_eq!(
+            options.operator_key,
+            connector_cli::OperatorKey::File(home.path().join("write.key").display().to_string())
+        );
+        assert_eq!(options.operator_url, "http://127.0.0.1:1");
+        assert_eq!(
+            (options.destination.as_str(), options.amount),
+            ("g.toon.relay", 42)
+        );
+        assert_eq!(options.seal_to, "http://far:7100/ilp");
+        assert_eq!(options.seal_key, None);
+        assert_eq!(
+            (options.method.as_str(), options.target.as_str()),
+            ("PUT", "inbox")
+        );
+        assert_eq!(options.headers, headers.to_vec());
+        assert_eq!(options.body, b"{}".to_vec());
+        assert_eq!(options.expires_in_seconds, 30);
+        assert_eq!(options.wait, Some(packet_wait()));
+        assert_eq!(
+            options.socks_proxy.map(|url| url.to_string()),
+            Some("socks5h://127.0.0.1:9050".to_owned())
+        );
+        assert_eq!(options.proxy_scope, connector_cli::ProxyScope::OnionOnly);
+        assert!(!options.dry_run && !options.expect_fulfill);
+
+        let agent = Surface::of_agent_key("http://far:3000/", "relay", [9u8; 32]);
+        let key = [4u8; 65];
+        let options = send_options(
+            &agent,
+            "g.toon.relay",
+            1,
+            ("http://far:3000/ilp".into(), Some(key)),
+            Request::json(Vec::new()),
+            None,
+        )
+        .expect("options");
+        assert_eq!(
+            options.operator_key,
+            connector_cli::OperatorKey::InMemory([9u8; 32])
+        );
+        assert_eq!(options.seal_key, Some(key));
+        assert_eq!(
+            (options.method.as_str(), options.target.as_str()),
+            ("POST", "/")
+        );
+        assert!(options.headers.is_empty());
+        assert_eq!(options.socks_proxy, None);
     }
 
     #[test]
@@ -3411,17 +3374,5 @@ toon_fees_earned_total 40\n";
             assert_eq!(error.code, ErrorCode::Usage);
             assert!(error.message.contains(bad), "{}", error.message);
         }
-    }
-
-    #[test]
-    fn the_json_content_type_leads_unless_one_is_given() {
-        assert_eq!(
-            request_headers(&[pair("X-A", "1")]),
-            vec![pair("content-type", "application/json"), pair("X-A", "1")]
-        );
-        assert_eq!(
-            request_headers(&[pair("X-A", "1"), pair("Content-Type", "text/plain")]),
-            vec![pair("X-A", "1"), pair("Content-Type", "text/plain")]
-        );
     }
 }

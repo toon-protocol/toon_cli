@@ -232,11 +232,8 @@ pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
         home,
         &state.toon_apps[0].relay_prefix(),
         amount,
-        None,
-        "POST",
-        "/",
-        &[],
-        write_body(&event).into_bytes(),
+        operator::Seal::Own,
+        operator::Request::json(write_body(&event).into_bytes()),
     );
     written(event, answer?, amount)
 }
