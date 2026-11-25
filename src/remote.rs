@@ -664,21 +664,19 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
         ),
         Command::Send(args) => {
             let headers = operator::parse_headers(&args.header)?;
-            confirmed(args.amount.into(), args.yes)?;
-            let surface = KeyFile::load(path)?.surface(app)?;
-            let mut report = operator::send_as_agent(
-                &surface,
-                &args.address,
-                args.amount,
-                args.seal_to.as_deref(),
-                (&args.method, &args.path),
-                &headers,
-                args.body.as_deref(),
-            )?;
-            if report.exit == Exit::Success {
-                report.json["paid"] = json!(args.amount);
-            }
-            Ok(report)
+            let key = KeyFile::load(path)?;
+            let surface = key.surface(app)?;
+            crate::paid_send(&key.payer(app)?, args.amount.into(), args.yes, || {
+                operator::send_as_agent(
+                    &surface,
+                    &args.address,
+                    args.amount,
+                    args.seal_to.as_deref(),
+                    (&args.method, &args.path),
+                    &headers,
+                    args.body.as_deref(),
+                )
+            })
         }
         Command::Peer {
             command: PeerCommand::Add(args),

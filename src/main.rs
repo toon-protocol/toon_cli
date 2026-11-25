@@ -502,7 +502,7 @@ fn written(result: io::Result<()>, exit: Exit) -> Exit {
 }
 
 /// `toon send`: the packet `send` sends, paid through `purse`.
-fn paid_send<P: payer::Purse>(
+pub(crate) fn paid_send<P: payer::Purse>(
     purse: &P,
     amount: u128,
     yes: bool,
