@@ -1,0 +1,47 @@
+# Rendered by `toon` from state.json. Edits here are overwritten.
+client_edge_addr = "127.0.0.1:4100"
+state_dir = "{HOME}/connectors/0/state"
+peer_expose = "http"
+
+[node]
+addresses = ["g.toon.seg"]
+http_endpoint = "http://127.0.0.1:4100/ilp"
+
+[signer]
+key_file = "{HOME}/connectors/0/identity.key"
+
+[settlement.eip155.31337]
+rpc_url = "http://127.0.0.1:8545"
+token_address = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+decimals = 6
+asset_eip712_name = "USD Coin"
+asset_eip712_version = "2"
+asset_transfer_method = "eip3009"
+
+[settlement.eip155.31337.key]
+key_file = "{HOME}/connectors/0/settlement.key"
+
+[zk_note]
+vault = "B62qkYa1o6Mj6uTTjDQCob7FYZspuhkm4RRQhgJg9j4koEBWiSrTQrS"
+network = "mina:devnet"
+graphql_url = "http://127.0.0.1:8080/graphql"
+archive_url = "http://127.0.0.1:8081/graphql"
+state_key_file = "{HOME}/connectors/0/zk-state.key"
+verification_key_hash = "17783576495452972973648719307576910001175195573379209737447262132918659765208"
+tiers = [100000000, 1000000000]
+allowance_lifetime_secs = 3600
+open_budget_cap = 10000000000
+subsidy_budget = 0
+
+[[tokens]]
+asset = "eip155:31337/erc20:0x5FbDB2315678afecb367f032d93F642f64180aa3"
+
+[[rates]]
+from = "mina:devnet/slip44:12586"
+to = "eip155:31337/erc20:0x5FbDB2315678afecb367f032d93F642f64180aa3"
+rate = { numerator = 1, denominator = 2500 }
+
+[rate_guards]
+spread = { numerator = 0, denominator = 1 }
+ttl_secs = 60
+max_move = { numerator = 1, denominator = 10 }

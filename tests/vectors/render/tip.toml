@@ -1,0 +1,17 @@
+# Rendered by `toon` from state.json. Edits here are overwritten.
+client_edge_addr = "127.0.0.1:4100"
+state_dir = "{HOME}/connectors/0/state"
+peer_expose = "http"
+
+[node]
+addresses = ["g.toon.seg"]
+http_endpoint = "http://127.0.0.1:4100/ilp"
+
+[signer]
+key_file = "{HOME}/connectors/0/identity.key"
+
+[[routes]]
+prefix = "g.toon.seg.tip"
+handler_url = "http://127.0.0.1:4200/"
+price = 5
+payment = true

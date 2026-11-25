@@ -1,0 +1,22 @@
+# Rendered by `toon` from state.json. Edits here are overwritten.
+client_edge_addr = "127.0.0.1:4100"
+state_dir = "{HOME}/connectors/0/state"
+peer_expose = "http"
+
+[node]
+addresses = ["g.toon.seg"]
+http_endpoint = "http://127.0.0.1:4100/ilp"
+
+[signer]
+key_file = "{HOME}/connectors/0/identity.key"
+
+[settlement.eip155.31337]
+rpc_url = "http://127.0.0.1:8545"
+token_address = "0x5FbDB2315678afecb367f032d93F642f64180aa3"
+decimals = 6
+asset_eip712_name = "USD Coin"
+asset_eip712_version = "2"
+asset_transfer_method = "eip3009"
+
+[settlement.eip155.31337.key]
+key_file = "{HOME}/connectors/0/settlement.key"

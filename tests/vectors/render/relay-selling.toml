@@ -1,0 +1,26 @@
+# Rendered by `toon` from state.json. Edits here are overwritten.
+client_edge_addr = "127.0.0.1:4100"
+state_dir = "{HOME}/connectors/0/state"
+peer_expose = "http"
+
+[node]
+addresses = ["g.toon.seg"]
+http_endpoint = "http://127.0.0.1:4100/ilp"
+
+[signer]
+key_file = "{HOME}/connectors/0/identity.key"
+
+[[routes]]
+prefix = "g.toon.seg.relay"
+handler_url = "http://127.0.0.1:4102/write"
+price = 1
+
+[[routes]]
+prefix = "g.toon.seg.relay.ephemeral"
+handler_url = "http://127.0.0.1:4102/write-ephemeral"
+price = 0
+
+[[routes]]
+prefix = "g.toon.seg.relay.subscribe"
+handler_url = "http://127.0.0.1:4102/subscribe"
+price = 3

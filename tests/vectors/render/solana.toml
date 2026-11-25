@@ -1,0 +1,20 @@
+# Rendered by `toon` from state.json. Edits here are overwritten.
+client_edge_addr = "127.0.0.1:4100"
+state_dir = "{HOME}/connectors/0/state"
+peer_expose = "http"
+
+[node]
+addresses = ["g.toon.seg"]
+http_endpoint = "http://127.0.0.1:4100/ilp"
+
+[signer]
+key_file = "{HOME}/connectors/0/identity.key"
+
+[settlement.solana]
+rpc_url = "http://127.0.0.1:8899"
+token_address = "34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU"
+decimals = 6
+min_sponsored_deposit = 1000000
+
+[settlement.solana.key]
+key_file = "{HOME}/connectors/0/settlement-solana.key"
