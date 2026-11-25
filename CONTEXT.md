@@ -87,6 +87,10 @@ _Avoid_: Half-open peering, invite, handshake
 The most that may be paid out, per command and per day. Every command that moves money states its amount and is refused past the limit. The wallet has one, which `toon` checks for the operator; each agent key has its own, which the connector checks. A write to the agent node's own relay pays nothing out and is not counted.
 _Avoid_: Cap (the connector's word for the largest packet a peering carries), budget
 
+**Payer**:
+What pays for a command's packets: the wallet, whose spending limit `toon` checks, or an agent key, whose spending limit the connector checks.
+_Avoid_: Renter (compute's word for it today), spender
+
 **Wallet**:
 The operator's keys and funds for an agent node, which the CLI generates and manages. Distinct from the connector's Signer, which only reads the keys it is handed.
 _Avoid_: Signer (for this), keystore (for the concept)

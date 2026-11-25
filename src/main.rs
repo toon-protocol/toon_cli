@@ -38,6 +38,7 @@ mod operator;
 mod order;
 mod outcome;
 mod overlay;
+mod payer;
 mod pending;
 mod ports;
 mod profile;
@@ -138,81 +139,48 @@ fn run() -> ExitCode {
         .into(),
         Command::Send(args) => render(
             home::resolve().and_then(|home| {
-                let amount: u128 = args.amount.into();
                 let headers = operator::parse_headers(&args.header)?;
-                spending::spend_packets(&home, amount, args.yes, |packets| {
-                    let mut report = operator::send(
-                        &home,
-                        &args.address,
-                        args.amount,
-                        args.seal_to.as_deref(),
-                        &args.method,
-                        &args.path,
-                        &headers,
-                        args.body.as_deref(),
-                    )
-                    .map_err(|error| operator::repriced(error, packets.moved(amount)))?;
-                    // A packet that was rejected, or fulfilled wrongly, moved what its
-                    // channels moved by, which is nothing when the agent node's own
-                    // connector refused it.
-                    let paid = if report.exit == Exit::Success {
-                        amount
-                    } else {
-                        packets.moved(amount)
-                    };
-                    report.json["paid"] = json!(paid);
-                    if report.exit != Exit::Success && paid > 0 {
-                        report.text = format!("{} It cost {paid} base units.", report.text);
-                    }
-                    Ok((report, paid))
-                })
+                paid_send(
+                    &payer::Wallet::new(&home),
+                    args.amount.into(),
+                    args.yes,
+                    || {
+                        operator::send(
+                            &home,
+                            &args.address,
+                            args.amount,
+                            args.seal_to.as_deref(),
+                            &args.method,
+                            &args.path,
+                            &headers,
+                            args.body.as_deref(),
+                        )
+                    },
+                )
             }),
             json,
         )
         .into(),
         Command::Probe(args) => render(
             home::resolve().and_then(|home| {
-                let amount: u128 = args.amount.into();
                 let headers = operator::parse_headers(&args.header)?;
-                let probe = || {
-                    operator::probe(
-                        &home,
-                        &args.address,
-                        args.amount,
-                        args.seal_to.as_deref(),
-                        &args.method,
-                        &args.path,
-                        &headers,
-                        args.body.as_deref(),
-                    )
-                };
-                if amount == 0 {
-                    // Moves nothing: no `--yes`, and the limit is not touched.
-                    let mut report = probe()?;
-                    report.json["paid"] = json!(0);
-                    return Ok(report);
-                }
-                spending::spend_packets(&home, amount, args.yes, |packets| {
-                    let mut report = probe()
-                        .map_err(|error| operator::repriced(error, packets.moved(amount)))?;
-                    // Only a fulfilled probe paid its amount; a reject, whatever it states,
-                    // cost what the channels moved by.
-                    let delivered = report.json["outcome"] == "fulfilled";
-                    let paid = if delivered {
-                        amount
-                    } else {
-                        packets.moved(amount)
-                    };
-                    report.json["paid"] = json!(paid);
-                    if paid > 0 {
-                        report.text = if delivered {
-                            format!("{} It was paid for: {paid} base units.", report.text)
-                        } else {
-                            format!("{} It cost {paid} base units.", report.text)
-                        };
-                    }
-                    Ok((report, paid))
-                })
+                paid_probe(
+                    &payer::Wallet::new(&home),
+                    args.amount.into(),
+                    args.yes,
+                    || {
+                        operator::probe(
+                            &home,
+                            &args.address,
+                            args.amount,
+                            args.seal_to.as_deref(),
+                            &args.method,
+                            &args.path,
+                            &headers,
+                            args.body.as_deref(),
+                        )
+                    },
+                )
             }),
             json,
         )
@@ -529,5 +497,107 @@ fn written(result: io::Result<()>, exit: Exit) -> Exit {
     match result {
         Ok(()) => exit,
         Err(_) => Exit::Failure,
+    }
+}
+
+/// `toon send`: the packet `send` sends, paid through `purse`.
+fn paid_send<P: payer::Purse>(
+    purse: &P,
+    amount: u128,
+    yes: bool,
+    send: impl FnOnce() -> Result<Report, Error>,
+) -> Result<Report, Error> {
+    payer::pay(purse, amount, yes, |packets| {
+        let (mut report, paid) = packets.send(amount, send)?;
+        if report.exit != Exit::Success && paid > 0 {
+            report.text = format!("{} It cost {paid} base units.", report.text);
+        }
+        Ok((report, paid))
+    })
+}
+
+/// `toon probe`: the packet `probe` sends, paid through `purse`. An amount of 0 moves
+/// nothing: no `--yes`, and the limit is not touched.
+fn paid_probe<P: payer::Purse>(
+    purse: &P,
+    amount: u128,
+    yes: bool,
+    probe: impl FnOnce() -> Result<Report, Error>,
+) -> Result<Report, Error> {
+    if amount == 0 {
+        let mut report = probe()?;
+        report.json["paid"] = json!(0);
+        return Ok(report);
+    }
+    payer::pay(purse, amount, yes, |packets| {
+        let (mut report, paid) = packets.send(amount, probe)?;
+        // Only a fulfilled probe paid its amount; a reject, whatever it states, cost what
+        // the channels moved by.
+        if paid > 0 {
+            report.text = if report.json["outcome"] == "fulfilled" {
+                format!("{} It was paid for: {paid} base units.", report.text)
+            } else {
+                format!("{} It cost {paid} base units.", report.text)
+            };
+        }
+        Ok((report, paid))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::payer::fake::Fake;
+
+    fn report(exit: Exit, outcome: &str) -> Result<Report, Error> {
+        Ok(Report {
+            exit,
+            json: json!({ "outcome": outcome }),
+            text: "Done.".to_owned(),
+        })
+    }
+
+    #[test]
+    fn send_of_a_fulfilled_packet_exits_0_and_pays_its_amount() {
+        let purse = Fake::new();
+        let report = paid_send(&purse, 60, true, || report(Exit::Success, "fulfilled")).unwrap();
+        assert_eq!(report.exit, Exit::Success);
+        assert_eq!(report.json["paid"], 60);
+        assert_eq!(report.text, "Done.");
+    }
+
+    #[test]
+    fn send_of_a_rejected_packet_exits_1_and_pays_what_moved() {
+        let purse = Fake::new();
+        purse.moved.set(20);
+        let report = paid_send(&purse, 60, true, || report(Exit::Failure, "rejected")).unwrap();
+        assert_eq!(report.exit, Exit::Failure);
+        assert_eq!(report.json["paid"], 20);
+        assert_eq!(report.text, "Done. It cost 20 base units.");
+        assert_eq!(purse.remaining.get(), 230);
+    }
+
+    #[test]
+    fn send_without_yes_sends_nothing() {
+        let purse = Fake::new();
+        let error = paid_send(&purse, 60, false, || panic!("sent")).unwrap_err();
+        assert_eq!(error.code, ErrorCode::NotConfirmed);
+    }
+
+    #[test]
+    fn probe_of_nothing_needs_no_yes_and_pays_0() {
+        let purse = Fake::new();
+        let report = paid_probe(&purse, 0, false, || report(Exit::Success, "fulfilled")).unwrap();
+        assert_eq!(report.json["paid"], 0);
+        assert_eq!(purse.remaining.get(), 250);
+    }
+
+    #[test]
+    fn probe_that_states_a_cost_exits_0_and_pays_what_moved() {
+        let purse = Fake::new();
+        let report = paid_probe(&purse, 60, true, || report(Exit::Success, "rejected")).unwrap();
+        assert_eq!(report.exit, Exit::Success);
+        assert_eq!(report.json["paid"], 0);
+        assert_eq!(purse.remaining.get(), 250);
     }
 }

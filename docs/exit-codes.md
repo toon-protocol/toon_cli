@@ -238,8 +238,8 @@ amount and publishes only with `--yes`, under the spending limit, paying from th
 node's own connector over a peering. If no peering of the agent node reaches
 the relay's `ilp_address` it fails with `peering_needed` and creates nothing (when a peering already reaches the `connector_url`, the message asks only for a `route add`). The report has
 the same outcomes as a publish to the own relay, plus `relay` and `paid`: the amount sent, or,
-when the packet was rejected, what the agent node's outbound channels moved by across it (`0`
-when none did). The amount is the relay's price unless `--amount <n>` states
+when the packet was rejected or fulfilled with the wrong fulfilment, what the agent node's
+outbound channels moved by across it (`0` when none did), at most the amount. The amount is the relay's price unless `--amount <n>` states
 another: `toon` sends exactly `n`, never probes for the path's cost, and refuses an `--amount`
 below the relay's price with `usage` before anything is signed. A connector between this agent
 node and the relay may charge to forward the write and rejects any other amount than its

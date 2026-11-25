@@ -355,6 +355,18 @@ pub fn spend<T, M: Into<Moved> + Copy>(
     yes: bool,
     act: impl FnOnce() -> Spent<T, M>,
 ) -> Result<T, Error> {
+    let day = charge(home, amount, yes)?;
+    let outcome = act();
+    let kept = kept(&outcome, amount);
+    if kept < amount {
+        refund(home, day, amount - kept);
+    }
+    outcome.map(|(report, _)| report)
+}
+
+/// Count `amount` against the day, which is the first half of [`spend`]: it needs `--yes`
+/// and must fit both limits. The day it was counted on is what [`refund`] takes back from.
+pub fn charge(home: &Path, amount: u128, yes: bool) -> Result<u64, Error> {
     if !yes {
         return Err(Error {
             nothing_sent: false,
@@ -376,8 +388,13 @@ pub fn spend<T, M: Into<Moved> + Copy>(
             .map_err(|refusal| limit_error(refusal.message(amount)))?;
         write_ledger(home, charged)
     })?;
-    let outcome = act();
-    let kept = match &outcome {
+    Ok(day)
+}
+
+/// What stays counted out of `amount` after a command that was counted for it ended in
+/// `outcome`.
+pub fn kept<T, M: Into<Moved> + Copy>(outcome: &Spent<T, M>, amount: u128) -> u128 {
+    match outcome {
         Ok((_, moved)) => (*moved).into().of(amount),
         Err(error) if failed_before_paying(error) => 0,
         // A packet nobody answered cost what the watermarks moved by.
@@ -386,15 +403,15 @@ pub fn spend<T, M: Into<Moved> + Copy>(
             ..
         }) => unanswered.paid.min(amount),
         Err(_) => amount,
-    };
-    if kept < amount {
-        // The rest is free again. A failure to take it back leaves it counted, which
-        // errs on the side of the limit.
-        let _ = locked(home, || {
-            write_ledger(home, read_ledger(home)?.refund(day, amount - kept))
-        });
     }
-    outcome.map(|(report, _)| report)
+}
+
+/// Give `amount` back to the day it was counted on. A failure to take it back leaves it
+/// counted, which errs on the side of the limit.
+pub fn refund(home: &Path, day: u64, amount: u128) {
+    let _ = locked(home, || {
+        write_ledger(home, read_ledger(home)?.refund(day, amount))
+    });
 }
 
 /// Whether `amount` fits the per-command limit and what is left of today's, without
@@ -439,13 +456,17 @@ pub fn spend_packets<T, M: Into<Moved> + Copy>(
     yes: bool,
     act: impl FnOnce(&Packets) -> Spent<T, M>,
 ) -> Result<T, Error> {
-    spend(home, amount, yes, || {
-        locked_by(&home.join("packets.lock"), || {
-            act(&Packets {
-                home,
-                before: operator::outbound_watermark(home).ok().flatten(),
-            })
-        })
+    spend(home, amount, yes, || packets_locked(home, act)?)
+}
+
+/// Run `act` with the watermarks as they stand before, holding the lock that keeps another
+/// packet-sending command of this agent node from moving them meanwhile.
+pub fn packets_locked<T>(home: &Path, act: impl FnOnce(&Packets) -> T) -> Result<T, Error> {
+    locked_by(&home.join("packets.lock"), || {
+        Ok(act(&Packets {
+            home,
+            before: operator::outbound_watermark(home).ok().flatten(),
+        }))
     })
 }
 

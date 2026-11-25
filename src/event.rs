@@ -24,8 +24,8 @@ use crate::keystore;
 use crate::node;
 use crate::operator::{self, Answer};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::payer;
 use crate::relay_url::{self, RelayUrl};
-use crate::spending;
 use crate::tls;
 
 /// How long a relay gets to answer each message of a query.
@@ -732,15 +732,16 @@ pub fn pay_write(
 ) -> Result<Report, Error> {
     let price = edge.price;
     let sent: u128 = amount.into();
-    spending::spend_packets(home, sent, true, |packets| {
-        let mut report = write_to(home, event, &edge.ilp_address, amount, Some(&edge.seal_key))
-            .map_err(|error| operator::repriced(error, packets.moved(sent)))?;
-        // A fulfilled packet moved money, whatever the relay or its fulfilment said. A
-        // rejected one moved what its channels moved by.
-        let rejected = report.json["outcome"] == "rejected";
-        let paid = if rejected { packets.moved(sent) } else { sent };
+    payer::pay(&payer::Wallet::new(home), sent, true, |packets| {
+        let (mut report, paid) = packets.send(sent, || {
+            write_to(home, event, &edge.ilp_address, amount, Some(&edge.seal_key))
+        })?;
+        // A rejected or wrongly fulfilled packet moved what its channels moved by.
+        let rejected = matches!(
+            report.json["outcome"].as_str(),
+            Some("rejected" | "wrong_fulfilment")
+        );
         report.json["relay"] = json!(relay);
-        report.json["paid"] = json!(paid);
         if rejected {
             if paid > 0 {
                 report.text = format!("{} It cost {paid} base units.", report.text);
