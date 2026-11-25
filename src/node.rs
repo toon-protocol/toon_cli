@@ -1331,39 +1331,18 @@ pub fn concrete(listen: &str) -> Result<String, Error> {
     Ok(format!("{host}:{free}"))
 }
 
-/// Where an app's write port is reached, by the app's name.
-pub type Addresses = [(String, SocketAddr)];
-
-/// Render the connector config of `app` into `home` and check it with the connector's
-/// own validation. `addresses` is where each app that runs is reached; a route is
-/// rendered for an app that has no address yet only if the operator serves it. `overlay` is
-/// what a hidden service is rendered with: an app that is one has no config without it, and
-/// one that is not ignores it. The config is written whether or not it validates, so that the
-/// error can be read against it; a caller that gets `Err` starts nothing.
-pub fn render(
-    home: &Path,
+/// The text of the connector config of `app`: a pure function of what it is given. It reads
+/// no file, writes none and opens no port. `listen` is the concrete address the connector
+/// binds, `operator` whether the operator surface is rendered, and `overlay` is the
+/// overlay of a hidden service, none for any other. See `render` for `addresses`.
+pub fn config_text(
     app: &ToonApp,
     addresses: &Addresses,
     overlay: Option<&Overlay>,
-) -> Result<ConnectorFiles, Error> {
-    let overlay = match (&app.reach, overlay) {
-        (Reach::Hidden, Some(overlay)) => Some(overlay),
-        (Reach::Hidden, None) => {
-            return Err(Error {
-                nothing_sent: false,
-                unanswered: None,
-                code: ErrorCode::OverlayUnavailable,
-                message: format!(
-                    "{} is a hidden service and the overlay is not there to render it with.",
-                    app.name
-                ),
-            })
-        }
-        (Reach::Clearnet { .. }, _) => None,
-    };
-    let files = ConnectorFiles::of(home, app.connector);
-    let operator = write_operator_files(home, &files, &app.name)?;
-    let listen = concrete(&app.listen)?;
+    files: &ConnectorFiles,
+    listen: &str,
+    operator: bool,
+) -> Result<String, Error> {
     // `socks_proxy` is one top-level key, so it goes before the first table: all the
     // connector dials out goes through it, and `socks5h` because no local resolver
     // resolves an onion name.
@@ -1395,7 +1374,7 @@ pub fn render(
          client_edge_addr = {}\nstate_dir = {}\npeer_expose = \"http\"\n{}{socks}\n\
          [node]\naddresses = [{}]\nhttp_endpoint = {}\n{btp_endpoint}\n\
          [signer]\nkey_file = {}\n",
-        string(&listen),
+        string(listen),
         string(&files.state_dir.to_string_lossy()),
         if app.plaintext_peers {
             "peer_allow_plaintext_endpoints = true\n"
@@ -1502,8 +1481,45 @@ pub fn render(
         ));
     }
     if let Some(zk) = &app.zk_edge {
-        config.push_str(&zk_tables(zk, app, &files, overlay)?);
+        config.push_str(&zk_tables(zk, app, files, overlay)?);
     }
+    Ok(config)
+}
+
+/// Where an app's write port is reached, by the app's name.
+pub type Addresses = [(String, SocketAddr)];
+
+/// Render the connector config of `app` into `home` and check it with the connector's
+/// own validation. `addresses` is where each app that runs is reached; a route is
+/// rendered for an app that has no address yet only if the operator serves it. `overlay` is
+/// what a hidden service is rendered with: an app that is one has no config without it, and
+/// one that is not ignores it. The config is written whether or not it validates, so that the
+/// error can be read against it; a caller that gets `Err` starts nothing.
+pub fn render(
+    home: &Path,
+    app: &ToonApp,
+    addresses: &Addresses,
+    overlay: Option<&Overlay>,
+) -> Result<ConnectorFiles, Error> {
+    let overlay = match (&app.reach, overlay) {
+        (Reach::Hidden, Some(overlay)) => Some(overlay),
+        (Reach::Hidden, None) => {
+            return Err(Error {
+                nothing_sent: false,
+                unanswered: None,
+                code: ErrorCode::OverlayUnavailable,
+                message: format!(
+                    "{} is a hidden service and the overlay is not there to render it with.",
+                    app.name
+                ),
+            })
+        }
+        (Reach::Clearnet { .. }, _) => None,
+    };
+    let files = ConnectorFiles::of(home, app.connector);
+    let operator = write_operator_files(home, &files, &app.name)?;
+    let listen = concrete(&app.listen)?;
+    let config = config_text(app, addresses, overlay, &files, &listen, operator)?;
     write(&files.config, config.as_bytes(), 0o600)?;
     fs::create_dir_all(&files.state_dir).map_err(|source| io(&files.state_dir, source))?;
     connector_cli::load_config(&["toon connector", &files.config.to_string_lossy()]).map_err(
@@ -1691,5 +1707,283 @@ mod tests {
         let state = State::from_json(&recorded).unwrap();
         assert_eq!(state.peerings["first"], "http://127.0.0.1:1/ilp");
         assert_eq!(State::from_json(&state.json()).unwrap(), state);
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+
+    /// One kind of TOON app, with where its apps are reached and what it is rendered with.
+    struct Kind {
+        name: &'static str,
+        app: ToonApp,
+        addresses: Vec<(String, SocketAddr)>,
+        overlay: Option<Overlay>,
+        operator: bool,
+    }
+
+    fn app(name: &str, reach: Reach) -> ToonApp {
+        ToonApp {
+            name: name.into(),
+            connector: 0,
+            segment: "seg".into(),
+            reach,
+            listen: "127.0.0.1:4100".into(),
+            evm: None,
+            solana: None,
+            plaintext_peers: false,
+            apps: Vec::new(),
+            relay: RelaySettings::default(),
+            tip: None,
+            zk_edge: None,
+        }
+    }
+
+    fn clearnet() -> Reach {
+        Reach::Clearnet {
+            hostname: "toon.example".into(),
+        }
+    }
+
+    fn image(name: &str, prefix: &str) -> App {
+        App {
+            source: Source::Image("registry.example/shop:1".into()),
+            name: name.into(),
+            prefix: prefix.into(),
+            price: 7,
+            ..App::relay("seg")
+        }
+    }
+
+    fn evm() -> Evm {
+        Evm {
+            chain_id: 31337,
+            rpc_url: "http://127.0.0.1:8545".into(),
+            token: "0x5FbDB2315678afecb367f032d93F642f64180aa3".into(),
+            decimals: 6,
+            asset_code: Some("USDC".into()),
+            asset_name: "USD Coin".into(),
+            asset_version: "2".into(),
+            transfer_method: "eip3009".into(),
+        }
+    }
+
+    fn solana() -> Solana {
+        Solana {
+            rpc_url: "http://127.0.0.1:8899".into(),
+            token: "34eSxY7qxQ4GzyhDJ8GpUcTz1WWzruGbJbR8q6TtxfQU".into(),
+            decimals: 6,
+        }
+    }
+
+    fn at(port: u16) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], port))
+    }
+
+    fn overlay() -> Overlay {
+        Overlay {
+            proxy: at(9050),
+            endpoint: "abcdefghijklmnop.anon".into(),
+        }
+    }
+
+    fn kinds() -> Vec<Kind> {
+        let kind = |name, app, addresses, overlay, operator| Kind {
+            name,
+            app,
+            addresses,
+            overlay,
+            operator,
+        };
+        let mut shop = app("shop", clearnet());
+        shop.apps = vec![image("shop", "g.toon.seg.shop")];
+        let mut hidden = app("hidden", Reach::Hidden);
+        hidden.apps = vec![image("shop", "g.toon.seg.shop")];
+        let mut relay = app("relay", clearnet());
+        relay.apps = vec![App::relay("seg")];
+        let mut selling = relay.clone();
+        selling.relay.subscribe_price = Some(3);
+        selling.relay.broadcast_price = Some(1);
+        let mut tip = app("tip", clearnet());
+        tip.tip = Some(Tip {
+            minimum: 5,
+            port: 4200,
+        });
+        let mut settling_evm = app("evm", clearnet());
+        settling_evm.evm = Some(evm());
+        let mut settling_solana = app("solana", clearnet());
+        settling_solana.solana = Some(solana());
+        let mut zk = app("zk", clearnet());
+        zk.evm = Some(evm());
+        zk.zk_edge = Some(ZkEdge {
+            vault: "B62qkYa1o6Mj6uTTjDQCob7FYZspuhkm4RRQhgJg9j4koEBWiSrTQrS".into(),
+            network: "mina:devnet".into(),
+            graphql_url: "http://127.0.0.1:8080/graphql".into(),
+            archive_url: "http://127.0.0.1:8081/graphql".into(),
+            tiers: vec![100_000_000, 1_000_000_000],
+            zk_allowance_lifetime_secs: 3600,
+            open_budget_cap: 10_000_000_000,
+            subsidy_budget: 0,
+            rate: Some(Rate::parse("0.40").unwrap()),
+        });
+        vec![
+            kind(
+                "clearnet-image",
+                shop,
+                vec![("shop".into(), at(4101))],
+                None,
+                false,
+            ),
+            kind(
+                "hidden",
+                hidden,
+                vec![("shop".into(), at(4101))],
+                Some(overlay()),
+                false,
+            ),
+            kind(
+                "relay",
+                relay,
+                vec![("relay".into(), at(4102))],
+                None,
+                false,
+            ),
+            kind(
+                "relay-selling",
+                selling,
+                vec![("relay".into(), at(4102))],
+                None,
+                false,
+            ),
+            kind("tip", tip, Vec::new(), None, false),
+            kind(
+                "operator",
+                app("operator", clearnet()),
+                Vec::new(),
+                None,
+                true,
+            ),
+            kind("evm", settling_evm, Vec::new(), None, false),
+            kind("solana", settling_solana, Vec::new(), None, false),
+            kind("zk-edge", zk, Vec::new(), None, false),
+        ]
+    }
+
+    /// The text of `kind` for a home at `home`.
+    fn text(kind: &Kind, home: &Path) -> String {
+        let files = ConnectorFiles::of(home, kind.app.connector);
+        config_text(
+            &kind.app,
+            &kind.addresses,
+            kind.overlay.as_ref(),
+            &files,
+            &kind.app.listen,
+            kind.operator,
+        )
+        .unwrap()
+    }
+
+    /// The table of `kind` that its test is about: removing it must fail the test.
+    fn table(name: &str) -> &'static str {
+        match name {
+            "clearnet-image" | "hidden" => "[[routes]]",
+            "relay" => "/write-ephemeral",
+            "relay-selling" => "/subscribe",
+            "tip" => "payment = true",
+            "operator" => "[operator]",
+            "evm" => "[settlement.eip155.31337]",
+            "solana" => "[settlement.solana]",
+            _ => "[zk_note]",
+        }
+    }
+
+    /// Whether `connector_cli::load_config` accepts `text` written beside the key files it
+    /// names.
+    fn loads(kind: &Kind, text: &str) -> Result<(), String> {
+        let home = tempfile::tempdir().unwrap();
+        let files = ConnectorFiles::of(home.path(), kind.app.connector);
+        let text = text.replace("{HOME}", &home.path().to_string_lossy());
+        fs::create_dir_all(&files.state_dir).unwrap();
+        for key in [
+            &files.identity_key,
+            &files.settlement_key,
+            &files.solana_settlement_key,
+        ] {
+            fs::write(key, [7u8; 32]).unwrap();
+        }
+        fs::write(
+            &files.zk_state_key,
+            "EKEQc95PPQZnMY9d9p1vWjCqRNv5mP6ApwX2vWYvwEiGEEhVvkB8",
+        )
+        .unwrap();
+        fs::write(&files.bearer_token, "token").unwrap();
+        fs::write(&files.write_keys, format!("{}\n", "ab".repeat(32))).unwrap();
+        fs::write(&files.controller_keys, "").unwrap();
+        fs::write(&files.config, text).unwrap();
+        connector_cli::load_config(&["toon connector", &files.config.to_string_lossy()])
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    fn check(name: &str) {
+        let kind = kinds().into_iter().find(|kind| kind.name == name).unwrap();
+        let text = text(&kind, Path::new("{HOME}"));
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/vectors/render")
+            .join(format!("{name}.toml"));
+        assert_eq!(
+            text,
+            fs::read_to_string(fixture).unwrap(),
+            "the text of {name} changed"
+        );
+        loads(&kind, &text).unwrap_or_else(|error| panic!("{name}: {error}\n{text}"));
+        // The test fails if the table it is about is gone, from the fixture or from the text.
+        assert!(text.contains(table(name)), "{name}: no {}", table(name));
+    }
+
+    #[test]
+    fn render_a_clearnet_connector_with_one_image_app() {
+        check("clearnet-image");
+    }
+
+    #[test]
+    fn render_a_hidden_service() {
+        check("hidden");
+    }
+
+    #[test]
+    fn render_a_relay_with_its_ephemeral_route() {
+        check("relay");
+    }
+
+    #[test]
+    fn render_a_relay_that_sells_its_feed() {
+        check("relay-selling");
+    }
+
+    #[test]
+    fn render_a_tip_route() {
+        check("tip");
+    }
+
+    #[test]
+    fn render_an_operator_surface() {
+        check("operator");
+    }
+
+    #[test]
+    fn render_evm_settlement() {
+        check("evm");
+    }
+
+    #[test]
+    fn render_solana_settlement() {
+        check("solana");
+    }
+
+    #[test]
+    fn render_a_zk_edge() {
+        check("zk-edge");
     }
 }

@@ -1,0 +1,17 @@
+# Rendered by `toon` from state.json. Edits here are overwritten.
+client_edge_addr = "127.0.0.1:4100"
+state_dir = "{HOME}/connectors/0/state"
+peer_expose = "http"
+
+[node]
+addresses = ["g.toon.seg"]
+http_endpoint = "http://127.0.0.1:4100/ilp"
+
+[signer]
+key_file = "{HOME}/connectors/0/identity.key"
+
+[operator]
+bearer_token_file = "{HOME}/connectors/0/operator-bearer-token"
+write_keys_file = "{HOME}/connectors/0/operator-write-keys"
+controller_keys_file = "{HOME}/connectors/0/operator-controller-keys"
+packet_history = 1000
