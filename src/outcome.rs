@@ -119,7 +119,7 @@ mod tests {
     use super::ErrorCode;
 
     /// The binary's error codes are the ones `tests/error_codes.txt` fixes, which
-    /// `tests/exit_codes.rs` checks against `docs/exit-codes.md`.
+    /// `tests/integration/exit_codes.rs` checks against `docs/exit-codes.md`.
     #[test]
     fn the_error_codes_are_the_ones_the_tests_fix() {
         let fixed = include_str!("../tests/error_codes.txt");

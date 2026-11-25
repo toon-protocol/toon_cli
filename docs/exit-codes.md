@@ -2,7 +2,7 @@
 
 Both are part of `toon`'s interface. A code is added, and never renumbered or given a
 new meaning, so a script or an agent can branch on it across releases.
-`tests/exit_codes.rs` holds a copy of both lists and fails when the exit codes here,
+`tests/integration/exit_codes.rs` holds a copy of both lists and fails when the exit codes here,
 the ones `toon --help` prints, and that copy differ, or when an error code in that copy
 is missing here. Add a new code to the test and to this file together.
 

@@ -8,4 +8,4 @@ We chose a citation over a copy in `nips/`, which would give the draft two sourc
 
 - A change to a cited draft is made in its own repository first, and the CLI follows in an ordinary PR, as for a draft here.
 - Work on a command that follows a cited draft waits until the draft is on its owner's `main`, so the link resolves.
-- `tests/nips.rs` checks only the drafts in `nips/`. Nothing here notices when a cited draft changes under the CLI.
+- `tests/integration/nips.rs` checks only the drafts in `nips/`. Nothing here notices when a cited draft changes under the CLI.

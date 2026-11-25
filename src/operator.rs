@@ -2682,7 +2682,7 @@ mod tests {
 
     /// The timeout repeat is keyed on the start of the connector's refusal, a string literal
     /// in its crates, and on the reason reqwest gives a read that outlasted its wait.
-    /// `tests/peer_unread.rs` pins the pair through the running connector.
+    /// `tests/integration/peer_unread.rs` pins the pair through the running connector.
     #[test]
     fn the_connectors_unread_wording_is_pinned() {
         let binary = embedded_connector();
@@ -2845,14 +2845,14 @@ mod tests {
 
     /// The connector keeps its wording for a replayed signature in a private type, so it is
     /// pinned through the running connector, by
-    /// `the_connectors_replay_wording_is_pinned` in `tests/peer.rs`. This keeps that test
+    /// `the_connectors_replay_wording_is_pinned` in `tests/integration/peer.rs`. This keeps that test
     /// on the wording the repeat is keyed on.
     #[test]
     fn the_replay_wording_pinned_is_the_one_the_repeat_is_keyed_on() {
-        let pinned = include_str!("../tests/peer.rs");
+        let pinned = include_str!("../tests/integration/peer.rs");
         assert!(
             pinned.contains(&format!("text.contains({REPLAYED:?})")),
-            "tests/peer.rs no longer pins {REPLAYED:?}"
+            "tests/integration/peer.rs no longer pins {REPLAYED:?}"
         );
     }
 

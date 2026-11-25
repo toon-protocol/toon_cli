@@ -15,10 +15,10 @@ Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/age
 ## The crate
 
 One Rust crate, `toon-cli`, at the repository root; it builds the binary `toon`.
-Tests live in `tests/` and go through one seam: `tests/support` runs the built binary
+Tests live in `tests/integration/`, one integration-test binary (`main.rs` declares a module per file), and go through one seam: `tests/integration/support` runs the built binary
 against a temporary home directory, and a test asserts on its output, its exit code,
 the files it leaves, and what a connector it started answers over loopback. Exit codes and error codes are part of the interface and are listed
-in `docs/exit-codes.md`. `tests/exit_codes.rs` keeps its own copy of the exit codes, and `tests/error_codes.txt`
+in `docs/exit-codes.md`. `tests/integration/exit_codes.rs` keeps its own copy of the exit codes, and `tests/error_codes.txt`
 holds the error codes; both are checked against that file, the exit codes against
 `toon --help` too. Add an error code to `src/error_codes.table`, `tests/error_codes.txt`
 and the table in `docs/exit-codes.md` together. Those lists take one line to a code and
@@ -27,8 +27,8 @@ merge as a union (`.gitattributes`), so codes added on two branches do not confl
 ## Draft NIPs
 
 `nips/` holds the draft NIPs that ship with the CLI, each written from `nips/TEMPLATE.md`
-and listed in `nips/README.md`; `tests/nips.rs` checks both by reading the files, as
-`tests/exit_codes.rs` reads its document. A draft is the single source
+and listed in `nips/README.md`; `tests/integration/nips.rs` checks both by reading the files, as
+`tests/integration/exit_codes.rs` reads its document. A draft is the single source
 for what implements it: `nips/paid-subscription.md` for the subscribe commands, the fake
 remote relay and the Rust relay, `nips/proposals-as-events.md` for `toon nip publish`.
 The skill for authoring a NIP, `authoring-a-nip`, now lives in the `toon-nostr` plugin of
@@ -42,7 +42,7 @@ commit, `vendor/toon-plugins/REV` (a full SHA; ADR 0013). `build.rs` compiles ev
 under it into `toon skill install`, `list` and `show`, and fails the build if `REV` is not a
 full SHA. Do not edit the copy: change a skill in `toon-plugins`, then refresh with
 `scripts/vendor-toon-plugins.sh <sha>` in an ordinary PR. `toon-client` is never vendored.
-`tests/skill.rs` checks that every command a vendored skill names exists, and that the
+`tests/integration/skill.rs` checks that every command a vendored skill names exists, and that the
 `toon_cli` range in the `sending-with-toon-cli` frontmatter includes this crate's version.
 
 ## The vendored wire fixtures
@@ -68,10 +68,10 @@ connector's own `Cargo.lock` at that revision, then run `cargo build` once witho
 embedded connector on the dependency versions the connector was tested with.
 
 `toon up` starts `toon connector <config>`, a hidden command, as a child process
-(`src/connector.rs`). Tests that start a connector use `tests/support/fake_chain.rs`,
+(`src/connector.rs`). Tests that start a connector use `tests/integration/support/fake_chain.rs`,
 the connector's `FakeRpc` answering as an EVM chain with x402 deployed. It holds no
 channels and accepts no transaction: enough for a connector to start, not for a test
-that moves money. A test that moves money uses `tests/support/local_chain.rs`: a
+that moves money. A test that moves money uses `tests/integration/support/local_chain.rs`: a
 disposable `anvil` with x402's contracts and a USDC on it, from the connector's
 `test-util` fixtures. It skips where `anvil` is missing, except under CI, where it fails,
 so CI installs Foundry in a `uses:` step.

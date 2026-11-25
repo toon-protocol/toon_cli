@@ -20,7 +20,7 @@ The Deployment draft, which specifies the TOON Compute Deployment (kind 30437) t
 ## Writing one
 
 Copy [`TEMPLATE.md`](TEMPLATE.md) to a file named after the draft, keep its `##`
-headings in their order, and add a row to the table above. `tests/nips.rs` fails a
+headings in their order, and add a row to the table above. `tests/integration/nips.rs` fails a
 draft that drops a section, does not say `draft` under its title, or is missing from
 the table.
 
