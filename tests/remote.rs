@@ -299,6 +299,56 @@ fn a_send_and_what_is_left_of_the_limit_are_the_connectors() {
 }
 
 #[test]
+fn a_send_over_the_keys_per_write_limit_is_refused_before_any_packet_is_sent() {
+    let node = node();
+    let (key, _) = node.create(&["--max-per-command", "5", "--max-per-day", "100"]);
+    let relay = node.machine.relay_prefix();
+
+    let over = node.agent(&key, &["send", &relay, "--amount", "6", "--yes", "--json"]);
+
+    assert_eq!(over.exit_code, 1, "{}{}", over.stdout, over.stderr);
+    assert_eq!(
+        over.json()["error"]["code"],
+        "spending_limit",
+        "{}",
+        over.stdout
+    );
+    let after = node.agent(&key, &["limit", "show", "--json"]);
+    assert_eq!(after.json()["limits"]["relay"]["remaining_today"], "100");
+}
+
+#[test]
+fn a_send_over_what_is_left_of_the_keys_day_is_refused_before_any_packet_is_sent() {
+    let node = node();
+    let (key, _) = node.create(&["--max-per-command", "5", "--max-per-day", "5"]);
+    let relay = node.machine.relay_prefix();
+    let spent = node.agent(&key, &["send", &relay, "--amount", "3", "--yes", "--json"]);
+    assert!(spent.exit_code <= 1, "{}{}", spent.stdout, spent.stderr);
+
+    let over = node.agent(&key, &["send", &relay, "--amount", "3", "--yes", "--json"]);
+
+    assert_eq!(over.exit_code, 1, "{}{}", over.stdout, over.stderr);
+    assert_eq!(
+        over.json()["error"]["code"],
+        "spending_limit",
+        "{}",
+        over.stdout
+    );
+}
+
+#[test]
+fn a_keys_send_reports_paid_as_the_payer_measured_it() {
+    let node = node();
+    let (key, _) = node.create(&["--max-per-command", "5", "--max-per-day", "100"]);
+    let relay = node.machine.relay_prefix();
+
+    let sent = node.agent(&key, &["send", &relay, "--amount", "0", "--yes", "--json"]);
+
+    assert_eq!(sent.exit_code, 0, "{}{}", sent.stdout, sent.stderr);
+    assert_eq!(sent.json()["paid"], 0, "{}", sent.stdout);
+}
+
+#[test]
 fn a_peering_outside_the_keys_scope_or_limit_is_refused_by_the_connector() {
     let node = node();
     let (no_peer, _) = node.create(&["--scope", "status,send"]);
