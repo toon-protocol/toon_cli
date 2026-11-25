@@ -68,14 +68,59 @@ pub const PASSPHRASE: &str = "correct horse battery staple";
 /// The fake relay of `examples/fake_relay.rs`, which cargo builds for the tests.
 pub fn fake_relay() -> PathBuf {
     let tests = std::env::current_exe().expect("the test binary's path");
-    let program = tests
-        .parent()
-        .and_then(Path::parent)
-        .expect("target/<profile>/deps/<test>")
-        .join("examples")
-        .join("fake_relay");
-    assert!(program.exists(), "{} is not built", program.display());
-    program
+    // Where cargo puts the example depends on its version and on whether the build
+    // directory is apart from the target directory, so look at every level above the
+    // test binary for the forms cargo uses, and take the newest:
+    // - `<profile>/examples/fake_relay`, the copy cargo hands out;
+    // - `<profile>/examples/fake_relay-<hash>`, the build's own before Rust 1.100;
+    // - `<profile>/build/<crate>/<hash>/out/fake_relay`, the build's own since Rust 1.100.
+    let mut candidates = Vec::new();
+    for dir in tests.ancestors().skip(1) {
+        let examples = dir.join("examples");
+        candidates.push(examples.join("fake_relay"));
+        let entries = |dir: &Path| {
+            std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>()
+        };
+        candidates.extend(entries(&examples).into_iter().filter(|path| {
+            path.extension().is_none()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("fake_relay-"))
+        }));
+        if dir.parent().and_then(Path::file_name) == Some("build".as_ref()) {
+            candidates.extend(
+                entries(dir)
+                    .into_iter()
+                    .map(|unit| unit.join("out").join("fake_relay")),
+            );
+        }
+    }
+    candidates
+        .into_iter()
+        .filter_map(|path| {
+            Some((
+                path.metadata()
+                    .ok()
+                    .filter(|m| m.is_file())?
+                    .modified()
+                    .ok()?,
+                path,
+            ))
+        })
+        .max()
+        .map(|(_, path)| path)
+        .unwrap_or_else(|| {
+            panic!(
+                "examples/fake_relay is not built beside {}",
+                tests.display()
+            )
+        })
 }
 
 /// The ports a machine's connector is given: below the ones `toon` picks by itself
