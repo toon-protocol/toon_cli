@@ -17,6 +17,7 @@ mod control;
 mod deployment;
 mod derive;
 mod describe;
+mod destination;
 mod egress;
 mod event;
 mod feed;

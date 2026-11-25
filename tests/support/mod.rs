@@ -66,26 +66,32 @@ pub const TEST_CHAIN_ID: u64 = 31_337;
 pub const PASSPHRASE: &str = "correct horse battery staple";
 
 /// The fake relay of `examples/fake_relay.rs`, which cargo builds for the tests.
+///
+/// Where Cargo puts it depends on its version and on whether the build directory is apart
+/// from the target directory, so look at every level above the test binary for each form
+/// Cargo uses, and take the newest:
+/// - `<profile>/examples/fake_relay`, the copy Cargo hands out;
+/// - `<profile>/examples/fake_relay-<hash>`, the build's own before Rust 1.100;
+/// - `<profile>/build/<crate>/<hash>/out/fake_relay`, the build's own since Rust 1.100;
+/// - `examples/fake_relay` beside the `toon` Cargo builds for the tests.
 pub fn fake_relay() -> PathBuf {
     let tests = std::env::current_exe().expect("the test binary's path");
-    // Where cargo puts the example depends on its version and on whether the build
-    // directory is apart from the target directory, so look at every level above the
-    // test binary for the forms cargo uses, and take the newest:
-    // - `<profile>/examples/fake_relay`, the copy cargo hands out;
-    // - `<profile>/examples/fake_relay-<hash>`, the build's own before Rust 1.100;
-    // - `<profile>/build/<crate>/<hash>/out/fake_relay`, the build's own since Rust 1.100.
-    let mut candidates = Vec::new();
+    let entries = |dir: &Path| {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>()
+    };
+    let mut candidates = vec![Path::new(env!("CARGO_BIN_EXE_toon"))
+        .parent()
+        .expect("target/<profile>/toon")
+        .join("examples")
+        .join("fake_relay")];
     for dir in tests.ancestors().skip(1) {
         let examples = dir.join("examples");
         candidates.push(examples.join("fake_relay"));
-        let entries = |dir: &Path| {
-            std::fs::read_dir(dir)
-                .into_iter()
-                .flatten()
-                .filter_map(Result::ok)
-                .map(|entry| entry.path())
-                .collect::<Vec<_>>()
-        };
         candidates.extend(entries(&examples).into_iter().filter(|path| {
             path.extension().is_none()
                 && path
@@ -115,12 +121,7 @@ pub fn fake_relay() -> PathBuf {
         })
         .max()
         .map(|(_, path)| path)
-        .unwrap_or_else(|| {
-            panic!(
-                "examples/fake_relay is not built beside {}",
-                tests.display()
-            )
-        })
+        .unwrap_or_else(|| panic!("examples/fake_relay is not built near {}", tests.display()))
 }
 
 /// The ports a machine's connector is given: below the ones `toon` picks by itself

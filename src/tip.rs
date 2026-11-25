@@ -16,6 +16,7 @@ use crate::agent_key::Key;
 use crate::apps;
 use crate::cli::TipCommand;
 use crate::describe;
+use crate::destination::{self, Destination};
 use crate::egress::Egress;
 use crate::event;
 use crate::inbox;
@@ -438,38 +439,6 @@ fn subject_tags(what: &[String]) -> Result<Vec<Value>, Error> {
         .collect()
 }
 
-/// A tip route as the event names it.
-struct Route {
-    connector_url: String,
-    ilp_address: String,
-    seal_key: [u8; 65],
-}
-
-fn route_of(event: &Value) -> Result<Route, String> {
-    let named = |name: &str| {
-        event["tags"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|tag| tag.as_array())
-            .find(|tag| tag.first().and_then(Value::as_str) == Some(name))
-            .and_then(|tag| tag.get(1))
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| format!("no `{name}`"))
-    };
-    let key = named("connector_seal_key")?;
-    let seal_key = hex::decode(key.trim_start_matches("0x"))
-        .ok()
-        .and_then(|bytes| <[u8; 65]>::try_from(bytes).ok())
-        .ok_or_else(|| format!("a `connector_seal_key` that is not 65 bytes of hex: {key}"))?;
-    Ok(Route {
-        connector_url: named("connector_url")?.to_owned(),
-        ilp_address: named("ilp_address")?.to_owned(),
-        seal_key,
-    })
-}
-
 /// The relays a tip route is looked for on: the agent node's own, the one its profile follows
 /// and the ones the operator names.
 fn relays_to_read(home: &Path, state: &State, named: &[String]) -> (Vec<String>, Vec<String>) {
@@ -499,7 +468,7 @@ fn find_route(
     state: &State,
     recipient: &str,
     named: &[String],
-) -> Result<(Value, Route), Error> {
+) -> Result<(Value, Destination), Error> {
     let (relays, mut unread) = relays_to_read(home, state, named);
     let egress = Egress::of(home)?;
     let filter = json!({ "kinds": [ROUTE], "authors": [recipient] });
@@ -540,7 +509,7 @@ fn find_route(
             ),
         ));
     };
-    let route = route_of(&newest).map_err(|why| {
+    let route = destination::tip_route(&newest).map_err(|why| {
         unsent(
             ErrorCode::TipRouteNotFound,
             format!(
@@ -561,7 +530,7 @@ fn check_route(
     recipient: &str,
     named: &[String],
     toon_app: Option<&str>,
-) -> Result<(Route, u128), Error> {
+) -> Result<(Destination, u128), Error> {
     let (_, route) = find_route(home, state, recipient, named)?;
     let egress = Egress::of(home)?;
     let description = describe::fetch(&egress, &route.connector_url)?;
@@ -660,7 +629,7 @@ pub(crate) fn read_cost(ilp_address: &str, answer: Answer) -> Result<(u128, bool
 }
 
 /// The probe of the path to the tip route: a packet of no amount, sealed to the pinned key.
-fn probe_answer(home: &Path, route: &Route) -> Result<Answer, Error> {
+fn probe_answer(home: &Path, route: &Destination) -> Result<Answer, Error> {
     operator::dispatch_with_headers(
         home,
         &route.ilp_address,

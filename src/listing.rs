@@ -8,6 +8,7 @@
 
 use serde_json::{json, Value};
 
+use crate::destination::{self, Destination};
 use crate::egress::Egress;
 use crate::event;
 use crate::nip19;
@@ -96,18 +97,11 @@ pub struct Listing {
     pub lease_interval_s: Option<u64>,
 }
 
-/// What a tenant reads from a Provider Profile.
-#[derive(Debug)]
-pub struct Profile {
-    pub ilp_address: String,
-    pub connector_url: String,
-    pub connector_seal_key: [u8; 65],
-}
-
 #[derive(Debug)]
 pub struct Resolved {
     pub listing: Listing,
-    pub profile: Profile,
+    /// Where the provider is paid, from its Profile.
+    pub profile: Destination,
 }
 
 fn content(event: &Value) -> Option<Value> {
@@ -129,29 +123,6 @@ fn authentic(event: &Value, kind: u64, author: &str) -> bool {
     event["kind"].as_u64() == Some(kind)
         && event["pubkey"].as_str() == Some(author)
         && event::verify(event).is_ok()
-}
-
-/// The `connector_seal_key`: 65 bytes of hex beginning `04`, with or without `0x`.
-pub fn seal_key(text: &str) -> Option<[u8; 65]> {
-    hex::decode(text.strip_prefix("0x").unwrap_or(text))
-        .ok()
-        .and_then(|key| key.try_into().ok())
-        .filter(|key: &[u8; 65]| key[0] == 0x04)
-}
-
-fn profile_of(event: &Value) -> Option<Profile> {
-    let content = content(event)?;
-    let text = |field: &str| {
-        content[field]
-            .as_str()
-            .filter(|text| !text.is_empty())
-            .map(str::to_owned)
-    };
-    Some(Profile {
-        ilp_address: text("ilp_address")?,
-        connector_url: text("connector_url")?,
-        connector_seal_key: seal_key(&text("connector_seal_key")?)?,
-    })
 }
 
 fn listing_of(event: &Value, name: &str) -> Option<Listing> {
@@ -257,7 +228,7 @@ pub fn resolve(
         .iter()
         .filter(|event| authentic(event, PROFILE_KIND, author))
         .max_by_key(|event| event["created_at"].as_u64())
-        .and_then(profile_of)
+        .and_then(destination::profile)
         .ok_or_else(|| {
             not_found(
                 ErrorCode::ListingNotFound,

@@ -1019,26 +1019,29 @@ mod tests {
     use super::*;
 
     /// The fake relay of `examples/fake_relay.rs`, built alongside the tests.
+    ///
+    /// Where Cargo puts it depends on its version and on whether the build directory is apart
+    /// from the target directory, so look at every level above the test binary for each form
+    /// Cargo uses, and take the newest:
+    /// - `<profile>/examples/fake_relay`, the copy Cargo hands out;
+    /// - `<profile>/examples/fake_relay-<hash>`, the build's own before Rust 1.100;
+    /// - `<profile>/build/<crate>/<hash>/out/fake_relay`, the build's own since Rust 1.100;
+    /// - `target/debug/examples/fake_relay` under the crate, the default target directory.
     fn fake_relay() -> PathBuf {
-        let tests = std::env::current_exe().expect("the test binary's path");
-        // Where cargo puts the example depends on its version and on whether the build
-        // directory is apart from the target directory, so look at every level above the
-        // test binary for the forms cargo uses, and take the newest:
-        // - `<profile>/examples/fake_relay`, the copy cargo hands out;
-        // - `<profile>/examples/fake_relay-<hash>`, the build's own before Rust 1.100;
-        // - `<profile>/build/<crate>/<hash>/out/fake_relay`, the build's own since Rust 1.100.
-        let mut candidates = Vec::new();
+        let tests = env::current_exe().expect("the test binary's path");
+        let entries = |dir: &Path| {
+            std::fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>()
+        };
+        let mut candidates =
+            vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/examples/fake_relay")];
         for dir in tests.ancestors().skip(1) {
             let examples = dir.join("examples");
             candidates.push(examples.join("fake_relay"));
-            let entries = |dir: &Path| {
-                std::fs::read_dir(dir)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Result::ok)
-                    .map(|entry| entry.path())
-                    .collect::<Vec<_>>()
-            };
             candidates.extend(entries(&examples).into_iter().filter(|path| {
                 path.extension().is_none()
                     && path
@@ -1068,12 +1071,7 @@ mod tests {
             })
             .max()
             .map(|(_, path)| path)
-            .unwrap_or_else(|| {
-                panic!(
-                    "examples/fake_relay is not built beside {}",
-                    tests.display()
-                )
-            })
+            .unwrap_or_else(|| panic!("examples/fake_relay is not built near {}", tests.display()))
     }
 
     fn spec(data_dir: &Path, image: &str) -> AppSpec {

@@ -160,6 +160,10 @@ _Avoid_: Node name, node id, namespace
 What a relay says about where a write to it is paid: the ILP address the write is sent to, the seal key of the connector that terminates it, and the price. A relay names its own write edge in its information document. The connector URL beside it is a location hint, not something the write depends on.
 _Avoid_: Paid edge, payment endpoint
 
+**Paid destination**:
+Where a packet is paid for and the key it is sealed to: an ILP address, a connector URL as a location hint, and a seal key of 65 bytes of hex beginning `04`, with or without `0x`. Four sources name one: a relay's information document, a tip route, a provider's Profile and the supervisor's reply to a `tip` order. A write edge is a paid destination with the price of a write there.
+_Avoid_: Edge, route, terms, for the whole of it
+
 **Hidden service**:
 The mode in which a connector is reachable only at an address inside the Anyone overlay, which public DNS cannot resolve. It is the default for a new TOON app.
 _Avoid_: Onion service, Tor service, dark node

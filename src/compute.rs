@@ -587,7 +587,7 @@ fn check_availability(
         Route::Availability,
         &destination,
         0,
-        &profile.connector_seal_key,
+        &profile.seal_key,
         &body,
     )?;
     match reply_of(answer) {
@@ -621,7 +621,7 @@ fn resolve_target(
     let resolved = listing::resolve(&renter.egress()?, &relays, &coordinate)?;
     // The Profile pins the key a packet is sealed to; the connector must say the same.
     let served = operator::identity(&renter.egress()?, &resolved.profile.connector_url)?;
-    if served != resolved.profile.connector_seal_key {
+    if served != resolved.profile.seal_key {
         return Err(unsent(
             ErrorCode::SealKeyMismatch,
             format!(
@@ -918,7 +918,7 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
                 provider: target.coordinate.author.clone(),
                 ilp_address: profile.ilp_address.clone(),
                 connector_url: profile.connector_url.clone(),
-                connector_seal_key: format!("0x{}", hex::encode(profile.connector_seal_key)),
+                connector_seal_key: format!("0x{}", hex::encode(profile.seal_key)),
                 listing: target.coordinate.text(),
                 listing_name: target.resolved.listing.name.clone(),
                 listing_version: target.resolved.listing.version,
@@ -1014,7 +1014,7 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
                         route,
                         &destination,
                         target.price,
-                        &profile.connector_seal_key,
+                        &profile.seal_key,
                         &request,
                     )
                     .inspect_err(|error| {
