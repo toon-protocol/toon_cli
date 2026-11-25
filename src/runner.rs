@@ -1019,16 +1019,20 @@ mod tests {
     use super::*;
 
     /// The fake relay of `examples/fake_relay.rs`, built alongside the tests.
+    ///
+    /// Cargo copies it to `<target>/<profile>/examples/`. The test binary is somewhere
+    /// below `<target>/<profile>` (`deps/` before Cargo 1.100, `build/<crate>/<hash>/out/`
+    /// since), or in a separate build directory, so look up from it, then in `target/`.
     fn fake_relay() -> PathBuf {
         let tests = env::current_exe().expect("the test binary's path");
+        let fallback = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug");
         let program = tests
-            .parent()
-            .and_then(Path::parent)
-            .expect("target/<profile>/deps/<test>")
-            .join("examples")
-            .join("fake_relay");
-        assert!(program.exists(), "{} is not built", program.display());
+            .ancestors()
+            .chain([fallback.as_path()])
+            .map(|dir| dir.join("examples").join("fake_relay"))
+            .find(|program| program.is_file());
         program
+            .unwrap_or_else(|| panic!("examples/fake_relay is not built near {}", tests.display()))
     }
 
     fn spec(data_dir: &Path, image: &str) -> AppSpec {
