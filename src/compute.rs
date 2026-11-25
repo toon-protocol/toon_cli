@@ -21,42 +21,45 @@ use crate::lease_file::{Claim, Lease, Leases, State};
 use crate::lease_request::{self, Request, Route};
 use crate::listing::{self, Resolved};
 use crate::node;
-use crate::operator::{self, Answer, Surface};
+use crate::operator::{self, Answer};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
-use crate::spending;
+use crate::payer::{self, Packet, Packets, Payer, Purse};
 
 /// How long a Lease Request is good for (spec §7.2, the Request window is longer).
 const REQUEST_TTL_S: u64 = 60;
 
-/// What an agent key may still spend, read from its connector: `None` states no limit.
-pub struct AgentLimit {
-    pub per_write: Option<u64>,
-    pub remaining_today: Option<u64>,
-    /// What the connector has counted against the key today, rejected packets in full.
-    pub counted_today: Option<u64>,
-}
-
 /// Signs and, if told to, publishes a Deployment's tags and content.
 pub type SignDeployment = Box<dyn Fn(&Tags, &str, bool) -> Result<(), Error>>;
 
-/// An agent key with no home.
+/// An agent key with no home: where its leases are kept, and how it signs a Deployment.
 pub struct AgentRenter {
-    pub surface: Surface,
     pub leases: Leases,
-    /// Read from the connector, for a command that pays, before its first packet.
-    pub limit: Option<AgentLimit>,
-    /// Reads the connector's `counted_today` again: `None` when it cannot be read.
-    pub counted_today: Box<dyn Fn() -> Option<u64>>,
     /// Signs a Deployment's tags with the agent identity (the `sign` order) and, when the last
     /// argument is true, writes it to the agent node's own relay. False signs and discards: a
     /// probe of the key's scope, free.
     pub sign_deployment: SignDeployment,
 }
 
-/// Who rents: the operator, or an agent key with no home.
-pub enum Renter<'a> {
+/// Where a renter's leases are kept: the home, or beside an agent key with no home.
+pub enum Holder<'a> {
     Home(&'a Path),
     Agent(Box<AgentRenter>),
+}
+
+/// Who rents: the payer of the packets, and the holder of the leases.
+pub struct Renter<'a> {
+    pub payer: Payer<'a>,
+    pub holder: Holder<'a>,
+}
+
+impl<'a> Renter<'a> {
+    /// The operator, renting with the home.
+    pub fn home(home: &'a Path) -> Self {
+        Renter {
+            payer: Payer::Wallet(payer::Wallet::new(home)),
+            holder: Holder::Home(home),
+        }
+    }
 }
 
 fn now() -> u64 {
@@ -270,16 +273,16 @@ fn reply_of(answer: Answer) -> Reply {
 
 impl Renter<'_> {
     fn leases(&self) -> Leases {
-        match self {
-            Renter::Home(home) => Leases::of_home(home),
-            Renter::Agent(agent) => agent.leases.clone(),
+        match &self.holder {
+            Holder::Home(home) => Leases::of_home(home),
+            Holder::Agent(agent) => agent.leases.clone(),
         }
     }
 
     fn egress(&self) -> Result<Egress, Error> {
-        match self {
-            Renter::Home(home) => Egress::of(home),
-            Renter::Agent(_) => Ok(Egress::direct()),
+        match &self.holder {
+            Holder::Home(home) => Egress::of(home),
+            Holder::Agent(_) => Ok(Egress::direct()),
         }
     }
 
@@ -294,31 +297,18 @@ impl Renter<'_> {
         body: &Value,
     ) -> Result<Answer, Error> {
         lease_request::check_shape(route, body)?;
-        let bytes = body.to_string().into_bytes();
-        match self {
-            Renter::Home(home) => operator::dispatch_with_headers(
-                home,
-                destination,
-                amount,
-                seal_key,
-                ("POST", "/"),
-                vec![("content-type".to_owned(), "application/json".to_owned())],
-                bytes,
-            ),
-            Renter::Agent(agent) => operator::write_sealed_as_agent(
-                &agent.surface,
-                destination,
-                amount,
-                seal_key,
-                bytes,
-            ),
-        }
+        self.payer.send(Packet {
+            destination,
+            amount,
+            seal_key: Some(seal_key),
+            body: body.to_string().into_bytes(),
+        })
     }
 
     /// Whether a packet to `ilp_address` leaves this agent node: a peering and a route are
     /// there. An agent key has no home to look in, and its connector answers.
     fn reaches(&self, ilp_address: &str, connector_url: &str) -> Result<(), Error> {
-        let Renter::Home(home) = self else {
+        let Holder::Home(home) = self.holder else {
             return Ok(());
         };
         if node::State::load(home)?.is_none() {
@@ -453,8 +443,10 @@ fn limits_refuse(
         };
         return Err(over(&counted, max));
     }
-    if let Renter::Home(home) = renter {
-        return spending::check(home, u128::from(total)).map_err(|error| Error {
+    renter
+        .payer
+        .check(u128::from(total), u128::from(price))
+        .map_err(|error| Error {
             nothing_sent: true,
             message: format!(
                 "The {what} would pay {}: {} Nothing was sent.",
@@ -462,65 +454,7 @@ fn limits_refuse(
                 error.message
             ),
             ..error
-        });
-    }
-    if let Renter::Agent(agent) = renter {
-        let Some(limit) = &agent.limit else {
-            return Ok(());
-        };
-        if let Some(per_write) = limit.per_write.filter(|limit| price > *limit) {
-            return Err(Error {
-                code: ErrorCode::SpendingLimit,
-                ..over(
-                    &format!(
-                        "the agent key's per-write limit (one packet pays {})",
-                        amount_text(price)
-                    ),
-                    per_write,
-                )
-            });
-        }
-        if let Some(remaining) = limit.remaining_today.filter(|left| total > *left) {
-            return Err(Error {
-                code: ErrorCode::SpendingLimit,
-                ..over("what is left of the agent key's per-day limit", remaining)
-            });
-        }
-    }
-    Ok(())
-}
-
-/// Pay `total` for a command that sends packets: through `toon limit` as one `spend_packets`
-/// call with a home, directly with an agent key. `act` is given what moved so far, capped:
-/// with an agent key, what the connector counted since the limit was read. A count that cannot
-/// be read says the whole cap moved, as `Packets::moved` does with a home.
-fn paying(
-    renter: &Renter,
-    total: u64,
-    act: impl FnOnce(&dyn Fn(u128) -> u128) -> Result<Report, Error>,
-) -> Result<Report, Error> {
-    match renter {
-        Renter::Home(home) => spending::spend_packets(home, u128::from(total), true, |packets| {
-            let result = act(&|cap| packets.moved(cap));
-            let paid = match &result {
-                Ok(_) => u128::from(total),
-                Err(error) => error
-                    .unanswered
-                    .as_ref()
-                    .map_or_else(|| packets.moved(u128::from(total)), |u| u.paid),
-            };
-            result.map(|report| (report, paid))
-        }),
-        Renter::Agent(agent) => {
-            let before = agent.limit.as_ref().and_then(|limit| limit.counted_today);
-            act(&|cap| match (before, (agent.counted_today)()) {
-                (Some(before), Some(after)) => after
-                    .checked_sub(before)
-                    .map_or(cap, |moved| u128::from(moved).min(cap)),
-                _ => cap,
-            })
-        }
-    }
+        })
 }
 
 fn relays_for(
@@ -530,7 +464,7 @@ fn relays_for(
 ) -> Result<Vec<String>, Error> {
     let mut relays: Vec<String> = args.relays.clone();
     relays.extend(coordinate.relays.iter().cloned());
-    if let Renter::Home(home) = renter {
+    if let Holder::Home(home) = renter.holder {
         relays.extend(node::State::load(home)?.and_then(|state| state.relay_url));
     }
     let mut seen = Vec::new();
@@ -540,12 +474,12 @@ fn relays_for(
         new
     });
     if relays.is_empty() {
-        return Err(usage(match renter {
-            Renter::Home(_) => {
+        return Err(usage(match renter.holder {
+            Holder::Home(_) => {
                 "There is no relay to read the Listing from: the naddr names none and the \
                  network profile follows none. Name one with --relay."
             }
-            Renter::Agent(_) => {
+            Holder::Agent(_) => {
                 "There is no relay to read the Listing from: an agent key has no home to read a \
                  relay from, and the naddr names none. Name one with --relay or give an naddr \
                  with relay hints."
@@ -729,48 +663,28 @@ fn plan(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Plan, Error> {
 // ---- what one command has paid and bought ----
 
 /// What the packets of one command have cost and bought so far, across every member of the
-/// lease. `moved` is the connector's own count of what left, for a packet nobody answered.
+/// lease. What each packet cost is the payer's.
 struct Ledger<'a> {
-    /// What the command pays in all, which caps what `moved` may say.
-    total: u64,
-    moved: &'a dyn Fn(u128) -> u128,
+    packets: &'a Packets<'a>,
     /// How many packets the command means to pay.
     wanted: u64,
-    counted: Cell<u64>,
     bought: Cell<u64>,
     /// Whether a packet failed that the provider may have received and acted on.
     unknown: Cell<bool>,
 }
 
 impl<'a> Ledger<'a> {
-    fn new(total: u64, moved: &'a dyn Fn(u128) -> u128, wanted: u64) -> Self {
+    fn new(packets: &'a Packets<'a>, wanted: u64) -> Self {
         Self {
-            total,
-            moved,
+            packets,
             wanted,
-            counted: Cell::new(0),
             bought: Cell::new(0),
             unknown: Cell::new(false),
         }
     }
 
-    /// A packet the provider answered, with a lease or an error: billed in full.
-    fn answered(&self, price: u64) -> u64 {
-        self.counted.set(self.counted.get().saturating_add(price));
-        price
-    }
-
-    /// A packet nobody answered, or the connector refused: what moved since the last packet,
-    /// at most its price.
-    fn unanswered(&self, price: u64) -> u64 {
-        let moved = u64::try_from((self.moved)(u128::from(self.total))).unwrap_or(self.total);
-        let amount = moved.saturating_sub(self.counted.get()).min(price);
-        self.counted.set(self.counted.get() + amount);
-        amount
-    }
-
     fn paid(&self) -> u64 {
-        self.counted.get()
+        u64::try_from(self.packets.paid()).unwrap_or(u64::MAX)
     }
 
     /// A packet that bought a Lease Interval.
@@ -782,6 +696,11 @@ impl<'a> Ledger<'a> {
     fn unknown_one(&self) {
         self.unknown.set(true);
     }
+}
+
+/// What a packet cost, in the lease file's terms.
+fn cost(paid: u128) -> u64 {
+    u64::try_from(paid).unwrap_or(u64::MAX)
 }
 
 fn short(provider: &str) -> &str {
@@ -973,8 +892,9 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
     }
 
     let leases = renter.leases();
-    paying(renter, total, |moved| -> Result<Report, Error> {
-        let ledger = Ledger::new(total, moved, intervals * targets.len() as u64);
+    let (total, largest) = (u128::from(total), u128::from(max_price));
+    payer::pay_packets(&renter.payer, total, largest, true, |packets| {
+        let ledger = Ledger::new(packets, intervals * targets.len() as u64);
         let mut members: Vec<Lease> = Vec::new();
         let mut access = Value::Null;
         let bought = (|| -> Result<(), Error> {
@@ -1009,14 +929,17 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
                 leases.write(&members).inspect_err(|_| {
                     members.pop();
                 })?;
-                let answer = renter
-                    .send(
-                        route,
-                        &destination,
-                        target.price,
-                        &profile.seal_key,
-                        &request,
-                    )
+                let answer = ledger
+                    .packets
+                    .priced(target.price.into(), || {
+                        renter.send(
+                            route,
+                            &destination,
+                            target.price,
+                            &profile.seal_key,
+                            &request,
+                        )
+                    })
                     .inspect_err(|error| {
                         if !error.nothing_sent {
                             return;
@@ -1078,13 +1001,13 @@ fn deploy(
     probe: bool,
 ) -> Result<(), Error> {
     let (tags, content) = deployment::for_lease(now(), claim, members, expires_at)?;
-    match renter {
-        Renter::Home(_) if probe => Ok(()),
-        Renter::Home(home) => {
+    match &renter.holder {
+        Holder::Home(_) if probe => Ok(()),
+        Holder::Home(home) => {
             deployment::publish_deployment(home, &claim.environment, tags, content, None)
                 .map(|_| ())
         }
-        Renter::Agent(agent) => (agent.sign_deployment)(&tags, &content, !probe),
+        Holder::Agent(agent) => (agent.sign_deployment)(&tags, &content, !probe),
     }
 }
 
@@ -1190,10 +1113,10 @@ fn settle_spawn(
     leases: &Leases,
     members: &mut [Lease],
     index: usize,
-    answer: Answer,
+    (answer, paid): (Answer, u128),
     ledger: &Ledger,
 ) -> Result<Value, Error> {
-    let price = members[index].price.unwrap_or_default();
+    let paid = cost(paid);
     let id = members[0].workload_id.clone();
     let what = if index == 0 {
         "the spawn".to_owned()
@@ -1202,7 +1125,7 @@ fn settle_spawn(
     };
     match reply_of(answer) {
         Reply::Body(body) => {
-            members[index].paid = ledger.answered(price);
+            members[index].paid = paid;
             let expires_at = body["expires_at"]
                 .as_u64()
                 .filter(|_| body["workload_id"] == id.as_str());
@@ -1234,7 +1157,7 @@ fn settle_spawn(
         }
         Reply::Error { error, message } => {
             let lease = &mut members[index];
-            lease.paid = ledger.answered(price);
+            lease.paid = paid;
             lease.state = State::Failed;
             lease.error = Some((error.clone(), message.clone()));
             let paid = lease.paid;
@@ -1257,7 +1180,7 @@ fn settle_spawn(
         // connection), so whether it took is not known, as with no answer at all.
         reply @ (Reply::Rejected { .. } | Reply::Unanswered | Reply::Strange(_)) => {
             let lease = &mut members[index];
-            lease.paid = ledger.unanswered(price);
+            lease.paid = paid;
             lease.state = State::Unknown;
             if let Reply::Rejected { code, message } = &reply {
                 lease.error = Some((format!("rejected {code}"), message.clone()));
@@ -1324,18 +1247,18 @@ fn extend_once(
         &member.listing_name,
         member.listing_version,
     );
-    let answer = renter.send(
-        route,
-        &destination,
-        price,
-        &member.seal_key()?,
-        &json!({ "workload_id": id }),
-    )?;
+    let seal_key = member.seal_key()?;
+    let (answer, billed) = ledger.packets.priced(price.into(), || {
+        renter.send(
+            route,
+            &destination,
+            price,
+            &seal_key,
+            &json!({ "workload_id": id }),
+        )
+    })?;
     let reply = reply_of(answer);
-    let billed = match &reply {
-        Reply::Body(_) | Reply::Error { .. } => ledger.answered(price),
-        _ => ledger.unanswered(price),
-    };
+    let billed = cost(billed);
     let lease = &mut members[index];
     lease.paid += billed;
     let cause = match reply {
@@ -1501,8 +1424,9 @@ pub fn extend(renter: &Renter, args: &ComputeExtendArgs) -> Result<Report, Error
     }
     // A changed lease limit is kept before anything is paid.
     leases.write(&members)?;
-    paying(renter, total, |moved| {
-        let ledger = Ledger::new(total, moved, args.intervals * live.len() as u64);
+    let (total, largest) = (u128::from(total), u128::from(max_price));
+    payer::pay_packets(&renter.payer, total, largest, true, |packets| {
+        let ledger = Ledger::new(packets, args.intervals * live.len() as u64);
         match extend_rounds(renter, &leases, &mut members, args.intervals, &ledger) {
             Ok(()) => Ok(announce(
                 renter,

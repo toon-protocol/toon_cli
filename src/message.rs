@@ -307,15 +307,17 @@ fn send_to(home: &Path, message: &Message, relay: &str, yes: bool) -> Result<Rep
         own: &own,
         relay,
         price,
+        free: false,
     };
+    let wallet = payer::Wallet::new(home);
     paid_wraps(
-        &payer::Wallet::new(home),
+        &wallet,
         yes,
         &paying,
         || write_copy(home, &sealed.to_sender),
         |wrap| {
-            event::write_to(
-                home,
+            event::write_through(
+                &wallet,
                 wrap.clone(),
                 &destination.ilp_address,
                 price,
@@ -334,6 +336,8 @@ struct Paying<'a> {
     own: &'a str,
     relay: &'a str,
     price: u64,
+    /// Whether the wraps go to the agent node's own relay, which is written free.
+    free: bool,
 }
 
 /// Write the sender's copy with `copy`, then each recipient's wrap with `write`, paid through
@@ -352,6 +356,7 @@ fn paid_wraps<P: payer::Purse>(
         own,
         relay,
         price,
+        free,
     } = *paying;
     let total = u128::from(price) * message.recipients.len() as u128;
     payer::pay(purse, total, yes, |packets| {
@@ -381,13 +386,11 @@ fn paid_wraps<P: payer::Purse>(
                 break;
             }
         }
-        Ok(report(
-            sealed,
-            message,
-            wraps,
-            Some(packets.paid()),
-            Some(relay),
-        ))
+        Ok(if free {
+            report(sealed, message, wraps, None, None)
+        } else {
+            report(sealed, message, wraps, Some(packets.paid()), Some(relay))
+        })
     })
 }
 
@@ -422,17 +425,17 @@ pub fn seal_order(home: &Path, body: &Value) -> Result<Value, Error> {
     }))
 }
 
-/// `toon message send` through an agent key (ADR 0010): `sealed` asks the supervisor to seal
-/// the message (the `seal` order), and `write` sends one wrap to the agent node's own relay,
-/// named in the answer, with the agent key, so the connector counts it. The sender's copy goes first and must be
-/// taken, as with the home.
-pub fn send_sealed(
+/// `toon message send` through an agent key (ADR 0010): `seal` asks the supervisor to seal
+/// the message (the `seal` order), and each wrap is written to the agent node's own relay,
+/// named in the answer, through `purse`, so the agent key's connector counts it. The sender's
+/// copy goes first and must be taken, as with the home.
+pub fn send_sealed<P: payer::Purse>(
+    purse: &P,
     body: &Value,
-    sealed: impl FnOnce(&Value) -> Result<Value, Error>,
-    write: impl Fn(&Value, &str) -> Result<Report, Error>,
+    seal: impl FnOnce(&Value) -> Result<Value, Error>,
 ) -> Result<Report, Error> {
     let message = message_of(body)?;
-    let answer = sealed(body)?;
+    let answer = seal(body)?;
     let malformed = || io("The supervisor's answer was not a sealed message.".to_owned());
     let wraps_of = |name: &str| -> Result<Vec<Value>, Error> {
         answer[name].as_array().cloned().ok_or_else(malformed)
@@ -451,16 +454,23 @@ pub fn send_sealed(
         .as_str()
         .unwrap_or_default()
         .to_owned();
-    copy_written(write(&sealed.to_sender, relay))?;
-    let mut wraps = vec![wrap_entry(&sealed.to_sender, &sender, relay, &published())];
-    for (recipient, wrap) in message.recipients.iter().zip(&sealed.to_recipients) {
-        let written = write(wrap, relay)?;
-        wraps.push(wrap_entry(wrap, recipient, relay, &written));
-        if written.json["outcome"] != "published" {
-            break;
-        }
-    }
-    Ok(report(&sealed, &message, wraps, None, None))
+    let paying = Paying {
+        sealed: &sealed,
+        message: &message,
+        sender: &sender,
+        own: relay,
+        relay,
+        price: 0,
+        free: true,
+    };
+    let write = |wrap: &Value| event::write_through(purse, wrap.clone(), relay, 0, None);
+    paid_wraps(
+        purse,
+        true,
+        &paying,
+        || copy_written(write(&sealed.to_sender)),
+        write,
+    )
 }
 
 /// `toon message`.
@@ -672,6 +682,7 @@ mod tests {
             own: "g.own",
             relay: "wss://elsewhere",
             price: 40,
+            free: false,
         };
         let mut writes = writes.into_iter();
         paid_wraps(

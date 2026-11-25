@@ -556,6 +556,11 @@ fn limit_or_scope(status: u16, text: &str) -> bool {
 }
 
 impl Surface {
+    /// The TOON app whose connector this is.
+    pub fn toon_app(&self) -> &str {
+        &self.toon_app
+    }
+
     /// The surface of the connector at `url` of the TOON app `toon_app`, reached with an
     /// agent key's `secret` and no home: reads and writes are signed, and nothing about the
     /// agent node is known beyond that.
@@ -1853,6 +1858,12 @@ fn is_onion_endpoint(url: &str) -> bool {
             host.ends_with(&format!(".{}", crate::overlay::TLD)) || host.ends_with(".onion")
         })
     })
+}
+
+/// The sealing key of this agent node's own connector, the one `--app` names, as a packet to
+/// it is sealed when no other key is given. Nothing has been sent when it fails.
+pub fn own_identity(home: &Path) -> Result<[u8; 65], Error> {
+    identity(&Egress::of(home)?, &format!("{}/ilp", surface(home)?.url))
 }
 
 /// The sealing key the connector at `seal_to` gives as its identity, asked for the way

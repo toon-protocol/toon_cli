@@ -447,18 +447,6 @@ impl Packets<'_> {
     }
 }
 
-/// [`spend`] for a command that sends packets. `act` is given the watermarks as they stand
-/// before, and no other packet-sending command of this agent node runs until it returns, so
-/// that what moved across it is its own.
-pub fn spend_packets<T, M: Into<Moved> + Copy>(
-    home: &Path,
-    amount: u128,
-    yes: bool,
-    act: impl FnOnce(&Packets) -> Spent<T, M>,
-) -> Result<T, Error> {
-    spend(home, amount, yes, || packets_locked(home, act)?)
-}
-
 /// Run `act` with the watermarks as they stand before, holding the lock that keeps another
 /// packet-sending command of this agent node from moving them meanwhile.
 pub fn packets_locked<T>(home: &Path, act: impl FnOnce(&Packets) -> T) -> Result<T, Error> {

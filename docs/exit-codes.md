@@ -105,7 +105,7 @@ A failed command with `--json` prints:
 | `peering_needed` | 1 | `toon event publish --relay`, `toon message send --relay` or `toon relay subscribe` found no route that forwards the relay's `ilp_address`; nothing was paid and nothing was created. If no peering of this agent node reaches the relay's `connector_url`, the message prints the `toon peer add <connector_url> --deposit <amount> --yes` to run (for `subscribe`, with the deposit it would take in place of `<amount>`), then `toon route add`. If one does (the network joined from that URL, or a peering made with `toon peer add` toward it, under any id), the message names only `toon route add <address> --peer <id>` and says no new deposit is needed |
 | `no_follow_list` | 1 | `toon event query --following` or `toon relay subscribe --following` found no follow list of the agent identity on the agent node's own relay, or one with no keys; nothing was sent or paid |
 | `not_confirmed` | 1 | A command that moves money was run without `--yes`, so it did nothing |
-| `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; with an agent key, the connector refused the write for the key's spending limit (or deposit limit); the message says which limit and how much remains |
+| `spending_limit` | 1 | A payment is over the per-command limit or what is left of the day's, or the spending limit is missing or was not signed by the wallet; with an agent key, the connector refused the write for the key's spending limit (or deposit limit), or `toon event publish`, `toon message send`, `toon tip send`, `toon compute spawn` or `toon compute extend` found, before any packet was sent, that the key's limit as its connector states it would not cover them; the message says which limit and how much remains |
 | `funds_held` | 1 | `toon destroy` did nothing: a channel of the TOON app still holds funds, or its channels could not be read; the message names each |
 | `last_toon_app` | 1 | `toon destroy` was given the only TOON app: an agent node always has one |
 | `one_relay` | 1 | `toon create` or `toon add` was given the relay's image (any tag or digest of the repository this build pins): an agent node runs one relay, the one `toon init` created; nothing was changed |
@@ -433,3 +433,13 @@ today. `toon limit set` changes them and reads the wallet passphrase, so an agen
 cannot raise them: the limits are signed with a key the wallet derives, and an unsigned or
 edited `limits.json` stops every payment. When `limits.json` is missing or was edited,
 `toon limit set` needs both `--max-per-command` and `--max-per-day`.
+
+With an agent key and no home, the connector counts every payment against the key and
+enforces the key's own spending limit (ADR 0010); `toon` keeps no count of its own. Before a
+packet leaves, `toon event publish`, `toon message send`, `toon tip send`, `toon compute spawn`
+and `toon compute extend` read the key's limit from its connector, as `toon limit show` does,
+and check it: a packet that pays more than the key's per-write limit, or a command that pays
+more than what is left of the key's day, is refused with `spending_limit` and nothing is sent.
+A command that pays nothing reads no limit. `paid` in their reports is counted as it is with
+the home, except that what moved across a packet is what the connector counted against the
+key, and the packet's whole amount when that count cannot be read.

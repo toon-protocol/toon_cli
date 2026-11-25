@@ -89,7 +89,7 @@ _Avoid_: Cap (the connector's word for the largest packet a peering carries), bu
 
 **Payer**:
 What pays for a command's packets: the wallet, whose spending limit `toon` checks, or an agent key, whose spending limit the connector checks.
-_Avoid_: Renter (compute's word for it today), spender
+_Avoid_: Renter (compute's word for who rents: the payer and where the leases are kept), spender
 
 **Wallet**:
 The operator's keys and funds for an agent node, which the CLI generates and manages. Distinct from the connector's Signer, which only reads the keys it is handed.

@@ -15,14 +15,15 @@ use serde_json::{json, Value};
 use zeroize::Zeroizing;
 
 use crate::cli::{
-    AddArgs, Command, ComputeCommand, EventCommand, LimitCommand, MessageCommand, PeerCommand,
-    RouteCommand, TipCommand,
+    AddArgs, Command, EventCommand, LimitCommand, MessageCommand, PeerCommand, RouteCommand,
+    TipCommand,
 };
-use crate::destination::{self, Destination};
+use crate::destination;
 use crate::event;
 use crate::message;
-use crate::operator::{self, Answer, PeerAdd, Surface};
+use crate::operator::{self, PeerAdd, Surface};
 use crate::outcome::{Error, ErrorCode, Exit, Report};
+use crate::payer::{AgentKey, Connector, Payer};
 
 /// How long an order waits for the supervisor.
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -117,6 +118,15 @@ impl KeyFile {
     fn surface(&self, app: Option<&str>) -> Result<Surface, Error> {
         let (name, url) = self.choose(app)?;
         Ok(Surface::of_agent_key(url, name, *self.secret))
+    }
+
+    /// The payer of a command on the TOON app `app`, or the only one, or `relay`: this key,
+    /// through that TOON app's connector.
+    fn payer(&self, app: Option<&str>) -> Result<AgentKey, Error> {
+        Ok(AgentKey::new(Connector {
+            surface: self.surface(app)?,
+            public: self.public.clone(),
+        }))
     }
 
     /// The name and operator-surface address of the TOON app a command works on.
@@ -436,34 +446,6 @@ fn confirmed(amount: u128, yes: bool) -> Result<(), Error> {
     ))
 }
 
-/// What the key may still spend through the connector of the TOON app a command works on, read
-/// as `toon limit show` reads it: `None` for a limit the key does not state.
-fn agent_limit(key: &KeyFile, app: Option<&str>) -> Result<crate::compute::AgentLimit, Error> {
-    let (name, url) = key.choose(app)?;
-    let surface = Surface::of_agent_key(url, name, *key.secret);
-    let mine = operator::write_keys(&surface)?
-        .into_iter()
-        .find(|listed| {
-            listed["keyid"]
-                .as_str()
-                .is_some_and(|id| id.eq_ignore_ascii_case(&key.public))
-        })
-        .ok_or_else(|| {
-            failed(
-                ErrorCode::ConnectorFailed,
-                format!("The connector of {name} does not list this agent key."),
-            )
-        })?;
-    let limit = &mine["spending_limit"];
-    let per_day = limit["per_day"].as_u64();
-    Ok(crate::compute::AgentLimit {
-        per_write: limit["per_write"].as_u64(),
-        remaining_today: per_day
-            .map(|per_day| per_day.saturating_sub(limit["counted_today"].as_u64().unwrap_or(0))),
-        counted_today: limit["counted_today"].as_u64(),
-    })
-}
-
 fn limit_show(key: &KeyFile, app: Option<&str>) -> Result<Report, Error> {
     let apps: Vec<&(String, String)> = match app {
         Some(name) => vec![key
@@ -572,9 +554,7 @@ fn event_publish(
     let reply = signed(key, Some(name), kind, content, tags)?;
     let event = reply["event"].clone();
     let relay = reply["relay"].as_str().ok_or_else(unexpected)?;
-    let answer =
-        operator::write_as_agent(&key.surface(app)?, relay, amount, event::write_body(&event))?;
-    event::written(event, answer, amount)
+    event::publish_paid(&key.payer(app)?, event, relay, amount)
 }
 
 fn unexpected() -> Error {
@@ -587,29 +567,24 @@ fn unexpected() -> Error {
 fn message_send(key: &KeyFile, app: Option<&str>, mut body: Value) -> Result<Report, Error> {
     let (name, _) = key.choose(app)?;
     body["toon_app"] = json!(name);
-    let surface = key.surface(app)?;
-    message::send_sealed(
-        &body,
-        |body| order(key, "seal", body, PATIENCE),
-        |wrap, relay| {
-            let answer = operator::write_as_agent(&surface, relay, 0, event::write_body(wrap))?;
-            event::written(wrap.clone(), answer, 0)
-        },
-    )
+    message::send_sealed(&key.payer(app)?, &body, |body| {
+        order(key, "seal", body, PATIENCE)
+    })
 }
 
-/// What `toon tip send` asks, without `--relay` and `--yes`, which are settled before.
+/// What `toon tip send` asks, without `--relay`, which is settled before.
 struct TipOrder<'a> {
     recipient: &'a str,
     amount: u64,
     what: &'a [String],
     message: Option<&'a str>,
     anonymous: bool,
+    yes: bool,
 }
 
 /// `toon tip send` with an agent key: the supervisor finds the tip route, checks it and signs
-/// the receipt (the `tip` order); this prices the path and sends the one packet with the key,
-/// sealed to the key the order pins, which the connector counts.
+/// the receipt (the `tip` order); the tip is then delivered as with the home, paid by the key,
+/// which the connector counts, and sealed to the key the order pins.
 fn tip_send(key: &KeyFile, app: Option<&str>, tip: &TipOrder) -> Result<Report, Error> {
     let (name, _) = key.choose(app)?;
     let reply = order(
@@ -627,12 +602,7 @@ fn tip_send(key: &KeyFile, app: Option<&str>, tip: &TipOrder) -> Result<Report, 
     )?;
     let text = |field: &str| reply[field].as_str().ok_or_else(unexpected);
     let receipt = reply["receipt"].clone();
-    let Destination {
-        ilp_address,
-        seal_key,
-        ..
-    } = destination::order_reply(&reply).ok_or_else(unexpected)?;
-    let ilp_address = ilp_address.as_str();
+    let route = destination::order_reply(&reply).ok_or_else(unexpected)?;
     let minimum: u128 = text("minimum")?.parse().map_err(|_| unexpected())?;
     let recipient = receipt["tags"]
         .as_array()
@@ -642,36 +612,19 @@ fn tip_send(key: &KeyFile, app: Option<&str>, tip: &TipOrder) -> Result<Report, 
         .and_then(|tag| tag[1].as_str())
         .ok_or_else(unexpected)?
         .to_owned();
-    let receipt_id = receipt["id"].as_str().ok_or_else(unexpected)?.to_owned();
-    let surface = key.surface(app)?;
-
-    let probe = operator::write_sealed_as_agent(&surface, ilp_address, 0, &seal_key, Vec::new())?;
-    let (cost, whole) = crate::tip::read_cost(ilp_address, probe)?;
-    // The unsent receipt is dropped.
-    crate::tip::check_amount(tip.amount, cost, minimum)?;
-
-    let answer = operator::write_sealed_as_agent(
-        &surface,
-        ilp_address,
-        tip.amount,
-        &seal_key,
-        receipt.to_string().into_bytes(),
-    )?;
-    if matches!(answer, Answer::Unanswered) {
-        return Err(operator::unanswered_cost(u128::from(tip.amount), None));
-    }
-    Ok(crate::tip::sent_report(
-        answer,
-        &crate::tip::Sent {
+    receipt["id"].as_str().ok_or_else(unexpected)?;
+    crate::tip::deliver(
+        &key.payer(app)?,
+        tip.yes,
+        &crate::tip::Delivery {
             amount: tip.amount,
-            cost,
-            whole,
-            receipt_id: &receipt_id,
             recipient: &recipient,
-            ilp_address,
+            route: &route,
+            minimum,
         },
-        None,
-    ))
+        // The unsent receipt is dropped when the amount would not do.
+        || Ok(receipt),
+    )
 }
 
 fn message_list(key: &KeyFile, body: &Value) -> Result<Report, Error> {
@@ -780,41 +733,26 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
         } => limit_show(&KeyFile::load(path)?, app),
         Command::Compute { command } => {
             let key = KeyFile::load(path)?;
-            let limit = match &command {
-                ComputeCommand::Spawn(_) | ComputeCommand::Extend(_) => {
-                    Some(agent_limit(&key, app)?)
-                }
-                _ => None,
-            };
             crate::compute::run(
-                &crate::compute::Renter::Agent(Box::new(crate::compute::AgentRenter {
-                    surface: key.surface(app)?,
-                    leases: crate::lease_file::Leases::beside(path),
-                    limit,
-                    counted_today: {
-                        let counter = KeyFile::load(path)?;
-                        let app = app.map(str::to_owned);
-                        Box::new(move || {
-                            agent_limit(&counter, app.as_deref())
-                                .ok()
-                                .and_then(|limit| limit.counted_today)
-                        })
-                    },
-                    sign_deployment: {
-                        let signer = KeyFile::load(path)?;
-                        let app = app.map(str::to_owned);
-                        Box::new(move |tags, content, publish| {
-                            let tags = json!(tags).to_string();
-                            let parts = (crate::deployment::KIND, content, tags.as_str());
-                            if publish {
-                                event_publish(&signer, app.as_deref(), parts, 0).map(|_| ())
-                            } else {
-                                let (name, _) = signer.choose(app.as_deref())?;
-                                signed(&signer, Some(name), parts.0, parts.1, parts.2).map(|_| ())
-                            }
-                        })
-                    },
-                })),
+                &crate::compute::Renter {
+                    payer: Payer::AgentKey(Box::new(key.payer(app)?)),
+                    holder: crate::compute::Holder::Agent(Box::new(crate::compute::AgentRenter {
+                        leases: crate::lease_file::Leases::beside(path),
+                        sign_deployment: {
+                            let app = app.map(str::to_owned);
+                            Box::new(move |tags, content, publish| {
+                                let tags = json!(tags).to_string();
+                                let parts = (crate::deployment::KIND, content, tags.as_str());
+                                if publish {
+                                    event_publish(&key, app.as_deref(), parts, 0).map(|_| ())
+                                } else {
+                                    let (name, _) = key.choose(app.as_deref())?;
+                                    signed(&key, Some(name), parts.0, parts.1, parts.2).map(|_| ())
+                                }
+                            })
+                        },
+                    })),
+                },
                 &command,
             )
         }
@@ -890,6 +828,7 @@ pub fn run(path: &Path, app: Option<&str>, command: Command) -> Result<Report, E
                     what: &r#for,
                     message: message.as_deref(),
                     anonymous,
+                    yes,
                 },
             )
         }

@@ -228,59 +228,59 @@ pub fn write(home: &Path, event: Value, amount: u64) -> Result<Report, Error> {
     // The relay of the TOON app that fronts the agent node's connector. With none, the
     // write is addressed as it would be and the connector rejects it.
     let state = node::State::load(home)?.ok_or_else(|| node::no_agent_node(home))?;
-    write_to(
+    let body = home.join(format!(
+        "event.{}.json",
+        hex::encode(keystore::random::<8>()?)
+    ));
+    node::write(&body, write_body(&event).as_bytes(), 0o600)?;
+    let answer = operator::dispatch(
         home,
-        event,
         &state.toon_apps[0].relay_prefix(),
         amount,
         None,
-    )
+        "POST",
+        "/",
+        &[],
+        Some(&body),
+    );
+    let _ = std::fs::remove_file(&body);
+    written(event, answer?, amount)
 }
 
-/// Write a signed event to `destination` for `amount`, sealed to the key `seal_to`, or to
-/// this agent node's own connector.
-pub fn write_to(
-    home: &Path,
+/// Write a signed event to `destination` for `amount`, sent by `purse`, sealed to `seal_to` or
+/// to the connector the purse sends through.
+pub fn write_through<P: payer::Purse>(
+    purse: &P,
     event: Value,
     destination: &str,
     amount: u64,
     seal_to: Option<&[u8; 65]>,
 ) -> Result<Report, Error> {
-    let answer = match seal_to {
-        Some(key) => {
-            let headers = vec![("content-type".to_owned(), "application/json".to_owned())];
-            operator::dispatch_with_headers(
-                home,
-                destination,
-                amount,
-                key,
-                ("POST", "/"),
-                headers,
-                write_body(&event).into_bytes(),
-            )
-        }
-        None => {
-            let body = home.join(format!(
-                "event.{}.json",
-                hex::encode(keystore::random::<8>()?)
-            ));
-            node::write(&body, write_body(&event).as_bytes(), 0o600)?;
-            let answer = operator::dispatch(
-                home,
-                destination,
-                amount,
-                None,
-                "POST",
-                "/",
-                &[],
-                Some(&body),
-            );
-            let _ = std::fs::remove_file(&body);
-            answer
-        }
-    };
-
+    let answer = purse.send(payer::Packet {
+        destination,
+        amount,
+        seal_key: seal_to,
+        body: write_body(&event).into_bytes(),
+    });
     written(event, answer?, amount)
+}
+
+/// `toon event publish` paid through `purse`: the write of the signed `event` to the relay at
+/// `destination`, sealed to the connector the purse sends through, for `amount`. The
+/// confirmation is the caller's.
+pub fn publish_paid<P: payer::Purse>(
+    purse: &P,
+    event: Value,
+    destination: &str,
+    amount: u64,
+) -> Result<Report, Error> {
+    payer::pay(purse, amount.into(), true, |packets| {
+        packets
+            .send(amount.into(), || {
+                write_through(purse, event, destination, amount, None)
+            })
+            .map(|(report, _)| report)
+    })
 }
 
 /// The `sign` order, answered by the supervisor (ADR 0010): an event of any kind, signed
@@ -691,10 +691,11 @@ pub fn pay_write(
     amount: u64,
 ) -> Result<Report, Error> {
     let sent: u128 = amount.into();
-    payer::pay(&payer::Wallet::new(home), sent, true, |packets| {
+    let wallet = payer::Wallet::new(home);
+    payer::pay(&wallet, sent, true, |packets| {
         let (mut report, paid) = packets.send(sent, || {
-            write_to(
-                home,
+            write_through(
+                &wallet,
                 event,
                 &destination.ilp_address,
                 amount,

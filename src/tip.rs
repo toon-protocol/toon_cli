@@ -603,7 +603,7 @@ fn price_of(route: &Value) -> Option<u128> {
 /// whether that is the whole of it. A packet of no amount learns it from the reject, as
 /// `toon probe` does, and moves nothing. A path with several connectors that charge states only
 /// the amount to carry past the first, which is then the least that is known of the cost.
-pub(crate) fn read_cost(ilp_address: &str, answer: Answer) -> Result<(u128, bool), Error> {
+fn read_cost(ilp_address: &str, answer: Answer) -> Result<(u128, bool), Error> {
     let cannot = |why: String| {
         unsent(
             ErrorCode::SendFailed,
@@ -628,21 +628,8 @@ pub(crate) fn read_cost(ilp_address: &str, answer: Answer) -> Result<(u128, bool
     }
 }
 
-/// The probe of the path to the tip route: a packet of no amount, sealed to the pinned key.
-fn probe_answer(home: &Path, route: &Destination) -> Result<Answer, Error> {
-    operator::dispatch_with_headers(
-        home,
-        &route.ilp_address,
-        0,
-        &route.seal_key,
-        ("POST", "/"),
-        json_headers(),
-        Vec::new(),
-    )
-}
-
 /// Refuse a tip that would not cover the path and the tip route's minimum.
-pub(crate) fn check_amount(amount: u64, cost: u128, minimum: u128) -> Result<(), Error> {
+fn check_amount(amount: u64, cost: u128, minimum: u128) -> Result<(), Error> {
     let least = cost + minimum;
     if u128::from(amount) >= least {
         return Ok(());
@@ -688,10 +675,6 @@ struct Receipt<'a> {
     unit: &'a node::Unit,
     anonymous: bool,
     message: &'a str,
-}
-
-fn json_headers() -> Vec<(String, String)> {
-    vec![("content-type".to_owned(), "application/json".to_owned())]
 }
 
 /// The `tip` order, answered by the supervisor (ADR 0010): find the recipient's tip route,
@@ -821,7 +804,7 @@ fn unrevealing(error: &Error) -> order::Refusal {
 }
 
 /// A tip that was sent, as far as the sender knows.
-pub(crate) struct Sent<'a> {
+struct Sent<'a> {
     pub amount: u64,
     pub cost: u128,
     pub whole: bool,
@@ -830,10 +813,9 @@ pub(crate) struct Sent<'a> {
     pub ilp_address: &'a str,
 }
 
-/// What the packet of a tip came to, as a report. `paid` is what the sender knows moved, if it
-/// counts: an agent key's sender does not, the connector does. `answer` is one that
-/// came: an unanswered packet is the caller's.
-pub(crate) fn sent_report(answer: Answer, tip: &Sent, paid: Option<u128>) -> Report {
+/// What the packet of a tip came to, as a report, with `paid`, what it cost. `answer` is one
+/// that came: an unanswered packet is the caller's.
+fn sent_report(answer: Answer, tip: &Sent, paid: u128) -> Report {
     let amount = tip.amount;
     let arrives = u128::from(amount).saturating_sub(tip.cost);
     match answer {
@@ -850,9 +832,7 @@ pub(crate) fn sent_report(answer: Answer, tip: &Sent, paid: Option<u128>) -> Rep
                 "ilp_address": tip.ilp_address,
                 "response": { "status": status, "body": body },
             });
-            if paid.is_some() {
-                json["paid"] = json!(amount);
-            }
+            json["paid"] = json!(paid);
             Report {
                 exit: Exit::Success,
                 json,
@@ -878,17 +858,15 @@ pub(crate) fn sent_report(answer: Answer, tip: &Sent, paid: Option<u128>) -> Rep
                 "recipient": tip.recipient,
                 "ilp_address": tip.ilp_address,
                 "reject": { "code": code, "message": message },
+                "paid": paid,
             });
-            if let Some(paid) = paid {
-                json["paid"] = json!(paid);
-            }
             operator::add_cost(&mut json, &code, stated);
             let mut text = format!(
                 "Rejected with {code}: {amount} base units to {}. {message}{}",
                 tip.ilp_address,
                 operator::cost_sentence(&code, stated, "--amount")
             );
-            if let Some(paid) = paid.filter(|paid| *paid > 0) {
+            if paid > 0 {
                 text.push_str(&format!(" It cost {paid} base units."));
             }
             Report {
@@ -898,16 +876,14 @@ pub(crate) fn sent_report(answer: Answer, tip: &Sent, paid: Option<u128>) -> Rep
             }
         }
         Answer::WrongFulfilment => {
-            let mut json = json!({
+            let json = json!({
                 "outcome": "wrong_fulfilment",
                 "sent": amount,
                 "receipt_id": tip.receipt_id,
                 "recipient": tip.recipient,
                 "ilp_address": tip.ilp_address,
+                "paid": paid,
             });
-            if let Some(paid) = paid {
-                json["paid"] = json!(paid);
-            }
             Report {
                 exit: Exit::Failure,
                 json,
@@ -937,51 +913,82 @@ fn send(home: &Path, tip: &TipSend) -> Result<Report, Error> {
             )
         })?;
 
-    // Find the tip route, check it, and price the path.
+    // Find the tip route and check it.
     let (route, minimum) = check_route(home, &state, &recipient, tip.relays, None)?;
-    let (cost, whole) = read_cost(&route.ilp_address, probe_answer(home, &route)?)?;
-    check_amount(tip.amount, cost, minimum)?;
-
-    // Write the receipt. It is never published to a relay: it travels in the packet.
-    let secret = event::agent_secret(home)?;
-    event::keep_agent_secret(home, &secret)?;
-    let receipt = sign_receipt(
-        &secret,
-        &Receipt {
-            recipient: &recipient,
-            subjects: &subjects,
+    deliver(
+        &payer::Wallet::new(home),
+        tip.yes,
+        &Delivery {
             amount: tip.amount,
-            unit: &unit,
-            anonymous: tip.anonymous,
-            message: tip.message.unwrap_or_default(),
+            recipient: &recipient,
+            route: &route,
+            minimum,
         },
-    )?;
-    let receipt_id = receipt["id"].as_str().unwrap_or_default().to_owned();
+        || {
+            // Write the receipt. It is never published to a relay: it travels in the packet.
+            let secret = event::agent_secret(home)?;
+            event::keep_agent_secret(home, &secret)?;
+            sign_receipt(
+                &secret,
+                &Receipt {
+                    recipient: &recipient,
+                    subjects: &subjects,
+                    amount: tip.amount,
+                    unit: &unit,
+                    anonymous: tip.anonymous,
+                    message: tip.message.unwrap_or_default(),
+                },
+            )
+        },
+    )
+}
 
-    // Send it, sealed to the pinned key, which is not fetched again.
+/// Where a tip goes, once its route is found and checked: with the home, or by the
+/// supervisor for an agent key.
+pub(crate) struct Delivery<'a> {
+    pub amount: u64,
+    pub recipient: &'a str,
+    pub route: &'a Destination,
+    /// The least the tip route takes of what arrives.
+    pub minimum: u128,
+}
+
+/// Price the path to the tip route, refuse an amount that would not cover it, and send the
+/// one packet carrying the receipt `receipt` writes, sealed to the pinned key, which is not
+/// fetched again. Every packet goes through `purse`.
+pub(crate) fn deliver<P: payer::Purse>(
+    purse: &P,
+    yes: bool,
+    tip: &Delivery,
+    receipt: impl FnOnce() -> Result<Value, Error>,
+) -> Result<Report, Error> {
+    let route = tip.route;
+    let packet = |amount: u64, body: Vec<u8>| payer::Packet {
+        destination: &route.ilp_address,
+        amount,
+        seal_key: Some(&route.seal_key),
+        body,
+    };
+    let (cost, whole) = read_cost(&route.ilp_address, purse.send(packet(0, Vec::new()))?)?;
+    // A tip that is too little is refused before its receipt is written.
+    check_amount(tip.amount, cost, tip.minimum)?;
+    let receipt = receipt()?;
+    let receipt_id = receipt["id"].as_str().unwrap_or_default().to_owned();
     let sent = Sent {
         amount: tip.amount,
         cost,
         whole,
         receipt_id: &receipt_id,
-        recipient: &recipient,
+        recipient: tip.recipient,
         ilp_address: &route.ilp_address,
     };
-    paid_tip(&payer::Wallet::new(home), tip.yes, &sent, || {
-        operator::dispatch_with_headers(
-            home,
-            &route.ilp_address,
-            tip.amount,
-            &route.seal_key,
-            ("POST", "/"),
-            json_headers(),
-            receipt.to_string().into_bytes(),
-        )
+    paid_tip(purse, yes, &sent, || {
+        purse.send(packet(tip.amount, receipt.to_string().into_bytes()))
     })
 }
 
 /// The one packet of `tip`, which `send` sends, paid through `purse`.
-pub(crate) fn paid_tip<P: payer::Purse>(
+fn paid_tip<P: payer::Purse>(
     purse: &P,
     yes: bool,
     tip: &Sent,
@@ -990,7 +997,7 @@ pub(crate) fn paid_tip<P: payer::Purse>(
     let amount = u128::from(tip.amount);
     payer::pay(purse, amount, yes, |packets| {
         let (answer, paid) = packets.answer(amount, send)?;
-        Ok(sent_report(answer, tip, Some(paid)))
+        Ok(sent_report(answer, tip, paid))
     })
 }
 
@@ -1044,6 +1051,63 @@ mod tests {
         let purse = Fake::new();
         let error = paid_tip(&purse, false, &SENT, || panic!("sent")).unwrap_err();
         assert_eq!(error.code, ErrorCode::NotConfirmed);
+    }
+
+    fn route() -> Destination {
+        Destination {
+            ilp_address: "g.tip".into(),
+            connector_url: "http://far".into(),
+            seal_key: [4; 65],
+        }
+    }
+
+    /// Deliver a tip of `amount` through `purse`, whose probe states the path costs 5, to a
+    /// route taking at least 20: whether the receipt was written, and what came of it.
+    fn delivered(purse: &Fake, amount: u64) -> (bool, Result<Report, Error>) {
+        purse.answers.borrow_mut().push_back(Ok(Answer::Rejected {
+            code: "F99".into(),
+            message: String::new(),
+            cost: 5,
+        }));
+        let written = std::cell::Cell::new(false);
+        let route = route();
+        let outcome = deliver(
+            purse,
+            true,
+            &Delivery {
+                amount,
+                recipient: HEX,
+                route: &route,
+                minimum: 20,
+            },
+            || {
+                written.set(true);
+                Ok(json!({ "id": "receipt" }))
+            },
+        );
+        (written.get(), outcome)
+    }
+
+    #[test]
+    fn a_tip_that_covers_the_path_and_the_minimum_is_probed_then_paid() {
+        let purse = Fake::new();
+        let (written, outcome) = delivered(&purse, 25);
+        let report = outcome.unwrap();
+        assert!(written);
+        assert_eq!(report.json["paid"], 25);
+        assert_eq!(report.json["path_cost"], 5);
+        assert_eq!(*purse.sent.borrow(), vec![0, 25]);
+        assert_eq!(purse.remaining.get(), 225);
+    }
+
+    #[test]
+    fn a_tip_below_the_path_and_the_minimum_writes_no_receipt_and_pays_nothing() {
+        let purse = Fake::new();
+        let (written, outcome) = delivered(&purse, 24);
+        assert_eq!(outcome.unwrap_err().code, ErrorCode::TipBelowMinimum);
+        assert!(!written);
+        assert_eq!(*purse.sent.borrow(), vec![0]);
+        assert_eq!(purse.remaining.get(), 250);
     }
 
     #[test]

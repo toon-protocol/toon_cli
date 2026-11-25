@@ -352,7 +352,7 @@ fn run() -> ExitCode {
         Command::Event { command } => render(event::run(command), json).into(),
         Command::Message { command } => render(message::run(command), json).into(),
         Command::Compute { command } => render(
-            home::resolve().and_then(|home| compute::run(&compute::Renter::Home(&home), &command)),
+            home::resolve().and_then(|home| compute::run(&compute::Renter::home(&home), &command)),
             json,
         )
         .into(),
