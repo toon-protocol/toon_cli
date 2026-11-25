@@ -736,13 +736,9 @@ pub fn pay_write(
         let (mut report, paid) = packets.send(sent, || {
             write_to(home, event, &edge.ilp_address, amount, Some(&edge.seal_key))
         })?;
-        // A rejected or wrongly fulfilled packet moved what its channels moved by.
-        let rejected = matches!(
-            report.json["outcome"].as_str(),
-            Some("rejected" | "wrong_fulfilment")
-        );
+        // A rejected or wrongly fulfilled packet cost what its channels moved by.
         report.json["relay"] = json!(relay);
-        if rejected {
+        if report.json["outcome"] != "fulfilled" {
             if paid > 0 {
                 report.text = format!("{} It cost {paid} base units.", report.text);
             }

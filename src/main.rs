@@ -530,9 +530,9 @@ fn paid_probe<P: payer::Purse>(
         return Ok(report);
     }
     payer::pay(purse, amount, yes, |packets| {
-        let (mut report, paid) = packets.send(amount, probe)?;
         // Only a fulfilled probe paid its amount; a reject, whatever it states, cost what
         // the channels moved by.
+        let (mut report, paid) = packets.send(amount, probe)?;
         if paid > 0 {
             report.text = if report.json["outcome"] == "fulfilled" {
                 format!("{} It was paid for: {paid} base units.", report.text)
@@ -595,9 +595,11 @@ mod tests {
     #[test]
     fn probe_that_states_a_cost_exits_0_and_pays_what_moved() {
         let purse = Fake::new();
+        purse.moved.set(15);
         let report = paid_probe(&purse, 60, true, || report(Exit::Success, "rejected")).unwrap();
         assert_eq!(report.exit, Exit::Success);
-        assert_eq!(report.json["paid"], 0);
-        assert_eq!(purse.remaining.get(), 250);
+        assert_eq!(report.json["paid"], 15);
+        assert_eq!(report.text, "Done. It cost 15 base units.");
+        assert_eq!(purse.remaining.get(), 235);
     }
 }
