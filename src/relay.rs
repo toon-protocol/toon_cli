@@ -285,15 +285,16 @@ pub fn price(home: &Path, prices: &Prices, yes: bool) -> Result<Report, Error> {
 fn describe(home: &Path, relay: &str) -> Result<Report, Error> {
     let egress = Egress::of(home)?;
     let document = event::information_document(&egress, relay)?;
-    let (edge, price) = destination::relay_document(&document["toon"])
+    let (destination, price) = destination::relay_document(&document["toon"])
         .map_err(|missing| destination::unpayable_document(relay, &missing))?;
-    let reached = State::load(home)?.is_some() && operator::forwards(home, &edge.ilp_address)?;
+    let reached =
+        State::load(home)?.is_some() && operator::forwards(home, &destination.ilp_address)?;
     let feed = subscribe::feed_terms(&document);
     let mut lines = vec![
         format!("{relay} charges {} base units for a write.", price),
         format!(
             "Write paid at {} (connector {}).",
-            edge.ilp_address, edge.connector_url
+            destination.ilp_address, destination.connector_url
         ),
     ];
     lines.push(match &feed {
@@ -307,18 +308,18 @@ fn describe(home: &Path, relay: &str) -> Result<Report, Error> {
     lines.push(if reached {
         "A peering of this agent node reaches the write edge.".to_owned()
     } else {
-        match operator::peering_toward(home, &edge.connector_url) {
+        match operator::peering_toward(home, &destination.connector_url) {
             Ok(Some(id)) => format!(
                 "No route of this agent node forwards {}, but its peering {id} already reaches \
                  {}: no new deposit is needed. Run `toon route add {} --peer {id}`.",
-                edge.ilp_address, edge.connector_url, edge.ilp_address
+                destination.ilp_address, destination.connector_url, destination.ilp_address
             ),
             Ok(None) | Err(_) => format!(
                 "No peering of this agent node reaches {}: run `{}` and then \
                  `toon route add {} --peer <id>`.",
-                edge.ilp_address,
-                operator::peer_add_command(&edge.connector_url, "<amount>", ""),
-                edge.ilp_address
+                destination.ilp_address,
+                operator::peer_add_command(&destination.connector_url, "<amount>", ""),
+                destination.ilp_address
             ),
         }
     });
@@ -336,8 +337,8 @@ fn describe(home: &Path, relay: &str) -> Result<Report, Error> {
         json: json!({
             "relay": relay,
             "write": {
-                "ilp_address": edge.ilp_address,
-                "connector_url": edge.connector_url,
+                "ilp_address": destination.ilp_address,
+                "connector_url": destination.connector_url,
                 "price": price,
             },
             "feed": feed_json,

@@ -257,23 +257,30 @@ mod tests {
     #[test]
     fn a_key_that_is_not_65_bytes_beginning_04_is_refused_by_every_parser() {
         let compressed = format!("02{}", "ab".repeat(32));
-        let long = format!("04{}", "ab".repeat(64));
         let wrong_prefix = format!("02{}", "ab".repeat(64));
-        let short = format!("04{}", "ab".repeat(63));
+        let bytes_33 = "04".repeat(33);
+        let bytes_64 = "04".repeat(64);
         let not_hex = "zz".repeat(65);
-        for bad in [compressed, short, wrong_prefix, not_hex, String::new()] {
+        for bad in [
+            compressed,
+            wrong_prefix,
+            bytes_33,
+            bytes_64,
+            not_hex,
+            String::new(),
+        ] {
             assert!(seal_key(&bad).is_none(), "{bad}");
             assert!(relay_document(&with_key(&toon(), &bad)).is_err(), "{bad}");
             let mut event = tip_event();
             event["tags"][2][1] = json!(bad);
             assert!(tip_route(&event).is_err(), "{bad}");
+            let content: Value =
+                serde_json::from_str(profile_event()["content"].as_str().unwrap()).unwrap();
+            let event = json!({ "content": with_key(&content, &bad).to_string() });
+            assert!(profile(&event).is_none(), "{bad}");
             let mut reply = reply();
             reply["connector_seal_key"] = json!(bad);
             assert!(order_reply(&reply).is_none(), "{bad}");
         }
-        assert!(seal_key(&long).is_some());
-        // 33 and 64 bytes.
-        assert!(seal_key(&"04".repeat(33)).is_none());
-        assert!(seal_key(&"04".repeat(64)).is_none());
     }
 }

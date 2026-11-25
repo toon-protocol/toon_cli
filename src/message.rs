@@ -267,20 +267,20 @@ fn own_relay(home: &Path) -> Result<String, Error> {
 
 /// Send the recipients' wraps to `relay`, paying its write price for each.
 fn send_to(home: &Path, message: &Message, relay: &str, yes: bool) -> Result<Report, Error> {
-    let (edge, price) = event::edge(&Egress::of(home)?, relay)?;
+    let (destination, price) = event::edge(&Egress::of(home)?, relay)?;
     let count = message.recipients.len() as u128;
     let total = u128::from(price) * count;
-    if !operator::forwards(home, &edge.ilp_address)? {
+    if !operator::forwards(home, &destination.ilp_address)? {
         return Err(operator::peering_needed(
             home,
-            &edge.ilp_address,
-            &edge.connector_url,
+            &destination.ilp_address,
+            &destination.connector_url,
             format!(
                 "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
                  needed: run `{}` and then `toon route add {} --peer <id>`.",
-                edge.ilp_address,
-                operator::peer_add_command(&edge.connector_url, "<amount>", ""),
-                edge.ilp_address
+                destination.ilp_address,
+                operator::peer_add_command(&destination.connector_url, "<amount>", ""),
+                destination.ilp_address
             ),
         ));
     }
@@ -311,9 +311,9 @@ fn send_to(home: &Path, message: &Message, relay: &str, yes: bool) -> Result<Rep
             let written = match event::write_to(
                 home,
                 wrap.clone(),
-                &edge.ilp_address,
+                &destination.ilp_address,
                 price,
-                Some(&edge.seal_key),
+                Some(&destination.seal_key),
             ) {
                 Ok(written) => written,
                 // Once a wrap has been paid for, a failure is not one before paying: it

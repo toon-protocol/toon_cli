@@ -634,7 +634,7 @@ fn publish_to(
     if node::State::load(home)?.is_none() {
         return Err(node::no_agent_node(home));
     }
-    let (edge, price) = edge(&Egress::of(home)?, relay)?;
+    let (destination, price) = edge(&Egress::of(home)?, relay)?;
     let amount = amount.unwrap_or(price);
     if amount < price {
         return Err(usage(format!(
@@ -642,17 +642,17 @@ fn publish_to(
              and the relay's connector would reject it."
         )));
     }
-    if !operator::forwards(home, &edge.ilp_address)? {
+    if !operator::forwards(home, &destination.ilp_address)? {
         return Err(operator::peering_needed(
             home,
-            &edge.ilp_address,
-            &edge.connector_url,
+            &destination.ilp_address,
+            &destination.connector_url,
             format!(
                 "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
                  needed: run `{}` and then `toon route add {} --peer <id>`.",
-                edge.ilp_address,
-                operator::peer_add_command(&edge.connector_url, "<amount>", ""),
-                edge.ilp_address
+                destination.ilp_address,
+                operator::peer_add_command(&destination.connector_url, "<amount>", ""),
+                destination.ilp_address
             ),
         ));
     }
@@ -675,24 +675,31 @@ fn publish_to(
     let secret = agent_secret(home)?;
     keep_agent_secret(home, &secret)?;
     let event = sign(&secret, now(), kind, tags, content)?;
-    pay_write(home, relay, event, &edge, price, amount)
+    pay_write(home, relay, event, &destination, price, amount)
 }
 
-/// Write the signed `event` to `relay` at the write `edge` it published, for `amount`, counted
+/// Write the signed `event` to `relay` at the `destination` and `price` it published, for
+/// `amount`, counted
 /// against the spending limit. The confirmation is the caller's: the operator's `--yes`, or
 /// the supervisor's own decision to pay for a write (ADR 0013).
 pub fn pay_write(
     home: &Path,
     relay: &str,
     event: Value,
-    edge: &Destination,
+    destination: &Destination,
     price: u64,
     amount: u64,
 ) -> Result<Report, Error> {
     let sent: u128 = amount.into();
     spending::spend_packets(home, sent, true, |packets| {
-        let mut report = write_to(home, event, &edge.ilp_address, amount, Some(&edge.seal_key))
-            .map_err(|error| operator::repriced(error, packets.moved(sent)))?;
+        let mut report = write_to(
+            home,
+            event,
+            &destination.ilp_address,
+            amount,
+            Some(&destination.seal_key),
+        )
+        .map_err(|error| operator::repriced(error, packets.moved(sent)))?;
         // A fulfilled packet moved money, whatever the relay or its fulfilment said. A
         // rejected one moved what its channels moved by.
         let rejected = report.json["outcome"] == "rejected";
@@ -728,22 +735,22 @@ pub fn pay_write(
 /// price, without asking: the write is paid through this agent node's connector over a
 /// peering, and counts against the spending limit (ADR 0013).
 pub fn publish_signed_to(home: &Path, relay: &str, event: Value) -> Result<Report, Error> {
-    let (edge, price) = edge(&Egress::of(home)?, relay)?;
-    if !operator::forwards(home, &edge.ilp_address)? {
+    let (destination, price) = edge(&Egress::of(home)?, relay)?;
+    if !operator::forwards(home, &destination.ilp_address)? {
         return Err(operator::peering_needed(
             home,
-            &edge.ilp_address,
-            &edge.connector_url,
+            &destination.ilp_address,
+            &destination.connector_url,
             format!(
                 "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
                  needed: run `{}` and then `toon route add {} --peer <id>`.",
-                edge.ilp_address,
-                operator::peer_add_command(&edge.connector_url, "<amount>", ""),
-                edge.ilp_address
+                destination.ilp_address,
+                operator::peer_add_command(&destination.connector_url, "<amount>", ""),
+                destination.ilp_address
             ),
         ));
     }
-    pay_write(home, relay, event, &edge, price, price)
+    pay_write(home, relay, event, &destination, price, price)
 }
 
 /// Whether `event` is a signed event: its id is the hash of its other fields, and its
