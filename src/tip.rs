@@ -16,7 +16,7 @@ use crate::agent_key::Key;
 use crate::apps;
 use crate::cli::TipCommand;
 use crate::describe;
-use crate::destination::{self, Destination};
+use crate::destination::{self, Destination, Leaving, Pinned};
 use crate::egress::Egress;
 use crate::event;
 use crate::inbox;
@@ -558,36 +558,27 @@ fn check_route(
             ),
         )
     })?;
-    let served = operator::identity(&egress, &route.connector_url)?;
-    if served != route.seal_key {
-        return Err(unsent(
-            ErrorCode::TipSealKeyMismatch,
-            format!(
-                "The connector at {} gives a sealing key other than the `connector_seal_key` the \
-                 tip route names. Nothing was sent.",
-                route.connector_url
-            ),
-        ));
-    }
-
-    let forwards = match toon_app {
-        Some(name) => operator::forwards_through(home, name, &route.ilp_address)?,
-        None => operator::forwards(home, &route.ilp_address)?,
+    let leaving = match toon_app {
+        Some(name) => Leaving::App(home, name),
+        None => Leaving::Home(home),
     };
-    if !forwards {
-        return Err(operator::peering_needed(
-            home,
-            &route.ilp_address,
-            &route.connector_url,
-            format!(
-                "No peering of this agent node reaches {}, where the tip is taken. A peering is \
-                 needed: run `{}` and then `toon route add {} --peer <id>`.",
-                route.ilp_address,
-                operator::peer_add_command(&route.connector_url, "<amount>", ""),
-                route.ilp_address
-            ),
-        ));
-    }
+    let mismatch = unsent(
+        ErrorCode::TipSealKeyMismatch,
+        format!(
+            "The connector at {} gives a sealing key other than the `connector_seal_key` the tip \
+             route names. Nothing was sent.",
+            route.connector_url
+        ),
+    );
+    destination::preflight(
+        &route,
+        leaving,
+        Some(Pinned {
+            egress: &egress,
+            mismatch,
+        }),
+        None,
+    )?;
     Ok((route, minimum))
 }
 

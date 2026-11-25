@@ -11,13 +11,13 @@ use serde_json::{json, Value};
 
 use crate::cli::MessageCommand;
 use crate::control;
+use crate::destination::{self, Leaving};
 use crate::egress::Egress;
 use crate::event;
 use crate::gift_wrap;
 use crate::home;
 use crate::inbox;
 use crate::node;
-use crate::operator;
 use crate::outcome::{Error, ErrorCode, Exit, Report};
 use crate::payer;
 
@@ -270,20 +270,7 @@ fn send_to(home: &Path, message: &Message, relay: &str, yes: bool) -> Result<Rep
     let (destination, price) = event::edge(&Egress::of(home)?, relay)?;
     let count = message.recipients.len() as u128;
     let total = u128::from(price) * count;
-    if !operator::forwards(home, &destination.ilp_address)? {
-        return Err(operator::peering_needed(
-            home,
-            &destination.ilp_address,
-            &destination.connector_url,
-            format!(
-                "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
-                 needed: run `{}` and then `toon route add {} --peer <id>`.",
-                destination.ilp_address,
-                operator::peer_add_command(&destination.connector_url, "<amount>", ""),
-                destination.ilp_address
-            ),
-        ));
-    }
+    destination::preflight(&destination, Leaving::Home(home), None, None)?;
     if !yes {
         return Err(Error {
             nothing_sent: false,

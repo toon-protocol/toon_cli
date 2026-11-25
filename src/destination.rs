@@ -4,11 +4,19 @@
 //! route event, a provider's Profile and the supervisor's `tip` order reply. The seal-key
 //! rule is here once: 65 bytes of hex beginning `04`, with or without `0x`, the shape of
 //! the connector's `PublicKeyBytes`.
+//!
+//! So is the preflight every command runs before it pays a destination: the connector's
+//! served identity matches the pinned seal key, where the command talks to that connector
+//! anyway, and a route of this agent node forwards the ILP address.
+
+use std::path::Path;
 
 use serde_json::Value;
 
+use crate::egress::Egress;
 use crate::event;
-use crate::outcome::Error;
+use crate::operator;
+use crate::outcome::{Error, ErrorCode};
 
 /// Where a packet is paid for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +114,144 @@ pub fn order_reply(reply: &Value) -> Option<Destination> {
         connector_url: String::new(),
         seal_key: seal_key(reply["connector_seal_key"].as_str()?)?,
     })
+}
+
+/// Where a packet to a destination leaves, and so where the preflight looks for its route.
+pub enum Leaving<'a> {
+    /// Through the connector `--app` names, in this home.
+    Home(&'a Path),
+    /// Through the connector of the named TOON app, in this home: the supervisor paying for
+    /// an agent key's order.
+    App(&'a Path, &'a str),
+    /// Sent with an agent key: there is no home to look in, and its connector answers for
+    /// the route.
+    AgentKey,
+}
+
+/// The identity check of a command that talks to the destination's connector anyway (tip,
+/// compute): its served `/identity`, asked through `egress`, must be the pinned seal key, or
+/// the command fails with `mismatch`. A write edge is never identity-checked: a write to
+/// another relay, a private message and a subscription make no request to its
+/// `connector_url`.
+pub struct Pinned<'a> {
+    pub egress: &'a Egress,
+    pub mismatch: Error,
+}
+
+/// What the preflight found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    Good,
+    /// The connector serves another seal key than the pinned one.
+    Mismatch,
+    /// No route of this agent node forwards the ILP address.
+    NoRoute,
+}
+
+/// The preflight of a command about to pay `destination`. The identity check, when the
+/// command asks for one, comes first; then a route of this agent node must forward the ILP
+/// address, else `peering_needed`, naming `deposit` when the command knows what the peering
+/// would take. Nothing has been sent when it fails.
+pub fn preflight(
+    destination: &Destination,
+    leaving: Leaving,
+    pinned: Option<Pinned>,
+    deposit: Option<u128>,
+) -> Result<(), Error> {
+    let served = match &pinned {
+        Some(pinned) => Some(operator::identity(
+            pinned.egress,
+            &destination.connector_url,
+        )?),
+        None => None,
+    };
+    let found = verdict(destination, served, || {
+        Ok(match leaving {
+            Leaving::Home(home) => Some(operator::forwards(home, &destination.ilp_address)?),
+            Leaving::App(home, toon_app) => Some(operator::forwards_through(
+                home,
+                toon_app,
+                &destination.ilp_address,
+            )?),
+            Leaving::AgentKey => None,
+        })
+    })?;
+    match (found, leaving) {
+        (Verdict::Good, _) => Ok(()),
+        (Verdict::Mismatch, _) => Err(pinned.expect("a mismatch was checked").mismatch),
+        (Verdict::NoRoute, Leaving::Home(home) | Leaving::App(home, _)) => {
+            Err(peering_needed(home, destination, deposit))
+        }
+        (Verdict::NoRoute, Leaving::AgentKey) => unreachable!("an agent key looks for no route"),
+    }
+}
+
+/// The preflight's answer from the key the connector served (`None` when it was not asked)
+/// and whether a route forwards the ILP address (`None` with an agent key, whose connector
+/// answers for it). The route is looked for only once the key matches.
+fn verdict(
+    destination: &Destination,
+    served: Option<[u8; 65]>,
+    forwards: impl FnOnce() -> Result<Option<bool>, Error>,
+) -> Result<Verdict, Error> {
+    if served.is_some_and(|served| served != destination.seal_key) {
+        return Ok(Verdict::Mismatch);
+    }
+    Ok(match forwards()? {
+        Some(false) => Verdict::NoRoute,
+        Some(true) | None => Verdict::Good,
+    })
+}
+
+/// The `peering_needed` error for `destination`, which no route of this agent node forwards.
+/// A peering that cannot be looked up is not recognised, so the lookup never changes the
+/// error.
+fn peering_needed(home: &Path, destination: &Destination, deposit: Option<u128>) -> Error {
+    let reaching = operator::peering_toward(home, &destination.connector_url)
+        .ok()
+        .flatten();
+    Error {
+        code: ErrorCode::PeeringNeeded,
+        message: peering_message(
+            &destination.ilp_address,
+            &destination.connector_url,
+            deposit,
+            reaching.as_deref(),
+        ),
+        nothing_sent: false,
+        unanswered: None,
+    }
+}
+
+/// What to run so that a packet to `address`, paid at the connector at `connector_url`, is
+/// forwarded: only a route over `reaching`, the peering that already reaches that connector,
+/// else a peering with `deposit` (when known) and a route over it. The one wording of
+/// `peering_needed`.
+pub fn peering_message(
+    address: &str,
+    connector_url: &str,
+    deposit: Option<u128>,
+    reaching: Option<&str>,
+) -> String {
+    if let Some(id) = reaching {
+        return format!(
+            "No route of this agent node forwards {address}, but its peering {id} already \
+             reaches {connector_url}: no new deposit is needed. Run \
+             `toon route add {address} --peer {id}`."
+        );
+    }
+    let (needed, amount) = match deposit {
+        Some(deposit) => (
+            format!(", with a deposit of at least {deposit} base units"),
+            deposit.to_string(),
+        ),
+        None => (String::new(), "<amount>".to_owned()),
+    };
+    format!(
+        "No peering of this agent node reaches {address}. A peering is needed{needed}: run \
+         `{}` and then `toon route add {address} --peer <id>`.",
+        operator::peer_add_command(connector_url, &amount, "")
+    )
 }
 
 #[cfg(test)]
@@ -282,5 +428,86 @@ mod tests {
             reply["connector_seal_key"] = json!(bad);
             assert!(order_reply(&reply).is_none(), "{bad}");
         }
+    }
+
+    fn destination() -> Destination {
+        relay_document(&toon()).unwrap().0
+    }
+
+    fn other_key() -> [u8; 65] {
+        seal_key(&format!("04{}", "cd".repeat(64))).unwrap()
+    }
+
+    #[test]
+    fn the_preflight_refuses_a_served_key_other_than_the_pinned_one_before_any_route() {
+        let found = verdict(&destination(), Some(other_key()), || {
+            panic!("the route is not looked for after a mismatch")
+        });
+        assert_eq!(found.unwrap(), Verdict::Mismatch);
+    }
+
+    #[test]
+    fn the_preflight_refuses_a_destination_no_route_forwards() {
+        let served = destination().seal_key;
+        assert_eq!(
+            verdict(&destination(), Some(served), || Ok(Some(false))).unwrap(),
+            Verdict::NoRoute
+        );
+        assert_eq!(
+            verdict(&destination(), None, || Ok(Some(false))).unwrap(),
+            Verdict::NoRoute
+        );
+    }
+
+    #[test]
+    fn the_preflight_passes_a_matching_key_and_a_forwarding_route() {
+        let served = destination().seal_key;
+        assert_eq!(
+            verdict(&destination(), Some(served), || Ok(Some(true))).unwrap(),
+            Verdict::Good
+        );
+        assert_eq!(
+            verdict(&destination(), None, || Ok(Some(true))).unwrap(),
+            Verdict::Good
+        );
+    }
+
+    #[test]
+    fn with_an_agent_key_the_connector_answers_for_the_route() {
+        assert_eq!(
+            verdict(&destination(), None, || Ok(None)).unwrap(),
+            Verdict::Good
+        );
+    }
+
+    #[test]
+    fn without_a_peering_the_message_names_the_peer_add_and_the_route_add() {
+        assert_eq!(
+            peering_message("g.far", "http://far", None, None),
+            "No peering of this agent node reaches g.far. A peering is needed: run \
+             `toon peer add http://far --deposit <amount> --yes` and then \
+             `toon route add g.far --peer <id>`."
+        );
+    }
+
+    #[test]
+    fn without_a_peering_the_message_names_the_deposit_a_command_knows() {
+        assert_eq!(
+            peering_message("g.far", "http://far", Some(2000), None),
+            "No peering of this agent node reaches g.far. A peering is needed, with a \
+             deposit of at least 2000 base units: run \
+             `toon peer add http://far --deposit 2000 --yes` and then \
+             `toon route add g.far --peer <id>`."
+        );
+    }
+
+    #[test]
+    fn with_a_peering_toward_the_connector_the_message_asks_only_for_a_route() {
+        assert_eq!(
+            peering_message("g.far", "http://far", Some(2000), Some("far")),
+            "No route of this agent node forwards g.far, but its peering far already \
+             reaches http://far: no new deposit is needed. Run \
+             `toon route add g.far --peer far`."
+        );
     }
 }

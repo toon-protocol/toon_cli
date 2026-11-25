@@ -161,6 +161,39 @@ fn the_recipients_wraps_are_paid_for_and_the_senders_copy_stays_home() {
 }
 
 #[test]
+fn a_send_whose_connector_url_refuses_every_request_is_sent_and_never_dials_it() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    // The hint drops every connection: a request to it fails, and is counted.
+    let hint = support::spy::start();
+    let relay = document(json!({
+        "ilp_address": far.machine.relay_prefix(),
+        "connector_url": hint.url(),
+        "connector_seal_key": support::seal_key(&far.url()),
+        "price": PRICE,
+    }));
+    peer_and_route(&near, &far);
+
+    let sent = near.toon(&[
+        "message",
+        "send",
+        ALICE,
+        "--content",
+        "across",
+        "--relay",
+        &relay,
+        "--yes",
+        "--json",
+    ]);
+
+    assert_eq!(sent.exit_code, 0, "{}{}", sent.stdout, sent.stderr);
+    assert_eq!(sent.json()["outcome"], "sent", "{}", sent.stdout);
+    assert_eq!(hint.connections(), 0);
+    assert_eq!(wraps_at(&far).len(), 1);
+}
+
+#[test]
 fn without_yes_the_total_is_stated_and_nothing_is_sent_or_paid() {
     let chain = AnvilChain::start();
     let near = node_on(&chain);

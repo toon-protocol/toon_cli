@@ -16,7 +16,7 @@ use tungstenite::Message;
 
 use crate::cli::EventCommand;
 use crate::derive;
-use crate::destination::{self, Destination};
+use crate::destination::{self, Destination, Leaving};
 use crate::egress::Egress;
 use crate::feed;
 use crate::home;
@@ -642,20 +642,7 @@ fn publish_to(
              and the relay's connector would reject it."
         )));
     }
-    if !operator::forwards(home, &destination.ilp_address)? {
-        return Err(operator::peering_needed(
-            home,
-            &destination.ilp_address,
-            &destination.connector_url,
-            format!(
-                "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
-                 needed: run `{}` and then `toon route add {} --peer <id>`.",
-                destination.ilp_address,
-                operator::peer_add_command(&destination.connector_url, "<amount>", ""),
-                destination.ilp_address
-            ),
-        ));
-    }
+    destination::preflight(&destination, Leaving::Home(home), None, None)?;
     if !yes {
         return Err(Error {
             nothing_sent: false,
@@ -734,20 +721,7 @@ pub fn pay_write(
 /// peering, and counts against the spending limit (ADR 0013).
 pub fn publish_signed_to(home: &Path, relay: &str, event: Value) -> Result<Report, Error> {
     let (destination, price) = edge(&Egress::of(home)?, relay)?;
-    if !operator::forwards(home, &destination.ilp_address)? {
-        return Err(operator::peering_needed(
-            home,
-            &destination.ilp_address,
-            &destination.connector_url,
-            format!(
-                "No peering of this agent node reaches {}, where {relay} is paid. A peering is \
-                 needed: run `{}` and then `toon route add {} --peer <id>`.",
-                destination.ilp_address,
-                operator::peer_add_command(&destination.connector_url, "<amount>", ""),
-                destination.ilp_address
-            ),
-        ));
-    }
+    destination::preflight(&destination, Leaving::Home(home), None, None)?;
     pay_write(home, relay, event, &destination, price, price)
 }
 

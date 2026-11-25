@@ -308,20 +308,15 @@ fn describe(home: &Path, relay: &str) -> Result<Report, Error> {
     lines.push(if reached {
         "A peering of this agent node reaches the write edge.".to_owned()
     } else {
-        match operator::peering_toward(home, &destination.connector_url) {
-            Ok(Some(id)) => format!(
-                "No route of this agent node forwards {}, but its peering {id} already reaches \
-                 {}: no new deposit is needed. Run `toon route add {} --peer {id}`.",
-                destination.ilp_address, destination.connector_url, destination.ilp_address
-            ),
-            Ok(None) | Err(_) => format!(
-                "No peering of this agent node reaches {}: run `{}` and then \
-                 `toon route add {} --peer <id>`.",
-                destination.ilp_address,
-                operator::peer_add_command(&destination.connector_url, "<amount>", ""),
-                destination.ilp_address
-            ),
-        }
+        destination::peering_message(
+            &destination.ilp_address,
+            &destination.connector_url,
+            None,
+            operator::peering_toward(home, &destination.connector_url)
+                .ok()
+                .flatten()
+                .as_deref(),
+        )
     });
     let feed_json = match &feed {
         Some(feed) => json!({

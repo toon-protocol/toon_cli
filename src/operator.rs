@@ -421,27 +421,6 @@ pub fn peering_toward(home: &Path, connector_url: &str) -> Result<Option<String>
     Ok(candidates.into_iter().find(|id| ids.contains(id)))
 }
 
-/// The `peering_needed` error of a command whose packet to `address` no route forwards.
-/// `without_peering` is its message when no peering reaches `connector_url`; when one does,
-/// the message asks only for a route over it. A peering that cannot be looked up is not
-/// recognised, so the lookup never changes the error.
-pub fn peering_needed(
-    home: &Path,
-    address: &str,
-    connector_url: &str,
-    without_peering: String,
-) -> Error {
-    let message = match peering_toward(home, connector_url) {
-        Ok(Some(id)) => format!(
-            "No route of this agent node forwards {address}, but its peering {id} already \
-             reaches {connector_url}: no new deposit is needed. Run \
-             `toon route add {address} --peer {id}`."
-        ),
-        Ok(None) | Err(_) => without_peering,
-    };
-    failed(ErrorCode::PeeringNeeded, message)
-}
-
 /// A channel's amount as the connector reports it, which is absent while it is opening or
 /// when the chain could not be read.
 fn amount(value: &Value) -> String {

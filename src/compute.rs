@@ -15,6 +15,7 @@ use zeroize::Zeroizing;
 
 use crate::cli::{ComputeCommand, ComputeExtendArgs, ComputeSpawnArgs};
 use crate::deployment::{self, Tags};
+use crate::destination::{self, Destination, Leaving, Pinned};
 use crate::egress::Egress;
 use crate::keystore;
 use crate::lease_file::{Claim, Lease, Leases, State};
@@ -305,29 +306,28 @@ impl Renter<'_> {
         })
     }
 
-    /// Whether a packet to `ilp_address` leaves this agent node: a peering and a route are
-    /// there. An agent key has no home to look in, and its connector answers.
-    fn reaches(&self, ilp_address: &str, connector_url: &str) -> Result<(), Error> {
-        let Holder::Home(home) = self.holder else {
-            return Ok(());
+    /// The preflight of a packet to `destination`: a route of this agent node forwards it,
+    /// and, when `pinned`, the connector serves the seal key it is sealed to. An agent key has
+    /// no home to look in, and its connector answers for the route.
+    fn preflight(&self, destination: &Destination, pinned: Option<Pinned>) -> Result<(), Error> {
+        let leaving = match self.holder {
+            Holder::Home(home) => Leaving::Home(home),
+            Holder::Agent(_) => Leaving::AgentKey,
         };
-        if node::State::load(home)?.is_none() {
-            return Err(node::no_agent_node(home));
-        }
-        if operator::forwards(home, ilp_address)? {
-            return Ok(());
-        }
-        Err(operator::peering_needed(
-            home,
-            ilp_address,
-            connector_url,
-            format!(
-                "No peering of this agent node reaches {ilp_address}, where the provider is \
-                 paid. A peering is needed: run `{}` and then `toon route add {ilp_address} \
-                 --peer <id>`.",
-                operator::peer_add_command(connector_url, "<amount>", ""),
-            ),
-        ))
+        destination::preflight(destination, leaving, pinned, None)
+    }
+
+    /// [`Self::preflight`] for a packet of a lease already bought, whose seal key is not
+    /// asked again.
+    fn reaches(&self, lease: &Lease) -> Result<(), Error> {
+        self.preflight(
+            &Destination {
+                ilp_address: lease.ilp_address.clone(),
+                connector_url: lease.connector_url.clone(),
+                seal_key: lease.seal_key()?,
+            },
+            None,
+        )
     }
 }
 
@@ -543,8 +543,8 @@ fn check_availability(
     }
 }
 
-/// Read the Listing `text` names and its provider's Profile, and check the connector says
-/// the seal key the Profile does.
+/// Read the Listing `text` names and its provider's Profile. `spawn`'s preflight checks the
+/// connector says the seal key the Profile does.
 fn resolve_target(
     renter: &Renter,
     args: &ComputeSpawnArgs,
@@ -553,19 +553,6 @@ fn resolve_target(
     let coordinate = listing::parse_coordinate(text)?;
     let relays = relays_for(renter, args, &coordinate)?;
     let resolved = listing::resolve(&renter.egress()?, &relays, &coordinate)?;
-    // The Profile pins the key a packet is sealed to; the connector must say the same.
-    let served = operator::identity(&renter.egress()?, &resolved.profile.connector_url)?;
-    if served != resolved.profile.seal_key {
-        return Err(unsent(
-            ErrorCode::SealKeyMismatch,
-            format!(
-                "The connector at {} reports a sealing key other than the `connector_seal_key` \
-                 of the Profile of {}, so a packet sealed to either would not be the \
-                 provider's. Nothing was sent.",
-                resolved.profile.connector_url, coordinate.author
-            ),
-        ));
-    }
     Ok((resolved, coordinate))
 }
 
@@ -797,9 +784,26 @@ pub fn spawn(renter: &Renter, args: &ComputeSpawnArgs) -> Result<Report, Error> 
         total,
         max_price,
     } = plan(renter, args)?;
+    let egress = renter.egress()?;
     for target in &targets {
         let profile = &target.resolved.profile;
-        renter.reaches(&profile.ilp_address, &profile.connector_url)?;
+        // The Profile pins the key a packet is sealed to; the connector must say the same.
+        let mismatch = unsent(
+            ErrorCode::SealKeyMismatch,
+            format!(
+                "The connector at {} reports a sealing key other than the `connector_seal_key` \
+                 of the Profile of {}, so a packet sealed to either would not be the \
+                 provider's. Nothing was sent.",
+                profile.connector_url, target.coordinate.author
+            ),
+        );
+        renter.preflight(
+            profile,
+            Some(Pinned {
+                egress: &egress,
+                mismatch,
+            }),
+        )?;
     }
     // Every limit before any packet, the free `availability` question included.
     limits_refuse(renter, "spawn", args.max, 0, max_price, total)?;
@@ -1395,7 +1399,7 @@ pub fn extend(renter: &Renter, args: &ComputeExtendArgs) -> Result<Report, Error
         max_price = max_price.max(price);
     }
     for index in &live {
-        renter.reaches(&members[*index].ilp_address, &members[*index].connector_url)?;
+        renter.reaches(&members[*index])?;
     }
     limits_refuse(
         renter,
@@ -1499,7 +1503,7 @@ fn ask_with(
     op: &str,
     content: Value,
 ) -> Result<Reply, Error> {
-    renter.reaches(&lease.ilp_address, &lease.connector_url)?;
+    renter.reaches(lease)?;
     let request = lease_request(lease, op, content)?;
     let destination = lease_request::destination(
         &lease.ilp_address,

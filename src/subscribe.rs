@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::control;
 use crate::derive;
-use crate::destination::{self, Destination};
+use crate::destination::{self, Destination, Leaving};
 use crate::egress::Egress;
 use crate::event;
 use crate::node;
@@ -41,11 +41,9 @@ fn usage(message: impl Into<String>) -> Error {
 
 /// What a relay says it sells its feed for, from its information document.
 struct Sale {
-    /// Where the relay's connector is reached, for the peering the subscriber needs, and the
-    /// key a packet is sealed to.
+    /// Where a subscribe packet is paid: the subscribe route, the key it is sealed to and
+    /// where the relay's connector is reached, for the peering the subscriber needs.
     destination: Destination,
-    /// The subscribe route.
-    address: String,
     /// What one packet costs and credits.
     price: u64,
     /// What the relay debits for each event it broadcasts.
@@ -78,12 +76,14 @@ pub fn feed_terms(document: &Value) -> Option<Feed> {
 
 fn sale(egress: &Egress, relay: &str) -> Result<Sale, Error> {
     let document = event::information_document(egress, relay)?;
-    let (paid_to, _) = destination::relay_document(&document["toon"])
+    let (write_edge, _) = destination::relay_document(&document["toon"])
         .map_err(|missing| destination::unpayable_document(relay, &missing))?;
     match feed_terms(&document) {
         Some(feed) => Ok(Sale {
-            destination: paid_to,
-            address: feed.address,
+            destination: Destination {
+                ilp_address: feed.address,
+                ..write_edge
+            },
             price: feed.price,
             broadcast_price: feed.broadcast_price,
         }),
@@ -296,21 +296,7 @@ pub fn subscribe(
     }
     let paid = packets as u128 * packet_amount as u128;
     let credit = packets as u128 * sale.price as u128;
-    if !operator::forwards(home, &sale.address)? {
-        return Err(operator::peering_needed(
-            home,
-            &sale.address,
-            &sale.destination.connector_url,
-            format!(
-                "No peering of this agent node reaches {}, where {relay} sells its feed. A \
-                 peering is needed, with a deposit of at least {paid} base units: run \
-                 `{}` and then `toon route add {} --peer <id>`.",
-                sale.address,
-                operator::peer_add_command(&sale.destination.connector_url, &paid.to_string(), ""),
-                sale.address
-            ),
-        ));
-    }
+    destination::preflight(&sale.destination, Leaving::Home(home), None, Some(paid))?;
     if !yes {
         return Err(Error {
             nothing_sent: false,
@@ -362,7 +348,7 @@ pub fn subscribe(
             ];
             operator::dispatch_with_headers(
                 home,
-                &sale.address,
+                &sale.destination.ilp_address,
                 packet_amount,
                 &sale.destination.seal_key,
                 ("POST", "/"),
