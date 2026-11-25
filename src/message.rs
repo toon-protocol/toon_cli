@@ -267,8 +267,7 @@ fn own_relay(home: &Path) -> Result<String, Error> {
 
 /// Send the recipients' wraps to `relay`, paying its write price for each.
 fn send_to(home: &Path, message: &Message, relay: &str, yes: bool) -> Result<Report, Error> {
-    let edge = event::edge(&Egress::of(home)?, relay)?;
-    let price = edge.price;
+    let (edge, price) = event::edge(&Egress::of(home)?, relay)?;
     let count = message.recipients.len() as u128;
     let total = u128::from(price) * count;
     if !operator::forwards(home, &edge.ilp_address)? {

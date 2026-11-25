@@ -277,7 +277,7 @@ impl Lease {
 
     /// The connector's sealing key, which every packet of the lease is sealed to.
     pub fn seal_key(&self) -> Result<[u8; 65], Error> {
-        crate::listing::seal_key(&self.connector_seal_key).ok_or_else(|| {
+        crate::destination::seal_key(&self.connector_seal_key).ok_or_else(|| {
             io_error(format!(
                 "The lease file of {} holds no connector seal key of 65 bytes.",
                 self.workload_id

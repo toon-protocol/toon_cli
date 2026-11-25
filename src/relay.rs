@@ -18,6 +18,7 @@ use serde_json::json;
 use crate::apps;
 use crate::cli::RelayCommand;
 use crate::control;
+use crate::destination;
 use crate::egress::Egress;
 use crate::event;
 use crate::node::{self, Expiry, RelaySettings, State, ToonApp};
@@ -284,17 +285,12 @@ pub fn price(home: &Path, prices: &Prices, yes: bool) -> Result<Report, Error> {
 fn describe(home: &Path, relay: &str) -> Result<Report, Error> {
     let egress = Egress::of(home)?;
     let document = event::information_document(&egress, relay)?;
-    let edge = event::edge_fields(&document["toon"]).map_err(|missing| {
-        event::unpayable(format!(
-            "The information document of {relay} does not say where a write is paid for: \
-             its `toon` object needs an `ilp_address`, a `connector_url`, a \
-             `connector_seal_key` of 65 bytes of hex and a `price`, and has {missing}."
-        ))
-    })?;
+    let (edge, price) = destination::relay_document(&document["toon"])
+        .map_err(|missing| destination::unpayable_document(relay, &missing))?;
     let reached = State::load(home)?.is_some() && operator::forwards(home, &edge.ilp_address)?;
     let feed = subscribe::feed_terms(&document);
     let mut lines = vec![
-        format!("{relay} charges {} base units for a write.", edge.price),
+        format!("{relay} charges {} base units for a write.", price),
         format!(
             "Write paid at {} (connector {}).",
             edge.ilp_address, edge.connector_url
@@ -342,7 +338,7 @@ fn describe(home: &Path, relay: &str) -> Result<Report, Error> {
             "write": {
                 "ilp_address": edge.ilp_address,
                 "connector_url": edge.connector_url,
-                "price": edge.price,
+                "price": price,
             },
             "feed": feed_json,
             "peering": reached,

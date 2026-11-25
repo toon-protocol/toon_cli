@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::control;
 use crate::derive;
+use crate::destination::{self, Destination};
 use crate::egress::Egress;
 use crate::event;
 use crate::node;
@@ -39,11 +40,10 @@ fn usage(message: impl Into<String>) -> Error {
 }
 
 /// What a relay says it sells its feed for, from its information document.
-struct Terms {
-    /// Where the relay's connector is reached, for the peering the subscriber needs.
-    connector_url: String,
-    /// The key a packet is sealed to.
-    seal_key: [u8; 65],
+struct Sale {
+    /// Where the relay's connector is reached, for the peering the subscriber needs, and the
+    /// key a packet is sealed to.
+    edge: Destination,
     /// The subscribe route.
     address: String,
     /// What one packet costs and credits.
@@ -76,19 +76,13 @@ pub fn feed_terms(document: &Value) -> Option<Feed> {
     })
 }
 
-fn terms(egress: &Egress, relay: &str) -> Result<Terms, Error> {
+fn sale(egress: &Egress, relay: &str) -> Result<Sale, Error> {
     let document = event::information_document(egress, relay)?;
-    let edge = event::edge_fields(&document["toon"]).map_err(|missing| {
-        event::unpayable(format!(
-            "The information document of {relay} does not say where its feed is paid for: \
-             its `toon` object needs an `ilp_address`, a `connector_url`, a \
-             `connector_seal_key` of 65 bytes of hex and a `price`, and has {missing}."
-        ))
-    })?;
+    let (edge, _) = destination::relay_document(&document["toon"])
+        .map_err(|missing| destination::unpayable_document(relay, &missing))?;
     match feed_terms(&document) {
-        Some(feed) => Ok(Terms {
-            connector_url: edge.connector_url,
-            seal_key: edge.seal_key,
+        Some(feed) => Ok(Sale {
+            edge,
             address: feed.address,
             price: feed.price,
             broadcast_price: feed.broadcast_price,
@@ -269,7 +263,7 @@ pub fn subscribe(
     } else {
         (filter, None)
     };
-    let terms = terms(&Egress::of(home)?, relay)?;
+    let terms = sale(&Egress::of(home)?, relay)?;
     // A top-up sends the filter last kept again: the relay may have forgotten an exhausted
     // subscription, and the draft says to send `filter` when that may be so.
     let filter = match filter {
@@ -306,13 +300,13 @@ pub fn subscribe(
         return Err(operator::peering_needed(
             home,
             &terms.address,
-            &terms.connector_url,
+            &terms.edge.connector_url,
             format!(
                 "No peering of this agent node reaches {}, where {relay} sells its feed. A \
                  peering is needed, with a deposit of at least {paid} base units: run \
                  `{}` and then `toon route add {} --peer <id>`.",
                 terms.address,
-                operator::peer_add_command(&terms.connector_url, &paid.to_string(), ""),
+                operator::peer_add_command(&terms.edge.connector_url, &paid.to_string(), ""),
                 terms.address
             ),
         ));
@@ -366,7 +360,7 @@ pub fn subscribe(
                 home,
                 &terms.address,
                 packet_amount,
-                &terms.seal_key,
+                &terms.edge.seal_key,
                 ("POST", "/"),
                 headers,
                 body.clone(),

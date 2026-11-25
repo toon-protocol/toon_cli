@@ -18,6 +18,7 @@ use crate::cli::{
     AddArgs, Command, ComputeCommand, EventCommand, LimitCommand, MessageCommand, PeerCommand,
     RouteCommand, TipCommand,
 };
+use crate::destination::{self, Destination};
 use crate::event;
 use crate::message;
 use crate::operator::{self, Answer, PeerAdd, Surface};
@@ -625,11 +626,13 @@ fn tip_send(key: &KeyFile, app: Option<&str>, tip: &TipOrder) -> Result<Report, 
         PATIENCE,
     )?;
     let text = |field: &str| reply[field].as_str().ok_or_else(unexpected);
-    let (ilp_address, receipt) = (text("ilp_address")?, reply["receipt"].clone());
-    let seal_key: [u8; 65] = hex::decode(text("connector_seal_key")?.trim_start_matches("0x"))
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(unexpected)?;
+    let receipt = reply["receipt"].clone();
+    let Destination {
+        ilp_address,
+        seal_key,
+        ..
+    } = destination::order_reply(&reply).ok_or_else(unexpected)?;
+    let ilp_address = ilp_address.as_str();
     let minimum: u128 = text("minimum")?.parse().map_err(|_| unexpected())?;
     let recipient = receipt["tags"]
         .as_array()

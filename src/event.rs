@@ -16,6 +16,7 @@ use tungstenite::Message;
 
 use crate::cli::EventCommand;
 use crate::derive;
+use crate::destination::{self, Destination};
 use crate::egress::Egress;
 use crate::feed;
 use crate::home;
@@ -572,43 +573,6 @@ pub fn watch(filter: Option<&str>, following: bool) -> Result<Report, Error> {
     })
 }
 
-/// Where another relay is paid for a write, from its information document.
-pub struct Edge {
-    pub ilp_address: String,
-    /// A location hint: where to peer, never dialled by a write.
-    pub connector_url: String,
-    /// The connector's sealing public key, which a write is sealed to.
-    pub seal_key: [u8; 65],
-    pub price: u64,
-}
-
-/// The write edge in a `toon` object, or what the object is missing to be one: the
-/// key is 65 bytes of hex, uncompressed so it begins `04`, with or without `0x`.
-pub fn edge_fields(toon: &Value) -> Result<Edge, String> {
-    let text = |field: &str| {
-        toon[field]
-            .as_str()
-            .filter(|text| !text.is_empty())
-            .ok_or_else(|| format!("no `{field}`"))
-    };
-    let key = text("connector_seal_key")?;
-    let seal_key: [u8; 65] = hex::decode(key.strip_prefix("0x").unwrap_or(key))
-        .ok()
-        .and_then(|key| key.try_into().ok())
-        .filter(|key: &[u8; 65]| key[0] == 0x04)
-        .ok_or_else(|| {
-            format!("a `connector_seal_key` that is not 65 bytes of hex beginning `04`: {key}")
-        })?;
-    Ok(Edge {
-        ilp_address: text("ilp_address")?.to_owned(),
-        connector_url: text("connector_url")?.to_owned(),
-        seal_key,
-        price: toon["price"]
-            .as_u64()
-            .ok_or_else(|| "no `price`".to_owned())?,
-    })
-}
-
 pub fn unpayable(message: String) -> Error {
     Error {
         nothing_sent: false,
@@ -646,17 +610,12 @@ pub fn information_document(egress: &Egress, relay: &str) -> Result<Value, Error
         })
 }
 
-/// The write edge `relay` publishes in its NIP-11 information document, the `toon`
-/// object.
-pub fn edge(egress: &Egress, relay: &str) -> Result<Edge, Error> {
+/// The paid destination of a write that `relay` publishes in its NIP-11 information
+/// document, the `toon` object, and the price of a write there.
+pub fn edge(egress: &Egress, relay: &str) -> Result<(Destination, u64), Error> {
     let document = information_document(egress, relay)?;
-    edge_fields(&document["toon"]).map_err(|missing| {
-        unpayable(format!(
-            "The information document of {relay} does not say where a write is paid for: \
-             its `toon` object needs an `ilp_address`, a `connector_url`, a \
-             `connector_seal_key` of 65 bytes of hex and a `price`, and has {missing}."
-        ))
-    })
+    destination::relay_document(&document["toon"])
+        .map_err(|missing| destination::unpayable_document(relay, &missing))
 }
 
 /// `toon event publish --relay`: publish to a relay this agent node does not run, paying
@@ -675,8 +634,7 @@ fn publish_to(
     if node::State::load(home)?.is_none() {
         return Err(node::no_agent_node(home));
     }
-    let edge = edge(&Egress::of(home)?, relay)?;
-    let price = edge.price;
+    let (edge, price) = edge(&Egress::of(home)?, relay)?;
     let amount = amount.unwrap_or(price);
     if amount < price {
         return Err(usage(format!(
@@ -717,7 +675,7 @@ fn publish_to(
     let secret = agent_secret(home)?;
     keep_agent_secret(home, &secret)?;
     let event = sign(&secret, now(), kind, tags, content)?;
-    pay_write(home, relay, event, &edge, amount)
+    pay_write(home, relay, event, &edge, price, amount)
 }
 
 /// Write the signed `event` to `relay` at the write `edge` it published, for `amount`, counted
@@ -727,10 +685,10 @@ pub fn pay_write(
     home: &Path,
     relay: &str,
     event: Value,
-    edge: &Edge,
+    edge: &Destination,
+    price: u64,
     amount: u64,
 ) -> Result<Report, Error> {
-    let price = edge.price;
     let sent: u128 = amount.into();
     spending::spend_packets(home, sent, true, |packets| {
         let mut report = write_to(home, event, &edge.ilp_address, amount, Some(&edge.seal_key))
@@ -770,7 +728,7 @@ pub fn pay_write(
 /// price, without asking: the write is paid through this agent node's connector over a
 /// peering, and counts against the spending limit (ADR 0013).
 pub fn publish_signed_to(home: &Path, relay: &str, event: Value) -> Result<Report, Error> {
-    let edge = edge(&Egress::of(home)?, relay)?;
+    let (edge, price) = edge(&Egress::of(home)?, relay)?;
     if !operator::forwards(home, &edge.ilp_address)? {
         return Err(operator::peering_needed(
             home,
@@ -785,8 +743,7 @@ pub fn publish_signed_to(home: &Path, relay: &str, event: Value) -> Result<Repor
             ),
         ));
     }
-    let price = edge.price;
-    pay_write(home, relay, event, &edge, price)
+    pay_write(home, relay, event, &edge, price, price)
 }
 
 /// Whether `event` is a signed event: its id is the hash of its other fields, and its
