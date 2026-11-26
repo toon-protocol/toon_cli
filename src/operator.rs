@@ -1711,51 +1711,19 @@ impl Request<'_> {
     }
 }
 
-/// How the identity a packet is sealed to is had.
-#[derive(Debug, PartialEq, Eq)]
-enum Route {
-    /// The connector's `send` fetches it, through this proxy for an onion host.
-    Fetch(Option<std::net::SocketAddr>),
-    /// It is fetched here, the way the egress says, and handed to the connector's `send`.
-    Pin,
-}
-
-/// How the identity at `seal_to` is had, when the egress sends a request to it through
-/// `proxy`. The connector's `send` takes one proxy, for onion hosts or for every host. For
-/// every host it would carry the write to the operator surface too, which is on this machine
-/// and which the overlay refuses, so a clearnet identity the overlay must carry is fetched here.
-fn identity_route(seal_to: &str, proxy: Option<std::net::SocketAddr>) -> Route {
-    match proxy {
-        Some(_) if !is_onion_endpoint(seal_to) => Route::Pin,
-        proxy => Route::Fetch(proxy),
-    }
-}
-
 /// What the connector's `send` is handed for one packet of `amount` to `destination`, signed
-/// with the key that signs `surface`'s writes and sealed to `(seal_to, seal_key)`, the key when
-/// it is held and else the identity at the URL, with `proxy` for an onion host.
+/// with the key that signs `surface`'s writes and sealed to `seal_key`, the key of the connector
+/// at `seal_to`. The key is always pinned, so the connector's `send` never fetches an identity:
+/// its fetch has no timeout, and a host that never answered it would hold the packets lock and
+/// the charge forever.
 fn send_options(
     surface: &Surface,
     destination: &str,
     amount: u64,
-    (seal_to, seal_key): (String, Option<[u8; 65]>),
+    (seal_to, seal_key): (String, [u8; 65]),
     request: Request,
-    proxy: Option<std::net::SocketAddr>,
-) -> Result<connector_cli::SendOptions, Error> {
-    let not_sent = |message: String| Error {
-        nothing_sent: true,
-        ..failed(ErrorCode::SendFailed, message)
-    };
-    let socks_proxy = proxy
-        .map(|proxy| {
-            reqwest::Url::parse(&format!("socks5h://{proxy}")).map_err(|error| {
-                not_sent(format!(
-                    "The overlay's proxy {proxy} is not a URL: {error}."
-                ))
-            })
-        })
-        .transpose()?;
-    Ok(connector_cli::SendOptions {
+) -> connector_cli::SendOptions {
+    connector_cli::SendOptions {
         operator_url: surface.url.clone(),
         operator_key: match &surface.held {
             Some(secret) => connector_cli::OperatorKey::InMemory(**secret),
@@ -1766,18 +1734,19 @@ fn send_options(
         destination: destination.to_owned(),
         amount,
         seal_to,
-        seal_key,
+        seal_key: Some(seal_key),
         target: request.target.to_owned(),
         method: request.method.to_owned(),
         body: request.body,
         headers: request.headers.to_vec(),
         expires_in_seconds: PACKET_EXPIRY.as_secs() as i64,
         wait: Some(packet_wait()),
-        socks_proxy,
+        // The write goes to the operator surface on this machine, never through the overlay.
+        socks_proxy: None,
         proxy_scope: connector_cli::ProxyScope::OnionOnly,
         dry_run: false,
         expect_fulfill: false,
-    })
+    }
 }
 
 /// Send one packet of `amount` to `destination` through the connector at `surface`, sealed to
@@ -1791,34 +1760,18 @@ fn send_on(
     seal: Seal,
     request: Request,
 ) -> Result<Answer, Error> {
-    let fetched = |seal_to: String| -> Result<_, Error> {
-        // An overlay that cannot be had is found out before anything is sent.
-        let wanted = egress.proxy_for(&seal_to).map_err(|error| Error {
-            nothing_sent: true,
-            ..error
-        })?;
-        Ok(match identity_route(&seal_to, wanted) {
-            Route::Fetch(proxy) => (seal_to, None, proxy),
-            Route::Pin => {
-                let key = identity(egress, &seal_to)?;
-                (seal_to, Some(key), None)
-            }
-        })
-    };
+    // The identity is fetched here, bounded and the way the egress says, before anything is
+    // sent or the connector's `send` is called.
     let own = format!("{}/ilp", surface.url);
-    let (seal_to, seal_key, proxy) = match seal {
-        Seal::Key(key) => (own, Some(*key), None),
-        Seal::Own => fetched(own)?,
-        Seal::Url(url) => fetched(url.to_owned())?,
+    let (seal_to, seal_key) = match seal {
+        Seal::Key(key) => (own, *key),
+        Seal::Own => {
+            let key = identity(egress, &own)?;
+            (own, key)
+        }
+        Seal::Url(url) => (url.to_owned(), identity(egress, url)?),
     };
-    let options = send_options(
-        surface,
-        destination,
-        amount,
-        (seal_to, seal_key),
-        request,
-        proxy,
-    )?;
+    let options = send_options(surface, destination, amount, (seal_to, seal_key), request);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1878,17 +1831,6 @@ pub fn parse_header(text: &str) -> Result<(String, String), Error> {
 /// Every `--header` of a command, parsed.
 pub fn parse_headers(texts: &[String]) -> Result<Vec<(String, String)>, Error> {
     texts.iter().map(|text| parse_header(text)).collect()
-}
-
-/// Whether `url` names an onion endpoint, which the connector's `send` dials through its
-/// proxy.
-fn is_onion_endpoint(url: &str) -> bool {
-    reqwest::Url::parse(url).is_ok_and(|url| {
-        url.host_str().is_some_and(|host| {
-            let host = host.to_ascii_lowercase();
-            host.ends_with(&format!(".{}", crate::overlay::TLD)) || host.ends_with(".onion")
-        })
-    })
 }
 
 /// The sealing key the connector at `seal_to` gives as its identity, asked for the way
@@ -2380,10 +2322,10 @@ pub fn join(home: &Path, args: &JoinArgs) -> Result<Report, Error> {
 mod tests {
     use super::parse_header;
     use super::{
-        add_cost, add_probe_cost, answer_of, cost_sentence, identity_route, packet_wait,
-        peer_add_on, peer_and_route_on, probe_cost_sentence, send_failure, send_options, Answer,
-        PeerAdd, Request, Route, Surface, AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY,
-        REPLAYED, STALE_READ, UNREAD, UNREAD_TIMEOUT,
+        add_cost, add_probe_cost, answer_of, cost_sentence, packet_wait, peer_add_on,
+        peer_and_route_on, probe_cost_sentence, send_failure, send_options, Answer, PeerAdd,
+        Request, Surface, AMBIGUOUS_CHAIN, AMBIGUOUS_CHAIN_LIST, PACKET_EXPIRY, REPLAYED,
+        STALE_READ, UNREAD, UNREAD_TIMEOUT,
     };
     use super::{history_report, land_report, parse_packet_counts, PacketCounts};
     use crate::cli::Chain;
@@ -2995,48 +2937,23 @@ mod tests {
     }
 
     #[test]
-    fn the_identity_is_fetched_by_the_connector_unless_the_overlay_must_carry_a_clearnet_fetch() {
-        let proxy: std::net::SocketAddr = "127.0.0.1:9050".parse().unwrap();
-        assert_eq!(
-            identity_route("http://127.0.0.1:7100/ilp", None),
-            Route::Fetch(None)
-        );
-        assert_eq!(
-            identity_route("http://abc.anyone:7100/ilp", Some(proxy)),
-            Route::Fetch(Some(proxy))
-        );
-        assert_eq!(
-            identity_route("http://abc.onion:7100/ilp", Some(proxy)),
-            Route::Fetch(Some(proxy))
-        );
-        // The connector's proxy for every host would carry the write to the operator surface on
-        // this machine too, which the overlay refuses: the identity is fetched here and pinned.
-        assert_eq!(
-            identity_route("http://relay.example:7100/ilp", Some(proxy)),
-            Route::Pin
-        );
-    }
-
-    #[test]
     fn a_packet_is_handed_to_the_connectors_send_with_its_signer_seal_request_and_wait() {
         let home = tempfile::tempdir().expect("a directory");
         let wallet = surface(home.path(), "http://127.0.0.1:1".into());
         let headers = [("authorization".to_owned(), "Nostr x".to_owned())];
-        let proxy: std::net::SocketAddr = "127.0.0.1:9050".parse().unwrap();
+        let far = [7u8; 65];
         let options = send_options(
             &wallet,
             "g.toon.relay",
             42,
-            ("http://far:7100/ilp".into(), None),
+            ("http://far:7100/ilp".into(), far),
             Request {
                 method: "PUT",
                 target: "inbox",
                 headers: &headers,
                 body: b"{}".to_vec(),
             },
-            Some(proxy),
-        )
-        .expect("options");
+        );
         assert_eq!(
             options.operator_key,
             connector_cli::OperatorKey::File(home.path().join("write.key").display().to_string())
@@ -3047,7 +2964,8 @@ mod tests {
             ("g.toon.relay", 42)
         );
         assert_eq!(options.seal_to, "http://far:7100/ilp");
-        assert_eq!(options.seal_key, None);
+        // Pinned, so the connector's `send` never fetches an identity, which it does unbounded.
+        assert_eq!(options.seal_key, Some(far));
         assert_eq!(
             (options.method.as_str(), options.target.as_str()),
             ("PUT", "inbox")
@@ -3056,10 +2974,7 @@ mod tests {
         assert_eq!(options.body, b"{}".to_vec());
         assert_eq!(options.expires_in_seconds, 30);
         assert_eq!(options.wait, Some(packet_wait()));
-        assert_eq!(
-            options.socks_proxy.map(|url| url.to_string()),
-            Some("socks5h://127.0.0.1:9050".to_owned())
-        );
+        assert_eq!(options.socks_proxy, None);
         assert_eq!(options.proxy_scope, connector_cli::ProxyScope::OnionOnly);
         assert!(!options.dry_run && !options.expect_fulfill);
 
@@ -3069,11 +2984,9 @@ mod tests {
             &agent,
             "g.toon.relay",
             1,
-            ("http://far:3000/ilp".into(), Some(key)),
+            ("http://far:3000/ilp".into(), key),
             Request::json(Vec::new()),
-            None,
-        )
-        .expect("options");
+        );
         assert_eq!(
             options.operator_key,
             connector_cli::OperatorKey::InMemory([9u8; 32])

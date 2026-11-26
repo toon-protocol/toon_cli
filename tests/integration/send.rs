@@ -566,3 +566,131 @@ fn texts(seen: &[Vec<u8>]) -> Vec<String> {
         .map(|request| String::from_utf8_lossy(request).into_owned())
         .collect()
 }
+
+/// A host that accepts every connection and never answers on it. Returns its `/ilp` URL.
+fn silent_connector() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let address = listener.local_addr().expect("address");
+    std::thread::spawn(move || {
+        // Held, never read or written, so a request to it waits for an answer forever.
+        let mut held = Vec::new();
+        for stream in listener.incoming().flatten() {
+            held.push(stream);
+        }
+    });
+    format!("http://{address}/ilp")
+}
+
+/// How long a send to a silent `--seal-to` may take to fail: the 30 seconds an identity
+/// is waited for, and room to start the command.
+const IDENTITY_BOUND: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// Run `toon` with `args` in the background and return its one JSON document and exit code,
+/// failing the test if it has not finished within `IDENTITY_BOUND`.
+fn bounded(
+    node: &Running,
+    args: &[&str],
+    configure: impl FnOnce(&mut std::process::Command),
+) -> (serde_json::Value, i32) {
+    let mut run = node.machine.start_with(args, configure);
+    let line = run
+        .try_line(IDENTITY_BOUND)
+        .unwrap_or_else(|| panic!("toon was still waiting after {IDENTITY_BOUND:?}"));
+    let report = serde_json::from_str(&line).expect("one JSON document");
+    (report, run.exit_code())
+}
+
+#[test]
+fn a_seal_to_host_that_never_answers_fails_in_time_and_counts_for_nothing() {
+    let node = running();
+    let silent = silent_connector();
+    let relay = node.machine.relay_prefix();
+    let before = remaining(&node);
+    assert!(before.is_string(), "{before}");
+
+    let (report, exit_code) = bounded(
+        &node,
+        &[
+            "send",
+            &relay,
+            "--amount",
+            "1",
+            "--seal-to",
+            &silent,
+            "--yes",
+            "--json",
+        ],
+        |_| {},
+    );
+
+    assert_eq!(report["error"]["code"], "send_failed", "{report}");
+    assert_eq!(exit_code, 1);
+    assert_eq!(remaining(&node), before);
+    // The packets lock was given up: the next paying command goes through.
+    let next = node
+        .machine
+        .toon(&["send", &relay, "--amount", "0", "--yes", "--json"]);
+    assert_eq!(next.exit_code, 0, "{}{}", next.stdout, next.stderr);
+}
+
+#[test]
+fn a_seal_to_host_that_never_answers_fails_in_time_through_an_agent_key() {
+    let node = running();
+    let silent = silent_connector();
+    let relay = node.machine.relay_prefix();
+    let created = node.machine.toon_with(
+        &["agent-key", "create", "--max-per-command", "5", "--json"],
+        |command| {
+            command.env("TOON_PASSPHRASE", PASSPHRASE);
+        },
+    );
+    assert_eq!(created.exit_code, 0, "{}{}", created.stdout, created.stderr);
+    let key = created.json()["key_file"].as_str().unwrap().to_owned();
+    let nowhere = tempfile::tempdir().unwrap();
+    let as_agent = |command: &mut std::process::Command| {
+        command
+            .env("HOME", nowhere.path())
+            .env("TOON_AGENT_KEY", &key);
+    };
+    // The supervisor binds its order address a moment after the key is made.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let run = node.machine.toon_with(
+            &["send", &relay, "--amount", "0", "--yes", "--json"],
+            as_agent,
+        );
+        if run.exit_code == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{}{}",
+            run.stdout,
+            run.stderr
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let (report, exit_code) = bounded(
+        &node,
+        &[
+            "send",
+            &relay,
+            "--amount",
+            "1",
+            "--seal-to",
+            &silent,
+            "--yes",
+            "--json",
+        ],
+        as_agent,
+    );
+
+    assert_eq!(report["error"]["code"], "send_failed", "{report}");
+    assert_eq!(exit_code, 1);
+    let next = node.machine.toon_with(
+        &["send", &relay, "--amount", "0", "--yes", "--json"],
+        as_agent,
+    );
+    assert_eq!(next.exit_code, 0, "{}{}", next.stdout, next.stderr);
+}
