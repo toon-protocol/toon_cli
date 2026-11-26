@@ -1354,17 +1354,23 @@ pub fn config_text(
             )
         })
         .unwrap_or_default();
-    // A hidden service is paid at its onion endpoint, over HTTP and BTP; any other
-    // connector at the address it listens on.
-    let (http_endpoint, btp_endpoint) = match overlay {
-        Some(overlay) => (
+    // A hidden service is paid at its onion endpoint, over HTTP and BTP. A clearnet
+    // app is paid at its hostname over HTTPS: the certificate and the reverse proxy
+    // that answer there are the operator's, and its loopback listen address is not
+    // reachable from outside (and is plain http, which a TLS-only connector refuses).
+    // Any other connector is paid at the address it listens on.
+    let (http_endpoint, btp_endpoint) = match (overlay, &app.reach) {
+        (Some(overlay), _) => (
             format!("http://{}/ilp", overlay.endpoint),
             format!(
                 "btp_endpoint = {}\n",
                 string(&format!("ws://{}/ilp/btp", overlay.endpoint))
             ),
         ),
-        None => (format!("http://{listen}/ilp"), String::new()),
+        (None, Reach::Clearnet { hostname }) => {
+            (format!("https://{hostname}/ilp"), String::new())
+        }
+        (None, _) => (format!("http://{listen}/ilp"), String::new()),
     };
     // Every connector is peerable: another operator can peer toward it. A peer reads
     // where to pay it from the connector's self-description, so the connector must be
@@ -1707,6 +1713,45 @@ mod tests {
         let state = State::from_json(&recorded).unwrap();
         assert_eq!(state.peerings["first"], "http://127.0.0.1:1/ilp");
         assert_eq!(State::from_json(&state.json()).unwrap(), state);
+    }
+
+    #[test]
+    fn a_clearnet_app_advertises_its_hostname_over_https_not_its_listen_address() {
+        let mut value = state_of("devnet", json!({}));
+        value["toon_apps"][0]["reach"] =
+            json!({ "mode": "clearnet", "hostname": "node.example" });
+        value["toon_apps"][0]["listen"] = json!("127.0.0.1:7768");
+        let state = State::from_json(&value).unwrap();
+        let app = &state.toon_apps[0];
+
+        let home = tempfile::tempdir().unwrap();
+        let files = render(home.path(), app, &[], None).unwrap();
+        let config = fs::read_to_string(&files.config).unwrap();
+
+        assert!(
+            config.contains("http_endpoint = \"https://node.example/ilp\""),
+            "{config}"
+        );
+        assert!(!config.contains("http://127.0.0.1:7768/ilp"), "{config}");
+    }
+
+    #[test]
+    fn a_hidden_app_still_advertises_its_onion_endpoint() {
+        let state = State::from_json(&state_of("devnet", json!({}))).unwrap();
+        let app = &state.toon_apps[0];
+        let overlay = Overlay {
+            proxy: "127.0.0.1:9050".parse().unwrap(),
+            endpoint: "example.anon".into(),
+        };
+
+        let home = tempfile::tempdir().unwrap();
+        let files = render(home.path(), app, &[], Some(&overlay)).unwrap();
+        let config = fs::read_to_string(&files.config).unwrap();
+
+        assert!(
+            config.contains("http_endpoint = \"http://example.anon/ilp\""),
+            "{config}"
+        );
     }
 }
 
