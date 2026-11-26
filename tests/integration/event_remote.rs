@@ -305,10 +305,26 @@ const FORWARD: u64 = 101;
 /// `near` peered with `mid`, `mid` peered with `far`, and `mid` charging `FORWARD` for the
 /// route to `far`'s relay. Returns the relay's information document's URL.
 fn through_a_charging_connector(chain: &AnvilChain) -> (Node, Node, Node, String) {
+    through_a_connector_charging(chain, FORWARD, PRICE)
+}
+
+/// `near` peered with `mid`, `mid` peered with `far`, `mid` charging `forward` for the route
+/// to `far`'s relay (the whole path's cost), and the relay's price `price`. Returns the relay's information document's
+/// URL.
+fn through_a_connector_charging(
+    chain: &AnvilChain,
+    forward: u64,
+    price: u64,
+) -> (Node, Node, Node, String) {
     let near = node_on(chain);
     let mid = node_on(chain);
     let far = node_on(chain);
-    let relay = information_document(&far);
+    let relay = document(json!({
+        "ilp_address": far.machine.relay_prefix(),
+        "connector_url": far.url(),
+        "connector_seal_key": support::seal_key(&far.url()),
+        "price": price,
+    }));
     let prefix = far.machine.relay_prefix();
     let peered = |from: &Node, to: &Node, id: &str| {
         let run = from.toon(&[
@@ -332,7 +348,7 @@ fn through_a_charging_connector(chain: &AnvilChain) -> (Node, Node, Node, String
         "--peer",
         "far",
         "--price",
-        &FORWARD.to_string(),
+        &forward.to_string(),
     ]);
     assert_eq!(routed.exit_code, 0, "{}{}", routed.stdout, routed.stderr);
     let routed = near.toon(&["route", "add", &prefix, "--peer", "mid"]);
@@ -416,6 +432,63 @@ fn a_stated_amount_pays_a_connector_that_charges_to_forward_and_without_it_is_re
     let moved = outbound_watermark(&near) - watermark;
     assert_eq!(moved, u128::from(FORWARD), "{moved}");
     assert!(before - after >= moved, "{} < {moved}", before - after);
+}
+
+#[test]
+fn a_paid_write_over_the_price_reports_what_the_connectors_in_between_keep() {
+    let chain = AnvilChain::start();
+    // `mid`'s route costs 120 to the end: the relay's 100 and the 20 `mid` keeps.
+    let (near, _mid, far, relay) = through_a_connector_charging(&chain, 120, 100);
+    let before: u128 = remaining(&near).parse().expect("a number");
+
+    let published = near.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--amount", "120", "--yes",
+    ]);
+
+    assert_eq!(published.exit_code, 0, "{}", published.stdout);
+    let events = near.machine.toon(&[
+        "event",
+        "query",
+        &far.relay_url(),
+        "--filter",
+        r#"{"kinds":[1]}"#,
+        "--json",
+    ]);
+    let id = events.json()["events"][0]["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the write reached the relay: {}", events.stdout))
+        .to_owned();
+    assert_eq!(
+        published.stdout,
+        format!(
+            "Published event {id}. Sent 120 base units for {relay}, whose price is 100; the \
+             connectors in between keep the other 20.\n"
+        )
+    );
+    let after: u128 = remaining(&near).parse().expect("a number");
+    assert_eq!(before - after, 120);
+}
+
+#[test]
+fn a_paid_write_at_the_price_reports_what_it_paid() {
+    let chain = AnvilChain::start();
+    let near = node_on(&chain);
+    let far = node_on(&chain);
+    let relay = information_document(&far);
+    peer_and_route(&near, &far);
+
+    let published = near.toon(&[
+        "event", "publish", "--relay", &relay, "--kind", "1", "--yes",
+    ]);
+
+    assert_eq!(published.exit_code, 0, "{}", published.stdout);
+    assert!(
+        published
+            .stdout
+            .ends_with(&format!(". Paid {PRICE} base units to {relay}.\n")),
+        "{}",
+        published.stdout
+    );
 }
 
 #[test]

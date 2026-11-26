@@ -682,7 +682,7 @@ pub fn pay_write(
         })?;
         // A rejected or wrongly fulfilled packet cost what its channels moved by.
         report.json["relay"] = json!(relay);
-        if report.json["outcome"] != "fulfilled" {
+        if report.json["outcome"] != "published" {
             if paid > 0 {
                 report.text = format!("{} It cost {paid} base units.", report.text);
             }
@@ -691,8 +691,9 @@ pub fn pay_write(
         } else {
             report.text = format!(
                 "{} Sent {amount} base units for {relay}, whose price is {price}; the \
-                 connectors in between keep the rest.",
-                report.text
+                 connectors in between keep the other {}.",
+                report.text,
+                amount - price
             );
         }
         // A stated cost is in the text above; without one the flag is named without a figure.
