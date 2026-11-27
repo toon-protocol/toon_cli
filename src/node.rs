@@ -1354,17 +1354,23 @@ pub fn config_text(
             )
         })
         .unwrap_or_default();
-    // A hidden service is paid at its onion endpoint, over HTTP and BTP; any other
-    // connector at the address it listens on.
-    let (http_endpoint, btp_endpoint) = match overlay {
-        Some(overlay) => (
+    // A hidden service is paid at its onion endpoint, over HTTP and BTP. A clearnet
+    // app is paid at its public hostname over HTTPS: the certificate and the reverse
+    // proxy that answer there are the operator's, and a connector that refuses
+    // plaintext cannot peer with a loopback `http` endpoint. Any other connector is
+    // paid at the address it listens on.
+    let (http_endpoint, btp_endpoint) = match (overlay, &app.reach) {
+        (Some(overlay), _) => (
             format!("http://{}/ilp", overlay.endpoint),
             format!(
                 "btp_endpoint = {}\n",
                 string(&format!("ws://{}/ilp/btp", overlay.endpoint))
             ),
         ),
-        None => (format!("http://{listen}/ilp"), String::new()),
+        (None, Reach::Clearnet { hostname }) => {
+            (format!("https://{hostname}/ilp"), String::new())
+        }
+        (None, _) => (format!("http://{listen}/ilp"), String::new()),
     };
     // Every connector is peerable: another operator can peer toward it. A peer reads
     // where to pay it from the connector's self-description, so the connector must be
@@ -1707,6 +1713,41 @@ mod tests {
         let state = State::from_json(&recorded).unwrap();
         assert_eq!(state.peerings["first"], "http://127.0.0.1:1/ilp");
         assert_eq!(State::from_json(&state.json()).unwrap(), state);
+    }
+
+    /// A clearnet app advertises `https://<hostname>/ilp`, not the loopback
+    /// address it listens on: a connector that refuses plaintext cannot peer
+    /// with an `http` endpoint, and the reverse proxy at the hostname speaks
+    /// HTTPS for it.
+    #[test]
+    fn a_clearnet_app_advertises_its_hostname_over_https() {
+        let app = ToonApp {
+            name: "node".into(),
+            connector: 0,
+            segment: "test".into(),
+            reach: Reach::Clearnet {
+                hostname: "node.example".into(),
+            },
+            listen: "127.0.0.1:7768".into(),
+            evm: None,
+            solana: None,
+            plaintext_peers: false,
+            apps: Vec::new(),
+            relay: RelaySettings::default(),
+            tip: None,
+            zk_edge: None,
+        };
+        let home = tempfile::tempdir().unwrap();
+        // The connector validates its config against the signer key file, which
+        // `init` writes before it renders; stand in for it with a key of our own.
+        let files = ConnectorFiles::of(home.path(), 0);
+        write(&files.identity_key, &[7u8; 32], 0o600).unwrap();
+        let files = render(home.path(), &app, &[], None).unwrap();
+        let config = fs::read_to_string(&files.config).unwrap();
+        assert!(
+            config.contains("http_endpoint = \"https://node.example/ilp\""),
+            "{config}"
+        );
     }
 }
 

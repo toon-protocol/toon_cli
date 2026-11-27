@@ -205,10 +205,9 @@ fn every_connector_the_cli_renders_a_config_for_is_peerable() {
 
     assert!(config.contains("peer_expose = \"http\""), "{config}");
     assert!(
-        config.contains("http_endpoint = \"http://127.0.0.1:"),
+        config.contains("http_endpoint = \"https://toon.example.com/ilp\""),
         "{config}"
     );
-    assert!(config.contains("/ilp\""), "{config}");
 }
 
 #[test]
